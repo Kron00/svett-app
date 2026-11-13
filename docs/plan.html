@@ -1,0 +1,519 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>svett build plan</title>
+<style>
+:root{--bg:#000;--fg:#fff;--dim:#a3a3a3;--line:#262626;--surface:#0f0f0f;--surface2:#171717;--ok:#4ade80;--warn:#fbbf24;--you:#60a5fa}
+*{box-sizing:border-box}
+html{background:var(--bg)}
+body{margin:0 auto;max-width:980px;padding:20px 16px 80px;background:var(--bg);color:var(--fg);font:16px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
+h1{font-size:28px;line-height:1.2;margin:8px 0 4px}
+h2{font-size:21px;margin:44px 0 10px;padding-top:14px;border-top:1px solid var(--line)}
+h3{font-size:17px;margin:26px 0 8px}
+p{margin:8px 0}
+a{color:var(--fg)}
+ul,ol{margin:8px 0;padding-left:22px}
+li{margin:4px 0}
+code{font:13px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace;background:var(--surface2);padding:1px 5px;border-radius:4px}
+.meta{color:var(--dim);font-size:14px}
+.box{background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:12px 14px;margin:12px 0}
+.scroll{overflow-x:auto;margin:10px 0}
+table{border-collapse:collapse;width:100%;font-size:14.5px}
+th,td{text-align:left;vertical-align:top;padding:8px 10px;border-bottom:1px solid var(--line)}
+th{color:var(--dim);font-weight:600;white-space:nowrap}
+td.id{white-space:nowrap;font-weight:600}
+.tag{display:inline-block;font-size:12px;padding:1px 7px;border-radius:999px;border:1px solid var(--line);white-space:nowrap}
+.ok{color:var(--ok);border-color:#14532d}
+.warn{color:var(--warn);border-color:#713f12}
+.you{color:var(--you);border-color:#1e3a8a}
+nav ol{columns:2;column-gap:28px;font-size:14.5px}
+@media (max-width:640px){nav ol{columns:1}h1{font-size:24px}}
+svg{width:100%;height:auto;display:block}
+svg text{fill:#fff;font:13px -apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif}
+svg .d{fill:#a3a3a3;font-size:12px}
+</style>
+</head>
+<body>
+
+<h1>svett build plan</h1>
+<p class="meta">Draft for your approval. Written 13 November 2026. Nothing is built yet. Building starts when you say go.</p>
+
+<div class="box">
+<p><strong>The short version.</strong> svett is one iPhone app for lifting and cardio. It has one feed for every kind of workout. You can take all your data out and bring it back in. A coach inside the app runs on your own ChatGPT plan after you tap <strong>Continue with ChatGPT</strong>, so nobody pays svett for AI.</p>
+<p>This plan builds the app in 8 phases and 26 pull requests. Each pull request is built, run in the iPhone 16 Pro Max simulator, reviewed by GPT Sol in a loop, and then scored by a council of Claude Opus and GPT Sol. A pull request merges only when both score it 9 or higher. Every merge ships a new version to your phone through AltStore.</p>
+</div>
+
+<nav aria-label="Contents">
+<ol>
+<li><a href="#asks">What you asked for</a></li>
+<li><a href="#you">What needs you</a></li>
+<li><a href="#decisions">Decisions already made</a></li>
+<li><a href="#scope">What version 1 contains</a></li>
+<li><a href="#layout">How the app is laid out</a></li>
+<li><a href="#arch">How it is built</a></li>
+<li><a href="#release">Where it is built and how it reaches your phone</a></li>
+<li><a href="#phases">Phases and pull requests</a></li>
+<li><a href="#verify">How each pull request is checked and reviewed</a></li>
+<li><a href="#risks">Risks and fallbacks</a></li>
+<li><a href="#evidence">What is proven and what is not</a></li>
+<li><a href="#rejected">Alternatives rejected</a></li>
+</ol>
+</nav>
+
+<h2 id="asks">1. What you asked for</h2>
+<div class="scroll"><table>
+<tr><th>You said</th><th>What the plan does</th></tr>
+<tr><td>An all-in-one health app, like Hevy and Strava combined</td><td>Lifting is phase 1 and 2. Cardio is phase 5. Both produce the same kind of record, an activity, so one feed and one history show both.</td></tr>
+<tr><td>The social side, brought together</td><td>Phase 6 adds accounts, follows and one feed. A lifting post shows its exercises, sets and records. A run shows its map, pace and splits.</td></tr>
+<tr><td>Your data elsewhere, usable by ChatGPT</td><td>Phase 3 adds full export and import. Phase 7 adds a connector, so ChatGPT can read and write your svett data with your approval.</td></tr>
+<tr><td>Continue with ChatGPT, using the user's own subscription</td><td>Phase 4. The sign-in copies the flow that already works in your interval tracker. Model requests go from the phone to OpenAI on the user's plan.</td></tr>
+<tr><td>Use what T3 Code uses</td><td>Expo and React Native in TypeScript, with the same main libraries. See <a href="#decisions">section 3</a>.</td></tr>
+<tr><td>iPhone only, built on rena-devbook with the iPhone 16 Pro Max simulator</td><td>No Android and no web app. rena-devbook does the native iOS builds and runs the simulator. rena-devbox, which is faster, does the rest of the building and testing. You chose this split during review. Releases are built on GitHub's macOS runner, as your interval tracker's are.</td></tr>
+<tr><td>Public GitHub repo, sideloaded and updated through AltStore</td><td>The repo becomes public in the first pull request. The second one publishes an AltStore source, and you install from it.</td></tr>
+<tr><td>Way better in every way, and it has to make sense</td><td>Section 4 lists, per area, what svett does that Hevy and Strava do not. Each item comes from the feature research.</td></tr>
+<tr><td>Sol loop and council on everything, 9 to merge</td><td>Section 9. This plan itself goes through both before you see it as ready.</td></tr>
+</table></div>
+
+<h2 id="you">2. What needs you</h2>
+<p>Everything not in this table runs without you. These are the points where only you can act.</p>
+<div class="scroll"><table>
+<tr><th>When</th><th>What</th><th>Why</th></tr>
+<tr><td>Now</td><td>Approve this plan, or correct it.</td><td>Building starts on your go.</td></tr>
+<tr><td>After pull request F2</td><td><span class="tag you">phone checkpoint 1, part 1</span> Add the svett source in AltStore and install the app. Tell me it opened. F3 does not merge until you do.</td><td>It proves the Expo build installs on your phone.</td></tr>
+<tr><td>After pull request F3</td><td><span class="tag you">phone checkpoint 1, part 2</span> Update the app in AltStore and tap through a five-minute check screen.</td><td>It proves an update that adds permissions installs, and it checks the things a simulator cannot. No feature work starts until it passes. See <a href="#risks">section 10</a>.</td></tr>
+<tr><td>After phases 1, 3, 4, 5 and 6</td><td><span class="tag you">phone checkpoints 2 to 6</span> Update in AltStore and use the new part once. Each has a short checklist.</td><td>You are the user. Work continues while I wait, and your notes go into the next pull request.</td></tr>
+<tr><td>During C1 and C2</td><td>Sign in with your ChatGPT account once, in the simulator, for the live tests. C2 cannot merge until its live run passes.</td><td>A live sign-in needs a person. It uses a little of your ChatGPT plan.</td></tr>
+<tr><td>Before D2</td><td>Export your history from Hevy and send me the file.</td><td>D2 checks its columns and time zone against the real file. The file stays on your machines and never enters the repo.</td></tr>
+<tr><td>During X1</td><td>Let me use your ChatGPT account on chatgpt.com to add svett as a custom server.</td><td>X1's proof needs a ChatGPT account that can add one.</td></tr>
+<tr><td>Before phase 6</td><td>Say where the server runs. My default is your Coolify server. It needs a public HTTPS address, so I need a domain name pointed at it.</td><td>The feed and sync need a server that phones can reach. Coolify did not answer from this machine today.</td></tr>
+<tr><td>Before checkpoint 6</td><td>Each friend who joins installs svett the way you do. They need AltStore on their iPhone, a Mac or PC running AltServer for the first install and refreshes, and their own Apple account. They have the same 7-day refresh and app limits. It costs them nothing.</td><td>Without the App Store, AltStore is the only way in. That caps the feed at people willing to set it up.</td></tr>
+<tr><td>Before phase 6</td><td>Choose Clerk's free plan with a weekly email code, or Clerk Pro at $25 a month for longer sign-ins. The default is the free plan.</td><td>Clerk's free plan fixes sign-ins at 7 days.</td></tr>
+<tr><td>Before phase 6</td><td>A Clerk account. I check the 1Password Agents vault first.</td><td>Clerk handles sessions and email codes. T3 Code uses it.</td></tr>
+<tr><td>Optional, any time</td><td>Send OpenAI's Sign in with ChatGPT interest form.</td><td>The form is a waitlist for commercial and hosted apps. It might lead to a fixed client ID, which could remove the email code described in <a href="#accounts">Accounts</a>.</td></tr>
+<tr><td>If it comes up</td><td>Choose what to do about Apple's limits on sideloaded apps.</td><td>A free Apple account allows three active apps and ten App IDs a week. See <a href="#risks">section 10</a>.</td></tr>
+</table></div>
+
+<h3>What it costs to run</h3>
+<div class="scroll"><table>
+<tr><th>Item</th><th>Cost</th><th>When it changes</th></tr>
+<tr><td>Phases 0 to 5</td><td>Nothing. There is no server and no paid service.</td><td>Until phase 6, your svett data lives only on the phone and in your iPhone backups. Data logged only in svett, such as a recorded run, is lost if the phone is. Export a file now and then from the You tab.</td></tr>
+<tr><td>GitHub</td><td>Free for a public repo, including the checks.</td><td></td></tr>
+<tr><td>Server, from phase 6</td><td>Nothing new if it runs on your Coolify server.</td><td>A hosted server instead would be a monthly bill. I bring you the price before anything is bought.</td></tr>
+<tr><td>Domain name</td><td>The yearly fee for one domain, if you do not already own one to use.</td><td></td></tr>
+<tr><td>Clerk</td><td>Its free plan, which covers 50,000 retained users. Sign-ins last 7 days, so each user enters an email code once a week.</td><td>Clerk Pro, at $25 a month or $20 a month billed yearly, removes the weekly code. You decide before phase 6.</td></tr>
+<tr><td>AI</td><td>Nothing for svett. Each user's own ChatGPT plan pays.</td><td>Coach use comes out of the same ChatGPT allowance the user has everywhere else. There is no separate allowance. On Plus, OpenAI shares one five-hour limit across every app that uses the plan. Each user can cap svett's weekly share in ChatGPT's settings.</td></tr>
+<tr><td>Apple</td><td>Free account. Optional paid developer account at Apple's yearly price.</td><td>Only if you want push notifications, no 7-day refresh, or more room than three active apps and ten App IDs a week.</td></tr>
+</table></div>
+<p><strong>Who runs the server.</strong> You own it. I set up the deployment and a nightly database backup that stays on your server, and S1 proves a restore. Nobody watches it around the clock. If it goes down, the app keeps working on the phone and syncs when the server is back. You ask an agent to fix it.</p>
+
+<h2 id="decisions">3. Decisions already made</h2>
+<div class="scroll"><table>
+<tr><th>Topic</th><th>Choice</th><th>Why</th></tr>
+<tr><td>App framework</td><td>Expo 58 and React Native 0.88, in TypeScript</td><td>You asked for T3 Code's stack. These are the versions in their mobile app today.</td></tr>
+<tr><td>Styling and native look</td><td>Uniwind (Tailwind for React Native), <code>@expo/ui</code>, SF Symbols, glass effect</td><td>Same as T3 Code. <code>@expo/ui</code> draws real iOS controls.</td></tr>
+<tr><td>Navigation</td><td>React Navigation native stack</td><td>Same as T3 Code.</td></tr>
+<tr><td>State and data parsing</td><td>Effect, <code>@effect/atom-react</code>, Effect Schema</td><td>Same as T3 Code. Every outside input is parsed by a schema before the app uses it.</td></tr>
+<tr><td>Storage on the phone</td><td><code>expo-sqlite</code> for data, Keychain for secrets</td><td>Same as T3 Code. A SQL database fits sets, history and charts.</td></tr>
+<tr><td>Lists and motion</td><td>Legend List, Reanimated, Gesture Handler</td><td>Same as T3 Code.</td></tr>
+<tr><td>Repo tooling</td><td>pnpm workspace, Vite+ for lint, format and tests, Node 26</td><td>Same as T3 Code.</td></tr>
+<tr><td>Accounts</td><td>Clerk</td><td>Same as T3 Code. Details in <a href="#accounts">Accounts</a>.</td></tr>
+<tr><td>Builds</td><td>Code, tests and the Metro server on rena-devbox. Native development builds with Xcode on rena-devbook. Release builds on GitHub's macOS runner. No Expo cloud builds.</td><td>AltStore needs only a Release <code>.ipa</code> signed ad hoc with its entitlements file, with no Apple certificate. Cloud builds cost money and add an account.</td></tr>
+<tr><td>Updates</td><td>AltStore only. No over-the-air JavaScript updates in version 1.</td><td>One update path is easier to reason about. Your interval tracker already ships this way.</td></tr>
+<tr><td>Left out of T3 Code's stack</td><td>Their terminal, diff viewer, code highlighter and patched library forks</td><td>They exist for a coding tool.</td></tr>
+<tr><td>Server</td><td>One TypeScript service and Postgres, starting in phase 6</td><td>Phases 0 to 5 need no server. The app works fully offline until then.</td></tr>
+<tr><td>Licence</td><td>MIT, added in F1</td><td>OpenAI offers plan usage to open-source projects. A public repo with no licence is readable but is not open source. MIT is the common choice. It lets anyone reuse the code, so tell me if you want a different licence.</td></tr>
+</table></div>
+<p><strong>One tradeoff of this stack.</strong> Apple Health, background GPS and the ChatGPT sign-in need native Swift code. Expo allows small native modules inside the app, and T3 Code's mobile app has eleven of them. svett needs two or three. They take more effort than they would in a pure Swift app.</p>
+
+<h2 id="scope">4. What version 1 contains</h2>
+<p>The right column is the reason to switch. Each point answers a gap seen in the Hevy and Strava screenshots.</p>
+<div class="scroll"><table>
+<tr><th>Area</th><th>In version 1</th><th>Better than Hevy or Strava because</th></tr>
+<tr><td>Lifting</td><td>Exercise library with search and filters. Custom exercises. Routines and folders. A workout logger with warm-up, normal, failure and drop sets, supersets, optional RPE, notes, previous values, a rest timer, a plate calculator and a warm-up calculator.</td><td>No limits on routines, custom exercises or history. Hevy charges for those.</td></tr>
+<tr><td>Progress</td><td>History, calendar and streak. Charts per exercise. Personal records. Weekly sets per muscle. Body measurements.</td><td>The app shows the rule behind every number. Hevy shows 36.5 sets for a muscle and does not say how it counted.</td></tr>
+<tr><td>Your data</td><td>Export everything as one file. Import that file back. Import from Hevy.</td><td>Hevy's export cannot be imported back, and its import works once, from Strong only. svett imports are repeatable, skip duplicates, and can be undone.</td></tr>
+<tr><td>Coach</td><td>Continue with ChatGPT. A chat that answers from your own training data. It can draft a routine or a program, and you approve each change before it is saved. A program is a folder of routines, such as a three-day split. Version 1 has no calendar scheduling.</td><td>It runs on your ChatGPT plan at no extra cost. Strava sells its AI. Hevy's ChatGPT app lives outside Hevy and only covers lifting.</td></tr>
+<tr><td>Cardio</td><td>Record a run, walk, hike or ride with GPS, with the screen locked. Map, splits and elevation. Manual entry for other sports. Import from Apple Health.</td><td>A Health import shows a preview and asks first. Strava imported a workout on one tap, with no preview and no confirmation.</td></tr>
+<tr><td>Social</td><td>Profiles, search by username, follows, one feed, likes, comments, an inbox. Privacy per post and per field.</td><td>One feed shows a lifting session and a run each in full. Privacy covers weight lifted, heart rate, start time and where a route starts. Body measurements never appear in the feed.</td></tr>
+<tr><td>Open access</td><td>A connector that lets ChatGPT read and write your svett data. A screen that lists connected apps, what each can do, and when it last read your data.</td><td>Read access and write access are separate choices. Access for an assistant never widens what followers see.</td></tr>
+</table></div>
+
+<h3>Left out of version 1</h3>
+<ul>
+<li>Android, a web app and an Apple Watch app.</li>
+<li>Import from Strong and other apps. Hevy is the one you use. Others can follow.</li>
+<li>Writing svett workouts into Apple Health. Version 1 only reads from Health, so a workout cannot loop back in.</li>
+<li>Strava's community features: segments, leaderboards, clubs, events, challenges, a route builder and heat maps.</li>
+<li>Photos and video on posts. They need file storage on the server. They are the first item after version 1.</li>
+<li>Push notifications. Apple allows them only with a paid developer account. Version 1 uses an in-app inbox and local notifications, which work with a free account.</li>
+<li>A lock-screen Live Activity for the rest timer. It needs an app extension, and each extension uses extra App IDs from the weekly limit described in <a href="#risks">section 10</a>. The rest timer uses a local notification instead.</li>
+<li>A listing in ChatGPT's public plugin directory. Version 1 connects as a custom server.</li>
+<li>An App Store release, payments and subscriptions.</li>
+</ul>
+
+<h2 id="layout">5. How the app is laid out</h2>
+<p>Five tabs. Each has one job.</p>
+<div class="scroll"><table>
+<tr><th>Tab</th><th>What it holds</th></tr>
+<tr><td><strong>Home</strong></td><td>Until phase 6, your own timeline and this week at a glance. From phase 6, the feed.</td></tr>
+<tr><td><strong>Train</strong></td><td>Start an empty workout, start a routine, or record cardio. Routines, folders and the exercise library.</td></tr>
+<tr><td><strong>Progress</strong></td><td>History, calendar, records, charts, muscle volume and body measurements.</td></tr>
+<tr><td><strong>Coach</strong></td><td>The chat with your ChatGPT plan, and the changes it proposes.</td></tr>
+<tr><td><strong>You</strong></td><td>Profile, privacy, connected apps, export and import, units and settings.</td></tr>
+</table></div>
+<p>A workout in progress stays visible as a bar above the tabs, on every tab, until you finish or discard it.</p>
+
+<h2 id="arch">6. How it is built</h2>
+
+<svg viewBox="0 0 760 372" role="img" aria-labelledby="archt archd">
+<title id="archt">The parts of svett</title>
+<desc id="archd">The iPhone app holds the screens, the state, the SQLite database and the ChatGPT sign-in module. It calls OpenAI directly for model requests. From phase 6 it syncs with the svett server. From phase 7 ChatGPT reaches the server through a connector.</desc>
+<g fill="none" stroke="#fff" stroke-width="1.2">
+<rect x="14" y="14" width="318" height="344" rx="10"/>
+<rect x="32" y="52" width="282" height="52" rx="6" stroke="#525252"/>
+<rect x="32" y="116" width="282" height="52" rx="6" stroke="#525252"/>
+<rect x="32" y="180" width="282" height="64" rx="6" stroke="#525252"/>
+<rect x="32" y="256" width="282" height="84" rx="6" stroke="#525252"/>
+<rect x="446" y="14" width="300" height="92" rx="10"/>
+<rect x="446" y="142" width="300" height="128" rx="10"/>
+<rect x="446" y="306" width="300" height="52" rx="10"/>
+<path d="M314 290 H388 V60 H440"/><path d="M432 55 l10 5 -10 5 z" fill="#fff"/>
+<path d="M314 212 H440"/><path d="M432 207 l10 5 -10 5 z" fill="#fff"/><path d="M322 207 l-10 5 10 5 z" fill="#fff"/>
+<path d="M596 306 V276"/><path d="M591 284 l5 -10 5 10 z" fill="#fff"/>
+</g>
+<text x="32" y="38" font-weight="600">iPhone app</text>
+<text x="44" y="74">Screens</text><text x="44" y="92" class="d">React Native, Uniwind, native controls</text>
+<text x="44" y="138">State and rules</text><text x="44" y="156" class="d">Effect services, schemas, repositories</text>
+<text x="44" y="202">SQLite database</text><text x="44" y="220" class="d">All your data. Works offline.</text><text x="44" y="236" class="d">Source of truth for what you logged.</text>
+<text x="44" y="278">ChatGPT sign-in module</text><text x="44" y="296" class="d">Swift. Listener on 127.0.0.1.</text><text x="44" y="312" class="d">Tokens in the Keychain.</text><text x="44" y="328" class="d">They never leave the phone.</text>
+<text x="460" y="38" font-weight="600">OpenAI</text><text x="460" y="60" class="d">auth.openai.com for sign-in</text><text x="460" y="78" class="d">api.openai.com/v1/responses</text><text x="460" y="96" class="d">Counted against the user's plan</text>
+<text x="460" y="166" font-weight="600">svett server, from phase 6</text><text x="460" y="188" class="d">API and sync</text><text x="460" y="206" class="d">Postgres</text><text x="460" y="224" class="d">One privacy function for every read</text><text x="460" y="242" class="d">Connector for assistants, from phase 7</text>
+<text x="460" y="330" font-weight="600">ChatGPT, as a custom MCP server</text><text x="460" y="348" class="d">Reads and writes only what you approve</text>
+<text x="336" y="204" class="d">sync, feed</text>
+<text x="336" y="282" class="d">model</text><text x="336" y="296" class="d">requests</text>
+</svg>
+
+<h3>The data shape comes first</h3>
+<p>Everything you do is an <strong>activity</strong>. A lifting session, a run, a manual entry and an imported workout are all activities. The details hang off the activity. That one decision is what makes one history, one feed and one export possible.</p>
+<div class="scroll"><table>
+<tr><th>Table</th><th>Holds</th></tr>
+<tr><td><code>activity</code></td><td>Kind (strength, run, ride, walk, hike, other), start, duration, title, notes, where it came from (logged here, imported, Apple Health), who can see it, which fields are hidden.</td></tr>
+<tr><td><code>activity_exercise</code>, <code>activity_set</code></td><td>For strength. The exercises in order, the superset group, and each set with its type, weight, reps, time, distance and RPE.</td></tr>
+<tr><td><code>activity_track</code>, <code>activity_sample</code></td><td>For cardio. The GPS route, splits, elevation and heart rate.</td></tr>
+<tr><td><code>exercise</code></td><td>The library and your custom exercises, with primary and secondary muscles and equipment.</td></tr>
+<tr><td><code>routine</code>, <code>routine_exercise</code>, <code>routine_set</code>, <code>folder</code></td><td>Saved plans.</td></tr>
+<tr><td><code>measurement</code></td><td>Body weight and tape measurements. Always private in version 1.</td></tr>
+<tr><td><code>import_batch</code></td><td>One row per import. Every imported row records its batch, its source, its identity in that source, and a fingerprint of its content.</td></tr>
+<tr><td><code>coach_message</code></td><td>The coach chats, kept on the phone only.</td></tr>
+<tr><td><code>proposal</code></td><td>A change the coach or a connected assistant wants to make, with its preview and whether you applied it.</td></tr>
+</table></div>
+
+<h3>Rules the code keeps</h3>
+<ol>
+<li><strong>The phone works alone.</strong> Logging, history, progress, export and import work with no network and no account. The coach is the exception in phases 0 to 5. It needs a ChatGPT sign-in and a connection.</li>
+<li><strong>Every row is ready for sync from the first schema, in F4.</strong> Each row has a unique ID, a time it changed, and a deleted marker. A row you create gets a random ID. A row imported from Hevy or Apple Health gets an ID computed from its source and its identity there, so two devices that import the same workout make the same row. The server keys every row by account and ID together, so two people who import workouts with the same start time each keep their own. Adding the server in phase 6 changes no IDs and rewrites no tables.</li>
+<li><strong>One writer per kind of data.</strong> Screens never run SQL. A repository per table group does, and it is the only code that writes those tables.</li>
+<li><strong>Outside data is parsed at the edge.</strong> Import files, model answers and server responses pass through an Effect Schema. Code past that point trusts its types.</li>
+<li><strong>An assistant proposes and you apply.</strong> No assistant, inside the app or outside it, changes data without a tap from you. Every applied proposal can be undone.</li>
+<li><strong>ChatGPT plan tokens stay on the phone.</strong> The svett server never receives them and never calls a model.</li>
+<li><strong>One function decides who sees what.</strong> Every server read goes through it. Tests list every combination of audience, follow state and hidden field.</li>
+<li><strong>One account's data never mixes with another's.</strong> Each account has its own database file and its own queue of unsent changes on the phone. The server sets the owner of every row from the signed-in session and ignores any owner the phone sends.</li>
+</ol>
+
+<h3 id="siwc">Continue with ChatGPT</h3>
+<p>The flow is OpenAI's documented one for open-source apps. Your interval tracker already runs it, and you signed in with it on your iPhone on 13 November. svett ports that code into a Swift module inside the Expo app.</p>
+<ol>
+<li>You tap <strong>Continue with ChatGPT</strong>. The app starts a small listener on <code>127.0.0.1</code>, on a port iOS picks.</li>
+<li>The system sign-in sheet opens OpenAI's page. The request asks for your identity and for plan usage. It uses PKCE and no secret, so the public repo holds nothing sensitive.</li>
+<li>OpenAI registers this install, sends the browser back to the listener, and the module exchanges the code for tokens.</li>
+<li>The module checks the identity token the way OpenAI's docs require: its signature against OpenAI's published keys, its issuer, its audience against the client ID OpenAI issued, its expiry, and the one-time value saved for this attempt.</li>
+<li>The module stores the tokens and the issued client ID as one Keychain item, kept per ChatGPT account, and reuses that client ID for later sign-ins to the same account. One refresh runs at a time, because each refresh retires the old refresh token.</li>
+<li>The coach is on only when the granted scope includes plan usage. If it does not, the app says the plan does not allow it and names the plans OpenAI lists.</li>
+<li>A ChatGPT sign-in renews itself while you use the coach. After 30 days without use it lapses, and you tap Continue with ChatGPT again.</li>
+<li><strong>Sign out</strong> deletes the tokens and tells OpenAI to revoke them. It keeps the client ID for that account, as the docs say.</li>
+</ol>
+<p>The port is not a straight copy. Your interval tracker checks the identity token's claims but not its signature, and it discards the client ID on sign out. C1 follows the docs on both.</p>
+<p>ChatGPT's help page lists Go, Plus, Pro and Business as plans with this feature (<a href="https://learn.chatgpt.com/docs/sign-in-with-chatgpt.md" target="_blank" rel="noopener noreferrer">Sign in with ChatGPT</a>). OpenAI's developer quickstart lists only Plus and Pro. A Free account cannot use the coach. Everything else in the app works without ChatGPT.</p>
+
+<h3>The coach</h3>
+<ul>
+<li>Requests go from the phone to <code>POST https://api.openai.com/v1/responses</code>. OpenAI's preview rules for plan usage set the request shape:
+<ul>
+<li>Every request streams and sets <code>store: false</code>.</li>
+<li>Instructions go in <code>instructions</code>. A <code>system</code> message is refused.</li>
+<li>Function tools go in a namespace or as <code>additional_tools</code> input items.</li>
+<li><code>previous_response_id</code>, <code>temperature</code> and <code>max_output_tokens</code> are not allowed. The phone sends the whole chat with every turn.</li>
+<li>A tool OpenAI does not support returns <code>subscription_sharing_unsupported_capability</code>, and the app shows that as an error.</li>
+</ul></li>
+<li>Chats are kept on the phone in a <code>coach_message</code> table. They are part of export and never sync to the server. A chat longer than the model accepts keeps its most recent turns.</li>
+<li>The coach answers from your data through tools that run on the phone against the local database. Read tools list workouts, exercise history, records, routines and measurements.</li>
+<li>Write tools create a proposal. You see the routine or program as a preview, and you tap <strong>Apply</strong>. <strong>Undo</strong> removes it.</li>
+<li>Each answer shows which of your data the coach read.</li>
+<li>If plan usage refuses function tools, the coach falls back to the interval tracker's method. The app sends a summary of the relevant data in the request and asks for an answer in a fixed JSON format. C2 records which method shipped.</li>
+<li>When the plan's limit is reached, OpenAI returns a specific error. The app stops sending and points you to ChatGPT's usage settings. svett never switches to another way of paying. ChatGPT's own usage settings may let an app spend your ChatGPT credits after the plan limit, and that choice is yours in ChatGPT.</li>
+<li>The tool definitions live in one shared package. The connector in phase 7 uses the same definitions, so the coach in the app and an assistant outside it can do the same things.</li>
+</ul>
+
+<h3 id="accounts">Accounts, from phase 6</h3>
+<p>Until phase 6 there is no account. Continue with ChatGPT only turns the coach on. From phase 6 an account lets you sync and use the feed.</p>
+<ul>
+<li>The sign-in screen has two choices: <strong>Continue with ChatGPT</strong> and <strong>Continue with email</strong>.</li>
+<li>Clerk keeps the session. The server checks Clerk's token on every request.</li>
+<li><strong>Continue with ChatGPT also asks for a six-digit email code when it signs you in to your svett account.</strong> The ChatGPT sign-in gives the app your verified email address, and the app fills it in for you.</li>
+<li><strong>On Clerk's free plan, a sign-in lasts 7 days.</strong> After that, the app asks for a new email code before it syncs again. Logging and everything on the phone keep working meanwhile. Clerk Pro, at $25 a month or $20 a month billed yearly, allows longer sessions. The default is the free plan with a weekly code. The choice is yours before phase 6.</li>
+</ul>
+<p><strong>Whose data is on the phone.</strong></p>
+<ul>
+<li>Before any account exists, your data lives in one local database with no owner.</li>
+<li>The first time you sign in, the app asks once whether to move that data into the account. If you say yes, the database becomes that account's. If you say no, the account starts empty, and the data without an owner stays on the phone. You can open it again after you sign out.</li>
+<li>Signing out closes that database and keeps it on the phone. It opens again only for the same account.</li>
+<li>Signing in as someone else opens a separate, empty database. Nothing from the first account is read or uploaded.</li>
+</ul>
+<p><strong>Why the code is there.</strong> OpenAI registers an open-source app on the phone, separately for each ChatGPT user, and issues it a client ID there. svett has no fixed client ID that its server could check. So the server cannot tell a ChatGPT identity token made for svett from one made for some other app you signed in to. Without a second check, that other app could sign in to svett as you. The email code closes that gap. OpenAI's interest form, a waitlist meant for commercial and hosted apps, might lead to a fixed client ID. If it does, the code step could go away.</p>
+
+<h3>Sync, from phase 6</h3>
+<ul>
+<li>Each change the phone makes gets its own ID and a timestamp from a hybrid logical clock. That clock orders changes across devices even when their wall clocks differ a little.</li>
+<li>The phone keeps unsent changes in a queue and sends them when it has a connection. It removes a change from the queue only after the server confirms it.</li>
+<li>The server remembers the ID of every change it applied. A change sent twice is applied once.</li>
+<li>If two devices change the same row, the change with the later timestamp wins. If the timestamps are equal, the change with the higher change ID wins. Arrival order does not matter, so a retried old change cannot overwrite a newer one. The server rejects a timestamp more than a few minutes in the future. The phone then tells you its clock is wrong and holds the change until the clock is fixed.</li>
+<li>Sets are separate rows. Two devices that log different sets in one workout both keep their sets.</li>
+<li>The server gives every applied change a number that only goes up. The phone stores the last number it has fully saved, and asks for everything after it.</li>
+<li>Deleting an activity deletes its exercises, sets and route with it. A later edit to one of those from another device is dropped. Undo is a restore with a newer timestamp, and it brings the activity back with what it had.</li>
+<li>Sync covers one person's own devices. Other people's posts are read from the server and are never stored as your data.</li>
+</ul>
+
+<h3>Privacy</h3>
+<ul>
+<li>Each activity has an audience: everyone, followers, or only you. A setting holds your default for new activities, and it starts at only you. You can change it per activity.</li>
+<li>Everything logged before you have an account, and everything imported, is only you. Moving your data into a new account keeps every audience as it was. Nothing becomes visible to anyone until you change it.</li>
+<li>Each activity can hide fields: weight lifted, heart rate, start time, calories and pace.</li>
+<li>A cardio route can hide its first and last stretch, so a map does not show where you live.</li>
+<li>A private profile means you approve each follower.</li>
+<li>Body measurements never appear in the feed.</li>
+<li>What an assistant may read is a separate permission. Granting it changes nothing about what followers see.</li>
+</ul>
+
+<h3>The connector for ChatGPT, phase 7</h3>
+<p>The server exposes the shared tools through the Model Context Protocol at a public HTTPS address, with OAuth sign-in to your svett account. Clerk is the default sign-in service for it, acting as the OAuth provider ChatGPT talks to. If Clerk's plan does not cover that, or its sign-ins lapse after 7 days, the server runs its own OAuth on top of the svett account instead. X1 checks which, and you know before you choose a Clerk plan. Version 1 supports one way to connect, and it is the one OpenAI documents for a private server.</p>
+<ol>
+<li>On chatgpt.com, open <strong>Plugins</strong>, choose <strong>Add custom MCP server</strong>, and enter svett's address.</li>
+<li>Sign in to svett and approve read access, write access, or both.</li>
+<li>Ask ChatGPT about your training. ChatGPT may ask you before it writes. Either way, a write arrives in svett as a proposal that you apply in the app.</li>
+</ol>
+<ul>
+<li>The <strong>Connected apps</strong> screen lists each connection, what it may do, and when it last read your data. <strong>Revoke</strong> cuts it off at once.</li>
+<li>OpenAI says account and workspace policies decide who may add a custom server. Its docs do not list the plans, and they do not say whether the ChatGPT iPhone app can add or use one. X1 finds out with your account and records the answer.</li>
+<li>A listing in ChatGPT's public directory would let anyone add svett in one tap. It needs a verified publisher, a privacy policy, terms, a support page and OpenAI's review. That is outside version 1.</li>
+<li>Other assistants that speak the same protocol may work. Version 1 tests ChatGPT only.</li>
+</ul>
+
+<h2 id="release">7. Where it is built and how it reaches your phone</h2>
+<div class="scroll"><table>
+<tr><th>Machine</th><th>Job</th></tr>
+<tr><td>rena-devbox (this Linux machine)</td><td>Holds the main working copy. Runs every agent, package installs, type checks, lint and unit tests. Runs the Metro development server, which bundles the TypeScript and serves it to the simulator over Tailscale. Runs the server and Postgres from phase 6. Holds the research.</td></tr>
+<tr><td>rena-devbook</td><td>Holds a copy that a script syncs to the branch under test, with the packages and CocoaPods the native build needs, because React Native's native build runs scripts from those packages. Runs the native iOS build, only when native code or a native package changes. Runs the iPhone 16 Pro Max simulator, which loads the app's TypeScript from Metro on rena-devbox. Runs the simulator scripts and saves their screenshots.</td></tr>
+<tr><td>rena</td><td>Real-phone work through iPhone Mirroring, only when a task needs it.</td></tr>
+<tr><td>GitHub</td><td>Public repo <code>Kron00/svett-app</code>. Its hosted runners run lint, type checks and unit tests on every pull request, an iOS compile check, and the release job after each merge. No runner runs on your machines, because a public repo would let pull requests from strangers run code on them.</td></tr>
+</table></div>
+
+<h3>Repo layout</h3>
+<div class="scroll"><table>
+<tr><th>Path</th><th>Holds</th></tr>
+<tr><td><code>apps/mobile</code></td><td>The Expo app. <code>modules/</code> holds the Swift modules.</td></tr>
+<tr><td><code>apps/server</code></td><td>The server, from phase 6.</td></tr>
+<tr><td><code>packages/core</code></td><td>Pure TypeScript with no React. Schemas, the rules for records and muscle volume, plate and warm-up maths, import parsers, the sync merge, the privacy function.</td></tr>
+<tr><td><code>packages/tools</code></td><td>The assistant tool definitions shared by the coach and the connector.</td></tr>
+<tr><td><code>scripts</code></td><td>Build, release, AltStore source, the fixture generator and the simulator flows.</td></tr>
+<tr><td><code>docs</code></td><td>This plan, the feature research, a decision log, and the screenshots each pull request saves.</td></tr>
+</table></div>
+<p>The research screenshots stay out of the repo. They show your email address, birthday, body weight and friends' names and photos. The written feature list goes in after I remove the names it quotes.</p>
+
+<h3>Releases and AltStore</h3>
+<ol>
+<li>A merge to <code>main</code> starts the release job on GitHub's own macOS runner, which is free for public repos. Your interval tracker uses the same pipeline. svett adds the ad hoc signing described below.</li>
+<li>The job builds a Release <code>.ipa</code> signed ad hoc with its entitlements file, with no Apple certificate. Then it creates a GitHub release and updates <code>altstore.json</code> on the latest release.</li>
+<li>AltStore refuses to install an app whose permissions differ from the ones the source lists. Expo adds permission keys on its own, and later phases add location and Health. So the job reads the permissions out of the built app and writes them into <code>altstore.json</code>.</li>
+<li>You add one source address in AltStore, once. AltStore then offers each new version.</li>
+<li>The version is the major and minor number plus the commit count, for example <code>0.3.41</code>.</li>
+</ol>
+<p>With a free Apple account, AltStore must refresh the app every 7 days. Your data stays on the phone across refreshes and updates.</p>
+
+<h2 id="phases">8. Phases and pull requests</h2>
+<p>Each row is one pull request. The third column is what I show as proof, from the iPhone 16 Pro Max simulator unless it says otherwise. A phase starts only after the one before it has merged, except where a note says two can run side by side.</p>
+
+<h3>Phase 0. Foundation</h3>
+<div class="scroll"><table>
+<tr><th>ID</th><th>Builds</th><th>Proof</th></tr>
+<tr><td class="id">F1</td><td>The repo skeleton: pnpm workspace, the Expo app with five empty tabs, lint, type checks, unit tests, the checks on GitHub, and the MIT licence. It installs Node 26 and pnpm on rena-devbox, and CocoaPods on rena-devbook. It adds the script that syncs rena-devbook to a branch and builds the native app, and it drives the simulator with <code>agent-device</code>, the tool T3 Code's device panel uses. The repo becomes public.</td><td>The app opens in the simulator with five tabs, loading its code from Metro on rena-devbox. GitHub checks pass. A search of the repo, including <code>AGENTS.md</code> and <code>CLAUDE.md</code>, finds no name, email, screenshot, IP address or user name from the research or from your machines. The pull request states the free disk space on rena-devbook after a native build, counting its packages, CocoaPods and build output.</td></tr>
+<tr><td class="id">F2</td><td>The release path: the release job on GitHub's macOS runner, the GitHub release, and an AltStore source whose permissions come from the built app. The job signs the app ad hoc with the entitlements file Expo generates, because an unsigned build carries no entitlements and AltStore re-signs with the ones it finds in the app.</td><td>The Release build runs in the simulator with no development server. The source address returns valid JSON that lists the version. The <code>.ipa</code> downloads and contains the app. A second release appears in the source as an update. The entitlements AltStore will read from the <code>.ipa</code> match the ones in the source. Installing on a phone is proved at checkpoint 1.</td></tr>
+<tr><td class="id">F3</td><td>A check screen for the things only a phone can prove: Keychain after restart, a local notification, GPS with the screen locked, Apple Health permission, and a ChatGPT sign-in round trip. The sign-in is the interval tracker's listener and sign-in ported as they are. C1 hardens them.</td><td>Every check passes in the simulator where the simulator can run it. F3 adds the location, notification and Health permissions. <span class="tag you">checkpoint 1</span> You install the F2 release from AltStore and open it before F3 merges. Then you update to the F3 release, which proves an update that adds permissions installs on a real phone. Then you run the check screen, and send me the report it copies. The report includes how many active apps and App IDs AltStore shows.</td></tr>
+<tr><td class="id">F4</td><td>The data layer: schema, migrations, repositories, the exercise library, and a generator that makes a test database of 300 workouts and 6,000 sets.</td><td>Unit tests for every repository. The generated database opens in the app. Migrations run forward from an empty database and from the previous version.</td></tr>
+<tr><td class="id">F5</td><td>The design system: colours, type, spacing, buttons, rows, sheets, a number pad, chart parts. Light and dark. Large text sizes.</td><td>A gallery screen of every component, as screenshots in light, dark and the largest text size.</td></tr>
+</table></div>
+<p><strong>Checkpoint 1 gates all feature work.</strong> No pull request from phase 1 onward starts until the app has installed, opened and updated on your phone through AltStore. F4 and F5 can be built while that is pending, side by side. If the Expo build cannot be installed, those two are the only work at risk.</p>
+
+<h3>Phase 1. Lifting</h3>
+<div class="scroll"><table>
+<tr><th>ID</th><th>Builds</th><th>Proof</th></tr>
+<tr><td class="id">L1</td><td>Exercise library: search, filters by muscle and equipment, exercise detail, custom exercises with no limit.</td><td>Search finds an exercise in the bundled library. A custom exercise survives an app restart.</td></tr>
+<tr><td class="id">L2</td><td>Routines: create, edit, reorder, duplicate, delete, folders, target sets and reps.</td><td>A routine built in the simulator starts a workout with its exercises and targets filled in.</td></tr>
+<tr><td class="id">L3</td><td>The logger: start empty or from a routine. Add, reorder, replace and remove exercises. Sets by weight, reps, time or distance. Set types. Previous values. Notes. Finish and discard.</td><td>A full workout logged in the simulator appears in the database with every set. Killing the app mid-workout and reopening it restores the workout.</td></tr>
+<tr><td class="id">L4</td><td>Logger tools: rest timer with a notification, supersets, optional RPE, plate calculator with your own plates and bars, warm-up calculator, kg and lb.</td><td>The rest timer notification fires with the app in the background. Plate and warm-up maths match a table of worked examples in the tests.</td></tr>
+</table></div>
+<p><span class="tag you">checkpoint 2</span> You log one real gym session with svett next to Hevy.</p>
+
+<h3>Phase 2. Progress</h3>
+<div class="scroll"><table>
+<tr><th>ID</th><th>Builds</th><th>Proof</th></tr>
+<tr><td class="id">P1</td><td>History, workout detail with muscle split and record badges, edit, delete with undo, save as routine, calendar with streak.</td><td>With the 300-workout database, the history list scrolls without blank rows, and editing a past set updates its detail screen.</td></tr>
+<tr><td class="id">P2</td><td>Charts per exercise, record detection, weekly sets per muscle with the counting rule shown, body measurements.</td><td>Records and muscle totals match hand-worked examples in the tests. Each chart has a screenshot with the generated data.</td></tr>
+</table></div>
+
+<h3>Phase 3. Your data</h3>
+<div class="scroll"><table>
+<tr><th>ID</th><th>Builds</th><th>Proof</th></tr>
+<tr><td class="id">D1</td><td>Export everything to one versioned file. Import that file with a preview. Undo an import. The rules for repeats are below the table.</td><td>Export, wipe, import gives a database equal to the original, row for row. Importing the same file twice adds nothing. The test reads the list of tables from the schema, so a table added later fails the test until export and import cover it.</td></tr>
+<tr><td class="id">D2</td><td>Import from a Hevy export file. A bundled table maps Hevy's exercise names to the library, and a screen matches the names it does not know.</td><td>A sample Hevy file imports with the right counts. Importing it again adds nothing. A sample with one changed workout and one renamed workout shows both as changed and adds no duplicate. Taking the new version and then Undo gives back the earlier version. Your real Hevy export is tested on your machines and never enters the repo.</td></tr>
+</table></div>
+<p><strong>How repeats and Undo work.</strong></p>
+<ul>
+<li>A Hevy file has no workout ID. A workout's identity there is its start time. Its title, exercises and sets are content. A row in a svett file has its own ID. D2 confirms the file's columns against your real export, including whether its times carry a time zone. The match against Apple Health in K2 depends on it.</li>
+<li>Importing a workout that is already here and unchanged does nothing.</li>
+<li>If the source workout changed since the last import, the preview lists it. A renamed workout counts as changed, not as new. You choose to keep yours or take the new one. The default keeps yours.</li>
+<li>If a workout in the file has a new start time but the same exercises and sets as one already here, or two workouts in the file share a start time, the preview shows it as a possible duplicate and you choose. If you keep both workouts that share a start time, the second one's identity adds its position in the file, so the two get different IDs.</li>
+<li>Taking the new one keeps the version it replaces.</li>
+<li>Undo removes the workouts an import added and puts back the versions it replaced. A workout you edited after the import is listed and left as it is, unless you choose to undo it too.</li>
+<li>Apple Health imports in K2 follow the same rules, with the Health workout ID as the identity.</li>
+<li>One workout can arrive from two sources, such as Hevy and Apple Health. If a new workout overlaps the time of one from another source, the preview shows it as a possible duplicate. Linking keeps one activity that records both source identities, so neither source imports it again.</li>
+</ul>
+<p><span class="tag you">checkpoint 3</span> You import your Hevy history on your phone.</p>
+
+<h3>Phase 4. Coach</h3>
+<div class="scroll"><table>
+<tr><th>ID</th><th>Builds</th><th>Proof</th></tr>
+<tr><td class="id">C1</td><td>Continue with ChatGPT for real use: the Swift module, identity token checks, Keychain storage, refresh, sign out, a Safari fallback, the settings screen.</td><td>Tests replay every documented OpenAI answer, including each refresh failure, against a stand-in. A token with a bad signature, a wrong audience or a past expiry is refused. One live test signs in with a real account in the simulator. It runs only on request.</td></tr>
+<tr><td class="id">C2</td><td>Coach chat with read tools, streaming answers, and the plan-limit message.</td><td>Before C2 merges, one live run with a real account and the generated database must pass, using whichever method ships, tool calls or the fallback. "What was my best squat set last month" returns the set the database holds. That run is recorded and becomes the stand-in's fixture. Tests replay it and check each request against the rules above. Later live runs are on request. The answer shows which data it read.</td></tr>
+<tr><td class="id">C3</td><td>Coach proposals: draft a routine, or a program as a folder of routines. Preview, Apply, Undo.</td><td>A proposed routine and a proposed three-routine program each appear under Train only after Apply. Undo removes each. A malformed model answer creates nothing and shows an error.</td></tr>
+</table></div>
+<p><span class="tag you">checkpoint 4</span> You sign in on your phone and ask the coach for a program for next week. More than an hour later, after the first token has expired, you close and reopen the app and ask again. That second answer proves a real token refresh on the phone. At least another hour later, you close and reopen the app again and ask a third time, without signing in. That answer needs a second refresh, so it proves the replacement token from the first refresh was saved and used. The app records that a refresh happened, never the token. Phase 4 can run beside phase 3.</p>
+
+<h3>Phase 5. Cardio</h3>
+<div class="scroll"><table>
+<tr><th>ID</th><th>Builds</th><th>Proof</th></tr>
+<tr><td class="id">K1</td><td>Record a run, walk, hike or ride: live time, distance and pace, pause and resume, screen locked. Activity detail with an Apple Maps map, through Expo's <code>expo-maps</code>, plus splits and elevation. Route start and end hiding.</td><td>The simulator plays a recorded GPS route. The saved activity's distance is within 1% of the route's known length, and the splits add up to the total.</td></tr>
+<tr><td class="id">K2</td><td>Apple Health import with preview, confirm and duplicate detection. Manual cardio entry. Heart rate when Health has it.</td><td>Sample Health workouts import once and only once. Declining the preview imports nothing. A Hevy workout already imported and its Health copy, with overlapping times, show as one possible duplicate. Linking them keeps one activity with all its sets and the Health heart rate.</td></tr>
+</table></div>
+<p><span class="tag you">checkpoint 5</span> You record a real walk or run with the phone locked.</p>
+
+<h3>Phase 6. Accounts and the feed</h3>
+<div class="scroll"><table>
+<tr><th>ID</th><th>Builds</th><th>Proof</th></tr>
+<tr><td class="id">S1</td><td>The server, its database, its deployment and a nightly backup.</td><td>The server answers over HTTPS. A backup restores into an empty database.</td></tr>
+<tr><td class="id">S1b</td><td>Sign-in with both choices, and the first sign-in's offer to move local data into the account.</td><td>A new account signs in on the simulator and moves in a database of imported history. A second account sees none of that history. A write from one account that uses an ID another account already holds changes only the writer's own row, and the other account's row is unchanged. A write that sends a different owner is stored under the signed-in account.</td></tr>
+<tr><td class="id">S2</td><td>Sync.</td><td>Two simulators on one account converge after offline edits on both. Tests cover every order of arrival, two changes with equal timestamps in both orders, a lost confirmation followed by a retry that must not undo a newer edit, and a delete on one device against a set edit on the other. Signing out and in as a second account uploads nothing from the first. Two accounts that import the same Hevy file both sync all of it.</td></tr>
+<tr><td class="id">S3</td><td>Profiles with a unique username, search by username, follows, follow requests, and the privacy function.</td><td>The test matrix for the privacy function passes. A followers-only activity is absent for a stranger and present for a follower, checked against the live server.</td></tr>
+<tr><td class="id">S4</td><td>The feed, likes, comments and the inbox. Home becomes the feed.</td><td>Two test accounts find each other by username and follow each other. A lifting post and a run each show their own detail in the other's feed. A hidden field does not appear.</td></tr>
+<tr><td class="id">S5</td><td>Safety: block, remove a follower, rate limits, a server-side export, and account deletion. Deleting an account removes its server data and ends every session. The phone asks whether to keep a local copy with no account or erase it.</td><td>A blocked account sees none of the blocker's posts and cannot follow, like or comment. After an account is deleted, a second device that was offline comes back, its upload is refused, and nothing is recreated on the server.</td></tr>
+</table></div>
+<p><span class="tag you">checkpoint 6</span> You and one friend use the feed for a day.</p>
+
+<h3>Phase 7. Open access and finish</h3>
+<div class="scroll"><table>
+<tr><th>ID</th><th>Builds</th><th>Proof</th></tr>
+<tr><td class="id">X1</td><td>The connector, its sign-in, separate read and write approval, the Connected apps screen and the access log.</td><td>ChatGPT on the web, added as a custom MCP server and signed in to a test account, lists that account's workouts. A routine it proposes appears in the app only after Apply. Revoke makes its next request fail. Deleting the account also revokes the connection. The pull request records which ChatGPT plan was used and whether the iPhone app could use the connection.</td></tr>
+<tr><td class="id">X2</td><td>The finishing pass: first-run screens, empty states, accessibility, the speed targets measured again, the README and the user guide.</td><td>A recorded walkthrough of every tab. A table of each speed target with its measured value.</td></tr>
+</table></div>
+
+<h3>Speed targets</h3>
+<p>Each target is measured in a Release build with the 300-workout database, in the pull request that first makes it measurable, and again in X2. Simulator numbers are a floor for regressions. The phone checkpoints are where real speed is judged.</p>
+<div class="scroll"><table>
+<tr><th>What</th><th>Target</th><th>First measured in</th></tr>
+<tr><td>Cold start to a usable Train tab</td><td>Under 2 seconds</td><td>L2</td></tr>
+<tr><td>Marking a set done, until the row shows it</td><td>Under 100 milliseconds</td><td>L3</td></tr>
+<tr><td>History list of 300 workouts</td><td>No blank rows while scrolling</td><td>P1</td></tr>
+<tr><td>Importing 300 workouts from a Hevy file</td><td>Under 10 seconds</td><td>D2</td></tr>
+<tr><td>First words of a coach answer</td><td>Shown as soon as OpenAI sends them</td><td>C2</td></tr>
+</table></div>
+
+<h2 id="verify">9. How each pull request is checked and reviewed</h2>
+<ol>
+<li><strong>Build.</strong> One agent owns the pull request on its own branch on rena-devbox. rena-devbook runs the native builds and the simulator for it. I read its whole diff myself.</li>
+<li><strong>Automated checks.</strong> Lint, type checks and unit tests pass locally and on GitHub. Logic lives in <code>packages/core</code>, where tests run in seconds without a simulator.</li>
+<li><strong>Run it for real.</strong> A saved script drives the app in the iPhone 16 Pro Max simulator and takes a screenshot at each step of the proof. Anyone can rerun the script. Passing tests alone never count as done.</li>
+<li><strong>Sol loop.</strong> GPT Sol reviews the diff. I fix real findings with the smallest change and decline the rest with a reason. Up to three rounds.</li>
+<li><strong>Council.</strong> Claude Opus and GPT Sol each review the pull request and score it out of 10. They see the code, the test results and the screenshots.</li>
+<li><strong>Merge at 9.</strong> Both scores must be 9 or higher. Below that, I fix and ask for a fresh round. The scores for every round go in the pull request description.</li>
+<li><strong>Ship.</strong> The merge starts the release job, and AltStore offers the new version.</li>
+</ol>
+<ul>
+<li><strong>If a pull request stalls.</strong> After four council rounds without two scores of 9, I stop and bring it to you with both sides of the disagreement. I do not merge it.</li>
+<li><strong>Scope stays fixed.</strong> A reviewer's idea that is outside the pull request goes on a follow-up list in <code>docs</code>. It does not grow the pull request.</li>
+<li><strong>At most two pull requests are open at once.</strong> Each has its own working copy and Metro port on rena-devbox. They take turns on the one simulator. The 15 GB of memory on rena-devbox is the other limit.</li>
+<li><strong>A decision log</strong> in <code>docs</code> records each choice made without you, and each review score.</li>
+</ul>
+
+<h2 id="risks">10. Risks and fallbacks</h2>
+<div class="scroll"><table>
+<tr><th>Risk</th><th>Found out in</th><th>If it goes wrong</th></tr>
+<tr><td>An Expo build may not install through AltStore. Your interval tracker is a pure Swift app, so this stack is untested on that path.</td><td>Checkpoint 1, which gates all feature work</td><td>Fix the build settings. If Expo cannot produce an installable build, I stop and bring you the choice of native Swift.</td></tr>
+<tr><td>Apple Health may not work in an app signed with a free Apple account.</td><td>Checkpoint 1</td><td>First check that the Health entitlement is inside the <code>.ipa</code>. A build that lost it fails the same way, and that one is fixable. If the free account is the cause, K2 imports Apple Health's export file and GPX files instead.</td></tr>
+<tr><td>Apple's two limits on a free account, according to AltStore's FAQ. Three sideloaded apps can be active at once. Ten App IDs can be registered in a week, each app uses one, and each extension uses more. Checkpoint 1 records how many of each your phone already uses.</td><td>Checkpoint 1</td><td>If no active slot is free, AltStore can deactivate an app such as your interval tracker and keep its data. If App IDs run out, the install waits until older ones expire after a week. A paid Apple developer account removes both problems, and also unlocks push notifications and removes the 7-day refresh.</td></tr>
+<tr><td>OpenAI's plan usage is a preview. Its rules, models or eligibility can change.</td><td>Any time</td><td>The coach is one tab. The rest of the app does not depend on it. C1's tests replay OpenAI's documented answers, so they cannot see a change at OpenAI. The live test, run on request, and the coach failing on your phone are how a change shows up.</td></tr>
+<tr><td>OpenAI's docs do not mention phones. The flow worked on your iPhone once, with one plan.</td><td>F3 and checkpoint 1</td><td>The Safari fallback from your interval tracker covers a sign-in sheet that fails to return.</td></tr>
+<tr><td>OpenAI treats "remotely hosted" apps differently and does not define the term. svett's server never holds plan tokens or calls a model, which I read as outside that rule.</td><td>Open until OpenAI replies, which it may never do</td><td>The interest form asks OpenAI directly. Phase 6 goes ahead on this reading either way. Until they answer, phases 0 to 5 are an MIT-licensed app that makes every model request from the phone. That matches the open-source and local wording in OpenAI's docs. OpenAI has not confirmed it for svett.</td></tr>
+<tr><td>Friends have to sideload too. Each needs AltStore, a computer running AltServer and the 7-day refresh, so the feed reaches only people willing to do that.</td><td>Checkpoint 6</td><td>An App Store release needs a paid Apple developer account and Apple's review. That is outside version 1, and the decision is yours when you want it.</td></tr>
+<tr><td>Streaming a model answer inside React Native.</td><td>C2</td><td>The Swift module does the streaming and hands text to the screen.</td></tr>
+<tr><td>Disk space on rena-devbook. It has 19 GB free. It holds the packages, CocoaPods and build output that native builds need. Tests, test data and the server stay on rena-devbox.</td><td>F1</td><td>F1 measures the space a native build uses, with its packages, CocoaPods and build output, times two for the two pull requests that may be open at once. If less than 5 GB would stay free, I clear build caches and unused simulators first, and I tell you if that is not enough.</td></tr>
+<tr><td>The simulator loads the app from Metro on rena-devbox over Tailscale. A dropped connection stops the app from loading new code.</td><td>F1</td><td>Reload the app once the connection is back. A release build carries its own bundle and does not depend on this.</td></tr>
+<tr><td>The Coolify server has no public address yet.</td><td>Before phase 6</td><td>A small hosted server for a few dollars a month, which is your call.</td></tr>
+<tr><td>Effect is a demanding library, and agents can write tangled code with it.</td><td>F4</td><td>F4 sets the patterns in a short guide in <code>AGENTS.md</code>. Reviewers check every later pull request against it.</td></tr>
+</table></div>
+
+<h2 id="evidence">11. What is proven and what is not</h2>
+<h3>Proven</h3>
+<ul>
+<li><span class="tag ok">read today</span> T3 Code's mobile app uses Expo 58.0.23, React Native 0.88.1, Uniwind, Effect, Clerk, <code>expo-sqlite</code>, pnpm 12 and Node 26. Source: <a href="https://github.com/pingdotgg/t3code/tree/main/apps/mobile" target="_blank" rel="noopener noreferrer">the mobile app in the T3 Code repo</a>.</li>
+<li><span class="tag ok">your own repo</span> Continue with ChatGPT works from an iPhone app installed by AltStore. Your interval tracker's README records the test on your iPhone on 13 November 2026: the sheet returned signed in, the app built a workout on the plan, and the sign-in survived a restart. Source: <a href="https://github.com/Kron00/interval-tracker" target="_blank" rel="noopener noreferrer">Kron00/interval-tracker</a>.</li>
+<li><span class="tag ok">your own repo</span> In an earlier simulator run on 12 November 2026, OpenAI granted all six scopes, including plan usage, accepted a strict JSON schema, and listed eight models.</li>
+<li><span class="tag ok">read today</span> OpenAI's docs say plan usage "is available to open-source projects, personal projects that run locally, and selected private apps". Source: <a href="https://developers.openai.com/cookbook/articles/sign-in-with-chatgpt" target="_blank" rel="noopener noreferrer">Integrating Sign in with ChatGPT in your open-source app</a>.</li>
+<li><span class="tag ok">read today</span> The docs give the redirect rule (loopback on 127.0.0.1 only), the token lifetimes, the request rules and the error codes this plan uses. Source: <a href="https://developers.openai.com/siwc/quickstart" target="_blank" rel="noopener noreferrer">Sign in with ChatGPT quickstart</a>.</li>
+<li><span class="tag ok">checked today</span> rena-devbook has Xcode 27.2 and an iPhone 16 Pro Max simulator on iOS 27.2. It lacks pnpm and CocoaPods, and its Node is version 22.</li>
+<li><span class="tag ok">read today</span> OpenAI documents adding a private MCP server on chatgpt.com under Plugins, over streamable HTTP with OAuth. Source: <a href="https://developers.openai.com/plugins/deploy/connect-chatgpt.md" target="_blank" rel="noopener noreferrer">Connect a plugin to ChatGPT</a>.</li>
+<li><span class="tag ok">your own repo</span> The AltStore release path works: a build script, a GitHub release and a source file at a fixed address.</li>
+<li><span class="tag ok">checked today</span> The exercise dataset <a href="https://github.com/yuhonas/free-exercise-db" target="_blank" rel="noopener noreferrer">free-exercise-db</a> is released under the Unlicense, so the app can bundle it.</li>
+<li><span class="tag ok">this project</span> The feature research covers 108 screenshots of Hevy and Strava. A second model checked it against the first 97.</li>
+</ul>
+<h3>Not proven yet</h3>
+<ul>
+<li><span class="tag warn">checkpoint 1</span> An Expo build installed through AltStore.</li>
+<li><span class="tag warn">checkpoint 1</span> Apple Health and background GPS in a build signed with a free account.</li>
+<li><span class="tag warn">checkpoint 1</span> Room for a third sideloaded app on your phone.</li>
+<li><span class="tag warn">checkpoint 4</span> A token refresh on a phone. Nobody has watched one.</li>
+<li><span class="tag warn">C2</span> Tool calls on plan usage. Your interval tracker used a JSON schema, never tools.</li>
+<li><span class="tag warn">open</span> Which ChatGPT plans qualify. Only one plan has been tried, and OpenAI's pages disagree.</li>
+<li><span class="tag warn">open</span> Whether OpenAI counts an app with its own server as "remotely hosted" when the server never touches plan tokens.</li>
+<li><span class="tag warn">F1</span> That 19 GB of free disk on rena-devbook is enough for React Native builds.</li>
+<li><span class="tag warn">X1</span> Which ChatGPT plans may add a custom MCP server, and whether the ChatGPT iPhone app can use one.</li>
+<li><span class="tag warn">before phase 6</span> Whether Clerk's free plan can be the OAuth provider for the ChatGPT connector, and how long that sign-in lasts. I check this before you choose a Clerk plan.</li>
+</ul>
+
+<h2 id="rejected">12. Alternatives rejected</h2>
+<div class="scroll"><table>
+<tr><th>Alternative</th><th>Why not</th></tr>
+<tr><td>Native Swift and SwiftUI</td><td>It is the easier path for Apple Health, GPS and the sign-in, and your interval tracker proves it. You chose T3 Code's stack. It stays the fallback if checkpoint 1 fails.</td></tr>
+<tr><td>Send model requests through the svett server</td><td>The server would hold every user's ChatGPT tokens. OpenAI's rules cover local apps, and a server in the middle falls outside them.</td></tr>
+<tr><td>svett pays for the AI</td><td>You want users to use their own subscription.</td></tr>
+<tr><td>Accept a ChatGPT identity token as the whole sign-in</td><td>Each install has its own client ID, so the server cannot tell whose app made the token. See <a href="#accounts">Accounts</a>.</td></tr>
+<tr><td>Build the server first</td><td>Nothing in phases 0 to 5 needs it, and you can use the app daily long before the feed exists.</td></tr>
+<tr><td>Expo's cloud builds and over-the-air updates</td><td>They add an account and a cost. AltStore already delivers updates.</td></tr>
+<tr><td>Copy Strava's community features in version 1</td><td>Segments, clubs and heat maps are each large. The research shows the gap is a combined feed and open data, so those come first.</td></tr>
+<tr><td>One pull request per phase</td><td>A pull request that large cannot be reviewed to a 9. Twenty-six small ones each end in a check.</td></tr>
+</table></div>
+
+<p class="meta">Sources read on 13 November 2026: OpenAI's Sign in with ChatGPT developer docs, the T3 Code repository, the Kron00/interval-tracker repository, the AltStore FAQ, and this project's feature research.</p>
+
+</body>
+</html>
