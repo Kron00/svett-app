@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vite-plus/test";
 
-import { expandEntitlements, expandVariables, settingsFor } from "./signing-entitlements.ts";
+import { entitlementsFor, expandEntitlements, expandVariables } from "./signing-entitlements.ts";
 
 const plist: { parse: (xml: string) => unknown; build: (value: unknown) => string } = createRequire(
   import.meta.url,
@@ -78,20 +78,57 @@ const target = (name: string, product: string, extra: Record<string, string> = {
   buildSettings: { FULL_PRODUCT_NAME: product, ...extra },
 });
 
-describe("settingsFor", () => {
-  const json = JSON.stringify([
-    target("svett", "svett.app"),
-    target("Widgets", "Widgets.appex", { PRODUCT_BUNDLE_IDENTIFIER: "com.kron00.svett.widgets" }),
-  ]);
+const appProject = () => {
+  const root = mkdtempSync(join(tmpdir(), "signing-entitlements-"));
+  mkdirSync(join(root, "svett"), { recursive: true });
+  writeFileSync(
+    join(root, "svett", "svett.entitlements"),
+    plist.build({
+      "com.apple.security.application-groups": ["group.$(PRODUCT_BUNDLE_IDENTIFIER)"],
+    }),
+  );
+  writeFileSync(
+    join(root, "svett", "Other.entitlements"),
+    plist.build({ "com.apple.developer.healthkit": true }),
+  );
+  return (entitlements = "svett/svett.entitlements") =>
+    target("svett", "svett.app", {
+      SRCROOT: root,
+      CODE_SIGN_ENTITLEMENTS: entitlements,
+      PRODUCT_BUNDLE_IDENTIFIER: "com.kron00.svett",
+    });
+};
 
-  it("finds the target that builds the product", () => {
-    expect(settingsFor(json, "Widgets.appex").PRODUCT_BUNDLE_IDENTIFIER).toBe(
-      "com.kron00.svett.widgets",
+describe("entitlementsFor", () => {
+  it("refuses a product no target builds, so an extension is never signed blind", () => {
+    const app = appProject();
+    expect(() => entitlementsFor(JSON.stringify([app()]), "Other.appex")).toThrow(
+      "No target builds Other.appex",
     );
   });
 
-  it("refuses a product no target builds, so an extension is never signed blind", () => {
-    expect(() => settingsFor(json, "Other.appex")).toThrow("No target builds Other.appex");
+  it("signs once with a target the build settings list twice alike", () => {
+    const app = appProject();
+    expect(plist.parse(entitlementsFor(JSON.stringify([app(), app()]), "svett.app"))).toEqual({
+      "com.apple.security.application-groups": ["group.com.kron00.svett"],
+    });
+  });
+
+  it("refuses a target listed twice with different entitlements", () => {
+    const app = appProject();
+    expect(() =>
+      entitlementsFor(JSON.stringify([app(), app("svett/Other.entitlements")]), "svett.app"),
+    ).toThrow(
+      "The build settings list svett more than once with different entitlements for svett.app",
+    );
+  });
+
+  it("refuses two targets that build the same product", () => {
+    const app = appProject();
+    const json = JSON.stringify([app(), { ...app(), target: "svett copy" }]);
+    expect(() => entitlementsFor(json, "svett.app")).toThrow(
+      "svett.app is built by svett and svett copy",
+    );
   });
 });
 

@@ -70,17 +70,37 @@ export function expandEntitlements(
   return plist.build(entitlements);
 }
 
-/** The build settings of the target that builds `product`, such as svett.app. */
-export function settingsFor(settingsJson: string, product: string): Record<string, string> {
-  const targets = decodeSettings(JSON.parse(settingsJson)).filter(
-    (target) => target.buildSettings.FULL_PRODUCT_NAME === product,
-  );
-  const [target, ...others] = targets;
-  if (target === undefined) throw new Error(`No target builds ${product}`);
-  if (others.length > 0) {
-    throw new Error(`${product} is built by ${targets.map((t) => t.target).join(" and ")}`);
+const entitlementsOf = (settings: Readonly<Record<string, string>>): string => {
+  const file = settings.CODE_SIGN_ENTITLEMENTS ?? "";
+  if (file === "") return "";
+  const path = resolve(settings.SRCROOT ?? ".", file);
+  return expandEntitlements(readFileSync(path, "utf8"), settings);
+};
+
+/**
+ * The entitlements to sign `product`, such as svett.app, with, or "" when its
+ * target has none. Xcode 27 can list a target more than once in
+ * `-showBuildSettings -alltargets`, so entries that would sign alike count as one.
+ */
+export function entitlementsFor(settingsJson: string, product: string): string {
+  const signings = decodeSettings(JSON.parse(settingsJson))
+    .filter((target) => target.buildSettings.FULL_PRODUCT_NAME === product)
+    .map((target) => ({
+      target: target.target,
+      entitlements: entitlementsOf(target.buildSettings),
+    }));
+  const [first, ...others] = signings;
+  if (first === undefined) throw new Error(`No target builds ${product}`);
+  const otherTarget = others.find((signing) => signing.target !== first.target);
+  if (otherTarget !== undefined) {
+    throw new Error(`${product} is built by ${first.target} and ${otherTarget.target}`);
   }
-  return { ...target.buildSettings };
+  if (others.some((signing) => signing.entitlements !== first.entitlements)) {
+    throw new Error(
+      `The build settings list ${first.target} more than once with different entitlements for ${product}`,
+    );
+  }
+  return first.entitlements;
 }
 
 if (import.meta.main) {
@@ -89,10 +109,5 @@ if (import.meta.main) {
   });
   const { "build-settings": buildSettings, product } = values;
   if (!buildSettings || !product) throw new Error("--build-settings and --product are required");
-  const settings = settingsFor(readFileSync(buildSettings, "utf8"), product);
-  const file = settings.CODE_SIGN_ENTITLEMENTS ?? "";
-  if (file !== "") {
-    const path = resolve(settings.SRCROOT ?? ".", file);
-    process.stdout.write(expandEntitlements(readFileSync(path, "utf8"), settings));
-  }
+  process.stdout.write(entitlementsFor(readFileSync(buildSettings, "utf8"), product));
 }
