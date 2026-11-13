@@ -4,10 +4,12 @@
 #
 # Usage: scripts/sim/gallery.sh [--release] [out-dir]
 #
-# Opens the gallery from the You tab three times: in light, in dark, and in light
-# at the largest accessibility text size. Each time it saves a screenshot per
-# page, scrolling until the gallery's end marker is on screen, then opens the
-# sheet and saves that too. Files are <pass>-NN.png and <pass>-sheet.png in
+# Opens the gallery three times: in light, in dark, and in light at the largest
+# accessibility text size. Each time it saves a screenshot per page, scrolling
+# until the gallery's end marker is on screen, then opens the sheet and saves
+# that too. It reaches the gallery and the sheet through the svett://gallery
+# link, not taps, because agent-device refuses taps in screen content on iOS 27
+# as covered by UIKit's touch-transparent floating bar containers. Files are <pass>-NN.png and <pass>-sheet.png in
 # out-dir, by default ~/svett-proof/<branch>/gallery/. Like tabs.sh, Debug opens
 # the development client on Metro at SVETT_METRO, --release opens the installed
 # Release build, and every step runs through SVETT_DEVICE_CMD when it is set.
@@ -31,6 +33,7 @@ cd "$repo"
 out=${1:-$HOME/svett-proof/$(git branch --show-current)/gallery}
 bundle_id=com.kron00.svett
 # React Navigation labels each iOS tab button "<title>, tab, <n> of <count>".
+# The You tab showing means the app has loaded and can take the gallery link.
 you_tab='label="You, tab, 5 of 5"'
 max_pages=40
 
@@ -77,9 +80,7 @@ shoot() {
   # A running app adopts a new text size only when it relaunches.
   agent_device open "$bundle_id" "${open_flags[@]}"
   agent_device wait "$you_tab" 120000
-  agent_device press "$you_tab"
-  agent_device wait 'id="design-gallery-row"' 10000
-  agent_device press 'id="design-gallery-row"'
+  agent_device open "$bundle_id" svett://gallery
   agent_device wait 'id="gallery"' 10000
   agent_device wait 1000
 
@@ -96,14 +97,11 @@ shoot() {
   done
   echo "$pass: $page pages"
 
-  # The end marker is on screen, so the sheet button is on screen or just above it.
-  agent_device scroll up --until 'id="gallery-open-sheet"'
-  agent_device press 'id="gallery-open-sheet"'
+  # The next pass relaunches the app, which closes the sheet.
+  agent_device open "$bundle_id" 'svett://gallery?sheet=open'
   agent_device wait 'id="gallery-sheet"' 10000
   agent_device wait 1000
   screenshot "$pass-sheet"
-  agent_device press 'id="gallery-sheet-done"'
-  agent_device wait absent 'id="gallery-sheet"' 10000
 }
 
 shoot light light large

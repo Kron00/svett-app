@@ -9,6 +9,8 @@ import {
   stepValue,
   WEIGHT_KG_ENTRY,
 } from "@svett/core";
+import { type RouteProp, useNavigation, useRoute } from "@react-navigation/native";
+import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import { type ReactNode, useState } from "react";
 import { ScrollView, View } from "react-native";
 
@@ -183,6 +185,8 @@ const DAYS = (
   ] as const
 ).map(([key, label, value]) => ({ key, label, value }));
 
+type GalleryParams = { Gallery: { sheet?: "open" } | undefined };
+
 /**
  * Every design system component in its states. It is reachable from the You
  * tab, and scripts/sim/gallery.sh screenshots it in light, dark and the
@@ -193,7 +197,11 @@ export function GalleryScreen() {
   const [awake, setAwake] = useState(true);
   const [weight, setWeight] = useState(80);
   const [reps, setReps] = useState(8);
-  const [sheetOpen, setSheetOpen] = useState(false);
+  // The sheet's state is a route param so svett://gallery?sheet=open can show it.
+  const navigation = useNavigation<NativeStackNavigationProp<GalleryParams, "Gallery">>();
+  const sheetOpen = useRoute<RouteProp<GalleryParams>>().params?.sheet === "open";
+  const setSheetOpen = (open: boolean) =>
+    navigation.setParams({ sheet: open ? "open" : undefined });
 
   return (
     <ScrollView

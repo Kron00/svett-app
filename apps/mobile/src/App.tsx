@@ -1,7 +1,7 @@
 import "../global.css";
 
 import { createBottomTabNavigator } from "@react-navigation/bottom-tabs";
-import { NavigationContainer } from "@react-navigation/native";
+import { type LinkingOptions, NavigationContainer } from "@react-navigation/native";
 import { createNativeStackNavigator } from "@react-navigation/native-stack";
 import { StatusBar } from "expo-status-bar";
 import { SymbolView } from "expo-symbols";
@@ -15,6 +15,16 @@ import { TABS } from "./tabs";
 
 const Stack = createNativeStackNavigator();
 const Tabs = createBottomTabNavigator();
+
+// scripts/sim/gallery.sh opens svett://gallery, and svett://gallery?sheet=open
+// for the sheet, because agent-device refuses taps in screen content on iOS 27.
+// It reads UIKit's touch-transparent floating bar containers as toolbars that
+// cover the whole screen.
+const linking: LinkingOptions<{ Tabs: undefined; Gallery: { sheet?: "open" } | undefined }> = {
+  prefixes: ["svett://"],
+  filter: (url) => !url.includes("expo-development-client"),
+  config: { initialRouteName: "Tabs", screens: { Gallery: "gallery" } },
+};
 
 function TabNavigator() {
   return (
@@ -43,7 +53,7 @@ function TabNavigator() {
 
 export default function App() {
   return (
-    <NavigationContainer theme={useNavigationTheme()}>
+    <NavigationContainer theme={useNavigationTheme()} linking={linking}>
       <StatusBar style="auto" />
       <Stack.Navigator screenOptions={{ headerShown: false }}>
         <Stack.Screen name="Tabs" component={TabNavigator} />

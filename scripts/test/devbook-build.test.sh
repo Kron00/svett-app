@@ -371,13 +371,18 @@ debug_open="com.kron00.svett --relaunch --launch-url $local_dev_client_url"
 
 case_name="gallery.sh Debug with SVETT_DEVICE_CMD"
 FAKE_GALLERY_SCROLLS=2 sim_script gallery.sh "$root/gallery"
-check "gallery.sh relaunches into the dev client on Metro once per pass" \
-  only_open "$debug_open" "$debug_open" "$debug_open"
+gallery_links=("com.kron00.svett svett://gallery" "com.kron00.svett svett://gallery?sheet=open")
+check "gallery.sh relaunches into the dev client on Metro once per pass, then opens the gallery links" \
+  only_open "$debug_open" "${gallery_links[@]}" "$debug_open" "${gallery_links[@]}" \
+  "$debug_open" "${gallery_links[@]}"
 check "gallery.sh sets each pass's appearance and text size before relaunching, then restores them" \
   only_calls "settings|open" \
   "settings appearance light" "settings text-size large" "open $debug_open" \
+  "open ${gallery_links[0]}" "open ${gallery_links[1]}" \
   "settings appearance dark" "settings text-size large" "open $debug_open" \
+  "open ${gallery_links[0]}" "open ${gallery_links[1]}" \
   "settings appearance light" "settings text-size accessibility-extra-extra-extra-large" "open $debug_open" \
+  "open ${gallery_links[0]}" "open ${gallery_links[1]}" \
   "settings appearance light" "settings text-size large"
 check "gallery.sh pages each pass down to the end marker, then shoots the sheet" \
   only_calls "screenshot" \
@@ -387,14 +392,15 @@ check "gallery.sh pages each pass down to the end marker, then shoots the sheet"
   "screenshot $root/gallery/dark-03.png" "screenshot $root/gallery/dark-sheet.png" \
   "screenshot $root/gallery/largest-text-01.png" "screenshot $root/gallery/largest-text-02.png" \
   "screenshot $root/gallery/largest-text-03.png" "screenshot $root/gallery/largest-text-sheet.png"
-check "gallery.sh opens the gallery from the You tab's row" \
-  bound_got "$bound_prefix press id=\"design-gallery-row\""
+check "gallery.sh presses nothing in screen content, which agent-device refuses as covered on iOS 27" \
+  only_calls "press"
 check "gallery.sh with SVETT_DEVICE_CMD never calls simctl" test ! -e "$root/simctl-calls"
 
 case_name="gallery.sh Release with SVETT_DEVICE_CMD"
 sim_script gallery.sh --release "$root/gallery-release"
 check "gallery.sh Release relaunches the installed app without Metro" \
-  only_open "com.kron00.svett --relaunch" "com.kron00.svett --relaunch" "com.kron00.svett --relaunch"
+  only_open "com.kron00.svett --relaunch" "${gallery_links[@]}" "com.kron00.svett --relaunch" "${gallery_links[@]}" \
+  "com.kron00.svett --relaunch" "${gallery_links[@]}"
 
 case_name="gallery.sh without an end marker"
 rm -f "$root/bound-calls"
