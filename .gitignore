@@ -13,3 +13,4 @@ metro.log
 !.env.example
 .DS_Store
 research/screenshots/
+.fixtures/

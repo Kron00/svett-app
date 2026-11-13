@@ -6,6 +6,9 @@
   "scripts": {
     "typecheck": "effect-tsgo tsrs --noEmit"
   },
+  "dependencies": {
+    "@svett/core": "workspace:*"
+  },
   "devDependencies": {
     "@resvg/resvg-js": "2.6.2",
     "@types/node": "catalog:"

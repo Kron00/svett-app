@@ -1,1 +1,15 @@
 export { DurationSeconds, formatDuration } from "./duration.ts";
+export * from "./ids.ts";
+export * from "./schema.ts";
+export * from "./sql.ts";
+export { MIGRATIONS, migrate, currentVersion, DatabaseTooNewError } from "./migrations.ts";
+export type { Migration } from "./migrations.ts";
+export { TABLES, InvalidRowError, RowNotFoundError } from "./table.ts";
+export type { Table, Patch } from "./table.ts";
+export * from "./exercise-library.ts";
+export * from "./repositories/origin.ts";
+export * from "./repositories/activities.ts";
+export * from "./repositories/exercises.ts";
+export * from "./repositories/routines.ts";
+export * from "./repositories/records.ts";
+export * from "./database.ts";
