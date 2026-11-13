@@ -1,0 +1,12 @@
+node_modules/
+.pnpm-store/
+dist/
+build/
+.expo/
+ios/build/
+*.ipa
+.env
+.env.*
+!.env.example
+.DS_Store
+research/screenshots/
