@@ -5,7 +5,6 @@
   "main": "index.ts",
   "scripts": {
     "start": "expo start --dev-client",
-    "prebuild": "expo prebuild --platform ios --clean",
     "typecheck": "effect-tsgo tsrs --noEmit"
   },
   "dependencies": {
