@@ -61,7 +61,7 @@ const makeExerciseRepository = Effect.gen(function* () {
   const create = ({ origin, ...draft }: ExerciseDraft) =>
     run(
       Effect.gen(function* () {
-        const id = ExerciseId.make(yield* rowId(origin));
+        const id = ExerciseId.make(yield* rowId(TABLES.exercise, origin));
         yield* insertRows(TABLES.exercise, [
           { ...draft, ...provenance(origin), id, updatedAt: yield* currentTime, deletedAt: null },
         ]);

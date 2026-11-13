@@ -24,7 +24,6 @@ import {
   TABLES,
   updateRow,
 } from "../table.ts";
-import { MADE_HERE, rowId } from "./origin.ts";
 
 type Draft<A, Parent extends string = never> = Omit<
   A,
@@ -67,7 +66,7 @@ const makeRoutineRepository = Effect.gen(function* () {
   const ids = yield* Ids;
   const run = <A, E>(effect: Effect.Effect<A, E, Sql | Ids>) =>
     effect.pipe(Effect.provideService(Sql, sql), Effect.provideService(Ids, ids));
-  const newId = rowId(MADE_HERE);
+  const newId = ids.random;
 
   const createRoutine = ({ exercises, ...fields }: RoutineDraft) =>
     run(

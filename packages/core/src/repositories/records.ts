@@ -54,7 +54,7 @@ const makeMeasurementRepository = Effect.gen(function* () {
     create: ({ origin, ...draft }: MeasurementDraft) =>
       run(
         Effect.gen(function* () {
-          const id = MeasurementId.make(yield* rowId(origin));
+          const id = MeasurementId.make(yield* rowId(TABLES.measurement, origin));
           yield* insertRows(TABLES.measurement, [
             { ...draft, ...provenance(origin), id, updatedAt: yield* currentTime, deletedAt: null },
           ]);
@@ -88,7 +88,7 @@ const makeImportRepository = Effect.gen(function* () {
     create: (source: ImportSource) =>
       run(
         Effect.gen(function* () {
-          const id = ImportBatchIdSchema.make(yield* rowId(MADE_HERE));
+          const id = ImportBatchIdSchema.make(yield* rowId(TABLES.importBatch, MADE_HERE));
           const now = yield* currentTime;
           yield* insertRows(TABLES.importBatch, [
             { id, source, status: "previewed", createdAt: now, updatedAt: now, deletedAt: null },
@@ -123,7 +123,7 @@ const makeProposalRepository = Effect.gen(function* () {
     create: (draft: ProposalDraft) =>
       run(
         Effect.gen(function* () {
-          const id = ProposalId.make(yield* rowId(MADE_HERE));
+          const id = ProposalId.make(yield* rowId(TABLES.proposal, MADE_HERE));
           const now = yield* currentTime;
           yield* insertRows(TABLES.proposal, [
             { ...draft, id, status: "pending", createdAt: now, updatedAt: now, deletedAt: null },
@@ -155,7 +155,7 @@ const makeCoachMessageRepository = Effect.gen(function* () {
     append: (draft: CoachMessageDraft) =>
       run(
         Effect.gen(function* () {
-          const id = CoachMessageId.make(yield* rowId(MADE_HERE));
+          const id = CoachMessageId.make(yield* rowId(TABLES.coachMessage, MADE_HERE));
           const now = yield* currentTime;
           yield* insertRows(TABLES.coachMessage, [
             { ...draft, id, createdAt: now, updatedAt: now, deletedAt: null },

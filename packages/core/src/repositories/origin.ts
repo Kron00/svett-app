@@ -27,10 +27,14 @@ export const provenance = (origin: Origin) =>
 
 /**
  * A row made here gets a random UUIDv7. An imported row and each of its children get a
- * UUIDv5 of the source and the source identity, extended by the child's `path` inside it,
- * so the same import on two devices makes the same rows.
+ * UUIDv5 of the table, the source and the source identity, extended by the child's `path`
+ * inside it, so the same import on two devices makes the same rows.
  */
-export const rowId = (origin: Origin, path = ""): Effect.Effect<Uuid, never, Ids> =>
+export const rowId = (
+  table: { readonly name: string },
+  origin: Origin,
+  path = "",
+): Effect.Effect<Uuid, never, Ids> =>
   origin.source === "svett"
     ? Effect.flatMap(Effect.service(Ids), (ids) => ids.random)
-    : Effect.succeed(importedId(origin.source, `${origin.sourceId}${path}`));
+    : Effect.succeed(importedId(table.name, origin.source, `${origin.sourceId}${path}`));

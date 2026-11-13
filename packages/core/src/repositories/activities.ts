@@ -85,20 +85,24 @@ const makeActivityRepository = Effect.gen(function* () {
         Effect.gen(function* () {
           const updatedAt = yield* currentTime;
           const { origin, exercises, track, ...fields } = draft;
-          const id = ActivityId.make(yield* rowId(origin));
+          const id = ActivityId.make(yield* rowId(TABLES.activity, origin));
           yield* insertRows(TABLES.activity, [
             { ...fields, ...provenance(origin), id, updatedAt, deletedAt: null },
           ]);
           for (const [position, { sets, ...exercise }] of exercises.entries()) {
             const exerciseId = ActivityExerciseId.make(
-              yield* rowId(origin, `/exercise/${position}`),
+              yield* rowId(TABLES.activityExercise, origin, `/exercise/${position}`),
             );
             yield* insertRows(TABLES.activityExercise, [
               { ...exercise, id: exerciseId, activityId: id, position, updatedAt, deletedAt: null },
             ]);
             for (const [setPosition, set] of sets.entries()) {
               const setId = ActivitySetId.make(
-                yield* rowId(origin, `/exercise/${position}/set/${setPosition}`),
+                yield* rowId(
+                  TABLES.activitySet,
+                  origin,
+                  `/exercise/${position}/set/${setPosition}`,
+                ),
               );
               yield* insertRows(TABLES.activitySet, [
                 {
@@ -114,13 +118,15 @@ const makeActivityRepository = Effect.gen(function* () {
           }
           if (track !== null) {
             const { samples, ...trackFields } = track;
-            const trackId = ActivityTrackId.make(yield* rowId(origin, "/track"));
+            const trackId = ActivityTrackId.make(
+              yield* rowId(TABLES.activityTrack, origin, "/track"),
+            );
             yield* insertRows(TABLES.activityTrack, [
               { ...trackFields, id: trackId, activityId: id, updatedAt, deletedAt: null },
             ]);
             for (const [index, sample] of samples.entries()) {
               const sampleId = ActivitySampleId.make(
-                yield* rowId(origin, `/track/sample/${index}`),
+                yield* rowId(TABLES.activitySample, origin, `/track/sample/${index}`),
               );
               yield* insertRows(TABLES.activitySample, [
                 { ...sample, id: sampleId, activityTrackId: trackId, updatedAt, deletedAt: null },
