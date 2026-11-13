@@ -61,7 +61,9 @@ tab_label() {
 
 mkdir -p "$out"
 open_flags=(--relaunch)
-[[ "$release" == true ]] || open_flags+=(--metro-host 127.0.0.1 --metro-port 8081)
+# Opening by bundle id alone shows the development client's launcher, and
+# agent-device's own Expo detection falls back to that when it is inconclusive.
+[[ "$release" == true ]] || open_flags+=(--launch-url "$(dev_client_url http://localhost:8081)")
 
 # Leaves the simulator light and frees its own session, also when a step fails.
 if [[ -n "${SVETT_DEVICE_CMD:-}" ]]; then

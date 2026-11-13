@@ -177,11 +177,9 @@ curl -fsS "$metro_url/status" | grep -q packager-status:running || {
 step "Opening the app on $metro_url"
 # Skips the dev menu's first-run sheet, which would cover the app.
 xcrun simctl spawn "$udid" defaults write "$bundle_id" EXDevMenuIsOnboardingFinished -bool YES
-encoded_url=$(node -e 'process.stdout.write(encodeURIComponent(process.argv[1]))' "$metro_url")
-dev_client_url="svett://expo-development-client/?url=$encoded_url"
 if [[ -n "${SVETT_DEVICE_CMD:-}" ]]; then
-  agent_device open "$bundle_id" "$dev_client_url"
+  agent_device open "$bundle_id" --relaunch --launch-url "$(dev_client_url "$metro_url")"
 else
-  xcrun simctl openurl "$udid" "$dev_client_url"
+  xcrun simctl openurl "$udid" "$(dev_client_url "$metro_url")"
 fi
 echo "Metro log: $metro_log"

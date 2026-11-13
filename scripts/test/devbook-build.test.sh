@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Runs scripts/devbook-build.sh and scripts/sim/launch.sh on Linux against fake
+# Runs scripts/devbook-build.sh and the sim/ scripts on Linux against fake
 # Xcode, CocoaPods, pnpm, Expo and agent-device tools. It checks which native
 # build steps run, which native inputs the installed app was built from, and
 # that the T3 Code bound device command replaces simctl launch and openurl.
@@ -241,7 +241,41 @@ case_name="Debug with SVETT_DEVICE_CMD"
 routed SVETT_DEVICE_CMD="$bound_cmd" b "$metro"
 check "Debug with SVETT_DEVICE_CMD calls neither simctl launch nor openurl" no_simctl_launch_or_openurl
 check "Debug with SVETT_DEVICE_CMD opens the dev client URL through the bound command" \
-  bound_got "$bound_prefix open com.kron00.svett $dev_client_url"
+  bound_got "$bound_prefix open com.kron00.svett --relaunch --launch-url $dev_client_url"
+
+local_dev_client_url="svett://expo-development-client/?url=http%3A%2F%2Flocalhost%3A8081"
+
+# sim_script <script> [args...] runs a sim/ script through the bound command.
+sim_script() {
+  rm -f "$root/simctl-calls" "$root/bound-calls"
+  env PATH="$fake:$PATH" SVETT_DEVICE_CMD="$bound_cmd" "$repo/scripts/sim/$1" "${@:2}" >"$output" 2>&1 ||
+    fail "$1 ${*:2} failed"
+}
+
+# only_open <expected open arguments> checks the script opened the app once, with exactly these arguments.
+only_open() {
+  local opens
+  opens=$(grep -F -- "$bound_prefix open " "$root/bound-calls" || true)
+  [[ "$opens" == "$bound_prefix open $1" ]] || {
+    { echo "bound command opens:"; echo "$opens"; } >>"$output"
+    fail "the bound command did not get exactly one \"open $1\""
+  }
+}
+
+case_name="tabs.sh Debug with SVETT_DEVICE_CMD"
+sim_script tabs.sh "$root/proof-debug"
+check "tabs.sh Debug relaunches into the dev client on Metro, not a bare relaunch" \
+  only_open "com.kron00.svett --relaunch --launch-url $local_dev_client_url"
+check "tabs.sh with SVETT_DEVICE_CMD never calls simctl" test ! -e "$root/simctl-calls"
+
+case_name="tabs.sh Release with SVETT_DEVICE_CMD"
+sim_script tabs.sh --release "$root/proof-release"
+check "tabs.sh Release relaunches the installed app without Metro" only_open "com.kron00.svett --relaunch"
+
+case_name="launch.sh Debug with SVETT_DEVICE_CMD"
+sim_script launch.sh -svettFixture "$root/fixture one.json"
+check "launch.sh Debug relaunches into the dev client with the launch arguments" only_open \
+  "com.kron00.svett --relaunch --launch-url $local_dev_client_url --launch-args=-svettFixture --launch-args=$root/fixture one.json"
 
 case_name="launch.sh with SVETT_DEVICE_CMD"
 rm -f "$root/simctl-calls" "$root/bound-calls"
