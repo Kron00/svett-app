@@ -243,9 +243,15 @@ export const workoutDurationSeconds = (workout: Workout, now: number): DurationS
   return DurationSeconds.make(Math.max(0, (end - workout.startedAt) / 1000));
 };
 
-const WorkoutJson = Schema.fromJsonString(Workout);
+// An app update kills a workout in progress. The version lets a build that changes this shape
+// migrate an older save instead of failing to read it.
+const SavedWorkout = Schema.fromJsonString(
+  Schema.Struct({ version: Schema.Literal(1), workout: Workout }),
+);
 
-export const encodeWorkout = (workout: Workout): string => Schema.encodeSync(WorkoutJson)(workout);
+export const encodeWorkout = (workout: Workout): string =>
+  Schema.encodeSync(SavedWorkout)({ version: 1, workout });
 
+/** Undefined means the text could not be read. Keep that text instead of overwriting it. */
 export const restoreWorkout = (text: string): Workout | undefined =>
-  Option.getOrUndefined(Schema.decodeUnknownOption(WorkoutJson)(text));
+  Option.getOrUndefined(Schema.decodeUnknownOption(SavedWorkout)(text))?.workout;

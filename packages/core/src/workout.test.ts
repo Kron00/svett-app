@@ -83,6 +83,11 @@ describe("crash recovery", () => {
     ["the wrong shape", JSON.stringify({ id: "w1", exercises: [] })],
     ["negative reps", encodeWorkout(log(session)).replace('"reps":5', '"reps":-5')],
     ["an unknown phase", encodeWorkout(log(session)).replace('"_tag":"Active"', '"_tag":"Paused"')],
+    [
+      "a save from a newer build",
+      encodeWorkout(log(session)).replace('"version":1', '"version":2'),
+    ],
+    ["a workout without its version", JSON.stringify(log(session))],
   ])("restores %s to undefined", (_, text) => {
     expect(restoreWorkout(text)).toBeUndefined();
   });
