@@ -45,9 +45,10 @@ export const cleanTrack = (
   points: ReadonlyArray<TrackPoint>,
   kind: ActivityKind,
 ): ReadonlyArray<TrackPoint> => {
-  const plausible = (from: TrackPoint, to: TrackPoint): boolean => {
+  const plausible = (from: TrackPoint, to: TrackPoint, slackMeters = 0): boolean => {
     const seconds = secondsBetween(from, to);
-    return seconds > 0 && distanceMeters(from, to) / seconds <= MAX_SPEED_MPS[kind];
+    const meters = Math.max(0, distanceMeters(from, to) - slackMeters);
+    return seconds > 0 && meters / seconds <= MAX_SPEED_MPS[kind];
   };
   const kept: Array<TrackPoint> = [];
   let rejected: Array<TrackPoint> = [];
@@ -61,7 +62,12 @@ export const cleanTrack = (
       // Two fixes of one spot can sit up to both error radii apart. Only the last one's time is kept.
       held = { ...last, at: point.at };
       rejected = [];
-    } else if (last === undefined || plausible(last, point)) {
+    } else if (
+      last === undefined ||
+      // After a stop, a jump must also be plausible from the latest still fix, not only from
+      // where the stop began.
+      (plausible(last, point) && (held === undefined || plausible(held, point, jitter)))
+    ) {
       kept.push(point);
       rejected = [];
       held = undefined;

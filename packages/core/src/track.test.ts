@@ -135,6 +135,15 @@ describe("cleanTrack", () => {
     },
   );
 
+  it("drops a GPS jump that follows a stop", () => {
+    const stop = Array.from({ length: 60 }, (_, i) => point(11 + i, 30, { accuracyMeters: 1 }));
+    const back = [72, 73, 74].map((second) => point(second, 30, { accuracyMeters: 1 }));
+    const track = [...tenSecondRun(0, 0), ...stop, point(71, 530, { accuracyMeters: 1 }), ...back];
+    const cleaned = cleanTrack(track, "run");
+    expect(trackDistanceMeters(cleaned)).toBeCloseTo(30, 6);
+    expect(movingSeconds(cleaned)).toBe(10);
+  });
+
   it("adds no distance for random jitter within the accuracy while standing still", () => {
     let seed = 7;
     const random = () => {
