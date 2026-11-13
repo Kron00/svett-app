@@ -1,22 +1,7 @@
-import { Schema } from "effect";
-
+import type { Audience } from "./schema.ts";
 import { distanceMeters, type TrackPoint } from "./track.ts";
 
-export const Audience = Schema.Literals(["only-you", "followers", "everyone"]);
-
-export type Audience = typeof Audience.Type;
-
-export const DEFAULT_AUDIENCE: Audience = "only-you";
-
-export const HiddenField = Schema.Literals([
-  "weight",
-  "heart-rate",
-  "start-time",
-  "calories",
-  "pace",
-]);
-
-export type HiddenField = typeof HiddenField.Type;
+export const DEFAULT_AUDIENCE: Audience = "only_you";
 
 const METERS_PER_DEGREE = (6_371_008.8 * Math.PI) / 180;
 

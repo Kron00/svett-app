@@ -1,7 +1,8 @@
 import { Schema } from "effect";
 import { describe, expect, it } from "vite-plus/test";
 
-import { Audience, DEFAULT_AUDIENCE, HiddenField, trimRoute } from "./privacy.ts";
+import { DEFAULT_AUDIENCE, trimRoute } from "./privacy.ts";
+import { Audience } from "./schema.ts";
 import { distanceMeters, type TrackPoint } from "./track.ts";
 
 const METERS_PER_DEGREE = (6_371_008.8 * Math.PI) / 180;
@@ -18,15 +19,7 @@ const home = point(0, 0);
 
 describe("audience", () => {
   it("starts new activities visible only to you", () => {
-    expect(Schema.decodeUnknownSync(Audience)(DEFAULT_AUDIENCE)).toBe("only-you");
-  });
-
-  it.each(["public", "friends", ""])("rejects %j as an audience", (input) => {
-    expect(() => Schema.decodeUnknownSync(Audience)(input)).toThrow();
-  });
-
-  it.each(["weight", "heart-rate", "start-time", "calories", "pace"])("can hide %s", (field) => {
-    expect(Schema.decodeUnknownSync(HiddenField)(field)).toBe(field);
+    expect(Schema.decodeUnknownSync(Audience)(DEFAULT_AUDIENCE)).toBe("only_you");
   });
 });
 

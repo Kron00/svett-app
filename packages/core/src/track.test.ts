@@ -1,7 +1,7 @@
 import { Schema } from "effect";
 import { describe, expect, it } from "vite-plus/test";
 
-import type { ActivityKind } from "./activity-kind.ts";
+import type { ActivityKind } from "./schema.ts";
 import {
   cleanTrack,
   distanceMeters,

@@ -1,6 +1,6 @@
 import { Schema } from "effect";
 
-import { ActivityKind } from "./activity-kind.ts";
+import { ActivityKind } from "./schema.ts";
 
 export const WeightUnit = Schema.Literals(["kg", "lb"]);
 

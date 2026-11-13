@@ -1,6 +1,6 @@
 import { Schema } from "effect";
 
-import type { ActivityKind } from "./activity-kind.ts";
+import type { ActivityKind } from "./schema.ts";
 
 export const TrackPoint = Schema.Struct({
   at: Schema.Number.check(Schema.isFinite()),
