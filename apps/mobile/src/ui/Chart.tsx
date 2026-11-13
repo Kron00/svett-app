@@ -1,0 +1,213 @@
+import { niceTicks, scaleLinear, type Ticks } from "@svett/core";
+import { createContext, type ReactNode, use, useMemo, useState } from "react";
+import { View } from "react-native";
+import Svg, { Circle, Line, Path, Rect } from "react-native-svg";
+
+import { useColor, useIsAccessibilityTextSize } from "../design/hooks";
+import type { ColorToken } from "../design/tokens";
+import { AppText } from "./AppText";
+
+export type ChartPoint = {
+  /** Identifies the point's slot, such as its date. Unique within a chart. */
+  readonly key: string;
+  /** The x-axis label under this point. An empty string leaves that slot blank. */
+  readonly label: string;
+  readonly value: number;
+};
+
+type Plot = {
+  readonly points: ReadonlyArray<ChartPoint>;
+  readonly ticks: Ticks;
+  readonly width: number;
+  readonly height: number;
+  /** The centre of point i's slot. Bars and line points share it, so they line up with the labels. */
+  readonly x: (index: number) => number;
+  readonly y: (value: number) => number;
+  readonly slot: number;
+};
+
+const PlotContext = createContext<Plot | null>(null);
+
+// Keeps points and lines on the top and bottom ticks from being cut in half by the SVG's edge.
+const PLOT_INSET = 6;
+const X_LABEL_WIDTH = 120;
+
+function usePlot(): Plot {
+  const plot = use(PlotContext);
+  if (!plot) throw new Error("Chart marks must be children of <Chart>");
+  return plot;
+}
+
+/**
+ * The frame every chart shares: value axis, x labels and the plot's scales.
+ * Marks such as ChartGrid, ChartLine and ChartBars go inside it. Axis labels
+ * are text views, so they follow Dynamic Type. VoiceOver reads the chart as
+ * one image with the caller's summary.
+ */
+export function Chart({
+  points,
+  accessibilityLabel,
+  includeZero = false,
+  formatValue = String,
+  children,
+}: {
+  readonly points: ReadonlyArray<ChartPoint>;
+  /** What the chart shows in words, such as "Bench press best set, rising from 80 to 92.5 kg". */
+  readonly accessibilityLabel: string;
+  /** Bars start at zero. A line can start near its lowest value. */
+  readonly includeZero?: boolean;
+  readonly formatValue?: (value: number) => string;
+  readonly children: ReactNode;
+}) {
+  const large = useIsAccessibilityTextSize();
+  const [width, setWidth] = useState(0);
+  const [labelHeight, setLabelHeight] = useState(0);
+  const height = large ? 240 : 160;
+  const plot = useMemo((): Plot => {
+    const ticks = niceTicks(
+      points.map((point) => point.value),
+      large ? 3 : 4,
+      { includeZero },
+    );
+    const slot = points.length > 0 ? width / points.length : 0;
+    return {
+      points,
+      ticks,
+      width,
+      height,
+      slot,
+      x: (index) => slot * (index + 0.5),
+      y: scaleLinear([ticks.min, ticks.max], [height - PLOT_INSET, PLOT_INSET]),
+    };
+  }, [points, includeZero, large, width, height]);
+  const labelWidth = Math.min(width, X_LABEL_WIDTH);
+
+  return (
+    <View accessible accessibilityRole="image" accessibilityLabel={accessibilityLabel}>
+      <View className="flex-row gap-2">
+        <View
+          className="flex-1 gap-1"
+          style={{ paddingTop: Math.max(0, labelHeight / 2 - PLOT_INSET) }}
+          onLayout={({ nativeEvent }) => setWidth(nativeEvent.layout.width)}
+        >
+          <View style={{ height }}>
+            {width > 0 ? (
+              <Svg width={width} height={height}>
+                <PlotContext value={plot}>{children}</PlotContext>
+              </Svg>
+            ) : null}
+          </View>
+          <View>
+            {/* Sets the row's height. The labels are centred on their points instead of
+                squeezed into one slot each, so "Sep" stays whole at large text sizes. */}
+            <AppText variant="caption1" style={{ opacity: 0 }}>
+              0
+            </AppText>
+            {points.map((point, index) => (
+              <AppText
+                key={point.key}
+                variant="caption1"
+                tone="secondary"
+                className="absolute top-0 text-center"
+                style={{
+                  width: labelWidth,
+                  left: Math.min(Math.max(0, plot.x(index) - labelWidth / 2), width - labelWidth),
+                }}
+              >
+                {point.label}
+              </AppText>
+            ))}
+          </View>
+        </View>
+        <View className="justify-between" style={{ height: height - 2 * PLOT_INSET + labelHeight }}>
+          {plot.ticks.values.toReversed().map((tick, index) => (
+            <AppText
+              key={tick}
+              variant="caption1"
+              tone="secondary"
+              numeric
+              onLayout={
+                index === 0
+                  ? ({ nativeEvent }) => setLabelHeight(nativeEvent.layout.height)
+                  : undefined
+              }
+            >
+              {formatValue(tick)}
+            </AppText>
+          ))}
+        </View>
+      </View>
+    </View>
+  );
+}
+
+/** A hairline at each value tick, solid at the bottom and dashed above it. */
+export function ChartGrid() {
+  const { ticks, width, y } = usePlot();
+  const color = useColor("separator");
+  return ticks.values.map((tick, index) => (
+    <Line
+      key={tick}
+      x1={0}
+      x2={width}
+      y1={y(tick)}
+      y2={y(tick)}
+      stroke={color}
+      strokeWidth={1}
+      strokeDasharray={index === 0 ? undefined : "3 3"}
+    />
+  ));
+}
+
+export function ChartLine({ color = "accent" }: { readonly color?: ColorToken }) {
+  const { points, x, y } = usePlot();
+  const stroke = useColor(color);
+  const surface = useColor("surface");
+  const path = points
+    .map((point, index) => `${index === 0 ? "M" : "L"}${x(index)},${y(point.value)}`)
+    .join(" ");
+  return (
+    <>
+      <Path
+        d={path}
+        stroke={stroke}
+        strokeWidth={3}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        fill="none"
+      />
+      {points.map((point, index) => (
+        <Circle
+          key={point.key}
+          cx={x(index)}
+          cy={y(point.value)}
+          r={4}
+          fill={surface}
+          stroke={stroke}
+          strokeWidth={2.5}
+        />
+      ))}
+    </>
+  );
+}
+
+export function ChartBars({ color = "accent" }: { readonly color?: ColorToken }) {
+  const { points, slot, ticks, x, y } = usePlot();
+  const fill = useColor(color);
+  const barWidth = slot * 0.6;
+  const base = y(Math.max(0, ticks.min));
+  return points.map((point, index) => {
+    const top = y(point.value);
+    return (
+      <Rect
+        key={point.key}
+        x={x(index) - barWidth / 2}
+        y={Math.min(top, base)}
+        width={barWidth}
+        height={Math.abs(base - top)}
+        rx={Math.min(6, barWidth / 4)}
+        fill={fill}
+      />
+    );
+  });
+}
