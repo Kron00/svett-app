@@ -1,6 +1,6 @@
 # Feature inventory: Hevy and Strava
 
-Source: 53 Hevy and 55 Strava screenshots from Julian's iPhone, taken 2026-11-13,
+Source: 53 Hevy and 55 Strava screenshots from the owner's iPhone, taken 2026-11-13,
 in `research/screenshots/`. Each item cites the screenshot it came from. Items
 marked *(inferred)* were partly visible or only named in a menu, and the screen
 behind them wasn't opened. The screenshots show one account's screens, not
@@ -407,7 +407,7 @@ up and what's still open.
    product problem, and none of it was captured.
 4. **A combined feed is the bet, but it's unproven.** Hevy says it posts
    workouts to your Strava feed (025). No screenshot shows what survives:
-   sets, reps, muscle data or heart rate. Julian's accounts aren't connected,
+   sets, reps, muscle data or heart rate. The owner's accounts aren't connected,
    and searching his Strava found no strength activities (Strava 051, 052; Hevy 052).
    The test means connecting Hevy to Strava and posting one workout, which
    would be visible publicly.
