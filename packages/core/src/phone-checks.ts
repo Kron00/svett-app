@@ -278,6 +278,26 @@ export function chatGPTOutcome(observation: ChatGPTObservation): SeenOutcome {
   }
 }
 
+/**
+ * Hides the checks while their saved results are forgotten, then always shows them
+ * again. Returns why forgetting failed, or undefined when it worked.
+ */
+export async function resetChecks(steps: {
+  readonly hide: () => void;
+  readonly forget: () => Promise<void>;
+  readonly show: () => void;
+}): Promise<string | undefined> {
+  steps.hide();
+  try {
+    await steps.forget();
+    return undefined;
+  } catch (error) {
+    return `Reset failed: ${error instanceof Error ? error.message : String(error)}`;
+  } finally {
+    steps.show();
+  }
+}
+
 /** Reads a count typed by the user, or undefined when it is not a whole number. */
 export function parseCount(text: string): number | undefined {
   const trimmed = text.trim();

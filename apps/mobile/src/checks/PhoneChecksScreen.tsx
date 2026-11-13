@@ -6,6 +6,7 @@ import {
   formatReport,
   mergeOutcomes,
   parseCount,
+  resetChecks,
   statusLabel,
 } from "@svett/core";
 import * as Application from "expo-application";
@@ -152,16 +153,29 @@ export function PhoneChecksScreen() {
   // A new key mounts the checks afresh after a reset, and null unmounts them while
   // their saved results are deleted, so none of them saves an old result back.
   const [generation, setGeneration] = useState<number | null>(0);
+  const [resetProblem, setResetProblem] = useState<string>();
   const reset = async () => {
     const next = (generation ?? 0) + 1;
-    setGeneration(null);
-    await forgetChecks();
-    setGeneration(next);
+    setResetProblem(
+      await resetChecks({
+        hide: () => setGeneration(null),
+        forget: forgetChecks,
+        show: () => setGeneration(next),
+      }),
+    );
   };
-  return generation === null ? null : <PhoneChecks key={generation} onReset={reset} />;
+  return generation === null ? null : (
+    <PhoneChecks key={generation} onReset={reset} resetProblem={resetProblem} />
+  );
 }
 
-function PhoneChecks({ onReset }: { readonly onReset: () => Promise<void> }) {
+function PhoneChecks({
+  onReset,
+  resetProblem,
+}: {
+  readonly onReset: () => Promise<void>;
+  readonly resetProblem: string | undefined;
+}) {
   const keychain = useKeychainCheck();
   const notification = useNotificationCheck();
   const location = useLocationCheck();
@@ -248,6 +262,9 @@ function PhoneChecks({ onReset }: { readonly onReset: () => Promise<void> }) {
       <View className="flex-row">
         <Button label="Reset checks" onPress={onReset} />
       </View>
+      {resetProblem === undefined ? null : (
+        <Text className="text-sm text-red-600">{resetProblem}</Text>
+      )}
       <Text selectable className="font-mono text-xs text-neutral-600 dark:text-neutral-400">
         {report(copiedAt ?? openedAt)}
       </Text>

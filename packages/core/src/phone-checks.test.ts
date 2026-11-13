@@ -20,6 +20,7 @@ import {
   mergeOutcomes,
   notificationOutcome,
   parseCount,
+  resetChecks,
   type WorkoutAccess,
 } from "./phone-checks.ts";
 
@@ -415,5 +416,29 @@ describe("saved outcomes across a restart", () => {
       decodeStoredOutcome(JSON.stringify({ outcome: { status: "not run" }, launchedAt: launchA })),
     ).toBeUndefined();
     expect(mergeOutcome(NOT_RUN, undefined, launchB)).toEqual(NOT_RUN);
+  });
+});
+
+const runReset = (forget: () => Promise<void>) => {
+  const seen: Array<string> = [];
+  const problem = resetChecks({
+    hide: () => seen.push("hide"),
+    forget,
+    show: () => seen.push("show"),
+  });
+  return { seen, problem };
+};
+
+describe("resetChecks", () => {
+  it("shows the checks again after forgetting their results", async () => {
+    const { seen, problem } = runReset(async () => {});
+    expect(await problem).toBeUndefined();
+    expect(seen).toEqual(["hide", "show"]);
+  });
+
+  it("shows the checks again with the reason when forgetting fails", async () => {
+    const { seen, problem } = runReset(() => Promise.reject(new Error("Keychain refused")));
+    expect(await problem).toBe("Reset failed: Keychain refused");
+    expect(seen).toEqual(["hide", "show"]);
   });
 });
