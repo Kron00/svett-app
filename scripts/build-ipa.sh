@@ -3,9 +3,9 @@
 #
 # Usage: scripts/build-ipa.sh
 #
-# The build number is the commit count, so HEAD must have full history. The
-# Release build is unsigned, then signed ad hoc with the entitlements file that
-# `expo prebuild` generates: AltStore re-signs with the entitlements it finds in
+# The build number is SVETT_BUILD_NUMBER when set, otherwise the commit count,
+# which needs the full history of HEAD. The Release build is unsigned, then
+# signed ad hoc with the entitlements file that `expo prebuild` generates: AltStore re-signs with the entitlements it finds in
 # the app, and an unsigned app carries none. Writes build/release/svett.ipa and,
 # for the AltStore source, the app's Info.plist and signed entitlements as XML.
 set -euo pipefail
@@ -16,8 +16,13 @@ out="$repo/build/release"
 derived_data="$repo/build/release-derived"
 app_name=svett.app
 
-build_number=$(git rev-list --count HEAD)
-echo "Build number $build_number"
+if [[ -n "${SVETT_BUILD_NUMBER:-}" ]]; then
+  build_number=$SVETT_BUILD_NUMBER
+  echo "Build number $build_number, from SVETT_BUILD_NUMBER"
+else
+  build_number=$(git rev-list --count HEAD)
+  echo "Build number $build_number, the commit count"
+fi
 
 SVETT_BUILD_NUMBER=$build_number scripts/ios-prebuild.sh
 (cd apps/mobile/ios && pod install)

@@ -10,8 +10,10 @@ permissions:
 
 concurrency:
   group: ci-${{ github.ref }}
-  # A newer push to a pull request replaces its checks. Runs on main finish, so no release is cut short.
+  # A newer push to a pull request replaces its checks. Runs on main all wait their
+  # turn, since the default queue of one pending run would skip a merge's release.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  queue: ${{ github.event_name == 'pull_request' && 'single' || 'max' }}
 
 jobs:
   check:
@@ -120,6 +122,7 @@ jobs:
     concurrency:
       group: release
       cancel-in-progress: false
+      queue: max
     env:
       DEVELOPER_DIR: /Applications/Xcode_27.2.app/Contents/Developer
     steps:
