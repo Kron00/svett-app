@@ -7,6 +7,7 @@ import { StatusBar } from "expo-status-bar";
 import { SymbolView } from "expo-symbols";
 import { useColorScheme } from "react-native";
 
+import { WorkoutCounts } from "./data/WorkoutCounts";
 import { PlaceholderScreen } from "./PlaceholderScreen";
 import { TABS } from "./tabs";
 
@@ -26,7 +27,11 @@ function TabNavigator() {
             ),
           }}
         >
-          {() => <PlaceholderScreen tab={tab} />}
+          {() => (
+            <PlaceholderScreen tab={tab}>
+              {tab.name === "Progress" ? <WorkoutCounts /> : null}
+            </PlaceholderScreen>
+          )}
         </Tabs.Screen>
       ))}
     </Tabs.Navigator>
