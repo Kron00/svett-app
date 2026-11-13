@@ -408,7 +408,7 @@ up and what's still open.
 4. **A combined feed is the bet, but it's unproven.** Hevy says it posts
    workouts to your Strava feed (025). No screenshot shows what survives:
    sets, reps, muscle data or heart rate. The owner's accounts aren't connected,
-   and searching his Strava found no strength activities (Strava 051, 052; Hevy 052).
+   and searching their Strava found no strength activities (Strava 051, 052; Hevy 052).
    The test means connecting Hevy to Strava and posting one workout, which
    would be visible publicly.
 5. **Shared basics to build once:** a feed with likes, comments and share
