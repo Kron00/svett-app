@@ -11,6 +11,7 @@ export const DeliveryState = Schema.Union([
   Schema.Struct({
     status: Schema.Literal("sending"),
     since: EpochMs,
+    sendId: Schema.String,
     attempt: Attempt,
     resend: Schema.Boolean,
   }),
@@ -83,37 +84,44 @@ export const enqueue = (
     }
   });
 
+/** `sendId` is a fresh random ID per send, so a late reply from an abandoned send is ignored. */
 export const markSending = (
   ledger: Ledger,
   destination: Destination,
   activityId: string,
+  sendId: string,
   now: number,
 ): Ledger =>
   update(ledger, destination, activityId, (state) => {
     switch (state?.status) {
       case "pending":
-        return { status: "sending", since: now, attempt: 1, resend: false };
+        return { status: "sending", since: now, sendId, attempt: 1, resend: false };
       case "failed":
-        return { status: "sending", since: now, attempt: state.attempts + 1, resend: false };
+        return {
+          status: "sending",
+          since: now,
+          sendId,
+          attempt: state.attempts + 1,
+          resend: false,
+        };
       case "sending":
         return state.since + STALE_SEND_MS <= now
-          ? { status: "sending", since: now, attempt: state.attempt + 1, resend: false }
+          ? { status: "sending", since: now, sendId, attempt: state.attempt + 1, resend: false }
           : state;
       default:
         return state;
     }
   });
 
-/** `attempt` is the one `markSending` started, so a late reply from an abandoned attempt is ignored. */
 export const markSent = (
   ledger: Ledger,
   destination: Destination,
   activityId: string,
-  attempt: number,
+  sendId: string,
   now: number,
 ): Ledger =>
   update(ledger, destination, activityId, (state) =>
-    state?.status !== "sending" || state.attempt !== attempt
+    state?.status !== "sending" || state.sendId !== sendId
       ? state
       : state.resend
         ? { status: "pending", since: now }
@@ -124,12 +132,12 @@ export const markFailed = (
   ledger: Ledger,
   destination: Destination,
   activityId: string,
-  attempt: number,
+  sendId: string,
   now: number,
   error: string,
 ): Ledger =>
   update(ledger, destination, activityId, (state) =>
-    state?.status !== "sending" || state.attempt !== attempt
+    state?.status !== "sending" || state.sendId !== sendId
       ? state
       : {
           status: "failed",

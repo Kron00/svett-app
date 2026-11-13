@@ -18,22 +18,25 @@ import {
 
 const MINUTE = 60_000;
 const stateOf = (ledger: Ledger, id = "a1") => deliveryOf(ledger, "apple-health", id)?.state;
+const sendAs = (ledger: Ledger, sendId: string, now: number) =>
+  markSending(ledger, "apple-health", "a1", sendId, now);
+let sends = 0;
 const send = (ledger: Ledger, now: number, id = "a1") =>
-  markSending(ledger, "apple-health", id, now);
-const attemptOf = (ledger: Ledger, destination: Destination, id: string): number => {
+  markSending(ledger, "apple-health", id, `send-${++sends}`, now);
+const sendIdOf = (ledger: Ledger, destination: Destination, id: string): string => {
   const state = deliveryOf(ledger, destination, id)?.state;
-  return state?.status === "sending" ? state.attempt : 0;
+  return state?.status === "sending" ? state.sendId : "none";
 };
 const confirm = (
   ledger: Ledger,
   now: number,
   id = "a1",
   destination: Destination = "apple-health",
-) => markSent(ledger, destination, id, attemptOf(ledger, destination, id), now);
+) => markSent(ledger, destination, id, sendIdOf(ledger, destination, id), now);
 const fail = (ledger: Ledger, now: number, id = "a1") => {
   const sending = send(ledger, now, id);
-  const attempt = attemptOf(sending, "apple-health", id);
-  return markFailed(sending, "apple-health", id, attempt, now, "HealthKit write denied");
+  const sendId = sendIdOf(sending, "apple-health", id);
+  return markFailed(sending, "apple-health", id, sendId, now, "HealthKit write denied");
 };
 
 describe("delivery ledger", () => {
@@ -44,7 +47,7 @@ describe("delivery ledger", () => {
     const sent = confirm(send(queued, 1), 2);
     expect(stateOf(sent)).toEqual({ status: "sent", at: 2 });
     expect(dueDeliveries(sent, 10 * MINUTE)).toEqual([]);
-    expect(markSent(sent, "apple-health", "a1", 1, 3)).toBe(sent);
+    expect(confirm(sent, 3)).toBe(sent);
   });
 
   it("keeps a failure visible with its reason and backs off before the next try", () => {
@@ -86,7 +89,7 @@ describe("delivery ledger", () => {
   });
 
   it("sends an edit made during a send again instead of losing it", () => {
-    const sending = markSending(enqueue(emptyLedger, "server", "a1", 0), "server", "a1", 1);
+    const sending = markSending(enqueue(emptyLedger, "server", "a1", 0), "server", "a1", "s1", 1);
     const edited = enqueue(sending, "server", "a1", 2);
     const confirmed = confirm(edited, 3, "a1", "server");
     expect(deliveryOf(confirmed, "server", "a1")?.state).toEqual({ status: "pending", since: 3 });
@@ -100,13 +103,15 @@ describe("delivery ledger", () => {
   });
 
   it("ignores a late reply from a send that was abandoned as stale", () => {
-    const first = send(enqueue(emptyLedger, "apple-health", "a1", 0), 0);
-    const second = send(first, 2 * MINUTE);
-    expect(markSent(second, "apple-health", "a1", 1, 3 * MINUTE)).toBe(second);
-    expect(markFailed(second, "apple-health", "a1", 1, 3 * MINUTE, "timeout")).toBe(second);
-    expect(stateOf(markSent(second, "apple-health", "a1", 2, 3 * MINUTE))).toEqual({
+    const stale = sendAs(enqueue(emptyLedger, "apple-health", "a1", 0), "first", 0);
+    const resent = sendAs(stale, "second", 2 * MINUTE);
+    const sent = markSent(resent, "apple-health", "a1", "second", 3 * MINUTE);
+    const edited = sendAs(enqueue(sent, "apple-health", "a1", 4 * MINUTE), "third", 4 * MINUTE);
+    expect(markSent(edited, "apple-health", "a1", "first", 5 * MINUTE)).toBe(edited);
+    expect(markFailed(edited, "apple-health", "a1", "first", 5 * MINUTE, "timeout")).toBe(edited);
+    expect(stateOf(markSent(edited, "apple-health", "a1", "third", 5 * MINUTE))).toEqual({
       status: "sent",
-      at: 3 * MINUTE,
+      at: 5 * MINUTE,
     });
   });
 
