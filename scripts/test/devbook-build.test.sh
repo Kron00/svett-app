@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Runs scripts/devbook-build.sh and the sim/ scripts on Linux against fake
 # Xcode, CocoaPods, pnpm, Expo and agent-device tools. It checks which native
-# build steps run, which native inputs the installed app was built from, and
-# that the T3 Code bound device command replaces simctl launch and openurl.
+# build steps run, which native inputs the installed app was built from, which
+# simulator it lands on, where fnm and CocoaPods are found, and that the T3 Code
+# bound device command replaces simctl launch and openurl.
 #
 # Usage: scripts/test/devbook-build.test.sh
 set -euo pipefail
@@ -61,7 +62,10 @@ cat >"$fake/xcrun" <<EOF
 #!/usr/bin/env bash
 echo "\$*" >>"$root/simctl-calls"
 case "\$2" in
-  list) printf -- '-- iOS 27.2 --\n    svett iPhone 16 Pro Max (FAKE-UDID) (Booted)\n' ;;
+  list) printf -- '%s\n' \
+    '-- iOS 27.0 --' '    iPhone 16 Pro Max (STOCK-UDID) (Shutdown)' \
+    '-- iOS 26.0 --' '    svett iPhone 16 Pro Max (OLD-UDID) (Shutdown)' \
+    '-- iOS 27.2 --' '    svett iPhone 16 Pro Max (FAKE-UDID) (Booted)' ;;
   install) cat "\$4/built-from" >"$root/installed" ;;
 esac
 EOF
@@ -84,6 +88,12 @@ echo "\$*" >>"$root/bound-calls"
 EOF
 
 printf '#!/usr/bin/env bash\n' >"$fake/fnm"
+# Stand-ins for fnm and CocoaPods in their install folders, outside PATH.
+fnm_home="$root/home/.local/share/fnm"
+mise_ruby="$root/home/.local/share/mise/installs/ruby"
+mkdir -p "$fnm_home" "$mise_ruby/3.3.6/bin" "$mise_ruby/3.10.0/bin"
+printf '#!/usr/bin/env bash\necho "$*" >>"%s"\n' "$root/home-fnm-calls" >"$fnm_home/fnm"
+chmod +x "$fnm_home/fnm"
 printf '#!/usr/bin/env bash\necho packager-status:running\n' >"$fake/curl"
 chmod +x "$fake"/* "$pod_bin"/*
 
@@ -152,32 +162,32 @@ fail() {
 check() {
   case_name=$1
   shift
-  "$@"
+  "$@" || fail "$* failed"
   passed=$((passed + 1))
   echo "ok $passed - $case_name"
 }
 
-metro="metro.invalid:8081"
+metro="SVETT_METRO=metro.invalid:8081"
 skipped="skipped, the fingerprint matches $root/home/svett-app-build/Debug/DerivedData/Build/Products/Debug-iphonesimulator/svett.app"
 xcodebuild_only="xcodebuild only, the iOS project matches the fingerprint"
 full="full (prebuild, pod install, xcodebuild)"
 
 check "first Release build runs the full native build" build "$full" native-a --release a
 check "unchanged Release rebuild reuses the iOS project" build "$xcodebuild_only" native-a --release a
-check "Debug after Release with the same inputs reuses the iOS project" build "$xcodebuild_only" native-a a "$metro"
-check "unchanged Debug rebuild skips the native build" build "$skipped" native-a a "$metro"
-check "switching to a branch with other native inputs regenerates the iOS project" build "$full" native-b b "$metro"
+check "Debug after Release with the same inputs reuses the iOS project" build "$xcodebuild_only" native-a "$metro" a
+check "unchanged Debug rebuild skips the native build" build "$skipped" native-a "$metro" a
+check "switching to a branch with other native inputs regenerates the iOS project" build "$full" native-b "$metro" b
 check "Release after a Debug build of other inputs regenerates the iOS project" build "$full" native-a --release a
-check "Debug after a Release build of other inputs reuses its own app" build "$skipped" native-b b "$metro"
+check "Debug after a Release build of other inputs reuses its own app" build "$skipped" native-b "$metro" b
 
 git_ -C "$work" checkout -q a
 echo native-a2 >"$work/apps/mobile/native-inputs"
 git_ -C "$work" commit -q -am "change a's native inputs"
 git_ -C "$work" push -q "$root/origin.git" a
-check "changed native inputs regenerate the iOS project" build "$full" native-a2 a "$metro"
+check "changed native inputs regenerate the iOS project" build "$full" native-a2 "$metro" a
 
-check "interrupted xcodebuild fails" build_fails "fake xcodebuild failed" FAKE_XCODEBUILD_FAIL=1 --native a "$metro"
-check "Debug after an interrupted xcodebuild rebuilds the app on the same iOS project" build "$xcodebuild_only" native-a2 a "$metro"
+check "interrupted xcodebuild fails" build_fails "fake xcodebuild failed" FAKE_XCODEBUILD_FAIL=1 "$metro" --native a
+check "Debug after an interrupted xcodebuild rebuilds the app on the same iOS project" build "$xcodebuild_only" native-a2 "$metro" a
 
 check "interrupted pod install fails" build_fails "fake pod install failed" FAKE_POD_FAIL=1 --release b
 check "Release after an interrupted pod install regenerates the iOS project" build "$full" native-b --release b
@@ -191,6 +201,25 @@ check "a failed Simulator open continues headless" grep -qxF "Simulator did not 
 case_name="no pod outside the fakes"
 ! PATH="$fake:$PATH" command -v pod >/dev/null || fail "pod is on PATH"
 check "a full build without CocoaPods stops early" build_fails "CocoaPods (pod) is not on PATH" PATH="$fake:$PATH" --release a
+
+cp "$pod_bin/pod" "$mise_ruby/3.10.0/bin/pod"
+printf '#!/usr/bin/env bash\necho "pod from the older Ruby ran" >&2\nexit 1\n' >"$mise_ruby/3.3.6/bin/pod"
+chmod +x "$mise_ruby"/*/bin/pod
+check "CocoaPods off PATH is found in the newest mise Ruby" build "$full" native-a2 PATH="$fake:$PATH" --release --native a
+
+# PATH without fnm, so only the copy in fnm's install folder can be found.
+bare="$root/bare-bin"
+mkdir -p "$bare"
+for tool in "$fake"/*; do
+  [[ "${tool##*/}" == fnm ]] || ln -s "$tool" "$bare/"
+done
+ln -s "$(command -v node)" "$bare/node"
+case_name="fnm off PATH"
+rm -f "$root/home-fnm-calls"
+run_build PATH="$bare:$pod_bin:/usr/bin:/bin" --release a || fail "devbook-build.sh failed without fnm on PATH"
+check "fnm off PATH is found in its install folder" grep -qxF "use --install-if-missing" "$root/home-fnm-calls"
+
+check "a Metro address after the branch is refused" build_fails "Usage:" b metro.invalid:8081
 
 bound_cmd="bound-device --session 't3-test session' --device FAKE-UDID"
 bound_prefix="--session t3-test session --device FAKE-UDID"
@@ -221,9 +250,19 @@ simctl_got() {
 
 release_app="$root/home/svett-app-build/Release/DerivedData/Build/Products/Release-iphonesimulator/svett.app"
 
+# only_svett_ios27 checks no simctl call touched the stock or the iOS 26 simulator.
+only_svett_ios27() {
+  if grep -E 'STOCK-UDID|OLD-UDID' "$root/simctl-calls" >>"$output"; then
+    fail "simctl targeted a simulator other than the iOS 27 svett iPhone 16 Pro Max"
+  fi
+}
+
 case_name="Release without SVETT_DEVICE_CMD"
 routed --release b
 check "Release without SVETT_DEVICE_CMD launches with simctl" simctl_got "simctl launch FAKE-UDID com.kron00.svett"
+check "the iOS 27 svett simulator gets the install, not the stock or iOS 26 one" \
+  simctl_got "simctl install FAKE-UDID $release_app"
+check "no simctl call targets the stock or iOS 26 simulator" only_svett_ios27
 
 case_name="Release with SVETT_DEVICE_CMD"
 routed SVETT_DEVICE_CMD="$bound_cmd" --release b
@@ -233,12 +272,12 @@ check "Release with SVETT_DEVICE_CMD relaunches through the bound command" \
 check "Release with SVETT_DEVICE_CMD still installs with simctl" simctl_got "simctl install FAKE-UDID $release_app"
 
 case_name="Debug without SVETT_DEVICE_CMD"
-routed b "$metro"
+routed "$metro" b
 check "Debug without SVETT_DEVICE_CMD opens the dev client with simctl openurl" \
   simctl_got "simctl openurl FAKE-UDID $dev_client_url"
 
 case_name="Debug with SVETT_DEVICE_CMD"
-routed SVETT_DEVICE_CMD="$bound_cmd" b "$metro"
+routed SVETT_DEVICE_CMD="$bound_cmd" "$metro" b
 check "Debug with SVETT_DEVICE_CMD calls neither simctl launch nor openurl" no_simctl_launch_or_openurl
 check "Debug with SVETT_DEVICE_CMD opens the dev client URL through the bound command" \
   bound_got "$bound_prefix open com.kron00.svett --relaunch --launch-url $dev_client_url"
@@ -276,6 +315,14 @@ case_name="launch.sh Debug with SVETT_DEVICE_CMD"
 sim_script launch.sh -svettFixture "$root/fixture one.json"
 check "launch.sh Debug relaunches into the dev client with the launch arguments" only_open \
   "com.kron00.svett --relaunch --launch-url $local_dev_client_url --launch-args=-svettFixture --launch-args=$root/fixture one.json"
+
+case_name="tabs.sh and launch.sh with SVETT_METRO"
+SVETT_METRO=metro.invalid:8081 sim_script tabs.sh "$root/proof-metro"
+check "tabs.sh Debug opens the dev client on SVETT_METRO" \
+  only_open "com.kron00.svett --relaunch --launch-url $dev_client_url"
+SVETT_METRO=metro.invalid:8081 sim_script launch.sh
+check "launch.sh Debug opens the dev client on SVETT_METRO" \
+  only_open "com.kron00.svett --relaunch --launch-url $dev_client_url"
 
 case_name="launch.sh with SVETT_DEVICE_CMD"
 rm -f "$root/simctl-calls" "$root/bound-calls"

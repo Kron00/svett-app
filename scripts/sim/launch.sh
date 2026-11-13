@@ -5,7 +5,7 @@
 #
 # Usage: scripts/sim/launch.sh [--release] [app-argument...]
 #
-# Debug opens the development client on Metro at localhost:8081. --release opens
+# Debug opens the development client on Metro at SVETT_METRO. --release opens
 # the installed Release build with no development server. Like tabs.sh, it uses
 # SVETT_DEVICE_CMD when set and its own agent-device session otherwise. It leaves
 # the app running.
@@ -39,7 +39,7 @@ fi
 open_flags=(--relaunch)
 # Opening by bundle id alone shows the development client's launcher, and
 # agent-device's own Expo detection falls back to that when it is inconclusive.
-[[ "$release" == true ]] || open_flags+=(--launch-url "$(dev_client_url http://localhost:8081)")
+[[ "$release" == true ]] || open_flags+=(--launch-url "$(dev_client_url "http://$metro")")
 # The = form keeps agent-device from reading an argument such as -svettFixture as a flag.
 for argument in "$@"; do
   open_flags+=("--launch-args=$argument")
