@@ -112,20 +112,23 @@ export type Patch<A> = Partial<Omit<A, "id" | "updatedAt" | "deletedAt">>;
 
 /** Reads the row, applies the patch, and writes it back only if the result is a valid row. */
 export const updateRow = <A extends RowBase>(target: Table<A>, id: string, patch: Patch<A>) =>
-  Effect.gen(function* () {
-    const sql = yield* Sql;
-    const current = yield* selectById(target, id);
-    if (Option.isNone(current)) {
-      return yield* new RowNotFoundError({ table: target.name, id });
-    }
-    const next = { ...current.value, ...patch, updatedAt: yield* currentTime } as A;
-    const values = yield* encode(target, next);
-    yield* sql.run(
-      `UPDATE ${target.name} SET ${target.keys.map((key) => `${columnOf(key)} = ?`).join(", ")} WHERE id = ?`,
-      [...values, id],
-    );
-    return next;
-  });
+  Effect.flatMap(Effect.service(Sql), (sql) =>
+    sql.transaction(
+      Effect.gen(function* () {
+        const current = yield* selectById(target, id);
+        if (Option.isNone(current)) {
+          return yield* new RowNotFoundError({ table: target.name, id });
+        }
+        const next = { ...current.value, ...patch, updatedAt: yield* currentTime } as A;
+        const values = yield* encode(target, next);
+        yield* sql.run(
+          `UPDATE ${target.name} SET ${target.keys.map((key) => `${columnOf(key)} = ?`).join(", ")} WHERE id = ?`,
+          [...values, id],
+        );
+        return next;
+      }),
+    ),
+  );
 
 /** Marks matching live rows deleted at `at`. Returns how many rows it changed. */
 export const softDeleteRows = (

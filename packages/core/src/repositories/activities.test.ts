@@ -111,11 +111,48 @@ describe("ActivityRepository", () => {
           });
         }
         const page = yield* activities.list({ limit: 2 });
-        const next = yield* activities.list({ limit: 2, before: page.at(-1)!.startedAt });
+        const next = yield* activities.list({ limit: 2, before: page.at(-1)! });
         return [page, next].map((rows) => rows.map((row) => row.title));
       }),
     );
     expect(titles).toEqual([["Day 3", "Day 2"], ["Day 1"]]);
+  });
+
+  it("pages through workouts that start at the same moment without skipping any", async () => {
+    const database = openTestDatabase();
+    const pages = await run(database, (activities) =>
+      Effect.gen(function* () {
+        for (const title of ["A", "B", "C"]) {
+          yield* activities.create({ ...workout(), title });
+        }
+        const page = yield* activities.list({ limit: 2 });
+        const next = yield* activities.list({ limit: 2, before: page.at(-1)! });
+        return [page, next].map((rows) => rows.length);
+      }),
+    );
+    expect(pages).toEqual([2, 1]);
+  });
+
+  it("keeps both of two concurrent edits, and a concurrent delete stays deleted", async () => {
+    const database = openTestDatabase();
+    const id = await run(database, (activities) => activities.create(workout()));
+    await run(database, (activities) =>
+      Effect.all(
+        [activities.update(id, { title: "Push" }), activities.update(id, { notes: "PR" })],
+        {
+          concurrency: "unbounded",
+        },
+      ),
+    );
+    const edited = Option.getOrThrow(await run(database, (activities) => activities.get(id)));
+    expect(edited.activity).toMatchObject({ title: "Push", notes: "PR" });
+
+    await run(database, (activities) =>
+      Effect.all([Effect.exit(activities.update(id, { title: "Pull" })), activities.remove(id)], {
+        concurrency: "unbounded",
+      }),
+    );
+    expect(await run(database, (activities) => activities.get(id))).toEqual(Option.none());
   });
 
   it("refuses a set that records nothing and writes none of the activity", async () => {

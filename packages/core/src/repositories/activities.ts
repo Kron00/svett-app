@@ -156,13 +156,22 @@ const makeActivityRepository = Effect.gen(function* () {
       }),
     );
 
-  const list = (options: { readonly limit?: number; readonly before?: EpochMillis } = {}) =>
+  const list = (
+    options: {
+      readonly limit?: number;
+      readonly before?: Pick<Activity, "startedAt" | "id">;
+    } = {},
+  ) =>
     run(
       selectRows(
         TABLES.activity,
-        "started_at < ?",
-        [options.before ?? Number.MAX_SAFE_INTEGER, options.limit ?? 50],
-        "started_at DESC, id LIMIT ?",
+        "(started_at, id) < (?, ?)",
+        [
+          options.before?.startedAt ?? Number.MAX_SAFE_INTEGER,
+          options.before?.id ?? "",
+          options.limit ?? 50,
+        ],
+        "started_at DESC, id DESC LIMIT ?",
       ),
     );
 
