@@ -28,20 +28,21 @@ describe("uuidV5", () => {
 
 describe("importedId", () => {
   it("gives the same workout the same ID on every device", () => {
-    expect(importedId("hevy", "2025-03-01T08:15:00Z")).toBe(
-      importedId("hevy", "2025-03-01T08:15:00Z"),
+    expect(importedId("activity", "hevy", "2025-03-01T08:15:00Z")).toBe(
+      importedId("activity", "hevy", "2025-03-01T08:15:00Z"),
     );
-    expect(importedId("hevy", "2025-03-01T08:15:00Z")).toMatch(/^[0-9a-f-]{14}5/);
+    expect(importedId("activity", "hevy", "2025-03-01T08:15:00Z")).toMatch(/^[0-9a-f-]{14}5/);
   });
 
-  it("separates sources and identities", () => {
+  it("separates tables, sources and identities", () => {
     const ids = new Set([
-      importedId("hevy", "2025-03-01T08:15:00Z"),
-      importedId("apple_health", "2025-03-01T08:15:00Z"),
-      importedId("hevy", "2025-03-01T08:15:00Z#2"),
-      importedId("hevy:2025", "03-01T08:15:00Z"),
+      importedId("activity", "hevy", "2025-03-01T08:15:00Z"),
+      importedId("measurement", "hevy", "2025-03-01T08:15:00Z"),
+      importedId("activity", "apple_health", "2025-03-01T08:15:00Z"),
+      importedId("activity", "hevy", "2025-03-01T08:15:00Z#2"),
+      importedId("activity", "hevy:2025", "03-01T08:15:00Z"),
     ]);
-    expect(ids.size).toBe(4);
+    expect(ids.size).toBe(5);
   });
 });
 

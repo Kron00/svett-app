@@ -9,6 +9,7 @@ import {
   type Muscle,
   SourceIdentity,
 } from "./schema.ts";
+import { TABLES } from "./table.ts";
 
 const LibraryMuscle = Schema.Literals([
   "abdominals",
@@ -129,7 +130,7 @@ export interface LibraryExercise {
 
 /** The same library exercise has the same ID on every device. */
 export const libraryExerciseId = (libraryId: string): ExerciseId =>
-  ExerciseId.make(importedId("library", libraryId));
+  ExerciseId.make(importedId(TABLES.exercise.name, "library", libraryId));
 
 const unique = <A>(values: ReadonlyArray<A>): ReadonlyArray<A> => [...new Set(values)];
 

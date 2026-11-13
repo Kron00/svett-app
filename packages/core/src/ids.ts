@@ -55,10 +55,11 @@ const SVETT_NAMESPACE = "bed1957d-954d-4423-b6c5-ab7fa1d32366";
 
 /**
  * The ID of a row that came from outside, such as a Hevy workout or a library exercise.
- * Two devices that import the same thing compute the same ID, so sync sees one row.
+ * Two devices that import the same thing into the same table compute the same ID, so sync
+ * sees one row.
  */
-export const importedId = (source: string, identity: string): Uuid =>
-  uuidV5(SVETT_NAMESPACE, JSON.stringify([source, identity]));
+export const importedId = (table: string, source: string, identity: string): Uuid =>
+  uuidV5(SVETT_NAMESPACE, JSON.stringify([table, source, identity]));
 
 /** A stable fingerprint of a row's content, used to tell a changed import from an unchanged one. */
 export const contentFingerprint = (content: unknown): string =>

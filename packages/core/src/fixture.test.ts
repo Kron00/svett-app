@@ -10,7 +10,7 @@ describe("buildFixture", () => {
     expect(second).toEqual(first);
     expect(first).toMatchInlineSnapshot(`
       {
-        "checksum": "9b46552aea5d4eb65318e936d6833856df7734f4ce48b13e467c15eb28718d39",
+        "checksum": "6076eb64e6a2410654c677de0ab6037d4147550be0bac2f3ce3e5591543ac316",
         "exercises": 876,
         "measurements": 155,
         "routines": 3,
