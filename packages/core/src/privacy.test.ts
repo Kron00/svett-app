@@ -34,7 +34,9 @@ describe("trimRoute", () => {
   it("trims both ends of an out-and-back from home", () => {
     const out = Array.from({ length: 34 }, (_, i) => point(i * 10, i * 30));
     const back = Array.from({ length: 33 }, (_, i) => point(340 + i * 10, 960 - i * 30));
-    const trimmed = trimRoute([...out, ...back]);
+    const stretches = trimRoute([...out, ...back]);
+    expect(stretches).toHaveLength(1);
+    const trimmed = stretches.flat();
     expect(north(trimmed[0])).toBeCloseTo(210, 6);
     expect(north(trimmed.at(-1))).toBeCloseTo(210, 6);
     expect(trimmed).toHaveLength(27 + 26);
@@ -44,7 +46,7 @@ describe("trimRoute", () => {
   it("starts at least hideMeters from home when the route winds around it first", () => {
     const loop = [point(0, 0), point(30, 0, 75), point(60, 75, 75), point(90, 75), point(120, 0)];
     const out = Array.from({ length: 20 }, (_, i) => point(150 + i * 15, 55 + i * 50));
-    const trimmed = trimRoute([...loop, ...out, point(450, 1030)]);
+    const trimmed = trimRoute([...loop, ...out, point(450, 1030)]).flat();
     expect(north(trimmed[0])).toBeCloseTo(205, 6);
     expect(trimmed.every((p) => distanceMeters(home, p) >= 200)).toBe(true);
     expect(north(trimmed.at(-1))).toBeCloseTo(805, 6);
@@ -52,11 +54,20 @@ describe("trimRoute", () => {
 
   it.each([100, 500])("honours a hide distance of %d m", (hideMeters) => {
     const line = Array.from({ length: 67 }, (_, i) => point(i, i * 30));
-    const trimmed = trimRoute(line, hideMeters);
+    const trimmed = trimRoute(line, hideMeters).flat();
     expect(north(trimmed[0])).toBeGreaterThanOrEqual(hideMeters);
     expect(north(trimmed[0])).toBeLessThan(hideMeters + 30);
     expect(north(trimmed.at(-1))).toBeLessThanOrEqual(1980 - hideMeters);
     expect(north(trimmed.at(-1))).toBeGreaterThan(1980 - hideMeters - 30);
+  });
+
+  it("hides a pass by home in the middle of the route and splits the line there", () => {
+    const up = Array.from({ length: 21 }, (_, i) => point(i * 10, i * 50));
+    const through = Array.from({ length: 41 }, (_, i) => point(210 + i * 10, 1000 - i * 50));
+    const back = Array.from({ length: 20 }, (_, i) => point(620 + i * 10, -950 + i * 50));
+    const stretches = trimRoute([...up, ...through, ...back]);
+    expect(stretches.map((stretch) => Math.sign(north(stretch[0])))).toEqual([1, -1]);
+    expect(stretches.flat().every((p) => distanceMeters(home, p) >= 200)).toBe(true);
   });
 
   it.each([

@@ -50,20 +50,28 @@ export const cleanTrack = (
     return seconds > 0 && distanceMeters(from, to) / seconds <= MAX_SPEED_MPS[kind];
   };
   const kept: Array<TrackPoint> = [];
-  let rejected: TrackPoint | undefined;
+  let rejected: Array<TrackPoint> = [];
   for (const point of points) {
     if ((point.accuracyMeters ?? 0) > MAX_ACCURACY_METERS) continue;
     const last = kept.at(-1);
     if (last !== undefined && last.at >= point.at) continue;
-    if (last === undefined || plausible(last, point)) {
+    if (last !== undefined && distanceMeters(last, point) <= (point.accuracyMeters ?? 0)) {
+      // Inside its own error circle: standing still, so keep the time but not the jitter.
+      kept.push({ ...last, at: point.at });
+      rejected = [];
+    } else if (last === undefined || plausible(last, point)) {
       kept.push(point);
-      rejected = undefined;
-    } else if (kept.length === 1 && rejected !== undefined && plausible(rejected, point)) {
-      // Two fixes that agree with each other outvote a stale first fix they jumped from.
-      kept.splice(0, 1, rejected, point);
-      rejected = undefined;
+      rejected = [];
     } else {
-      rejected = point;
+      const previous = rejected.at(-1);
+      rejected =
+        previous !== undefined && plausible(previous, point) ? [...rejected, point] : [point];
+      // A longer run of fixes that agree with each other outvotes what came before, such as
+      // stale cached fixes at the start of a recording.
+      if (rejected.length > kept.length) {
+        kept.splice(0, kept.length, ...rejected);
+        rejected = [];
+      }
     }
   }
   return kept;

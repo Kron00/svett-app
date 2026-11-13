@@ -90,6 +90,29 @@ describe("cleanTrack", () => {
     expect(trackDistanceMeters(cleanTrack(track, "run"))).toBeCloseTo(18, 6);
   });
 
+  it("drops two stale cached fixes 3 km away at the start of a run", () => {
+    const stale = [point(0, 3000), point(1, 3000)];
+    const run = Array.from({ length: 601 }, (_, i) => point(2 + i, i * 3));
+    expect(trackDistanceMeters(cleanTrack([...stale, ...run], "run"))).toBeCloseTo(1800, 6);
+  });
+
+  it("counts a phone standing still with 5 m jitter as no distance and no moving time", () => {
+    const jitter = Array.from({ length: 121 }, (_, i) =>
+      point(i * 5, i % 2 === 0 ? 0 : 5, { accuracyMeters: 5 }),
+    );
+    const cleaned = cleanTrack(jitter, "run");
+    expect(trackDistanceMeters(cleaned)).toBe(0);
+    expect(movingSeconds(cleaned)).toBe(0);
+    expect(elapsedSeconds(cleaned)).toBe(600);
+  });
+
+  it("still measures a slow walk whose steps are smaller than the GPS error", () => {
+    const walk = Array.from({ length: 121 }, (_, i) => point(i, i * 1.5, { accuracyMeters: 5 }));
+    const meters = trackDistanceMeters(cleanTrack(walk, "walk"));
+    expect(meters).toBeGreaterThan(180 - 5);
+    expect(meters).toBeLessThan(180 + 1e-6);
+  });
+
   it("keeps the first good point even when every later point is implausible", () => {
     expect(cleanTrack([point(0, 0), point(1, 1000), point(2, 2000)], "walk")).toEqual([
       point(0, 0),
