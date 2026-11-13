@@ -3,7 +3,10 @@ node_modules/
 dist/
 build/
 .expo/
-ios/build/
+apps/mobile/ios/
+apps/mobile/android/
+metro.log
+.metro.pid
 *.ipa
 .env
 .env.*

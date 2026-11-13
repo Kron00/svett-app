@@ -1,0 +1,22 @@
+{
+  "name": "svett",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "lint": "vp lint --report-unused-disable-directives",
+    "fmt": "vp fmt",
+    "fmt:check": "vp fmt --check",
+    "typecheck": "vp run -r typecheck",
+    "test": "vp run -r test",
+    "icon": "node scripts/render-app-icon.ts"
+  },
+  "devDependencies": {
+    "@effect/tsgo": "0.67.1",
+    "@types/node": "catalog:",
+    "vite-plus": "catalog:"
+  },
+  "engines": {
+    "node": "26.12.1"
+  },
+  "packageManager": "pnpm@12.14.0"
+}

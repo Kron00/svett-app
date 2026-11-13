@@ -6,11 +6,11 @@ svett is an iPhone app for lifting and cardio. It has one feed for every kind of
 
 ## Machines
 
-| Machine | Job |
-| --- | --- |
-| rena-devbox (Linux) | Main working copy. Agents, package installs, type checks, lint, unit tests, the Metro dev server, and the phase 6 server. |
-| rena-devbook (Mac) | Native iOS builds and the iPhone 16 Pro Max simulator. The simulator loads TypeScript from Metro on rena-devbox over Tailscale. |
-| rena (Mac laptop) | Real-phone work through iPhone Mirroring, only when a task needs the phone. |
+| Machine               | Job                                                                                                                                       |
+| --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| rena-devbox (Linux)   | Main working copy. Agents, package installs, type checks, lint, unit tests, and the phase 6 server.                                       |
+| rena-devbook (Mac)    | Native iOS builds, the Metro dev server for the simulator, and the iPhone 16 Pro Max simulator.                                           |
+| rena (Mac laptop)     | Real-phone work through iPhone Mirroring, only when a task needs the phone.                                                               |
 | GitHub hosted runners | Lint, type checks, tests, an iOS compile check, and the release job after each merge. Never add a self-hosted runner: the repo is public. |
 
 ## Rules
@@ -19,3 +19,64 @@ svett is an iPhone app for lifting and cardio. It has one feed for every kind of
 - Phone sessions are read-only unless the task says otherwise. Do not sign in or out, buy, start trials, post, like, follow, comment, or save or delete any workout or activity.
 - Never commit `research/screenshots/`, real names, email addresses, IP addresses, user names, tokens or a real Hevy export.
 - `research/features.md` is the Hevy and Strava feature inventory the plan is based on.
+
+## Develop
+
+Node and pnpm versions are pinned in `.node-version` and `packageManager`. On rena-devbox, Node 26 comes from fnm. Put it on the path with `eval "$(fnm env)" && fnm use` before running anything.
+
+On rena-devbox:
+
+```sh
+pnpm install
+pnpm lint
+pnpm typecheck
+pnpm test
+pnpm fmt
+```
+
+`pnpm --filter @svett/mobile exec expo export --platform ios` bundles the app's JavaScript. It proves the app bundles without a Mac.
+
+On rena-devbook, after the branch is pushed:
+
+```sh
+~/svett-app/scripts/devbook-build.sh <branch>                     # Debug build, Metro on localhost:8081
+~/svett-app/scripts/devbook-build.sh <branch> host:port           # Debug build against another Metro
+~/svett-app/scripts/devbook-build.sh --release <branch>           # Release build, JS embedded, no Metro
+~/svett-app/scripts/devbook-build.sh --native <branch>            # Force the native build
+~/svett-app/scripts/sim/tabs.sh [out-dir]                         # Proof screenshots of a Debug build
+~/svett-app/scripts/sim/tabs.sh --release [out-dir]               # Proof screenshots of a Release build
+~/svett-app/scripts/sim/launch.sh [--release] [app-argument...]   # Relaunch with launch arguments
+```
+
+`devbook-build.sh` syncs `~/svett-app` to the branch, installs packages, builds the app for the simulator, installs it and opens it. Metro's log is `~/svett-app/metro.log`. The first run needs the clone, so run it from a copy of the script or clone the repo to `~/svett-app` first.
+
+The native build runs only when needed. The script compares the Expo fingerprint of the native inputs with the one saved after the last successful build in `~/svett-app-build/<configuration>/`, which also holds the build output. When they match, a Debug run skips `expo prebuild`, `pod install` and `xcodebuild`, and goes straight to installing and starting Metro. Otherwise `expo prebuild` and `pod install` run only when `apps/mobile/ios` was generated from other native inputs, which it records in `apps/mobile/ios/.svett-fingerprint`. A Release run always runs `xcodebuild` to embed the current JavaScript. The script prints which path it took. Pass `--native` to force the full build.
+
+The scripts use the simulator named by `SVETT_SIMULATOR`, by default a dedicated `svett iPhone 16 Pro Max` on iOS 27. `devbook-build.sh` creates it when it is missing. Names match exactly, so the stock `iPhone 16 Pro Max` is never picked by accident.
+
+`sim/tabs.sh` drives the simulator with `agent-device`. It opens the app, taps each of the five tabs, switches to dark appearance and back to light, and saves numbered screenshots to `out-dir`, by default `~/svett-proof/<branch>/`. Pass `--release` after a Release build so it opens the app without Metro.
+
+`sim/launch.sh` relaunches the app and passes each extra argument to the app process, for example `sim/launch.sh -svettFixture /path/to/fixture.json`. Pass `--release` after a Release build. It leaves the app running.
+
+Agents must use these scripts for simulator proof, so anyone can rerun it.
+
+`apps/mobile/ios` is generated by `scripts/ios-prebuild.sh` and is never committed. Change native settings in `apps/mobile/app.config.ts`.
+
+The app icon is rendered from `assets/icon.svg` with `pnpm icon`. Commit the regenerated `apps/mobile/assets/icon.png`.
+
+### Simulator scripts inside T3 Code
+
+An agent in T3 Code must drive the simulator through the command that T3's `device_open` tool returns, never through `simctl launch`, `simctl openurl` or its own `agent-device` session. The scripts follow that rule when `SVETT_DEVICE_CMD` holds the command. They still build with `xcodebuild` and install with `simctl install`. Without the variable they behave as before, for use outside T3.
+
+1. Call `device_list` for rena-devbook and find `svett iPhone 16 Pro Max` on iOS 27. If it is missing, create it with `xcrun simctl create "svett iPhone 16 Pro Max" "iPhone 16 Pro Max" <iOS 27 runtime>` and list again. To use another iOS 27 simulator instead, set `SVETT_SIMULATOR` to its exact name. The scripts install on that simulator, so it must be the one you open.
+2. Call `device_open` with its `hostId` and `id`.
+3. Run the scripts with the returned command in `SVETT_DEVICE_CMD`, in the same shell command, because environment variables do not carry over between an agent's shell calls:
+
+   ```sh
+   export SVETT_DEVICE_CMD='<the command device_open returned>'
+   ~/svett-app/scripts/devbook-build.sh <branch> && ~/svett-app/scripts/sim/tabs.sh
+   ```
+
+   `sim/launch.sh` takes the same variable, so `~/svett-app/scripts/sim/launch.sh -svettFixture <path>` relaunches with a fixture.
+
+4. Call `device_close` when done. With `SVETT_DEVICE_CMD` set, `tabs.sh` does not close the session itself.

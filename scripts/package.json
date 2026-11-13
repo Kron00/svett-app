@@ -1,0 +1,14 @@
+{
+  "name": "@svett/scripts",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "effect-tsgo tsrs --noEmit",
+    "test": "bash test/devbook-build.test.sh"
+  },
+  "devDependencies": {
+    "@resvg/resvg-js": "2.6.2",
+    "@types/node": "catalog:"
+  }
+}
