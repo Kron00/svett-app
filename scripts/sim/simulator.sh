@@ -1,5 +1,5 @@
 # shellcheck shell=bash
-# Sourced by devbook-build.sh and sim/tabs.sh so both use the same simulator.
+# Sourced by devbook-build.sh and the sim/ scripts so all use the same simulator.
 #
 # SVETT_SIMULATOR names the simulator. The default is a dedicated one that
 # devbook-build.sh creates when it is missing.
@@ -42,4 +42,15 @@ ensure_simulator() {
     return 1
   }
   echo "$udid"
+}
+
+# Runs agent-device on the simulator whose UDID is in $udid. Inside T3 Code,
+# SVETT_DEVICE_CMD holds the command that device_open returned, already bound to
+# one device and session, and every call goes through it instead.
+agent_device() {
+  if [[ -n "${SVETT_DEVICE_CMD:-}" ]]; then
+    eval "$SVETT_DEVICE_CMD $(printf '%q ' "$@")"
+  else
+    npx --yes agent-device@0.21.37 "$@" --platform ios --udid "$udid" --session svett-proof
+  fi
 }
