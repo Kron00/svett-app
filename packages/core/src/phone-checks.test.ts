@@ -10,6 +10,7 @@ import {
   healthOutcome,
   keychainOutcome,
   locationOutcome,
+  notificationDateMs,
   notificationOutcome,
   parseCount,
 } from "./phone-checks.ts";
@@ -65,6 +66,20 @@ describe("notificationOutcome", () => {
 
   it("asks for another run when it arrived while svett was open", () => {
     expect(notificationOutcome({ kind: "arrived", at: s(50) }, away).status).toBe("waiting");
+  });
+
+  it("passes for an iOS delivery, whose date Expo gives in seconds", () => {
+    const iosDate = s(10) / 1000 + 0.123;
+    expect(notificationOutcome({ kind: "arrived", at: notificationDateMs(iosDate) }, away)).toEqual(
+      {
+        status: "passed",
+        detail: "Arrived at 15:00:10 UTC while svett was in the background.",
+      },
+    );
+  });
+
+  it("reads an Android date, which Expo gives in milliseconds, unchanged", () => {
+    expect(notificationDateMs(s(10))).toBe(s(10));
   });
 
   it("fails when notifications are off or it never showed", () => {

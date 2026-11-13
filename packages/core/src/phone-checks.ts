@@ -99,6 +99,10 @@ export type NotificationObservation =
   | { readonly kind: "arrived"; readonly at: number }
   | { readonly kind: "missing"; readonly dueAt: number };
 
+// Expo's `Notification.date` is seconds on iOS (UNNotification.date.timeIntervalSince1970) and
+// milliseconds on Android. Below 1e11 it can only be seconds: as milliseconds it would be 1973.
+export const notificationDateMs = (date: number): number => (date < 1e11 ? date * 1000 : date);
+
 export function notificationOutcome(
   observation: NotificationObservation,
   away: ReadonlyArray<AwayWindow>,

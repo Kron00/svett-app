@@ -11,6 +11,7 @@ import {
   healthOutcome,
   keychainOutcome,
   locationOutcome,
+  notificationDateMs,
   notificationOutcome,
 } from "@svett/core";
 import * as Location from "expo-location";
@@ -64,7 +65,7 @@ export function useNotificationCheck() {
     const arrived = (notification: Notifications.Notification) => {
       if (notification.request.identifier !== scheduled.current?.id) return;
       scheduled.current = undefined;
-      setObservation({ kind: "arrived", at: notification.date });
+      setObservation({ kind: "arrived", at: notificationDateMs(notification.date) });
       void Notifications.dismissNotificationAsync(notification.request.identifier);
     };
     const subscriptions = [
