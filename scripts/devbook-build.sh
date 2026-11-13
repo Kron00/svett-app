@@ -13,8 +13,10 @@
 # differs from the last successful build of that configuration, and prebuild and
 # pod install only when it differs from the generated project. --native forces
 # both. SVETT_SIMULATOR picks the simulator (see scripts/sim/simulator.sh).
-# The app is signed to run locally, with no team, so it carries its entitlements:
-# the Keychain and Apple Health refuse an app without them.
+# The app is built unsigned and then signed ad hoc by scripts/sign-app.sh with
+# the entitlements a release carries, because the Keychain and Apple Health
+# refuse an app without them. A skipped native build reuses the app only if
+# that signing finished.
 # fnm and CocoaPods are also found in their default install folders, because
 # agents run in non-interactive shells that skip ~/.zshrc.
 # When SVETT_DEVICE_CMD holds the agent-device command from T3 Code's device_open,
@@ -53,6 +55,8 @@ bundle_id=com.kron00.svett
 build_dir="$HOME/svett-app-build/$configuration"
 derived_data="$build_dir/DerivedData"
 fingerprint_file="$build_dir/fingerprint"
+signing_dir="$build_dir/signing"
+build_settings="$build_dir/build-settings.json"
 # The generated project and Pods are shared by Debug and Release, so they carry
 # their own fingerprint. It is written after pod install, and `expo prebuild
 # --clean` deletes it with the rest of ios/.
@@ -110,7 +114,8 @@ project_fingerprint=$(cat "$project_stamp" 2>/dev/null || true)
 echo "Current $fingerprint, last $configuration build ${last_fingerprint:-none}, iOS project ${project_fingerprint:-none}"
 
 # A Release app embeds the JS bundle, so it is rebuilt even when native inputs match.
-if [[ "$force_native" == false && "$configuration" == Debug && "$fingerprint" == "$last_fingerprint" && -d "$app_path" ]]; then
+if [[ "$force_native" == false && "$configuration" == Debug && "$fingerprint" == "$last_fingerprint" && -d "$app_path" &&
+  -f "$signing_dir/svett.app.entitlements" ]]; then
   echo "Native build: skipped, the fingerprint matches $app_path"
 else
   if [[ "$force_native" == false && "$fingerprint" == "$project_fingerprint" ]]; then
@@ -130,7 +135,7 @@ else
 
   step "Building $configuration for $simulator_name"
   mkdir -p "$build_dir"
-  rm -f "$fingerprint_file"
+  rm -rf "$fingerprint_file" "$signing_dir"
   xcodebuild build \
     -workspace apps/mobile/ios/svett.xcworkspace \
     -scheme svett \
@@ -138,10 +143,16 @@ else
     -sdk iphonesimulator \
     -destination "id=$udid" \
     -derivedDataPath "$derived_data" \
-    CODE_SIGN_IDENTITY=- \
-    CODE_SIGN_STYLE=Manual \
-    DEVELOPMENT_TEAM= \
+    CODE_SIGNING_ALLOWED=NO \
     -quiet
+
+  step "Signing the app with its entitlements"
+  xcodebuild -showBuildSettings -json \
+    -project apps/mobile/ios/svett.xcodeproj \
+    -alltargets \
+    -configuration "$configuration" \
+    -sdk iphonesimulator >"$build_settings"
+  scripts/sign-app.sh "$app_path" "$build_settings" "$signing_dir"
   echo "$fingerprint" >"$fingerprint_file"
 fi
 

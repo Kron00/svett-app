@@ -4,13 +4,12 @@
 # Usage: scripts/build-ipa.sh
 #
 # The build number is SVETT_BUILD_NUMBER when set, otherwise the commit count,
-# which needs the full history of HEAD. The Release build is unsigned, then the
-# app and each app extension are signed ad hoc with the entitlements file their
-# target names, with build variables expanded: AltStore re-signs with the
-# entitlements it finds in the app, and an unsigned app carries none. The build
-# fails if anything is signed with push (aps-environment), which a free Apple
-# account cannot sign. Writes build/release/svett.ipa and, for the AltStore source,
-# the app's Info.plist and signed entitlements as XML.
+# which needs the full history of HEAD. The Release build is unsigned, then
+# scripts/sign-app.sh signs it ad hoc with its entitlements: AltStore re-signs
+# with the entitlements it finds in the app, and an unsigned app carries none.
+# The build fails if anything is signed with push (aps-environment), which a
+# free Apple account cannot sign. Writes build/release/svett.ipa and, for the
+# AltStore source, the app's Info.plist and signed entitlements as XML.
 # fnm and CocoaPods are also found in their default install folders, as in
 # devbook-build.sh.
 set -euo pipefail
@@ -74,29 +73,8 @@ xcodebuild -showBuildSettings -json \
   -alltargets \
   -configuration Release \
   -sdk iphoneos >"$settings"
-mkdir -p "$out/signing"
 
-# Signs an app or app extension with its own target's entitlements, if it has any.
-sign_bundle() {
-  local bundle=$1 entitlements
-  entitlements="$out/signing/$(basename "$bundle").entitlements"
-  node scripts/signing-entitlements.ts --build-settings "$settings" --product "$(basename "$bundle")" >"$entitlements"
-  if [[ -s "$entitlements" ]]; then
-    codesign --force --sign - --entitlements "$entitlements" "$bundle"
-  else
-    codesign --force --sign - "$bundle"
-  fi
-}
-
-# Nested code is signed before the code that contains it.
-while IFS= read -r -d '' nested; do
-  case $nested in
-    *.appex) sign_bundle "$nested" ;;
-    *) codesign --force --sign - "$nested" ;;
-  esac
-done < <(find "$app" -mindepth 1 -depth \( -name '*.framework' -o -name '*.dylib' -o -name '*.appex' \) -print0)
-sign_bundle "$app"
-codesign --verify --deep --strict "$app"
+scripts/sign-app.sh "$app" "$settings" "$out/signing"
 
 codesign -d --entitlements - --xml "$app" >"$out/entitlements.plist"
 while IFS= read -r -d '' signed; do

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Runs scripts/devbook-build.sh and the sim/ scripts on Linux against fake
 # Xcode, CocoaPods, pnpm, Expo and agent-device tools. It checks which native
-# build steps run, which native inputs the installed app was built from, which
-# simulator it lands on, where fnm and CocoaPods are found, and that the T3 Code
+# build steps run, which native inputs the installed app was built from, that
+# it is installed signed with its expanded entitlements, which simulator it lands on, where fnm and CocoaPods are found, and that the T3 Code
 # bound device command replaces simctl launch and openurl.
 #
 # Usage: scripts/test/devbook-build.test.sh
@@ -29,8 +29,11 @@ case "$1 $2" in
   "fixture --out") echo "fake fixture" >"$3" ;;
   "exec expo")
     rm -rf ios
-    mkdir ios
+    mkdir -p ios/svett
     cp native-inputs ios/generated-from
+    cat >ios/svett/svett.entitlements <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>com.apple.developer.healthkit</key><true/><key>keychain-access-groups</key><array><string>$(PRODUCT_BUNDLE_IDENTIFIER)</string></array></dict></plist>
+PLIST
     ;;
   *) echo "fake pnpm: unexpected $*" >&2; exit 1 ;;
 esac
@@ -45,6 +48,12 @@ EOF
 
 cat >"$fake/xcodebuild" <<'EOF'
 #!/usr/bin/env bash
+if [[ "$1" == -showBuildSettings ]]; then
+  cat <<JSON
+[{"action":"build","target":"svett","buildSettings":{"FULL_PRODUCT_NAME":"svett.app","SRCROOT":"$PWD/apps/mobile/ios","CODE_SIGN_ENTITLEMENTS":"svett/svett.entitlements","PRODUCT_BUNDLE_IDENTIFIER":"com.kron00.svett","DEVELOPMENT_TEAM":""}}]
+JSON
+  exit 0
+fi
 while [[ $# -gt 0 ]]; do
   case $1 in
     -configuration) configuration=$2; shift ;;
@@ -60,6 +69,16 @@ done
 app="$derived_data/Build/Products/$configuration-iphonesimulator/svett.app"
 mkdir -p "$app"
 cp apps/mobile/ios/generated-from "$app/built-from"
+rm -f "$app/.signed-with"
+EOF
+
+# Records what a bundle was signed with in the bundle.
+cat >"$fake/codesign" <<'EOF'
+#!/usr/bin/env bash
+case $1 in
+  --force)
+    if [[ $4 == --entitlements ]]; then cp "$5" "$6/.signed-with"; else : >"$4/.signed-with"; fi ;;
+esac
 EOF
 
 cat >"$fake/xcrun" <<EOF
@@ -70,7 +89,9 @@ case "\$2" in
     '-- iOS 27.0 --' '    iPhone 16 Pro Max (STOCK-UDID) (Shutdown)' \
     '-- iOS 26.0 --' '    svett iPhone 16 Pro Max (OLD-UDID) (Shutdown)' \
     '-- iOS 27.2 --' '    svett iPhone 16 Pro Max (FAKE-UDID) (Booted)' ;;
-  install) cat "\$4/built-from" >"$root/installed" ;;
+  install)
+    cat "\$4/built-from" >"$root/installed"
+    cat "\$4/.signed-with" >"$root/installed-entitlements" 2>/dev/null || : >"$root/installed-entitlements" ;;
   get_app_container) echo "$root/data container" ;;
 esac
 EOF
@@ -111,7 +132,9 @@ git_() { git -c user.name=test -c user.email=test@example.invalid -c commit.gpgs
 
 work="$root/work"
 mkdir -p "$work/apps/mobile" "$work/scripts/sim"
-cp "$repo/scripts/ios-prebuild.sh" "$work/scripts/"
+cp "$repo/scripts/ios-prebuild.sh" "$repo/scripts/sign-app.sh" "$work/scripts/"
+# A link, so Node resolves the script's packages from the repo.
+ln -s "$repo/scripts/signing-entitlements.ts" "$work/scripts/"
 cp "$repo/scripts/sim/simulator.sh" "$work/scripts/sim/"
 node --version | sed 's/^v//' >"$work/.node-version"
 echo native-main >"$work/apps/mobile/native-inputs"
@@ -146,13 +169,17 @@ run_build() {
 build() {
   local expected_line=$1 expected_inputs=$2 installed
   shift 2
-  rm -f "$root/installed"
+  rm -f "$root/installed" "$root/installed-entitlements"
   run_build "$@" || fail "devbook-build.sh $* failed"
   grep -qxF "Native build: $expected_line" "$output" ||
     fail "devbook-build.sh $* did not print \"Native build: $expected_line\""
   installed=$(cat "$root/installed" 2>/dev/null || true)
   [[ "$installed" == "$expected_inputs" ]] ||
     fail "devbook-build.sh $* installed an app built from \"$installed\", not \"$expected_inputs\""
+  grep -qF "<key>com.apple.developer.healthkit</key>" "$root/installed-entitlements" ||
+    fail "devbook-build.sh $* installed an app not signed with the HealthKit entitlement"
+  grep -qF "<string>com.kron00.svett</string>" "$root/installed-entitlements" ||
+    fail "devbook-build.sh $* installed an app signed without its entitlement variables expanded"
 }
 
 # build_fails <expected message> [VAR=value...] [devbook-build.sh args...]
@@ -189,6 +216,12 @@ check "unchanged Debug rebuild skips the native build" build "$skipped" native-a
 check "switching to a branch with other native inputs regenerates the iOS project" build "$full" native-b "$metro" b
 check "Release after a Debug build of other inputs regenerates the iOS project" build "$full" native-a --release a
 check "Debug after a Release build of other inputs reuses its own app" build "$skipped" native-b "$metro" b
+
+# An app left by a build that never signed it, such as one from before sign-app.sh.
+debug_build="$root/home/svett-app-build/Debug"
+rm -rf "$debug_build/signing" "$debug_build/DerivedData/Build/Products/Debug-iphonesimulator/svett.app/.signed-with"
+check "an unsigned Debug app with a matching fingerprint is rebuilt and signed, not reused" \
+  build "$full" native-b "$metro" b
 
 git_ -C "$work" checkout -q a
 echo native-a2 >"$work/apps/mobile/native-inputs"

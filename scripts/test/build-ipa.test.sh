@@ -87,7 +87,7 @@ entitlements '<key>com.apple.developer.healthkit</key><true/><key>aps-environmen
 
 work="$root/work"
 mkdir -p "$work/scripts" "$work/apps/mobile"
-cp "$repo/scripts/build-ipa.sh" "$repo/scripts/ios-prebuild.sh" "$work/scripts/"
+cp "$repo/scripts/build-ipa.sh" "$repo/scripts/ios-prebuild.sh" "$repo/scripts/sign-app.sh" "$work/scripts/"
 cp "$repo/.node-version" "$work/"
 # A link, so Node resolves the script's packages from the repo.
 ln -s "$repo/scripts/signing-entitlements.ts" "$work/scripts/"
