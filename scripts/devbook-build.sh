@@ -7,6 +7,8 @@
 # localhost:8081 unless another host is given, and opens the app on that server.
 # --release builds the Release configuration with the JS bundle embedded and
 # launches it with no development server.
+#
+# SVETT_SIMULATOR picks the simulator (see scripts/sim/simulator.sh).
 set -euo pipefail
 
 usage() {
@@ -29,7 +31,6 @@ metro_port=8081
 
 repo_url=https://github.com/Kron00/svett-app.git
 checkout=${SVETT_CHECKOUT:-$HOME/svett-app}
-device_name="iPhone 16 Pro Max"
 bundle_id=com.kron00.svett
 derived_data="$checkout/apps/mobile/ios/build"
 metro_pid_file="$checkout/.metro.pid"
@@ -57,28 +58,29 @@ node_version=$(node --version)
 step "Installing packages"
 pnpm install --frozen-lockfile
 
+step "Finding the simulator"
+# shellcheck source=scripts/sim/simulator.sh
+source scripts/sim/simulator.sh
+udid=$(ensure_simulator)
+echo "$simulator_name ($udid)"
+
 step "Generating the iOS project"
 scripts/ios-prebuild.sh
 (cd apps/mobile/ios && pod install)
 
-step "Building $configuration for the $device_name simulator"
+step "Building $configuration for $simulator_name"
 xcodebuild build \
   -workspace apps/mobile/ios/svett.xcworkspace \
   -scheme svett \
   -configuration "$configuration" \
   -sdk iphonesimulator \
-  -destination "platform=iOS Simulator,name=$device_name" \
+  -destination "id=$udid" \
   -derivedDataPath "$derived_data" \
   CODE_SIGNING_ALLOWED=NO \
   -quiet
 app_path="$derived_data/Build/Products/$configuration-iphonesimulator/svett.app"
 
-step "Installing on the $device_name simulator"
-udid=$(xcrun simctl list devices available | grep -F "$device_name (" | head -1 | grep -oE '[0-9A-F]{8}(-[0-9A-F]{4}){3}-[0-9A-F]{12}')
-[[ -n "$udid" ]] || {
-  echo "No available simulator named $device_name" >&2
-  exit 1
-}
+step "Installing on $simulator_name"
 xcrun simctl bootstatus "$udid" -b
 open -a Simulator --args -CurrentDeviceUDID "$udid"
 xcrun simctl terminate "$udid" "$bundle_id" 2>/dev/null || true
