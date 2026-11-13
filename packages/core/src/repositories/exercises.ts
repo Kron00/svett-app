@@ -1,6 +1,6 @@
 import { Context, Effect, Layer } from "effect";
 
-import { exerciseLibrary, type LibraryExercise } from "../exercise-library.ts";
+import { exerciseLibrary, libraryIds } from "../exercise-library.ts";
 import { Ids } from "../ids.ts";
 import { type Exercise, ExerciseId } from "../schema.ts";
 import { Sql } from "../sql.ts";
@@ -30,10 +30,17 @@ const makeExerciseRepository = Effect.gen(function* () {
     effect.pipe(Effect.provideService(Sql, sql), Effect.provideService(Ids, ids));
 
   /** Adds the library exercises this database does not have yet. Safe to run on every open. */
-  const seedLibrary = (library: ReadonlyArray<LibraryExercise> = exerciseLibrary()) =>
+  const seedLibrary = () =>
     run(
       sql.transaction(
         Effect.gen(function* () {
+          const bundled = libraryIds();
+          const [stored] = yield* sql.all(
+            "SELECT count(*) AS present FROM exercise WHERE source = 'library' AND source_id IN (SELECT value FROM json_each(?))",
+            [JSON.stringify(bundled)],
+          );
+          if (Number(stored?.["present"]) === bundled.length) return 0;
+          const library = exerciseLibrary();
           const present = new Set(
             (yield* sql.all("SELECT id FROM exercise WHERE source = 'library'")).map((row) =>
               String(row["id"]),

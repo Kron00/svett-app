@@ -73,6 +73,15 @@ describe("ExerciseRepository", () => {
     });
   });
 
+  it("adds back only the library exercises a database lacks", async () => {
+    const database = openTestDatabase();
+    expect(await run(database, (exercises) => exercises.count)).toBe(876);
+    database.database.exec("DELETE FROM exercise WHERE source_id = 'Barbell_Squat'");
+    expect(await run(database, (exercises) => exercises.seedLibrary())).toBe(1);
+    expect(await run(database, (exercises) => exercises.count)).toBe(876);
+    expect(await run(database, (exercises) => exercises.seedLibrary())).toBe(0);
+  });
+
   it("opens the same file twice without adding rows", async () => {
     const { driver } = openNodeDatabase();
     const open = () =>
