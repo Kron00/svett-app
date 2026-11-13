@@ -23,6 +23,7 @@ cat >"$fake/pnpm" <<'EOF'
 case "$1 $2" in
   "install --frozen-lockfile") ;;
   "exec fingerprint") printf '{"hash":"%s"}' "$(cat native-inputs)" ;;
+  "fixture --out") echo "fake fixture" >"$3" ;;
   "exec expo")
     rm -rf ios
     mkdir ios
@@ -67,6 +68,7 @@ case "\$2" in
     '-- iOS 26.0 --' '    svett iPhone 16 Pro Max (OLD-UDID) (Shutdown)' \
     '-- iOS 27.2 --' '    svett iPhone 16 Pro Max (FAKE-UDID) (Booted)' ;;
   install) cat "\$4/built-from" >"$root/installed" ;;
+  get_app_container) echo "$root/data container" ;;
 esac
 EOF
 
@@ -291,13 +293,15 @@ sim_script() {
     fail "$1 ${*:2} failed"
 }
 
-# only_open <expected open arguments> checks the script opened the app once, with exactly these arguments.
+# only_open <expected open arguments>... checks the script opened the app once
+# per argument, in order, with exactly those arguments.
 only_open() {
-  local opens
+  local opens expected
   opens=$(grep -F -- "$bound_prefix open " "$root/bound-calls" || true)
-  [[ "$opens" == "$bound_prefix open $1" ]] || {
+  expected=$(printf '%s\n' "${@/#/$bound_prefix open }")
+  [[ "$opens" == "$expected" ]] || {
     { echo "bound command opens:"; echo "$opens"; } >>"$output"
-    fail "the bound command did not get exactly one \"open $1\""
+    fail "the bound command did not get exactly these opens: $expected"
   }
 }
 
@@ -332,5 +336,17 @@ env PATH="$fake:$PATH" SVETT_DEVICE_CMD="$bound_cmd" \
 check "launch.sh passes launch arguments through the bound command" bound_got \
   "$bound_prefix open com.kron00.svett --relaunch --launch-args=-svettFixture --launch-args=$root/fixture one.json"
 check "launch.sh with SVETT_DEVICE_CMD never calls simctl" test ! -e "$root/simctl-calls"
+
+container_fixture="$root/data container/Documents/svett-fixture.db"
+
+case_name="fixture.sh Debug with SVETT_DEVICE_CMD"
+sim_script fixture.sh "$root/proof fixture"
+check "fixture.sh copies the generated fixture into the app's data container" \
+  grep -qxF "fake fixture" "$container_fixture"
+check "fixture.sh launches plainly, then with -svettFixture on the copied file, through the bound command" only_open \
+  "com.kron00.svett --relaunch --launch-url $local_dev_client_url" \
+  "com.kron00.svett --relaunch --launch-url $local_dev_client_url --launch-args=-svettFixture --launch-args=$container_fixture"
+check "fixture.sh screenshots the fixture's counts" bound_got "$bound_prefix screenshot $root/proof fixture/02-fixture.png"
+check "fixture.sh with SVETT_DEVICE_CMD calls neither simctl launch nor openurl" no_simctl_launch_or_openurl
 
 echo "$passed passed"

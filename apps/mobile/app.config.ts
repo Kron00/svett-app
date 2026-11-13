@@ -28,7 +28,7 @@ const config: ExpoConfig = {
       ITSAppUsesNonExemptEncryption: false,
     },
   },
-  plugins: [["expo-build-properties", { ios: { deploymentTarget: "27.0" } }]],
+  plugins: [["expo-build-properties", { ios: { deploymentTarget: "27.0" } }], "expo-sqlite"],
 };
 
 export default config;
