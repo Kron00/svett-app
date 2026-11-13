@@ -85,6 +85,11 @@ describe("cleanTrack", () => {
     expect(cleanTrack(track, "run")).toEqual([point(1, 0), point(2, 3), point(3, 6)]);
   });
 
+  it("drops two agreeing offset fixes in the middle of a run", () => {
+    const track = [0, 3, 6, 506, 509, 15, 18].map((north, second) => point(second, north));
+    expect(trackDistanceMeters(cleanTrack(track, "run"))).toBeCloseTo(18, 6);
+  });
+
   it("keeps the first good point even when every later point is implausible", () => {
     expect(cleanTrack([point(0, 0), point(1, 1000), point(2, 2000)], "walk")).toEqual([
       point(0, 0),

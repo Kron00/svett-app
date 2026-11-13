@@ -58,10 +58,9 @@ export const cleanTrack = (
     if (last === undefined || plausible(last, point)) {
       kept.push(point);
       rejected = undefined;
-    } else if (rejected !== undefined && plausible(rejected, point)) {
-      // Two fixes that agree with each other outvote the one they jumped from, such as a stale first fix.
-      kept.pop();
-      kept.push(rejected, point);
+    } else if (kept.length === 1 && rejected !== undefined && plausible(rejected, point)) {
+      // Two fixes that agree with each other outvote a stale first fix they jumped from.
+      kept.splice(0, 1, rejected, point);
       rejected = undefined;
     } else {
       rejected = point;

@@ -104,14 +104,16 @@ export const markSending = (
     }
   });
 
+/** `attempt` is the one `markSending` started, so a late reply from an abandoned attempt is ignored. */
 export const markSent = (
   ledger: Ledger,
   destination: Destination,
   activityId: string,
+  attempt: number,
   now: number,
 ): Ledger =>
   update(ledger, destination, activityId, (state) =>
-    state?.status !== "sending"
+    state?.status !== "sending" || state.attempt !== attempt
       ? state
       : state.resend
         ? { status: "pending", since: now }
@@ -122,11 +124,12 @@ export const markFailed = (
   ledger: Ledger,
   destination: Destination,
   activityId: string,
+  attempt: number,
   now: number,
   error: string,
 ): Ledger =>
   update(ledger, destination, activityId, (state) =>
-    state?.status !== "sending"
+    state?.status !== "sending" || state.attempt !== attempt
       ? state
       : {
           status: "failed",
