@@ -1,20 +1,21 @@
-import { Schema } from "effect";
+import { Option, Schema } from "effect";
 
 export type CheckName = "keychain" | "notification" | "location" | "health" | "chatgpt";
 
-export type CheckOutcome =
-  | { readonly status: "not run" }
-  | {
-      readonly status: "waiting" | "passed" | "failed" | "inconclusive";
-      readonly detail: string;
-    };
+export type CheckOutcome = { readonly status: "not run" } | SeenOutcome;
+
+/** The outcome of a check that has run. */
+export interface SeenOutcome {
+  readonly status: "waiting" | "passed" | "failed" | "inconclusive";
+  readonly detail: string;
+}
 
 export const NOT_RUN: CheckOutcome = { status: "not run" };
 
-const waiting = (detail: string): CheckOutcome => ({ status: "waiting", detail });
-const passed = (detail: string): CheckOutcome => ({ status: "passed", detail });
-const failed = (detail: string): CheckOutcome => ({ status: "failed", detail });
-const inconclusive = (detail: string): CheckOutcome => ({ status: "inconclusive", detail });
+const waiting = (detail: string): SeenOutcome => ({ status: "waiting", detail });
+const passed = (detail: string): SeenOutcome => ({ status: "passed", detail });
+const failed = (detail: string): SeenOutcome => ({ status: "failed", detail });
+const inconclusive = (detail: string): SeenOutcome => ({ status: "inconclusive", detail });
 
 export interface CheckInfo {
   readonly name: CheckName;
@@ -60,6 +61,15 @@ export interface AwayWindow {
   readonly to?: number;
 }
 
+const parseJson = (text: string | null): unknown => {
+  if (text === null) return undefined;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return undefined;
+  }
+};
+
 const clock = (time: number): string => `${new Date(time).toISOString().slice(11, 19)} UTC`;
 const seconds = (ms: number): number => Math.round(ms / 1000);
 
@@ -80,7 +90,7 @@ export type KeychainRead =
   | { readonly kind: "read"; readonly stored: string | null }
   | { readonly kind: "error"; readonly message: string };
 
-export function keychainOutcome(read: KeychainRead, launchedAt: number): CheckOutcome {
+export function keychainOutcome(read: KeychainRead, launchedAt: number): SeenOutcome {
   if (read.kind === "error") return failed(`The Keychain refused: ${read.message}`);
   if (read.stored === null) {
     return waiting("Saved a value. Close svett in the app switcher and open it again.");
@@ -97,6 +107,22 @@ export function keychainOutcome(read: KeychainRead, launchedAt: number): CheckOu
   return passed(`Read back the value saved by the launch at ${clock(mark.launchedAt)}.`);
 }
 
+/** The notification the check scheduled and has not seen arrive yet. */
+export interface PendingNotification {
+  readonly id: string;
+  readonly dueAt: number;
+}
+
+const PendingNotificationSchema = Schema.Struct({ id: Schema.String, dueAt: Schema.Number });
+
+export const encodePendingNotification = (pending: PendingNotification): string =>
+  JSON.stringify(pending);
+
+const decodePending = Schema.decodeUnknownOption(PendingNotificationSchema);
+
+export const decodePendingNotification = (text: string | null): PendingNotification | undefined =>
+  Option.getOrUndefined(decodePending(parseJson(text)));
+
 export type NotificationObservation =
   | { readonly kind: "denied" }
   | { readonly kind: "scheduled"; readonly dueAt: number }
@@ -107,10 +133,12 @@ export type NotificationObservation =
 // milliseconds on Android. Below 1e11 it can only be seconds: as milliseconds it would be 1973.
 export const notificationDateMs = (date: number): number => (date < 1e11 ? date * 1000 : date);
 
+/** `launchedAt` is when this launch began: svett was closed before it. */
 export function notificationOutcome(
   observation: NotificationObservation,
   away: ReadonlyArray<AwayWindow>,
-): CheckOutcome {
+  launchedAt: number,
+): SeenOutcome {
   switch (observation.kind) {
     case "denied":
       return failed("Notifications are off for svett. Turn them on in Settings and run it again.");
@@ -119,6 +147,9 @@ export function notificationOutcome(
         `Due at ${clock(observation.dueAt)}. Lock the phone or go to the home screen now.`,
       );
     case "arrived":
+      if (observation.at < launchedAt) {
+        return passed(`Arrived at ${clock(observation.at)} while svett was closed.`);
+      }
       return wasAway(away, observation.at)
         ? passed(`Arrived at ${clock(observation.at)} while svett was in the background.`)
         : waiting(
@@ -150,7 +181,7 @@ export type LocationObservation =
 export function locationOutcome(
   observation: LocationObservation,
   away: ReadonlyArray<AwayWindow>,
-): CheckOutcome {
+): SeenOutcome {
   if (observation.kind === "denied") {
     return failed("Location is off for svett. Allow it in Settings and run it again.");
   }
@@ -199,7 +230,7 @@ export interface HealthObservation {
 const VERIFY_HEALTH =
   "Add one workout in the Health app, or open Health > Sharing > Apps > svett to see the read permission, then run the check again.";
 
-export function healthOutcome({ entitlement, access }: HealthObservation): CheckOutcome {
+export function healthOutcome({ entitlement, access }: HealthObservation): SeenOutcome {
   if (access.kind === "unavailable") return failed("Apple Health is not available on this device.");
   const signed =
     entitlement === null
@@ -231,7 +262,7 @@ export type ChatGPTObservation =
   | { readonly kind: "signed in"; readonly scope: string; readonly earlier: boolean }
   | { readonly kind: "failed"; readonly problem: string };
 
-export function chatGPTOutcome(observation: ChatGPTObservation): CheckOutcome {
+export function chatGPTOutcome(observation: ChatGPTObservation): SeenOutcome {
   switch (observation.kind) {
     case "signing in":
       return waiting("Signing in.");
@@ -251,6 +282,60 @@ export function chatGPTOutcome(observation: ChatGPTObservation): CheckOutcome {
 export function parseCount(text: string): number | undefined {
   const trimmed = text.trim();
   return /^\d{1,6}$/.test(trimmed) ? Number(trimmed) : undefined;
+}
+
+const SeenOutcomeSchema = Schema.Struct({
+  status: Schema.Literals(["waiting", "passed", "failed", "inconclusive"]),
+  detail: Schema.String,
+});
+
+/** A check's latest outcome, kept so that it outlives the launch that saw it. */
+export interface StoredOutcome {
+  readonly outcome: SeenOutcome;
+  /** The launch that saw it, as the process start time. */
+  readonly launchedAt: number;
+}
+
+const StoredOutcomeSchema = Schema.Struct({
+  outcome: SeenOutcomeSchema,
+  launchedAt: Schema.Number,
+});
+
+export const encodeStoredOutcome = (stored: StoredOutcome): string => JSON.stringify(stored);
+
+const decodeStored = Schema.decodeUnknownOption(StoredOutcomeSchema);
+
+/** Undefined when nothing was stored or what was stored cannot be read. */
+export const decodeStoredOutcome = (text: string | null): StoredOutcome | undefined =>
+  Option.getOrUndefined(decodeStored(parseJson(text)));
+
+/**
+ * What a check shows: what this launch saw, otherwise its latest outcome from an earlier
+ * launch. A check still waiting when svett closed cannot finish, so it says to run it again.
+ */
+export function mergeOutcome(
+  live: CheckOutcome,
+  stored: StoredOutcome | undefined,
+  launchedAt: number,
+): CheckOutcome {
+  if (live.status !== "not run") return live;
+  if (stored === undefined) return NOT_RUN;
+  if (stored.outcome.status === "waiting" && stored.launchedAt !== launchedAt) {
+    return waiting("svett closed before this check finished. Run it again.");
+  }
+  return stored.outcome;
+}
+
+export function mergeOutcomes(
+  live: Readonly<Record<CheckName, CheckOutcome>>,
+  stored: Readonly<Partial<Record<CheckName, StoredOutcome>>>,
+  launchedAt: number,
+): Record<CheckName, CheckOutcome> {
+  const merged = {} as Record<CheckName, CheckOutcome>;
+  for (const { name } of PHONE_CHECKS) {
+    merged[name] = mergeOutcome(live[name], stored[name], launchedAt);
+  }
+  return merged;
 }
 
 export interface PhoneReport {

@@ -6,6 +6,7 @@ import {
   type LocationObservation,
   type NotificationObservation,
   NOT_RUN,
+  type PendingNotification,
   chatGPTOutcome,
   encodeKeychainMark,
   healthOutcome,
@@ -22,34 +23,39 @@ import { AppState } from "react-native";
 
 import SvettNative from "../../modules/svett-native";
 import { LOCATION_TASK, awayWindows, locationPoints } from "./background";
+import {
+  KEYCHAIN_KEY,
+  SECURE_OPTIONS,
+  forgetPendingNotification,
+  loadPendingNotification,
+  savePendingNotification,
+} from "./saved";
 import { useStore } from "./store";
 
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
-const KEYCHAIN_KEY = "svett.phoneChecks.keychain";
-const KEYCHAIN_OPTIONS = { keychainAccessible: SecureStore.AFTER_FIRST_UNLOCK_THIS_DEVICE_ONLY };
-
-// Once per JavaScript runtime: read what an earlier launch saved, then save this launch.
-let keychainRead: Promise<KeychainRead> | undefined;
-const readThenMarkKeychain = (): Promise<KeychainRead> =>
-  (keychainRead ??= (async (): Promise<KeychainRead> => {
-    try {
-      const stored = await SecureStore.getItemAsync(KEYCHAIN_KEY, KEYCHAIN_OPTIONS);
+// The value is written only when none is stored, so every later launch, and a reload of
+// this one, reads what the first launch saved instead of what it just wrote itself.
+const readKeychain = async (): Promise<KeychainRead> => {
+  try {
+    const stored = await SecureStore.getItemAsync(KEYCHAIN_KEY, SECURE_OPTIONS);
+    if (stored === null) {
       await SecureStore.setItemAsync(
         KEYCHAIN_KEY,
         encodeKeychainMark(SvettNative.launchedAt),
-        KEYCHAIN_OPTIONS,
+        SECURE_OPTIONS,
       );
-      return { kind: "read", stored };
-    } catch (error) {
-      return { kind: "error", message: message(error) };
     }
-  })());
+    return { kind: "read", stored };
+  } catch (error) {
+    return { kind: "error", message: message(error) };
+  }
+};
 
 export function useKeychainCheck(): CheckOutcome {
   const [read, setRead] = useState<KeychainRead>();
   useEffect(() => {
-    void readThenMarkKeychain().then(setRead);
+    void readKeychain().then(setRead);
   }, []);
   return read === undefined ? NOT_RUN : keychainOutcome(read, SvettNative.launchedAt);
 }
@@ -58,33 +64,49 @@ const NOTIFICATION_DELAY_S = 10;
 
 export function useNotificationCheck() {
   const [observation, setObservation] = useState<NotificationObservation>();
-  const scheduled = useRef<{ id: string; dueAt: number }>(undefined);
+  const scheduled = useRef<PendingNotification>(undefined);
   const away = useStore(awayWindows);
 
   useEffect(() => {
+    const settle = (next: NotificationObservation) => {
+      scheduled.current = undefined;
+      void forgetPendingNotification();
+      setObservation(next);
+    };
     const arrived = (notification: Notifications.Notification) => {
       if (notification.request.identifier !== scheduled.current?.id) return;
-      scheduled.current = undefined;
-      setObservation({ kind: "arrived", at: notificationDateMs(notification.date) });
+      settle({ kind: "arrived", at: notificationDateMs(notification.date) });
       void Notifications.dismissNotificationAsync(notification.request.identifier);
     };
+    // Finds the notification if it showed while svett was away or closed. Tapping it
+    // removes it from the shown ones, so the response that opened svett counts too.
+    const look = async () => {
+      const pending = scheduled.current;
+      if (pending === undefined) return;
+      const presented = await Notifications.getPresentedNotificationsAsync();
+      const tapped = (await Notifications.getLastNotificationResponseAsync())?.notification;
+      const shown = [...presented, ...(tapped === undefined ? [] : [tapped])].find(
+        (n) => n.request.identifier === pending.id,
+      );
+      if (shown !== undefined) {
+        arrived(shown);
+      } else if (Date.now() > pending.dueAt + 2000 && scheduled.current === pending) {
+        settle({ kind: "missing", dueAt: pending.dueAt });
+      }
+    };
+    void loadPendingNotification().then((pending) => {
+      if (pending === undefined || scheduled.current !== undefined) return;
+      scheduled.current = pending;
+      setObservation({ kind: "scheduled", dueAt: pending.dueAt });
+      void look();
+    });
     const subscriptions = [
       Notifications.addNotificationReceivedListener(arrived),
       Notifications.addNotificationResponseReceivedListener((response) =>
         arrived(response.notification),
       ),
       AppState.addEventListener("change", (state) => {
-        const pending = scheduled.current;
-        if (state !== "active" || pending === undefined) return;
-        void Notifications.getPresentedNotificationsAsync().then((presented) => {
-          const shown = presented.find((n) => n.request.identifier === pending.id);
-          if (shown !== undefined) {
-            arrived(shown);
-          } else if (Date.now() > pending.dueAt + 2000 && scheduled.current === pending) {
-            scheduled.current = undefined;
-            setObservation({ kind: "missing", dueAt: pending.dueAt });
-          }
-        });
+        if (state === "active") void look();
       }),
     ];
     return () => {
@@ -104,10 +126,14 @@ export function useNotificationCheck() {
       },
     });
     scheduled.current = { id, dueAt };
+    void savePendingNotification({ id, dueAt });
     setObservation({ kind: "scheduled", dueAt });
   };
 
-  const outcome = observation === undefined ? NOT_RUN : notificationOutcome(observation, away);
+  const outcome =
+    observation === undefined
+      ? NOT_RUN
+      : notificationOutcome(observation, away, SvettNative.launchedAt);
   return { outcome, run };
 }
 

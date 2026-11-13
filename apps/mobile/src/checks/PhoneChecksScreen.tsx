@@ -4,12 +4,13 @@ import {
   type CheckOutcome,
   PHONE_CHECKS,
   formatReport,
+  mergeOutcomes,
   parseCount,
   statusLabel,
 } from "@svett/core";
 import * as Application from "expo-application";
 import * as Clipboard from "expo-clipboard";
-import { type ReactNode, useState } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 import { Platform, Pressable, ScrollView, Text, TextInput, View } from "react-native";
 
 import SvettNative from "../../modules/svett-native";
@@ -20,6 +21,13 @@ import {
   useLocationCheck,
   useNotificationCheck,
 } from "./hooks";
+import {
+  type StoredOutcomes,
+  encodeOutcome,
+  forgetChecks,
+  loadOutcomes,
+  saveOutcome,
+} from "./saved";
 
 const STATUS_COLOR: Record<CheckOutcome["status"], string> = {
   "not run": "text-neutral-500 dark:text-neutral-400",
@@ -115,7 +123,45 @@ function SafariPaste({ paste }: { readonly paste: (address: string) => Promise<s
   );
 }
 
+/**
+ * Keeps each check's latest outcome across launches, and returns what to show: this
+ * launch's outcome, otherwise the one an earlier launch saved.
+ */
+function useSavedOutcomes(live: Record<CheckName, CheckOutcome>): Record<CheckName, CheckOutcome> {
+  const [stored, setStored] = useState<StoredOutcomes>({});
+  const saved = useRef(new Map<CheckName, string>());
+  useEffect(() => {
+    void loadOutcomes().then(setStored);
+  }, []);
+
+  useEffect(() => {
+    for (const { name } of PHONE_CHECKS) {
+      const outcome = live[name];
+      if (outcome.status === "not run") continue;
+      const value = encodeOutcome(outcome);
+      if (saved.current.get(name) === value) continue;
+      saved.current.set(name, value);
+      void saveOutcome(name, value);
+    }
+  });
+
+  return mergeOutcomes(live, stored, SvettNative.launchedAt);
+}
+
 export function PhoneChecksScreen() {
+  // A new key mounts the checks afresh after a reset, and null unmounts them while
+  // their saved results are deleted, so none of them saves an old result back.
+  const [generation, setGeneration] = useState<number | null>(0);
+  const reset = async () => {
+    const next = (generation ?? 0) + 1;
+    setGeneration(null);
+    await forgetChecks();
+    setGeneration(next);
+  };
+  return generation === null ? null : <PhoneChecks key={generation} onReset={reset} />;
+}
+
+function PhoneChecks({ onReset }: { readonly onReset: () => Promise<void> }) {
   const keychain = useKeychainCheck();
   const notification = useNotificationCheck();
   const location = useLocationCheck();
@@ -126,13 +172,13 @@ export function PhoneChecksScreen() {
   const [openedAt] = useState(Date.now);
   const [copiedAt, setCopiedAt] = useState<number>();
 
-  const outcomes: Record<CheckName, CheckOutcome> = {
+  const outcomes = useSavedOutcomes({
     keychain,
     notification: notification.outcome,
     location: location.outcome,
     health: health.outcome,
     chatgpt: chatgpt.outcome,
-  };
+  });
   const actions: Record<CheckName, ReactNode> = {
     keychain: undefined,
     notification: <Button label="Run" onPress={notification.run} />,
@@ -198,6 +244,9 @@ export function PhoneChecksScreen() {
             Copied at {new Date(copiedAt).toLocaleTimeString()}
           </Text>
         )}
+      </View>
+      <View className="flex-row">
+        <Button label="Reset checks" onPress={onReset} />
       </View>
       <Text selectable className="font-mono text-xs text-neutral-600 dark:text-neutral-400">
         {report(copiedAt ?? openedAt)}

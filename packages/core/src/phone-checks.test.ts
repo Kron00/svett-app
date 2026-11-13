@@ -4,13 +4,20 @@ import {
   type CheckName,
   type CheckOutcome,
   NOT_RUN,
+  type StoredOutcome,
   chatGPTOutcome,
+  decodePendingNotification,
+  decodeStoredOutcome,
   encodeKeychainMark,
+  encodePendingNotification,
+  encodeStoredOutcome,
   formatReport,
   healthOutcome,
   keychainOutcome,
   locationOutcome,
   notificationDateMs,
+  mergeOutcome,
+  mergeOutcomes,
   notificationOutcome,
   parseCount,
   type WorkoutAccess,
@@ -53,30 +60,44 @@ describe("notificationOutcome", () => {
   const away = [{ from: s(3), to: s(40) }];
 
   it("passes when the notification arrived while svett was away", () => {
-    expect(notificationOutcome({ kind: "arrived", at: s(10) }, away)).toEqual({
+    expect(notificationOutcome({ kind: "arrived", at: s(10) }, away, s(0))).toEqual({
       status: "passed",
       detail: "Arrived at 15:00:10 UTC while svett was in the background.",
     });
   });
 
   it("counts an away stretch that has not ended yet", () => {
-    expect(notificationOutcome({ kind: "arrived", at: s(10) }, [{ from: s(3) }]).status).toBe(
+    expect(notificationOutcome({ kind: "arrived", at: s(10) }, [{ from: s(3) }], s(0)).status).toBe(
       "passed",
     );
   });
 
   it("asks for another run when it arrived while svett was open", () => {
-    expect(notificationOutcome({ kind: "arrived", at: s(50) }, away).status).toBe("waiting");
+    expect(notificationOutcome({ kind: "arrived", at: s(50) }, away, s(0)).status).toBe("waiting");
   });
 
   it("passes for an iOS delivery, whose date Expo gives in seconds", () => {
     const iosDate = s(10) / 1000 + 0.123;
-    expect(notificationOutcome({ kind: "arrived", at: notificationDateMs(iosDate) }, away)).toEqual(
-      {
-        status: "passed",
-        detail: "Arrived at 15:00:10 UTC while svett was in the background.",
-      },
-    );
+    expect(
+      notificationOutcome({ kind: "arrived", at: notificationDateMs(iosDate) }, away, s(0)),
+    ).toEqual({
+      status: "passed",
+      detail: "Arrived at 15:00:10 UTC while svett was in the background.",
+    });
+  });
+
+  it("passes when it arrived before this launch, while svett was closed", () => {
+    expect(notificationOutcome({ kind: "arrived", at: s(10) }, [], s(30))).toEqual({
+      status: "passed",
+      detail: "Arrived at 15:00:10 UTC while svett was closed.",
+    });
+  });
+
+  it("reads back the pending notification saved before a restart", () => {
+    const pending = { id: "abc", dueAt: s(10) };
+    expect(decodePendingNotification(encodePendingNotification(pending))).toEqual(pending);
+    expect(decodePendingNotification(null)).toBeUndefined();
+    expect(decodePendingNotification('{"id":1}')).toBeUndefined();
   });
 
   it("reads an Android date, which Expo gives in milliseconds, unchanged", () => {
@@ -84,8 +105,10 @@ describe("notificationOutcome", () => {
   });
 
   it("fails when notifications are off or it never showed", () => {
-    expect(notificationOutcome({ kind: "denied" }, []).status).toBe("failed");
-    expect(notificationOutcome({ kind: "missing", dueAt: s(10) }, away).status).toBe("failed");
+    expect(notificationOutcome({ kind: "denied" }, [], s(0)).status).toBe("failed");
+    expect(notificationOutcome({ kind: "missing", dueAt: s(10) }, away, s(0)).status).toBe(
+      "failed",
+    );
   });
 });
 
@@ -107,7 +130,7 @@ describe("locationOutcome", () => {
   it("fails when points stopped soon after the lock", () => {
     const outcome = locationOutcome(recording(everySecond(0, 20)), [{ from: s(5), to: s(75) }]);
     expect(outcome.status).toBe("failed");
-    expect(outcome.status !== "not run" && outcome.detail).toContain("16 points arrived");
+    expect(outcome.detail).toContain("16 points arrived");
   });
 
   it("fails when no point arrived while locked", () => {
@@ -214,7 +237,7 @@ describe("chatGPTOutcome", () => {
         "Signed in. Granted scope: openid email chatgpt.tokens.use.direct. Plan usage (chatgpt.tokens.use.direct): granted.",
     });
     const without = chatGPTOutcome({ kind: "signed in", scope: "openid email", earlier: true });
-    expect(without.status !== "not run" && without.detail).toBe(
+    expect(without.detail).toBe(
       "Signed in on an earlier launch. Granted scope: openid email. Plan usage (chatgpt.tokens.use.direct): not granted.",
     );
   });
@@ -225,7 +248,7 @@ describe("chatGPTOutcome", () => {
       scope: "chatgpt.tokens.use.direct.preview",
       earlier: false,
     });
-    expect(outcome.status !== "not run" && outcome.detail).toContain("not granted");
+    expect(outcome.detail).toContain("not granted");
   });
 
   it("fails with the sign-in problem", () => {
@@ -305,5 +328,92 @@ describe("formatReport", () => {
     expect(formatReport({ ...base, entitlements: null })).toContain(
       "Entitlements: could not be read\n",
     );
+  });
+});
+
+function saved(outcome: StoredOutcome["outcome"], launchedAt: number): StoredOutcome {
+  const stored = decodeStoredOutcome(encodeStoredOutcome({ outcome, launchedAt }));
+  if (stored === undefined) throw new Error("the saved outcome did not read back");
+  return stored;
+}
+
+describe("saved outcomes across a restart", () => {
+  const launchA = s(0);
+  const launchB = s(120);
+  const nothingLive: Record<CheckName, CheckOutcome> = {
+    keychain: NOT_RUN,
+    notification: NOT_RUN,
+    location: NOT_RUN,
+    health: NOT_RUN,
+    chatgpt: NOT_RUN,
+  };
+  const report = (outcomes: Record<CheckName, CheckOutcome>) =>
+    formatReport({
+      createdAt: launchB,
+      appVersion: "0.1.42",
+      appBuild: "42",
+      iosVersion: "27.2",
+      altStoreAppIds: undefined,
+      altStoreActiveApps: undefined,
+      entitlements: [],
+      outcomes,
+    });
+
+  it("reports the Keychain and a background notification as PASSED after svett restarts", () => {
+    const stored = {
+      keychain: saved(keychainOutcome({ kind: "read", stored: null }, launchA), launchA),
+      notification: saved(
+        notificationOutcome({ kind: "arrived", at: s(20) }, [{ from: s(5), to: s(60) }], launchA),
+        launchA,
+      ),
+    };
+    const live = {
+      ...nothingLive,
+      keychain: keychainOutcome({ kind: "read", stored: encodeKeychainMark(launchA) }, launchB),
+    };
+    const text = report(mergeOutcomes(live, stored, launchB));
+    expect(text).toContain(
+      "Keychain after restart: PASSED. Read back the value saved by the launch at 15:00:00 UTC.\n",
+    );
+    expect(text).toContain(
+      "Notification in the background: PASSED. Arrived at 15:00:20 UTC while svett was in the background.\n",
+    );
+    expect(text).toContain("Apple Health permission: NOT RUN\n");
+  });
+
+  it("keeps a reload of the same launch waiting for a real restart", () => {
+    const live = {
+      ...nothingLive,
+      keychain: keychainOutcome({ kind: "read", stored: encodeKeychainMark(launchA) }, launchA),
+    };
+    expect(report(mergeOutcomes(live, {}, launchA))).toContain("Keychain after restart: WAITING.");
+  });
+
+  it("shows this launch's outcome over a saved one", () => {
+    const stored = saved({ status: "passed", detail: "Arrived." }, launchA);
+    const live = { status: "waiting", detail: "Due soon." } as const;
+    expect(mergeOutcome(live, stored, launchB)).toEqual(live);
+  });
+
+  it("keeps a saved waiting outcome within its own launch", () => {
+    const outcome = { status: "waiting", detail: "Recording." } as const;
+    expect(mergeOutcome(NOT_RUN, saved(outcome, launchA), launchA)).toEqual(outcome);
+  });
+
+  it("asks to run again a check that was still waiting when svett closed", () => {
+    const stored = saved({ status: "waiting", detail: "Recording." }, launchA);
+    expect(mergeOutcome(NOT_RUN, stored, launchB)).toEqual({
+      status: "waiting",
+      detail: "svett closed before this check finished. Run it again.",
+    });
+  });
+
+  it("treats a missing or unreadable saved outcome as not run", () => {
+    expect(decodeStoredOutcome(null)).toBeUndefined();
+    expect(decodeStoredOutcome("{")).toBeUndefined();
+    expect(
+      decodeStoredOutcome(JSON.stringify({ outcome: { status: "not run" }, launchedAt: launchA })),
+    ).toBeUndefined();
+    expect(mergeOutcome(NOT_RUN, undefined, launchB)).toEqual(NOT_RUN);
   });
 });
