@@ -6,13 +6,13 @@ svett is an iPhone app for lifting and cardio, with one history for every kind o
 
 ## Repository
 
-| Path             | Holds                                                                |
-| ---------------- | -------------------------------------------------------------------- |
-| `apps/mobile`    | The Expo and React Native app.                                       |
-| `packages/core`  | Domain logic in plain TypeScript with no React, and its unit tests.  |
-| `packages/tools` | The tool definitions the coach uses.                                 |
-| `scripts`        | Mac build and simulator scripts, the icon renderer, and their tests. |
-| `docs/plan.html` | The approved build plan. Each pull request matches a step in it.     |
+| Path             | Holds                                                                             |
+| ---------------- | --------------------------------------------------------------------------------- |
+| `apps/mobile`    | The Expo and React Native app.                                                    |
+| `packages/core`  | Domain logic in plain TypeScript with no React, and its unit tests.               |
+| `packages/tools` | Where the coach's shared tool definitions will live. Empty for now.               |
+| `scripts`        | Mac build and simulator scripts, the icon renderer, and the build script's tests. |
+| `docs/plan.html` | The approved build plan. Each pull request matches a step in it.                  |
 
 ## Develop
 
@@ -45,7 +45,7 @@ The app reads no environment variables, so there is no `.env` file to set up.
 
 ### Tests
 
-`pnpm test` runs the Vitest suites in `packages/core` and the shell tests for `scripts/devbook-build.sh`. Test files sit next to the code they test, as `*.test.ts`. To run one package, or to rerun on each save:
+`pnpm test` runs the Vitest suites in `packages/core` and the shell tests for `scripts/devbook-build.sh`. Vitest files sit next to the code they test, as `*.test.ts`. The shell tests live in `scripts/test/`. To run one package, or to rerun on each save:
 
 ```sh
 pnpm --filter @svett/core test
@@ -54,9 +54,9 @@ pnpm --filter @svett/core exec vp test watch
 
 ### CI
 
-GitHub Actions runs `.github/workflows/ci.yml` on every pull request and on each push to `main`. One job checks formatting, lint, types and tests, then bundles the app. The other builds the app for the iOS Simulator on a macOS runner. `main` accepts changes only through pull requests, and both jobs must pass first. Dependabot opens one grouped pull request each week for npm packages and one for GitHub Actions.
+GitHub Actions runs `.github/workflows/ci.yml` on every pull request and on each push to `main`. One job checks formatting, lint, types and tests, then bundles the app. The other builds the app for the iOS Simulator on a macOS runner. Changes reach `main` through pull requests, and both jobs must pass first. Admins can still push directly. Dependabot opens one grouped pull request each week for npm packages and one for GitHub Actions.
 
-On the Mac, with Xcode 27.2, CocoaPods, Node 26 and pnpm 12:
+On the Mac, with Xcode 27.2, CocoaPods, and the same Node and pnpm versions:
 
 ```sh
 scripts/devbook-build.sh <branch>            # build, start Metro on localhost:8081, open the app

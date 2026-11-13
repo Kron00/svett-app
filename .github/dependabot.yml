@@ -31,9 +31,10 @@ updates:
         update-types: ["version-update:semver-major", "version-update:semver-minor"]
       - dependency-name: "@react-native/*"
         update-types: ["version-update:semver-major", "version-update:semver-minor"]
-      # These have overrides in pnpm-workspace.yaml that Dependabot does not edit.
+      # vite-plus moves with the vite alias to vite-plus-core in the pnpm catalog.
       - dependency-name: "vite-plus"
         update-types: ["version-update:semver-major", "version-update:semver-minor"]
+      # @react-navigation/core has an override in pnpm-workspace.yaml that Dependabot does not edit.
       - dependency-name: "@react-navigation/*"
         update-types: ["version-update:semver-major", "version-update:semver-minor"]
       # The major follows Node in .node-version.
