@@ -13,3 +13,6 @@ export * from "./repositories/exercises.ts";
 export * from "./repositories/routines.ts";
 export * from "./repositories/records.ts";
 export * from "./database.ts";
+export * from "./set-format.ts";
+export * from "./number-entry.ts";
+export * from "./chart-scale.ts";
