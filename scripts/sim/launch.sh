@@ -37,7 +37,9 @@ if [[ -z "${SVETT_DEVICE_CMD:-}" ]]; then
 fi
 
 open_flags=(--relaunch)
-[[ "$release" == true ]] || open_flags+=(--metro-host 127.0.0.1 --metro-port 8081)
+# Opening by bundle id alone shows the development client's launcher, and
+# agent-device's own Expo detection falls back to that when it is inconclusive.
+[[ "$release" == true ]] || open_flags+=(--launch-url "$(dev_client_url http://localhost:8081)")
 # The = form keeps agent-device from reading an argument such as -svettFixture as a flag.
 for argument in "$@"; do
   open_flags+=("--launch-args=$argument")

@@ -44,6 +44,13 @@ ensure_simulator() {
   echo "$udid"
 }
 
+# Prints the deep link that makes the development client load the app from the
+# Metro server at $1, such as http://localhost:8081.
+dev_client_url() {
+  printf 'svett://expo-development-client/?url=%s' \
+    "$(node -e 'process.stdout.write(encodeURIComponent(process.argv[1]))' "$1")"
+}
+
 # Runs agent-device on the simulator whose UDID is in $udid. Inside T3 Code,
 # SVETT_DEVICE_CMD holds the command that device_open returned, already bound to
 # one device and session, and every call goes through it instead.
