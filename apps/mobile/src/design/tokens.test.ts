@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 
 import { describe, expect, it } from "vite-plus/test";
 
-import { COLOR_TOKENS, type ColorToken, TEXT_STYLES } from "./tokens";
+import { COLOR_TOKENS, type ColorToken, TEXT_STYLES, TINT_COLORS } from "./tokens";
 
 const css = readFileSync(new URL("../../global.css", import.meta.url), "utf8");
 
@@ -63,6 +63,7 @@ const pairs: ReadonlyArray<readonly [ColorToken, ColorToken, number]> = [
   // An empty field shows the previous set's value as its placeholder.
   ["secondary-label", "control", TEXT],
   ["on-accent", "accent-fill", TEXT],
+  ...TINT_COLORS.map((token) => ["on-tint", token, GRAPHIC] as const),
   ["destructive", "destructive-fill", TEXT],
   // A finished set's row takes the success fill, and its badge keeps the set type's colour.
   ["label", "success-fill", TEXT],

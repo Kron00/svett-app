@@ -2,7 +2,7 @@ import { Children, Fragment, isValidElement, type ReactNode } from "react";
 import { Pressable, StyleSheet, Switch, View } from "react-native";
 
 import { useColor, useIsAccessibilityTextSize } from "../design/hooks";
-import type { ColorToken, SymbolName } from "../design/tokens";
+import type { SymbolName, TintColor } from "../design/tokens";
 import { AppText } from "./AppText";
 import { Icon } from "./Icon";
 
@@ -91,15 +91,15 @@ export type ListRowProps = {
   readonly title: string;
   readonly subtitle?: string;
   readonly value?: string;
-  readonly icon?: { readonly symbol: SymbolName; readonly color: ColorToken };
+  readonly icon?: { readonly symbol: SymbolName; readonly color: TintColor };
   readonly trailing?: RowTrailing;
   readonly testID?: string;
 };
 
-function RowIcon({ symbol, color }: { readonly symbol: SymbolName; readonly color: ColorToken }) {
+function RowIcon({ symbol, color }: { readonly symbol: SymbolName; readonly color: TintColor }) {
   return (
     <View className="rounded-lg p-1.5" style={{ backgroundColor: useColor(color) }}>
-      <Icon name={symbol} color="on-accent" size={17} />
+      <Icon name={symbol} color="on-tint" size={17} />
     </View>
   );
 }

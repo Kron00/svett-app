@@ -16,6 +16,7 @@ export const COLOR_TOKENS = [
   "accent",
   "accent-fill",
   "on-accent",
+  "on-tint",
   "destructive",
   "destructive-fill",
   "success",
@@ -34,7 +35,24 @@ export const COLOR_TOKENS = [
 
 export type ColorToken = (typeof COLOR_TOKENS)[number];
 
-export const SET_TYPE_COLOR: Readonly<Record<SetType, ColorToken>> = {
+/** Colours a symbol can sit on, as in a list row's icon. The symbol is drawn in on-tint. */
+export const TINT_COLORS = [
+  "accent",
+  "set-warm-up",
+  "set-normal",
+  "set-failure",
+  "set-drop",
+  "sport-strength",
+  "sport-run",
+  "sport-ride",
+  "sport-walk",
+  "sport-hike",
+  "sport-other",
+] as const satisfies ReadonlyArray<ColorToken>;
+
+export type TintColor = (typeof TINT_COLORS)[number];
+
+export const SET_TYPE_COLOR: Readonly<Record<SetType, TintColor>> = {
   warm_up: "set-warm-up",
   normal: "set-normal",
   failure: "set-failure",
@@ -44,7 +62,7 @@ export const SET_TYPE_COLOR: Readonly<Record<SetType, ColorToken>> = {
 export type Sport = {
   readonly label: string;
   readonly symbol: SymbolName;
-  readonly color: ColorToken;
+  readonly color: TintColor;
 };
 
 export const SPORTS: Readonly<Record<ActivityKind, Sport>> = {

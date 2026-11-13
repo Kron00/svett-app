@@ -20,6 +20,7 @@
       --color-accent: #c8103f;
       --color-accent-fill: #c8103f;
       --color-on-accent: #ffffff;
+      --color-on-tint: #ffffff;
       --color-destructive: #d70015;
       --color-destructive-fill: #fde7e9;
       --color-success: #1e7a35;
@@ -47,6 +48,7 @@
       --color-accent: #ff6b86;
       --color-accent-fill: #d4143f;
       --color-on-accent: #ffffff;
+      --color-on-tint: #000000;
       --color-destructive: #ff6961;
       --color-destructive-fill: #3b1517;
       --color-success: #30d158;
