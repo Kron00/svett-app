@@ -8,7 +8,8 @@
     "fmt:check": "vp fmt --check",
     "typecheck": "vp run -r typecheck",
     "test": "vp run -r test",
-    "icon": "node scripts/render-app-icon.ts"
+    "icon": "node scripts/render-app-icon.ts",
+    "fixture": "node scripts/fixture.ts"
   },
   "devDependencies": {
     "@effect/tsgo": "0.67.1",
