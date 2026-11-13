@@ -82,9 +82,10 @@ fingerprint=$(
     node -e 'let s = ""; process.stdin.on("data", (d) => (s += d)).on("end", () => console.log(JSON.parse(s).hash))'
 )
 last_fingerprint=$(cat "$fingerprint_file" 2>/dev/null || true)
+project_fingerprint=$(cat apps/mobile/ios/.svett-fingerprint 2>/dev/null || true)
 echo "Current $fingerprint, last $configuration build ${last_fingerprint:-none}"
 
-if [[ "$force_native" == false && "$fingerprint" == "$last_fingerprint" && -d "$app_path" ]]; then
+if [[ "$force_native" == false && "$fingerprint" == "$last_fingerprint" && "$fingerprint" == "$project_fingerprint" && -d "$app_path" ]]; then
   native_unchanged=true
 else
   native_unchanged=false
@@ -99,8 +100,10 @@ else
   else
     echo "Native build: full (prebuild, pod install, xcodebuild)"
     step "Generating the iOS project"
+    rm -f apps/mobile/ios/.svett-fingerprint
     scripts/ios-prebuild.sh
     (cd apps/mobile/ios && pod install)
+    echo "$fingerprint" >apps/mobile/ios/.svett-fingerprint
   fi
 
   step "Building $configuration for $simulator_name"
