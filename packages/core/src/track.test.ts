@@ -164,6 +164,19 @@ describe("cleanTrack", () => {
     expect(elapsedSeconds(cleaned)).toBe(245);
   });
 
+  it("outvotes a coarse, offset cold start once accurate fixes arrive", () => {
+    const coarse = Array.from({ length: 10 }, (_, i) =>
+      point(i, 0, { lon: 56 / METERS_PER_DEGREE, accuracyMeters: 25 }),
+    );
+    const walk = Array.from({ length: 200 }, (_, i) =>
+      point(10 + i, i * 1.5, { accuracyMeters: 5 }),
+    );
+    const cleaned = cleanTrack([...coarse, ...walk], "walk");
+    expect(cleaned[0]?.at).toBe(10 * 1000);
+    expect(trackDistanceMeters(cleaned)).toBeGreaterThan(298.5 - 10);
+    expect(trackDistanceMeters(cleaned)).toBeLessThan(298.5 + 1e-6);
+  });
+
   it("keeps the walk before a run of bad fixes in the middle", () => {
     const bad = Array.from({ length: 7 }, (_, i) =>
       point(40 + i, 60, { lon: 80 / METERS_PER_DEGREE, accuracyMeters: 5 }),

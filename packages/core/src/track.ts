@@ -53,7 +53,16 @@ export const cleanTrack = (
   const kept: Array<TrackPoint> = [];
   let rejected: Array<TrackPoint> = [];
   let held: TrackPoint | undefined;
-  let accepted = 0;
+  // Accepted fixes by whole metres of accuracy, so a run of bad fixes is weighed only against
+  // fixes at least as accurate as it is.
+  let accepted: Array<number> = Array.from({ length: MAX_ACCURACY_METERS + 1 }, () => 0);
+  const accept = (point: TrackPoint): void => {
+    accepted[Math.ceil(point.accuracyMeters ?? 0)]! += 1;
+  };
+  const acceptedAsAccurateAs = (run: ReadonlyArray<TrackPoint>): number => {
+    const worst = Math.ceil(Math.max(...run.map((fix) => fix.accuracyMeters ?? 0)));
+    return accepted.slice(0, worst + 1).reduce((sum, count) => sum + count, 0);
+  };
   for (const point of points) {
     if ((point.accuracyMeters ?? 0) > MAX_ACCURACY_METERS) continue;
     const last = kept.at(-1);
@@ -64,7 +73,7 @@ export const cleanTrack = (
       // Two fixes of one spot can sit up to both error radii apart. Only the last one's time is kept.
       held = { ...last, at: point.at };
       rejected = [];
-      accepted += 1;
+      accept(point);
     } else if (
       last === undefined ||
       // After a stop, a jump must also be plausible from the latest still fix, not only from
@@ -74,16 +83,17 @@ export const cleanTrack = (
       kept.push(point);
       rejected = [];
       held = undefined;
-      accepted += 1;
+      accept(point);
     } else {
       const previous = rejected.at(-1);
       rejected =
         previous !== undefined && plausible(previous, point) ? [...rejected, point] : [point];
-      // A run of at least three agreeing fixes outvotes every fix accepted before it, such as
-      // stale cached fixes at the start of a recording.
-      if (rejected.length >= 3 && rejected.length > accepted) {
+      // A run of at least three agreeing fixes outvotes the fixes accepted before it that are
+      // at least as accurate, such as stale or coarse cached fixes at the start of a recording.
+      if (rejected.length >= 3 && rejected.length > acceptedAsAccurateAs(rejected)) {
         kept.splice(0, kept.length, ...rejected);
-        accepted = rejected.length;
+        accepted = accepted.map(() => 0);
+        for (const fix of rejected) accept(fix);
         rejected = [];
         held = undefined;
       }
