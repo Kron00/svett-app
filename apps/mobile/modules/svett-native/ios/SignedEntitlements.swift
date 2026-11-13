@@ -2,11 +2,16 @@ import Foundation
 import MachO
 
 /// The entitlements the running app was signed with. On a phone they are in the code signature that
-/// AltStore wrote, so this shows what AltStore kept. A simulator build keeps them in a section of its
-/// own instead.
+/// AltStore wrote, so this shows what AltStore kept. Xcode signs a simulator build with empty
+/// entitlements and puts the real ones in a section of the executable, which the simulator grants.
 enum SignedEntitlements {
     static func keys() -> [String]? {
-        guard let xml = fromSignature() ?? fromSimulatorSection(),
+        #if targetEnvironment(simulator)
+        let xml = fromSimulatorSection()
+        #else
+        let xml = fromSignature()
+        #endif
+        guard let xml,
               let entitlements = try? PropertyListSerialization.propertyList(from: xml, format: nil) as? [String: Any]
         else { return nil }
         return entitlements.keys.sorted()
