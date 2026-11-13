@@ -7,6 +7,9 @@
 #
 # Usage: scripts/test/devbook-build.test.sh
 set -euo pipefail
+# Git exports these to commands it runs, such as `git rebase -x`. Left set, the
+# test's git calls would act on the repo under test instead of its temp repos.
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR
 
 repo=$(cd "$(dirname "$0")/../.." && pwd)
 root=$(mktemp -d)
