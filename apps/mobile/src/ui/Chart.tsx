@@ -1,4 +1,4 @@
-import { niceTicks, scaleLinear, type Ticks } from "@svett/core";
+import { niceTicks, placeAxisLabels, scaleLinear, type Ticks } from "@svett/core";
 import { createContext, type ReactNode, use, useMemo, useState } from "react";
 import { View } from "react-native";
 import Svg, { Circle, Line, Path, Rect } from "react-native-svg";
@@ -30,7 +30,7 @@ const PlotContext = createContext<Plot | null>(null);
 
 // Keeps points and lines on the top and bottom ticks from being cut in half by the SVG's edge.
 const PLOT_INSET = 6;
-const X_LABEL_WIDTH = 120;
+const X_LABEL_GAP = 4;
 
 function usePlot(): Plot {
   const plot = use(PlotContext);
@@ -80,7 +80,24 @@ export function Chart({
       y: scaleLinear([ticks.min, ticks.max], [height - PLOT_INSET, PLOT_INSET]),
     };
   }, [points, includeZero, large, width, height]);
-  const labelWidth = Math.min(width, X_LABEL_WIDTH);
+  const [labelWidths, setLabelWidths] = useState<Readonly<Record<string, number>>>({});
+  const measured = points.every((point) => labelWidths[point.key] !== undefined);
+  const placed = useMemo(
+    () =>
+      new Map(
+        measured
+          ? placeAxisLabels(
+              points.map((point, index) => ({
+                center: plot.x(index),
+                width: labelWidths[point.key] ?? 0,
+              })),
+              width,
+              X_LABEL_GAP,
+            ).map(({ index, left }) => [index, left])
+          : [],
+      ),
+    [points, plot, labelWidths, measured, width],
+  );
 
   return (
     <View accessible accessibilityRole="image" accessibilityLabel={accessibilityLabel}>
@@ -98,25 +115,38 @@ export function Chart({
             ) : null}
           </View>
           <View>
-            {/* Sets the row's height. The labels are centred on their points instead of
-                squeezed into one slot each, so "Sep" stays whole at large text sizes. */}
+            {/* Sets the row's height. Each label keeps its own width, centred on its point,
+                and labels that would overlap at large text sizes are left out. */}
             <AppText variant="caption1" style={{ opacity: 0 }}>
               0
             </AppText>
-            {points.map((point, index) => (
-              <AppText
-                key={point.key}
-                variant="caption1"
-                tone="secondary"
-                className="absolute top-0 text-center"
-                style={{
-                  width: labelWidth,
-                  left: Math.min(Math.max(0, plot.x(index) - labelWidth / 2), width - labelWidth),
-                }}
-              >
-                {point.label}
-              </AppText>
-            ))}
+            {points.map((point, index) => {
+              const left = placed.get(index);
+              return (
+                <AppText
+                  key={point.key}
+                  variant="caption1"
+                  tone="secondary"
+                  numberOfLines={1}
+                  className="absolute top-0 left-0"
+                  // Placed with a transform, so moving a label never changes the width it measures.
+                  style={{
+                    opacity: left === undefined ? 0 : 1,
+                    transform: [{ translateX: left ?? 0 }],
+                  }}
+                  onLayout={({ nativeEvent }) => {
+                    const measuredWidth = nativeEvent.layout.width;
+                    setLabelWidths((widths) =>
+                      widths[point.key] === measuredWidth
+                        ? widths
+                        : { ...widths, [point.key]: measuredWidth },
+                    );
+                  }}
+                >
+                  {point.label}
+                </AppText>
+              );
+            })}
           </View>
         </View>
         <View className="justify-between" style={{ height: height - 2 * PLOT_INSET + labelHeight }}>
