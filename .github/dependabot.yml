@@ -7,7 +7,6 @@ updates:
       interval: weekly
     cooldown:
       default-days: 7
-    open-pull-requests-limit: 5
     groups:
       dependencies:
         patterns: ["*"]
@@ -30,6 +29,11 @@ updates:
       - dependency-name: "react-native-*"
         update-types: ["version-update:semver-major", "version-update:semver-minor"]
       - dependency-name: "@react-native/*"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+      # Each of these moves with its override in pnpm-workspace.yaml.
+      - dependency-name: "vite-plus"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+      - dependency-name: "@react-navigation/*"
         update-types: ["version-update:semver-major", "version-update:semver-minor"]
       # The major follows the Node version in .node-version.
       - dependency-name: "@types/node"

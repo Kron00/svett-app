@@ -15,6 +15,6 @@
 - [ ] `pnpm fmt:check`, `pnpm lint`, `pnpm typecheck` and `pnpm test` pass.
 - [ ] The app bundles: `pnpm --filter @svett/mobile exec expo export --platform ios`.
 - [ ] Changes a user can see have simulator screenshots from `scripts/sim/tabs.sh`.
-- [ ] The diff holds no tokens, `.env` files, real names, email addresses, IP addresses or real workout exports.
+- [ ] The diff holds no tokens, `.env` files, real names, user names, email addresses, IP addresses, real workout exports or files from `research/screenshots/`.
 - [ ] `README.md` and `AGENTS.md` match the change.
 - [ ] The pull request went through the sol loop, and both council reviewers scored it 9 or higher.

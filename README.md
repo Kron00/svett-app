@@ -35,7 +35,7 @@ pnpm --filter @svett/mobile exec expo export --platform ios
 
 ### Run the tests
 
-`pnpm test` runs the unit tests in `packages/core` and the shell test of the Mac build script in `scripts`. To run one package's tests, or one test file, use a filter:
+`pnpm test` runs every package's tests. To run one package's tests, or one test file, use a filter:
 
 ```sh
 pnpm --filter @svett/core test
@@ -44,9 +44,9 @@ pnpm --filter @svett/core exec vp test run src/duration.test.ts
 
 ### Continuous integration
 
-GitHub Actions runs `.github/workflows/ci.yml` on every pull request and on every push to `main`. One job checks the format, lints, type checks, runs the tests and bundles the app. A second job compiles the app for the iOS Simulator on a macOS runner. `main` accepts changes only through a pull request on which both jobs pass.
+GitHub Actions runs `.github/workflows/ci.yml` on every pull request and on every push to `main`. One job checks the format, lints, type checks, runs the tests and bundles the app. A second job compiles the app for the iOS Simulator on a macOS runner. A pull request into `main` needs both jobs to pass. The repo owner can bypass that rule.
 
-Dependabot opens one pull request a week for package updates and one for GitHub Actions updates. `.github/dependabot.yml` holds the rules.
+Dependabot checks for updates each week. It groups package updates into one pull request and GitHub Actions updates into another. `.github/dependabot.yml` holds the rules.
 
 ### Build on the Mac
 
