@@ -69,8 +69,15 @@ const makeSql = (driver: SqlDriver) =>
                     const exit = yield* Effect.exit(
                       restore(Effect.provideService(effect, InTransaction, true)),
                     );
-                    const end = Exit.isSuccess(exit) ? "COMMIT" : "ROLLBACK";
-                    yield* call(end, () => driver.exec(end));
+                    const rollback = call("ROLLBACK", () => driver.exec("ROLLBACK"));
+                    if (Exit.isSuccess(exit)) {
+                      // A failed COMMIT leaves the transaction open on the shared connection.
+                      yield* call("COMMIT", () => driver.exec("COMMIT")).pipe(
+                        Effect.onError(() => Effect.ignore(rollback)),
+                      );
+                    } else {
+                      yield* rollback;
+                    }
                     return yield* exit;
                   }),
                 ),
