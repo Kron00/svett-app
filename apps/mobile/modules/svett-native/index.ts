@@ -1,3 +1,4 @@
+import type { WorkoutAccess } from "@svett/core";
 import { requireNativeModule } from "expo";
 
 export interface ChatGPTSession {
@@ -10,18 +11,12 @@ export type SignInResult =
   | { readonly status: "failed"; readonly problem: string }
   | { readonly status: "cancelled" };
 
-export interface WorkoutAccessResult {
-  readonly available: boolean;
-  readonly error?: string;
-  readonly workouts?: number;
-}
-
 interface SvettNative {
   /** When this process started, in milliseconds since 1970. */
   readonly launchedAt: number;
   /** The entitlement keys the running app is signed with, or null when they cannot be read. */
   signedEntitlements(): string[] | null;
-  requestWorkoutAccess(): Promise<WorkoutAccessResult>;
+  requestWorkoutAccess(): Promise<WorkoutAccess>;
   /** The stored ChatGPT sign-in, without its tokens. */
   chatGPTSession(): Promise<ChatGPTSession | null>;
   signInWithChatGPT(route: "sheet" | "safari"): Promise<SignInResult>;

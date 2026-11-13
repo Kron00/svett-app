@@ -26,6 +26,7 @@ const STATUS_COLOR: Record<CheckOutcome["status"], string> = {
   waiting: "text-amber-600 dark:text-amber-400",
   passed: "text-green-600 dark:text-green-400",
   failed: "text-red-600 dark:text-red-400",
+  inconclusive: "text-orange-600 dark:text-orange-400",
 };
 
 function Button({ label, onPress }: { readonly label: string; readonly onPress: () => unknown }) {

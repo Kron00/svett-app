@@ -13,6 +13,7 @@ import {
   notificationDateMs,
   notificationOutcome,
   parseCount,
+  type WorkoutAccess,
 } from "./phone-checks.ts";
 
 const T0 = Date.parse("2026-11-13T15:00:00Z");
@@ -147,31 +148,55 @@ describe("locationOutcome", () => {
   });
 });
 
-describe("healthOutcome", () => {
-  const ok = { available: true, entitlement: true, error: null, workouts: 3 };
+const read = (workouts: number) => ({ kind: "read", workouts }) as const;
+const signed = (access: WorkoutAccess) => healthOutcome({ entitlement: true, access });
 
-  it("passes when the request went through with the entitlement in the app", () => {
-    expect(healthOutcome(ok)).toEqual({
+describe("healthOutcome", () => {
+  it("passes only with the entitlement, a granted request and a readable workout", () => {
+    expect(signed(read(3))).toEqual({
       status: "passed",
       detail:
         "Asked to read workouts. Workouts readable: 3. The HealthKit entitlement is in the app.",
     });
   });
 
-  it("fails without the entitlement or when Health refuses", () => {
-    expect(healthOutcome({ ...ok, entitlement: false }).status).toBe("failed");
-    expect(healthOutcome({ ...ok, error: "Missing entitlement" })).toEqual({
+  it("is inconclusive with no readable workouts and says how to verify", () => {
+    expect(signed(read(0))).toEqual({
+      status: "inconclusive",
+      detail:
+        "Asked to read workouts. Workouts readable: 0. iOS also reads none when reading is not allowed. Add one workout in the Health app, or open Health > Sharing > Apps > svett to see the read permission, then run the check again.",
+    });
+  });
+
+  it("is inconclusive when the entitlements cannot be read", () => {
+    expect(healthOutcome({ entitlement: null, access: read(3) })).toEqual({
+      status: "inconclusive",
+      detail:
+        "Asked to read workouts. Workouts readable: 3. The app's entitlements could not be read. So the HealthKit entitlement is not confirmed.",
+    });
+  });
+
+  it("fails with the reason when the workout query fails", () => {
+    expect(signed({ kind: "query failed", reason: "Protected data is unavailable." })).toEqual({
+      status: "failed",
+      detail:
+        "Asked to read workouts, but reading them failed: Protected data is unavailable. The HealthKit entitlement is in the app.",
+    });
+    expect(
+      healthOutcome({ entitlement: null, access: { kind: "query failed", reason: "No." } }).status,
+    ).toBe("failed");
+  });
+
+  it("fails without the entitlement, when Health refuses, or without Health", () => {
+    expect(healthOutcome({ entitlement: false, access: read(3) })).toEqual({
+      status: "failed",
+      detail: "The HealthKit entitlement is missing from the app.",
+    });
+    expect(signed({ kind: "refused", reason: "Missing entitlement" })).toEqual({
       status: "failed",
       detail: "Apple Health refused: Missing entitlement The HealthKit entitlement is in the app.",
     });
-    expect(healthOutcome({ ...ok, available: false }).status).toBe("failed");
-  });
-
-  it("says when the entitlements cannot be read", () => {
-    const outcome = healthOutcome({ ...ok, entitlement: null, workouts: null });
-    expect(outcome.status !== "not run" && outcome.detail).toBe(
-      "Asked to read workouts. Workouts readable: unknown. The app's entitlements could not be read.",
-    );
+    expect(signed({ kind: "unavailable" }).status).toBe("failed");
   });
 });
 
@@ -230,7 +255,7 @@ describe("formatReport", () => {
     keychain: { status: "passed", detail: "Read back the value." },
     notification: NOT_RUN,
     location: { status: "waiting", detail: "Recording." },
-    health: { status: "failed", detail: "No entitlement." },
+    health: { status: "inconclusive", detail: "Workouts readable: 0." },
     chatgpt: NOT_RUN,
   };
 
@@ -259,7 +284,7 @@ describe("formatReport", () => {
         "Keychain after restart: PASSED. Read back the value.",
         "Notification in the background: NOT RUN",
         "GPS with the screen locked: WAITING. Recording.",
-        "Apple Health permission: FAILED. No entitlement.",
+        "Apple Health permission: INCONCLUSIVE. Workouts readable: 0.",
         "ChatGPT sign-in: NOT RUN",
         "",
       ].join("\n"),

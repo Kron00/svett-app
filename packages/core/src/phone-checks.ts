@@ -4,13 +4,17 @@ export type CheckName = "keychain" | "notification" | "location" | "health" | "c
 
 export type CheckOutcome =
   | { readonly status: "not run" }
-  | { readonly status: "waiting" | "passed" | "failed"; readonly detail: string };
+  | {
+      readonly status: "waiting" | "passed" | "failed" | "inconclusive";
+      readonly detail: string;
+    };
 
 export const NOT_RUN: CheckOutcome = { status: "not run" };
 
 const waiting = (detail: string): CheckOutcome => ({ status: "waiting", detail });
 const passed = (detail: string): CheckOutcome => ({ status: "passed", detail });
 const failed = (detail: string): CheckOutcome => ({ status: "failed", detail });
+const inconclusive = (detail: string): CheckOutcome => ({ status: "inconclusive", detail });
 
 export interface CheckInfo {
   readonly name: CheckName;
@@ -178,27 +182,46 @@ export function locationOutcome(
   );
 }
 
+/** What the app learned from asking Apple Health to read workouts. */
+export type WorkoutAccess =
+  | { readonly kind: "unavailable" }
+  | { readonly kind: "refused"; readonly reason: string }
+  | { readonly kind: "query failed"; readonly reason: string }
+  /** iOS also reads none when reading was not allowed. */
+  | { readonly kind: "read"; readonly workouts: number };
+
 export interface HealthObservation {
-  readonly available: boolean;
   /** Whether the running app's signature carries the HealthKit entitlement, when it can be read. */
   readonly entitlement: boolean | null;
-  readonly error: string | null;
-  /** How many workouts the app could read after asking. A denied read also reads none. */
-  readonly workouts: number | null;
+  readonly access: WorkoutAccess;
 }
 
-export function healthOutcome(health: HealthObservation): CheckOutcome {
-  if (!health.available) return failed("Apple Health is not available on this device.");
-  const entitlement =
-    health.entitlement === null
+const VERIFY_HEALTH =
+  "Add one workout in the Health app, or open Health > Sharing > Apps > svett to see the read permission, then run the check again.";
+
+export function healthOutcome({ entitlement, access }: HealthObservation): CheckOutcome {
+  if (access.kind === "unavailable") return failed("Apple Health is not available on this device.");
+  const signed =
+    entitlement === null
       ? "The app's entitlements could not be read."
-      : health.entitlement
+      : entitlement
         ? "The HealthKit entitlement is in the app."
         : "The HealthKit entitlement is missing from the app.";
-  if (health.error !== null) return failed(`Apple Health refused: ${health.error} ${entitlement}`);
-  if (health.entitlement === false) return failed(entitlement);
-  const workouts = health.workouts === null ? "unknown" : String(health.workouts);
-  return passed(`Asked to read workouts. Workouts readable: ${workouts}. ${entitlement}`);
+  if (access.kind === "refused") return failed(`Apple Health refused: ${access.reason} ${signed}`);
+  if (entitlement === false) return failed(signed);
+  if (access.kind === "query failed") {
+    return failed(`Asked to read workouts, but reading them failed: ${access.reason} ${signed}`);
+  }
+  const read = `Asked to read workouts. Workouts readable: ${access.workouts}.`;
+  if (entitlement === null) {
+    return inconclusive(`${read} ${signed} So the HealthKit entitlement is not confirmed.`);
+  }
+  if (access.workouts === 0) {
+    return inconclusive(
+      `${read} iOS also reads none when reading is not allowed. ${VERIFY_HEALTH}`,
+    );
+  }
+  return passed(`${read} ${signed}`);
 }
 
 export const PLAN_USAGE_SCOPE = "chatgpt.tokens.use.direct";
@@ -247,6 +270,7 @@ const STATUS_LABEL: Record<CheckOutcome["status"], string> = {
   waiting: "WAITING",
   passed: "PASSED",
   failed: "FAILED",
+  inconclusive: "INCONCLUSIVE",
 };
 
 export const statusLabel = (outcome: CheckOutcome): string => STATUS_LABEL[outcome.status];

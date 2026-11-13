@@ -178,11 +178,9 @@ export function useHealthCheck() {
     const access = await SvettNative.requestWorkoutAccess();
     const entitlements = SvettNative.signedEntitlements();
     setHealth({
-      available: access.available,
       entitlement:
         entitlements === null ? null : entitlements.includes("com.apple.developer.healthkit"),
-      error: access.error ?? null,
-      workouts: access.workouts ?? null,
+      access,
     });
   };
   return { outcome: health === undefined ? NOT_RUN : healthOutcome(health), run };

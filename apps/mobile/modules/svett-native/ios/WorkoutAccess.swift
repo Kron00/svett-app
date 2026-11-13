@@ -6,23 +6,31 @@ enum WorkoutAccess {
     private static let store = HKHealthStore()
 
     static func request() async -> [String: Any] {
-        guard HKHealthStore.isHealthDataAvailable() else { return ["available": false] }
+        guard HKHealthStore.isHealthDataAvailable() else { return ["kind": "unavailable"] }
         do {
             try await store.requestAuthorization(toShare: [], read: [HKObjectType.workoutType()])
         } catch {
-            return ["available": true, "error": error.localizedDescription]
+            return ["kind": "refused", "reason": error.localizedDescription]
         }
-        guard let workouts = await readableWorkouts() else { return ["available": true] }
-        return ["available": true, "workouts": workouts]
+        switch await readableWorkouts() {
+        case .success(let workouts):
+            return ["kind": "read", "workouts": workouts]
+        case .failure(let error):
+            return ["kind": "query failed", "reason": error.localizedDescription]
+        }
     }
 
-    private static func readableWorkouts() async -> Int? {
+    private static func readableWorkouts() async -> Result<Int, Error> {
         await withCheckedContinuation { continuation in
             let query = HKSampleQuery(
                 sampleType: HKObjectType.workoutType(), predicate: nil, limit: HKObjectQueryNoLimit,
                 sortDescriptors: nil
             ) { _, samples, error in
-                continuation.resume(returning: error == nil ? samples?.count ?? 0 : nil)
+                if let error {
+                    continuation.resume(returning: .failure(error))
+                } else {
+                    continuation.resume(returning: .success(samples?.count ?? 0))
+                }
             }
             store.execute(query)
         }
