@@ -17,7 +17,11 @@ trap 'rm -rf "$planted"' EXIT
 printf 'export const cta = "Upgrade to svett Pro to see older workouts";\n' >"$planted/cta.ts"
 [[ -n "$(scan "$planted")" ]] || { echo "FAIL: the scan missed planted upsell text" >&2; exit 1; }
 
-found=$(scan "$repo/apps/mobile/src" "$repo/apps/mobile/app.config.ts" "$repo"/packages/*/src)
+roots=("$repo/apps/mobile/src" "$repo/apps/mobile/app.config.ts" "$repo"/packages/*/src)
+for root in "${roots[@]}"; do
+  [[ -e "$root" ]] || { echo "FAIL: $root is gone. Point the scan at the app's code." >&2; exit 1; }
+done
+found=$(scan "${roots[@]}")
 if [[ -n "$found" ]]; then
   echo "FAIL: upsell wording found. svett has no paid tier." >&2
   echo "$found" >&2
