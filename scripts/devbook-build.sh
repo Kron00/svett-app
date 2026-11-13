@@ -1,0 +1,128 @@
+#!/usr/bin/env bash
+# Builds a branch of svett for the iOS Simulator on rena-devbook and opens it.
+#
+# Usage: scripts/devbook-build.sh [--release] <branch> [metro-host[:port]]
+#
+# Debug (default) builds a development client, starts Metro on this Mac at
+# localhost:8081 unless another host is given, and opens the app on that server.
+# --release builds the Release configuration with the JS bundle embedded and
+# launches it with no development server.
+set -euo pipefail
+
+usage() {
+  echo "Usage: $0 [--release] <branch> [metro-host[:port]]" >&2
+  exit 64
+}
+
+configuration=Debug
+if [[ "${1:-}" == "--release" ]]; then
+  configuration=Release
+  shift
+fi
+[[ $# -ge 1 && $# -le 2 ]] || usage
+
+branch=$1
+metro=${2:-localhost}
+metro_host=${metro%%:*}
+metro_port=8081
+[[ "$metro" == *:* ]] && metro_port=${metro##*:}
+
+repo_url=https://github.com/Kron00/svett-app.git
+checkout=${SVETT_CHECKOUT:-$HOME/svett-app}
+device_name="iPhone 16 Pro Max"
+bundle_id=com.kron00.svett
+derived_data="$checkout/apps/mobile/ios/build"
+metro_pid_file="$checkout/.metro.pid"
+metro_log="$checkout/metro.log"
+
+step() { printf '\n==> %s\n' "$*"; }
+
+step "Syncing $checkout to origin/$branch"
+[[ -d "$checkout/.git" ]] || git clone "$repo_url" "$checkout"
+cd "$checkout"
+git fetch origin "+refs/heads/$branch:refs/remotes/origin/$branch"
+git checkout --force -B "$branch" "origin/$branch"
+git log -1 --format='%h %s'
+
+if command -v fnm >/dev/null; then
+  eval "$(fnm env --shell bash)"
+  fnm use --install-if-missing
+fi
+node_version=$(node --version)
+[[ "v$(cat .node-version)" == "$node_version" ]] || {
+  echo "Node $(cat .node-version) is required, found $node_version" >&2
+  exit 1
+}
+
+step "Installing packages"
+pnpm install --frozen-lockfile
+
+step "Generating the iOS project"
+scripts/ios-prebuild.sh
+(cd apps/mobile/ios && pod install)
+
+step "Building $configuration for the $device_name simulator"
+xcodebuild build \
+  -workspace apps/mobile/ios/svett.xcworkspace \
+  -scheme svett \
+  -configuration "$configuration" \
+  -sdk iphonesimulator \
+  -destination "platform=iOS Simulator,name=$device_name" \
+  -derivedDataPath "$derived_data" \
+  CODE_SIGNING_ALLOWED=NO \
+  -quiet
+app_path="$derived_data/Build/Products/$configuration-iphonesimulator/svett.app"
+
+step "Installing on the $device_name simulator"
+udid=$(xcrun simctl list devices available | grep -F "$device_name (" | head -1 | grep -oE '[0-9A-F]{8}(-[0-9A-F]{4}){3}-[0-9A-F]{12}')
+[[ -n "$udid" ]] || {
+  echo "No available simulator named $device_name" >&2
+  exit 1
+}
+xcrun simctl bootstatus "$udid" -b
+open -a Simulator --args -CurrentDeviceUDID "$udid"
+xcrun simctl terminate "$udid" "$bundle_id" 2>/dev/null || true
+xcrun simctl install "$udid" "$app_path"
+
+if [[ "$configuration" == Release ]]; then
+  step "Launching the Release build"
+  xcrun simctl launch "$udid" "$bundle_id"
+  exit 0
+fi
+
+if [[ "$metro_host" == localhost ]]; then
+  step "Starting Metro on localhost:$metro_port"
+  if [[ -f "$metro_pid_file" ]] && kill -0 "$(cat "$metro_pid_file")" 2>/dev/null; then
+    # pnpm does not always pass the signal on, so the Metro listener is stopped too.
+    { cat "$metro_pid_file"; lsof -ti "tcp:$metro_port" -sTCP:LISTEN; } | xargs kill 2>/dev/null || true
+    for _ in $(seq 1 15); do
+      lsof -ti "tcp:$metro_port" -sTCP:LISTEN >/dev/null || break
+      sleep 1
+    done
+  fi
+  if lsof -ti "tcp:$metro_port" -sTCP:LISTEN >/dev/null; then
+    echo "Port $metro_port is taken by a process this script did not start" >&2
+    exit 1
+  fi
+  nohup pnpm --filter @svett/mobile start --port "$metro_port" </dev/null >"$metro_log" 2>&1 &
+  echo $! >"$metro_pid_file"
+  disown
+fi
+
+metro_url="http://$metro_host:$metro_port"
+step "Waiting for Metro at $metro_url"
+for _ in $(seq 1 60); do
+  curl -fsS "$metro_url/status" 2>/dev/null | grep -q packager-status:running && break
+  sleep 2
+done
+curl -fsS "$metro_url/status" | grep -q packager-status:running || {
+  echo "Metro is not answering at $metro_url (log: $metro_log)" >&2
+  exit 1
+}
+
+step "Opening the app on $metro_url"
+# Skips the dev menu's first-run sheet, which would cover the app.
+xcrun simctl spawn "$udid" defaults write "$bundle_id" EXDevMenuIsOnboardingFinished -bool YES
+encoded_url=$(node -e 'process.stdout.write(encodeURIComponent(process.argv[1]))' "$metro_url")
+xcrun simctl openurl "$udid" "svett://expo-development-client/?url=$encoded_url"
+echo "Metro log: $metro_log"
