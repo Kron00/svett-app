@@ -1,26 +1,33 @@
 #!/usr/bin/env bash
 # Builds a branch of svett for the iOS Simulator on rena-devbook and opens it.
 #
-# Usage: scripts/devbook-build.sh [--release] <branch> [metro-host[:port]]
+# Usage: scripts/devbook-build.sh [--release] [--native] <branch> [metro-host[:port]]
 #
 # Debug (default) builds a development client, starts Metro on this Mac at
 # localhost:8081 unless another host is given, and opens the app on that server.
 # --release builds the Release configuration with the JS bundle embedded and
 # launches it with no development server.
 #
-# SVETT_SIMULATOR picks the simulator (see scripts/sim/simulator.sh).
+# The native build runs only when the Expo fingerprint of the native inputs
+# differs from the last successful build of that configuration. --native forces
+# it. SVETT_SIMULATOR picks the simulator (see scripts/sim/simulator.sh).
 set -euo pipefail
 
 usage() {
-  echo "Usage: $0 [--release] <branch> [metro-host[:port]]" >&2
+  echo "Usage: $0 [--release] [--native] <branch> [metro-host[:port]]" >&2
   exit 64
 }
 
 configuration=Debug
-if [[ "${1:-}" == "--release" ]]; then
-  configuration=Release
+force_native=false
+while [[ "${1:-}" == --* ]]; do
+  case $1 in
+    --release) configuration=Release ;;
+    --native) force_native=true ;;
+    *) usage ;;
+  esac
   shift
-fi
+done
 [[ $# -ge 1 && $# -le 2 ]] || usage
 
 branch=$1
@@ -32,7 +39,11 @@ metro_port=8081
 repo_url=https://github.com/Kron00/svett-app.git
 checkout=${SVETT_CHECKOUT:-$HOME/svett-app}
 bundle_id=com.kron00.svett
-derived_data="$checkout/apps/mobile/ios/build"
+# Outside apps/mobile/ios, which `expo prebuild --clean` deletes.
+build_dir="$HOME/svett-app-build/$configuration"
+derived_data="$build_dir/DerivedData"
+fingerprint_file="$build_dir/fingerprint"
+app_path="$derived_data/Build/Products/$configuration-iphonesimulator/svett.app"
 metro_pid_file="$checkout/.metro.pid"
 metro_log="$checkout/metro.log"
 
@@ -64,21 +75,48 @@ source scripts/sim/simulator.sh
 udid=$(ensure_simulator)
 echo "$simulator_name ($udid)"
 
-step "Generating the iOS project"
-scripts/ios-prebuild.sh
-(cd apps/mobile/ios && pod install)
+step "Fingerprinting the native inputs"
+fingerprint=$(
+  cd apps/mobile
+  pnpm exec fingerprint fingerprint:generate --platform ios |
+    node -e 'let s = ""; process.stdin.on("data", (d) => (s += d)).on("end", () => console.log(JSON.parse(s).hash))'
+)
+last_fingerprint=$(cat "$fingerprint_file" 2>/dev/null || true)
+echo "Current $fingerprint, last $configuration build ${last_fingerprint:-none}"
 
-step "Building $configuration for $simulator_name"
-xcodebuild build \
-  -workspace apps/mobile/ios/svett.xcworkspace \
-  -scheme svett \
-  -configuration "$configuration" \
-  -sdk iphonesimulator \
-  -destination "id=$udid" \
-  -derivedDataPath "$derived_data" \
-  CODE_SIGNING_ALLOWED=NO \
-  -quiet
-app_path="$derived_data/Build/Products/$configuration-iphonesimulator/svett.app"
+if [[ "$force_native" == false && "$fingerprint" == "$last_fingerprint" && -d "$app_path" ]]; then
+  native_unchanged=true
+else
+  native_unchanged=false
+fi
+
+# A Release app embeds the JS bundle, so it is rebuilt even when native inputs match.
+if [[ "$native_unchanged" == true && "$configuration" == Debug ]]; then
+  echo "Native build: skipped, the fingerprint matches $app_path"
+else
+  if [[ "$native_unchanged" == true && -d apps/mobile/ios/Pods ]]; then
+    echo "Native build: xcodebuild only, to embed the current JS bundle"
+  else
+    echo "Native build: full (prebuild, pod install, xcodebuild)"
+    step "Generating the iOS project"
+    scripts/ios-prebuild.sh
+    (cd apps/mobile/ios && pod install)
+  fi
+
+  step "Building $configuration for $simulator_name"
+  mkdir -p "$build_dir"
+  rm -f "$fingerprint_file"
+  xcodebuild build \
+    -workspace apps/mobile/ios/svett.xcworkspace \
+    -scheme svett \
+    -configuration "$configuration" \
+    -sdk iphonesimulator \
+    -destination "id=$udid" \
+    -derivedDataPath "$derived_data" \
+    CODE_SIGNING_ALLOWED=NO \
+    -quiet
+  echo "$fingerprint" >"$fingerprint_file"
+fi
 
 step "Installing on $simulator_name"
 xcrun simctl bootstatus "$udid" -b
