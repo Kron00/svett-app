@@ -47,6 +47,12 @@ With a free Apple account the app stops opening after 7 days unless AltStore ref
 
 Every merge to `main` publishes a new version. The release job builds the app on GitHub's macOS runner, signs it ad hoc with the entitlements Expo generates, and attaches `svett.ipa` and `altstore.json` to a GitHub release. The version is the major and minor from `apps/mobile/app.config.ts` plus the commit count on `main`, such as 0.1.37.
 
+Each app extension is signed with its own entitlements, and build variables in them are filled in first. The build fails if anything would be signed with push notifications, which a free Apple account cannot sign. svett only uses local notifications. The release also fails if a newer version is already published, so a late or repeated run never pairs a newer version with older permissions.
+
+### Phone checks
+
+**You > Phone checks** proves what only a phone can: the Keychain after a restart, a notification in the background, GPS with the screen locked, Apple Health permission, and the ChatGPT sign-in. Run each check, type in the App ID and active app counts AltStore shows, and tap **Copy report**. The report never contains a token.
+
 ## License
 
 MIT. See [LICENSE](LICENSE).
