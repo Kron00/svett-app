@@ -1,0 +1,34 @@
+packages:
+  - apps/*
+  - packages/*
+  - scripts
+
+catalog:
+  "@types/node": 24.12.4
+  "@types/react": ~19.3.0
+  effect: 4.1.3
+  react: 19.3.0
+  tailwindcss: 4.3.3
+  vite: npm:@voidzero-dev/vite-plus-core@1.4.0
+  vite-plus: 1.4.0
+
+overrides:
+  # Earlier React Navigation declarations create a circular type alias in TypeScript 7.
+  # Move this with @react-navigation/native.
+  "@react-navigation/core": 7.24.0
+  # react-native-worklets peers on any version, so a fresh resolve takes the newest
+  # one; React Native's CLI plugin wants exactly its own. Move with react-native.
+  "@react-native/metro-config": 0.88.1
+  effect: "catalog:"
+  tailwindcss: "catalog:"
+  vite: "catalog:"
+  vite-plus: "catalog:"
+
+# Unmet peers fail resolution, so a pin outside a dependency's peer range is
+# caught when the lockfile changes instead of scrolling past as a warning.
+strictPeerDependencies: true
+
+peerDependencyRules:
+  allowAny:
+    - typescript
+    - vite
