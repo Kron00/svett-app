@@ -56,8 +56,9 @@ export const cleanTrack = (
     if ((point.accuracyMeters ?? 0) > MAX_ACCURACY_METERS) continue;
     const last = kept.at(-1);
     if (last !== undefined && last.at >= point.at) continue;
-    if (last !== undefined && distanceMeters(last, point) <= (point.accuracyMeters ?? 0)) {
-      // Inside its own error circle, so it is jitter. Only the time of the last one is kept.
+    const jitter = (last?.accuracyMeters ?? 0) + (point.accuracyMeters ?? 0);
+    if (last !== undefined && distanceMeters(last, point) <= jitter) {
+      // Two fixes of one spot can sit up to both error radii apart. Only the last one's time is kept.
       held = { ...last, at: point.at };
       rejected = [];
     } else if (last === undefined || plausible(last, point)) {
@@ -68,9 +69,9 @@ export const cleanTrack = (
       const previous = rejected.at(-1);
       rejected =
         previous !== undefined && plausible(previous, point) ? [...rejected, point] : [point];
-      // A longer run of fixes that agree with each other outvotes what came before, such as
-      // stale cached fixes at the start of a recording.
-      if (rejected.length > kept.length) {
+      // A run of at least three agreeing fixes, longer than what came before, outvotes it,
+      // such as stale cached fixes at the start of a recording.
+      if (rejected.length >= 3 && rejected.length > kept.length) {
         kept.splice(0, kept.length, ...rejected);
         rejected = [];
         held = undefined;

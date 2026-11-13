@@ -24,7 +24,7 @@ const point = (seconds: number, north: number, extra: Partial<TrackPoint> = {}):
 });
 
 const tenSecondRun = (from: number, start: number): Array<TrackPoint> =>
-  Array.from({ length: 11 }, (_, i) => point(from + i, start + i * 3, { accuracyMeters: 2 }));
+  Array.from({ length: 11 }, (_, i) => point(from + i, start + i * 3, { accuracyMeters: 1 }));
 
 const sum = (values: ReadonlyArray<number>): number => values.reduce((a, b) => a + b, 0);
 
@@ -118,14 +118,42 @@ describe("cleanTrack", () => {
     expect(elapsedSeconds(cleaned)).toBe(600);
   });
 
-  it("still measures a slow walk whose steps are smaller than the GPS error", () => {
-    const walk = Array.from({ length: 121 }, (_, i) => point(i, i * 1.5, { accuracyMeters: 5 }));
-    const cleaned = cleanTrack(walk, "walk");
-    const meters = trackDistanceMeters(cleaned);
-    expect(meters).toBeGreaterThan(180 - 5);
-    expect(meters).toBeLessThan(180 + 1e-6);
-    expect(movingSeconds(cleaned)).toBeGreaterThan(120 - 4);
-    expect(paceSecondsPerKm(movingSeconds(cleaned), meters)).toBeCloseTo(1000 / 1.5, -1);
+  it.each([
+    ["walk", 1.5, 5],
+    ["run", 3, 5],
+    ["run", 3, 8],
+  ] as const)(
+    "keeps moving time and pace for a %s at %d m/s with %d m accuracy",
+    (kind, speed, accuracyMeters) => {
+      const track = Array.from({ length: 601 }, (_, i) => point(i, i * speed, { accuracyMeters }));
+      const cleaned = cleanTrack(track, kind);
+      const meters = trackDistanceMeters(cleaned);
+      expect(meters).toBeGreaterThan(600 * speed - 2 * accuracyMeters);
+      expect(meters).toBeLessThan(600 * speed + 1e-6);
+      expect(movingSeconds(cleaned)).toBeGreaterThan(600 - (2 * accuracyMeters) / speed - 1);
+      expect(elapsedSeconds(cleaned)).toBe(600);
+    },
+  );
+
+  it("adds no distance for random jitter within the accuracy while standing still", () => {
+    let seed = 7;
+    const random = () => {
+      seed = (seed * 1_103_515_245 + 12_345) % 2 ** 31;
+      return seed / 2 ** 31;
+    };
+    const still = Array.from({ length: 600 }, (_, i) => {
+      const angle = random() * 2 * Math.PI;
+      const radius = random() * 5;
+      return point(i, Math.cos(angle) * radius, { accuracyMeters: 5 });
+    });
+    const cleaned = cleanTrack(still, "run");
+    expect(trackDistanceMeters(cleaned)).toBe(0);
+    expect(movingSeconds(cleaned)).toBe(0);
+  });
+
+  it("keeps a genuine first fix when only two bad fixes follow it", () => {
+    const track = [point(0, 0), point(1, 500), point(2, 503), point(3, 3), point(4, 6)];
+    expect(cleanTrack(track, "run")).toEqual([point(0, 0), point(3, 3), point(4, 6)]);
   });
 
   it("keeps the first good point even when every later point is implausible", () => {
