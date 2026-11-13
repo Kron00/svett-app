@@ -51,17 +51,19 @@ export const cleanTrack = (
   };
   const kept: Array<TrackPoint> = [];
   let rejected: Array<TrackPoint> = [];
+  let held: TrackPoint | undefined;
   for (const point of points) {
     if ((point.accuracyMeters ?? 0) > MAX_ACCURACY_METERS) continue;
     const last = kept.at(-1);
     if (last !== undefined && last.at >= point.at) continue;
     if (last !== undefined && distanceMeters(last, point) <= (point.accuracyMeters ?? 0)) {
-      // Inside its own error circle: standing still, so keep the time but not the jitter.
-      kept.push({ ...last, at: point.at });
+      // Inside its own error circle, so it is jitter. Only the time of the last one is kept.
+      held = { ...last, at: point.at };
       rejected = [];
     } else if (last === undefined || plausible(last, point)) {
       kept.push(point);
       rejected = [];
+      held = undefined;
     } else {
       const previous = rejected.at(-1);
       rejected =
@@ -71,10 +73,11 @@ export const cleanTrack = (
       if (rejected.length > kept.length) {
         kept.splice(0, kept.length, ...rejected);
         rejected = [];
+        held = undefined;
       }
     }
   }
-  return kept;
+  return held === undefined ? kept : [...kept, held];
 };
 
 export const cumulativeMeters = (points: ReadonlyArray<Position>): ReadonlyArray<number> => {

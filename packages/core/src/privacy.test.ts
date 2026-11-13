@@ -70,6 +70,13 @@ describe("trimRoute", () => {
     expect(stretches.flat().every((p) => distanceMeters(home, p) >= 200)).toBe(true);
   });
 
+  it("never draws a line through home between two sparse points on either side", () => {
+    const sparse = [point(0, 0), point(60, 300), point(120, 300, 300), point(180, -300, 300)];
+    const crossing = [point(240, -300), point(300, 300), point(360, 0, 1000)];
+    const stretches = trimRoute([...sparse, ...crossing]);
+    expect(stretches.map((stretch) => stretch.map(north))).toEqual([[300, 300, -300, -300]]);
+  });
+
   it.each([
     ["no points", []],
     ["one point", [point(0, 0)]],

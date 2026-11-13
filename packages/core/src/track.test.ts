@@ -23,6 +23,9 @@ const point = (seconds: number, north: number, extra: Partial<TrackPoint> = {}):
   ...extra,
 });
 
+const tenSecondRun = (from: number, start: number): Array<TrackPoint> =>
+  Array.from({ length: 11 }, (_, i) => point(from + i, start + i * 3, { accuracyMeters: 2 }));
+
 const sum = (values: ReadonlyArray<number>): number => values.reduce((a, b) => a + b, 0);
 
 describe("TrackPoint", () => {
@@ -96,6 +99,15 @@ describe("cleanTrack", () => {
     expect(trackDistanceMeters(cleanTrack([...stale, ...run], "run"))).toBeCloseTo(1800, 6);
   });
 
+  it("counts a phone standing still mid-run as no distance and no moving time", () => {
+    const still = Array.from({ length: 60 }, (_, i) =>
+      point(11 + i * 5, 30 + (i % 2) * 4, { accuracyMeters: 5 }),
+    );
+    const cleaned = cleanTrack([...tenSecondRun(0, 0), ...still, ...tenSecondRun(311, 33)], "run");
+    expect(trackDistanceMeters(cleaned)).toBeCloseTo(63, 6);
+    expect(movingSeconds(cleaned)).toBe(20);
+  });
+
   it("counts a phone standing still with 5 m jitter as no distance and no moving time", () => {
     const jitter = Array.from({ length: 121 }, (_, i) =>
       point(i * 5, i % 2 === 0 ? 0 : 5, { accuracyMeters: 5 }),
@@ -108,9 +120,12 @@ describe("cleanTrack", () => {
 
   it("still measures a slow walk whose steps are smaller than the GPS error", () => {
     const walk = Array.from({ length: 121 }, (_, i) => point(i, i * 1.5, { accuracyMeters: 5 }));
-    const meters = trackDistanceMeters(cleanTrack(walk, "walk"));
+    const cleaned = cleanTrack(walk, "walk");
+    const meters = trackDistanceMeters(cleaned);
     expect(meters).toBeGreaterThan(180 - 5);
     expect(meters).toBeLessThan(180 + 1e-6);
+    expect(movingSeconds(cleaned)).toBeGreaterThan(120 - 4);
+    expect(paceSecondsPerKm(movingSeconds(cleaned), meters)).toBeCloseTo(1000 / 1.5, -1);
   });
 
   it("keeps the first good point even when every later point is implausible", () => {
