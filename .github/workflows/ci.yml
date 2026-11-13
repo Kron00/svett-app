@@ -51,9 +51,10 @@ jobs:
 
   ios:
     name: iOS simulator build
-    # macos-26 is the newest macos-* image. Xcode 27 is only on the separate xcode-27 preview label.
-    runs-on: macos-26
+    runs-on: xcode-27
     timeout-minutes: 60
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_27.2.app/Contents/Developer
     steps:
       - name: Checkout
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
@@ -71,6 +72,11 @@ jobs:
           vp_pnpm_bin="$HOME/.vite-plus/package_manager/pnpm/$pnpm_version/pnpm/bin"
           echo "$vp_pnpm_bin" >> "$GITHUB_PATH"
           "$vp_pnpm_bin/pnpm" --version
+
+      - name: Show Xcode and simulators
+        run: |
+          xcodebuild -version
+          xcrun simctl list devices available
 
       - name: Generate the iOS project
         run: scripts/ios-prebuild.sh

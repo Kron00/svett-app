@@ -2,7 +2,7 @@
 
 # svett.app
 
-svett is an iPhone app for lifting and cardio, with one history for every kind of workout. It works offline, exports all your data, and runs its coach on your own ChatGPT plan.
+svett is an iPhone app for lifting and cardio, with one history for every kind of workout. It works offline, exports all your data, and runs its coach on your own ChatGPT plan. It needs iOS 27 or later.
 
 ## Develop
 
@@ -20,7 +20,7 @@ pnpm typecheck
 pnpm test
 ```
 
-On the Mac, with Xcode, CocoaPods, Node 26 and pnpm 12:
+On the Mac, with Xcode 27.2, CocoaPods, Node 26 and pnpm 12:
 
 ```sh
 scripts/devbook-build.sh <branch>            # build, start Metro on localhost:8081, open the app
