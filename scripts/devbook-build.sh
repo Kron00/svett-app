@@ -9,8 +9,9 @@
 # launches it with no development server.
 #
 # The native build runs only when the Expo fingerprint of the native inputs
-# differs from the last successful build of that configuration. --native forces
-# it. SVETT_SIMULATOR picks the simulator (see scripts/sim/simulator.sh).
+# differs from the last successful build of that configuration, and prebuild and
+# pod install only when it differs from the generated project. --native forces
+# both. SVETT_SIMULATOR picks the simulator (see scripts/sim/simulator.sh).
 set -euo pipefail
 
 usage() {
@@ -43,6 +44,10 @@ bundle_id=com.kron00.svett
 build_dir="$HOME/svett-app-build/$configuration"
 derived_data="$build_dir/DerivedData"
 fingerprint_file="$build_dir/fingerprint"
+# The generated project and Pods are shared by Debug and Release, so they carry
+# their own fingerprint. It is written after pod install, and `expo prebuild
+# --clean` deletes it with the rest of ios/.
+project_stamp=apps/mobile/ios/.svett-fingerprint
 app_path="$derived_data/Build/Products/$configuration-iphonesimulator/svett.app"
 metro_pid_file="$checkout/.metro.pid"
 metro_log="$checkout/metro.log"
@@ -82,21 +87,15 @@ fingerprint=$(
     node -e 'let s = ""; process.stdin.on("data", (d) => (s += d)).on("end", () => console.log(JSON.parse(s).hash))'
 )
 last_fingerprint=$(cat "$fingerprint_file" 2>/dev/null || true)
-project_fingerprint=$(cat apps/mobile/ios/.svett-fingerprint 2>/dev/null || true)
-echo "Current $fingerprint, last $configuration build ${last_fingerprint:-none}"
-
-if [[ "$force_native" == false && "$fingerprint" == "$last_fingerprint" && "$fingerprint" == "$project_fingerprint" && -d "$app_path" ]]; then
-  native_unchanged=true
-else
-  native_unchanged=false
-fi
+project_fingerprint=$(cat "$project_stamp" 2>/dev/null || true)
+echo "Current $fingerprint, last $configuration build ${last_fingerprint:-none}, iOS project ${project_fingerprint:-none}"
 
 # A Release app embeds the JS bundle, so it is rebuilt even when native inputs match.
-if [[ "$native_unchanged" == true && "$configuration" == Debug ]]; then
+if [[ "$force_native" == false && "$configuration" == Debug && "$fingerprint" == "$last_fingerprint" && -d "$app_path" ]]; then
   echo "Native build: skipped, the fingerprint matches $app_path"
 else
-  if [[ "$native_unchanged" == true && -d apps/mobile/ios/Pods ]]; then
-    echo "Native build: xcodebuild only, to embed the current JS bundle"
+  if [[ "$force_native" == false && "$fingerprint" == "$project_fingerprint" ]]; then
+    echo "Native build: xcodebuild only, the iOS project matches the fingerprint"
   else
     echo "Native build: full (prebuild, pod install, xcodebuild)"
     command -v pod >/dev/null || {
@@ -104,10 +103,10 @@ else
       exit 1
     }
     step "Generating the iOS project"
-    rm -f apps/mobile/ios/.svett-fingerprint
+    rm -f "$project_stamp"
     scripts/ios-prebuild.sh
     (cd apps/mobile/ios && pod install)
-    echo "$fingerprint" >apps/mobile/ios/.svett-fingerprint
+    echo "$fingerprint" >"$project_stamp"
   fi
 
   step "Building $configuration for $simulator_name"
@@ -127,8 +126,9 @@ fi
 
 step "Installing on $simulator_name"
 xcrun simctl bootstatus "$udid" -b
+# By path, because Xcode may not be at /Applications/Xcode.app where `open -a` looks.
 open "$(xcode-select -p)/Applications/Simulator.app" --args -CurrentDeviceUDID "$udid" ||
-  echo "Warning: could not open Simulator; continuing headless" >&2
+  echo "Simulator did not open, so the build continues headless" >&2
 xcrun simctl terminate "$udid" "$bundle_id" 2>/dev/null || true
 xcrun simctl install "$udid" "$app_path"
 
