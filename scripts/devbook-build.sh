@@ -99,6 +99,10 @@ else
     echo "Native build: xcodebuild only, to embed the current JS bundle"
   else
     echo "Native build: full (prebuild, pod install, xcodebuild)"
+    command -v pod >/dev/null || {
+      echo "CocoaPods (pod) is not on PATH" >&2
+      exit 1
+    }
     step "Generating the iOS project"
     rm -f apps/mobile/ios/.svett-fingerprint
     scripts/ios-prebuild.sh
@@ -123,7 +127,8 @@ fi
 
 step "Installing on $simulator_name"
 xcrun simctl bootstatus "$udid" -b
-open -a Simulator --args -CurrentDeviceUDID "$udid"
+open "$(xcode-select -p)/Applications/Simulator.app" --args -CurrentDeviceUDID "$udid" ||
+  echo "Warning: could not open Simulator; continuing headless" >&2
 xcrun simctl terminate "$udid" "$bundle_id" 2>/dev/null || true
 xcrun simctl install "$udid" "$app_path"
 
