@@ -105,13 +105,12 @@ The data layer lives in `packages/core`. Follow these patterns so every table st
 
 **Tests.** Tests run on `node:sqlite` in memory. `openTestDatabase()` in `packages/core/src/test-database.ts` returns a migrated, seeded database with a manual clock and seeded IDs. Test through the repositories and assert what a caller sees. Read the SQLite file directly only to check what a repository cannot show, such as deleted rows.
 
-**Fixture.** `pnpm fixture` writes `.fixtures/svett-fixture.db` with 300 strength workouts, about 6,000 sets over two years, three routines and body measurements. The same seed always gives the same rows. To open it in the simulator, copy it into the app's data folder and launch with `-svettFixture <absolute path>`:
+**Fixture.** `pnpm fixture` writes `.fixtures/svett-fixture.db` with 300 strength workouts, about 6,000 sets over two years, three routines and body measurements. The same seed always gives the same rows. To prove it in the simulator, run `scripts/sim/fixture.sh` on rena-devbook after `devbook-build.sh`, with the same `--release` choice and `SVETT_DEVICE_CMD` as `tabs.sh`:
 
 ```sh
-pnpm fixture
-data="$(xcrun simctl get_app_container booted com.kron00.svett data)"
-cp .fixtures/svett-fixture.db "$data/Documents/svett-fixture.db"
-xcrun simctl launch --terminate-running-process booted com.kron00.svett -svettFixture "$data/Documents/svett-fixture.db"
+~/svett-app/scripts/sim/fixture.sh [--release] <out-dir>
 ```
+
+It generates the fixture into `<out-dir>`, copies it into the app's data container, and screenshots the Progress tab's counts twice. `01-anonymous.png` is a plain launch. `02-fixture.png` is a relaunch through `launch.sh` with `-svettFixture <absolute path>`.
 
 iOS turns `-key value` launch arguments into user defaults, which React Native's `Settings` module reads, so the switch needs no native code. Without it the app opens the anonymous database. The Progress tab shows the counts it read.
