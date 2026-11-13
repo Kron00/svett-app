@@ -144,6 +144,9 @@ export const fromLibraryEntry = (entry: LibraryEntry): LibraryExercise => ({
   secondaryMuscles: unique(entry.secondaryMuscles.map((muscle) => MUSCLE_FROM_LIBRARY[muscle])),
 });
 
+/** The bundled library's IDs, read without decoding the library. */
+export const libraryIds = (): ReadonlyArray<string> => entries.map((entry) => entry.id);
+
 /** The bundled library, parsed and mapped to svett's muscles and equipment. */
 export const exerciseLibrary = (): ReadonlyArray<LibraryExercise> =>
   Schema.decodeUnknownSync(Schema.Array(LibraryEntry))(entries).map(fromLibraryEntry);
