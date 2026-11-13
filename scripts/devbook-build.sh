@@ -12,6 +12,8 @@
 # differs from the last successful build of that configuration, and prebuild and
 # pod install only when it differs from the generated project. --native forces
 # both. SVETT_SIMULATOR picks the simulator (see scripts/sim/simulator.sh).
+# When SVETT_DEVICE_CMD holds the agent-device command from T3 Code's device_open,
+# the app is launched and opened through it instead of simctl.
 set -euo pipefail
 
 usage() {
@@ -134,7 +136,11 @@ xcrun simctl install "$udid" "$app_path"
 
 if [[ "$configuration" == Release ]]; then
   step "Launching the Release build"
-  xcrun simctl launch "$udid" "$bundle_id"
+  if [[ -n "${SVETT_DEVICE_CMD:-}" ]]; then
+    agent_device open "$bundle_id" --relaunch
+  else
+    xcrun simctl launch "$udid" "$bundle_id"
+  fi
   exit 0
 fi
 
@@ -172,5 +178,10 @@ step "Opening the app on $metro_url"
 # Skips the dev menu's first-run sheet, which would cover the app.
 xcrun simctl spawn "$udid" defaults write "$bundle_id" EXDevMenuIsOnboardingFinished -bool YES
 encoded_url=$(node -e 'process.stdout.write(encodeURIComponent(process.argv[1]))' "$metro_url")
-xcrun simctl openurl "$udid" "svett://expo-development-client/?url=$encoded_url"
+dev_client_url="svett://expo-development-client/?url=$encoded_url"
+if [[ -n "${SVETT_DEVICE_CMD:-}" ]]; then
+  agent_device open "$bundle_id" "$dev_client_url"
+else
+  xcrun simctl openurl "$udid" "$dev_client_url"
+fi
 echo "Metro log: $metro_log"

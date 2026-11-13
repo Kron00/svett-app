@@ -6,7 +6,9 @@
 #
 # Writes numbered PNGs to out-dir, by default ~/svett-proof/<branch>/. Debug
 # reopens the development client on Metro at localhost:8081. --release opens the
-# installed Release build with no development server.
+# installed Release build with no development server. When SVETT_DEVICE_CMD holds
+# the agent-device command from T3 Code's device_open, every step runs through it
+# and the T3 session stays open for device_close.
 set -euo pipefail
 
 usage() {
@@ -35,22 +37,20 @@ fi
 
 # shellcheck source=scripts/sim/simulator.sh
 source scripts/sim/simulator.sh
-udid=$(simulator_udid "$simulator_name")
-[[ -n "$udid" ]] || {
-  echo "No available iOS 27 simulator named \"$simulator_name\". Run scripts/devbook-build.sh first." >&2
-  exit 1
-}
-
-device() {
-  npx --yes agent-device@0.21.37 "$@" --platform ios --udid "$udid" --session svett-proof
-}
+if [[ -z "${SVETT_DEVICE_CMD:-}" ]]; then
+  udid=$(simulator_udid "$simulator_name")
+  [[ -n "$udid" ]] || {
+    echo "No available iOS 27 simulator named \"$simulator_name\". Run scripts/devbook-build.sh first." >&2
+    exit 1
+  }
+fi
 
 shot=0
 screenshot() {
   shot=$((shot + 1))
   local path
   path=$(printf '%s/%02d-%s.png' "$out" "$shot" "$1")
-  device screenshot "$path"
+  agent_device screenshot "$path"
   echo "Saved $path"
 }
 
@@ -63,22 +63,26 @@ mkdir -p "$out"
 open_flags=(--relaunch)
 [[ "$release" == true ]] || open_flags+=(--metro-host 127.0.0.1 --metro-port 8081)
 
-# Leaves the simulator light and frees the session, also when a step fails.
-trap 'device settings appearance light || true; device close || true' EXIT
+# Leaves the simulator light and frees its own session, also when a step fails.
+if [[ -n "${SVETT_DEVICE_CMD:-}" ]]; then
+  trap 'agent_device settings appearance light || true' EXIT
+else
+  trap 'agent_device settings appearance light || true; agent_device close || true' EXIT
+fi
 
-device open "$bundle_id" "${open_flags[@]}"
-device settings appearance light
-device wait "$(tab_label 0) selected=true" 120000
+agent_device open "$bundle_id" "${open_flags[@]}"
+agent_device settings appearance light
+agent_device wait "$(tab_label 0) selected=true" 120000
 screenshot launch
 
 for i in "${!tabs[@]}"; do
-  device press "$(tab_label "$i")"
-  device wait "$(tab_label "$i") selected=true" 10000
+  agent_device press "$(tab_label "$i")"
+  agent_device wait "$(tab_label "$i") selected=true" 10000
   screenshot "$(tr '[:upper:]' '[:lower:]' <<<"${tabs[i]}")"
 done
 
-device settings appearance dark
-device wait 1500
+agent_device settings appearance dark
+agent_device wait 1500
 screenshot dark
 
 echo "Screenshots are in $out"
