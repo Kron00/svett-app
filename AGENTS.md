@@ -40,7 +40,7 @@ On rena-devbook, after the branch is pushed:
 
 ```sh
 ~/svett-app/scripts/devbook-build.sh <branch>                     # Debug build, Metro on localhost:8081
-~/svett-app/scripts/devbook-build.sh <branch> host:port           # Debug build against another Metro
+SVETT_METRO=host:port ~/svett-app/scripts/devbook-build.sh <branch> # Debug build against another Metro
 ~/svett-app/scripts/devbook-build.sh --release <branch>           # Release build, JS embedded, no Metro
 ~/svett-app/scripts/devbook-build.sh --native <branch>            # Force the native build
 ~/svett-app/scripts/sim/tabs.sh [out-dir]                         # Proof screenshots of a Debug build
@@ -49,6 +49,10 @@ On rena-devbook, after the branch is pushed:
 ```
 
 `devbook-build.sh` syncs `~/svett-app` to the branch, installs packages, builds the app for the simulator, installs it and opens it. Metro's log is `~/svett-app/metro.log`. The first run needs the clone, so run it from a copy of the script or clone the repo to `~/svett-app` first.
+
+`SVETT_METRO` is the one Metro address setting, `localhost:8081` by default. `devbook-build.sh`, `sim/tabs.sh` and `sim/launch.sh` all open a Debug build on it. When its host is `localhost`, `devbook-build.sh` starts Metro on that port first. Otherwise it expects Metro already running there.
+
+Agents on the Mac run in non-interactive shells that skip `~/.zshrc`. When `fnm` or `pod` is not on `PATH`, `devbook-build.sh` also looks in `~/.local/share/fnm/` and in the newest `~/.local/share/mise/installs/ruby/*/bin/`.
 
 The native build runs only when needed. The script compares the Expo fingerprint of the native inputs with the one saved after the last successful build in `~/svett-app-build/<configuration>/`, which also holds the build output. When they match, a Debug run skips `expo prebuild`, `pod install` and `xcodebuild`, and goes straight to installing and starting Metro. Otherwise `expo prebuild` and `pod install` run only when `apps/mobile/ios` was generated from other native inputs, which it records in `apps/mobile/ios/.svett-fingerprint`. A Release run always runs `xcodebuild` to embed the current JavaScript. The script prints which path it took. Pass `--native` to force the full build.
 

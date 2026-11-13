@@ -5,7 +5,7 @@
 # Usage: scripts/sim/tabs.sh [--release] [out-dir]
 #
 # Writes numbered PNGs to out-dir, by default ~/svett-proof/<branch>/. Debug
-# reopens the development client on Metro at localhost:8081. --release opens the
+# reopens the development client on Metro at SVETT_METRO. --release opens the
 # installed Release build with no development server. When SVETT_DEVICE_CMD holds
 # the agent-device command from T3 Code's device_open, every step runs through it
 # and the T3 session stays open for device_close.
@@ -63,7 +63,7 @@ mkdir -p "$out"
 open_flags=(--relaunch)
 # Opening by bundle id alone shows the development client's launcher, and
 # agent-device's own Expo detection falls back to that when it is inconclusive.
-[[ "$release" == true ]] || open_flags+=(--launch-url "$(dev_client_url http://localhost:8081)")
+[[ "$release" == true ]] || open_flags+=(--launch-url "$(dev_client_url "http://$metro")")
 
 # Leaves the simulator light and frees its own session, also when a step fails.
 if [[ -n "${SVETT_DEVICE_CMD:-}" ]]; then

@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # Builds a branch of svett for the iOS Simulator on rena-devbook and opens it.
 #
-# Usage: scripts/devbook-build.sh [--release] [--native] <branch> [metro-host[:port]]
+# Usage: scripts/devbook-build.sh [--release] [--native] <branch>
 #
-# Debug (default) builds a development client, starts Metro on this Mac at
-# localhost:8081 unless another host is given, and opens the app on that server.
+# Debug (default) builds a development client and opens the app on the Metro
+# server at SVETT_METRO (host:port, default localhost:8081). When the host is
+# localhost, it starts Metro on this Mac first.
 # --release builds the Release configuration with the JS bundle embedded and
 # launches it with no development server.
 #
@@ -12,12 +13,14 @@
 # differs from the last successful build of that configuration, and prebuild and
 # pod install only when it differs from the generated project. --native forces
 # both. SVETT_SIMULATOR picks the simulator (see scripts/sim/simulator.sh).
+# fnm and CocoaPods are also found in their default install folders, because
+# agents run in non-interactive shells that skip ~/.zshrc.
 # When SVETT_DEVICE_CMD holds the agent-device command from T3 Code's device_open,
 # the app is launched and opened through it instead of simctl.
 set -euo pipefail
 
 usage() {
-  echo "Usage: $0 [--release] [--native] <branch> [metro-host[:port]]" >&2
+  echo "Usage: $0 [--release] [--native] <branch>" >&2
   exit 64
 }
 
@@ -31,10 +34,12 @@ while [[ "${1:-}" == --* ]]; do
   esac
   shift
 done
-[[ $# -ge 1 && $# -le 2 ]] || usage
+[[ $# -eq 1 ]] || usage
 
 branch=$1
-metro=${2:-localhost}
+# Read here as well as in sim/simulator.sh, because this script sources the
+# simulator.sh of the branch it builds, which may predate SVETT_METRO.
+metro=${SVETT_METRO:-localhost:8081}
 metro_host=${metro%%:*}
 metro_port=8081
 [[ "$metro" == *:* ]] && metro_port=${metro##*:}
@@ -63,6 +68,9 @@ git fetch origin "+refs/heads/$branch:refs/remotes/origin/$branch"
 git checkout --force -B "$branch" "origin/$branch"
 git log -1 --format='%h %s'
 
+if ! command -v fnm >/dev/null && [[ -x "$HOME/.local/share/fnm/fnm" ]]; then
+  PATH="$HOME/.local/share/fnm:$PATH"
+fi
 if command -v fnm >/dev/null; then
   eval "$(fnm env --shell bash)"
   fnm use --install-if-missing
@@ -75,6 +83,13 @@ node_version=$(node --version)
 
 step "Installing packages"
 pnpm install --frozen-lockfile
+
+if ! command -v pod >/dev/null; then
+  ruby_bin=$(printf '%s\n' "$HOME"/.local/share/mise/installs/ruby/*/bin | sort -V | tail -1)
+  if [[ -x "$ruby_bin/pod" ]]; then
+    PATH="$ruby_bin:$PATH"
+  fi
+fi
 
 step "Finding the simulator"
 # shellcheck source=scripts/sim/simulator.sh
