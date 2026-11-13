@@ -1,0 +1,41 @@
+name: Bug report
+description: Something in svett does not work as it should.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Do not paste tokens, email addresses or a real workout export. Remove personal details from screenshots.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: Say what you saw, and what you expected to see.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open the Log tab.
+        2. Tap ...
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: svett version
+      description: The version AltStore shows, or the commit you built.
+    validations:
+      required: true
+  - type: input
+    id: device
+    attributes:
+      label: iPhone model and iOS version
+      placeholder: iPhone 16 Pro Max, iOS 27.1
+    validations:
+      required: true
+  - type: textarea
+    id: more
+    attributes:
+      label: Screenshots or logs
