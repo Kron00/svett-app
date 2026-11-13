@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "typecheck": "effect-tsgo tsrs --noEmit",
-    "test": "bash test/devbook-build.test.sh && vp test run"
+    "test": "bash test/devbook-build.test.sh && bash test/no-upsell.test.sh && vp test run"
   },
   "dependencies": {
     "@expo/plist": "0.10.2",

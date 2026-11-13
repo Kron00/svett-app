@@ -19,6 +19,8 @@ svett is an iPhone app for lifting and cardio. It has one feed for every kind of
 - Phone sessions are read-only unless the task says otherwise. Do not sign in or out, buy, start trials, post, like, follow, comment, or save or delete any workout or activity.
 - Never commit `research/screenshots/`, real names, email addresses, IP addresses, user names, tokens or a real Hevy export.
 - `research/features.md` is the Hevy and Strava feature inventory the plan is based on.
+- svett has no paid tier. Never add a paywall, a usage limit or an upgrade prompt. `scripts/test/no-upsell.test.sh` enforces the wording part in CI.
+- `packages/core` holds the protections against known Hevy and Strava failures: `workout.ts` (crash-safe workout in progress, per-set rest), `delivery.ts` (visible, retryable sync status), `track.ts` (GPS cleaning and the battery table), `privacy.ts` (private by default, route trimming), `intervals.ts` and `heart-rate.ts`. Feature pull requests build on them instead of re-deriving the rules.
 
 ## Develop
 
