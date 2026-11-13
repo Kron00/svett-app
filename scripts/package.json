@@ -5,10 +5,15 @@
   "type": "module",
   "scripts": {
     "typecheck": "effect-tsgo tsrs --noEmit",
-    "test": "bash test/devbook-build.test.sh"
+    "test": "bash test/devbook-build.test.sh && vp test run"
+  },
+  "dependencies": {
+    "@expo/plist": "0.10.2",
+    "effect": "catalog:"
   },
   "devDependencies": {
     "@resvg/resvg-js": "2.6.2",
-    "@types/node": "catalog:"
+    "@types/node": "catalog:",
+    "vite-plus": "catalog:"
   }
 }
