@@ -333,6 +333,14 @@ SVETT_METRO=metro.invalid:8081 sim_script launch.sh
 check "launch.sh Debug opens the dev client on SVETT_METRO" \
   only_open "com.kron00.svett --relaunch --launch-url $dev_client_url"
 
+case_name="tabs.sh and launch.sh with a SVETT_METRO host and no port"
+SVETT_METRO=metro.invalid sim_script tabs.sh "$root/proof-metro-host"
+check "tabs.sh Debug opens the dev client on port 8081 of a SVETT_METRO host" \
+  only_open "com.kron00.svett --relaunch --launch-url $dev_client_url"
+SVETT_METRO=metro.invalid sim_script launch.sh
+check "launch.sh Debug opens the dev client on port 8081 of a SVETT_METRO host" \
+  only_open "com.kron00.svett --relaunch --launch-url $dev_client_url"
+
 case_name="launch.sh with SVETT_DEVICE_CMD"
 rm -f "$root/simctl-calls" "$root/bound-calls"
 env PATH="$fake:$PATH" SVETT_DEVICE_CMD="$bound_cmd" \

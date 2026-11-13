@@ -3,12 +3,14 @@
 #
 # SVETT_SIMULATOR names the simulator. The default is a dedicated one that
 # devbook-build.sh creates when it is missing. SVETT_METRO is the host:port of the
-# Metro server a Debug build loads from.
+# Metro server a Debug build loads from. Without a port it means port 8081, as in
+# devbook-build.sh.
 
 default_simulator="svett iPhone 16 Pro Max"
 simulator_name=${SVETT_SIMULATOR:-$default_simulator}
 # shellcheck disable=SC2034 # read by tabs.sh and launch.sh
 metro=${SVETT_METRO:-localhost:8081}
+[[ "$metro" == *:* ]] || metro="$metro:8081"
 
 # Prints the UDID of the available iOS 27 simulator whose name is exactly $1.
 # A literal prefix match keeps "iPhone 16 Pro Max" and "svett iPhone 16 Pro Max" apart.
