@@ -13,6 +13,8 @@
 # differs from the last successful build of that configuration, and prebuild and
 # pod install only when it differs from the generated project. --native forces
 # both. SVETT_SIMULATOR picks the simulator (see scripts/sim/simulator.sh).
+# The app is signed to run locally, with no team, so it carries its entitlements:
+# the Keychain and Apple Health refuse an app without them.
 # fnm and CocoaPods are also found in their default install folders, because
 # agents run in non-interactive shells that skip ~/.zshrc.
 # When SVETT_DEVICE_CMD holds the agent-device command from T3 Code's device_open,
@@ -136,7 +138,9 @@ else
     -sdk iphonesimulator \
     -destination "id=$udid" \
     -derivedDataPath "$derived_data" \
-    CODE_SIGNING_ALLOWED=NO \
+    CODE_SIGN_IDENTITY=- \
+    CODE_SIGN_STYLE=Manual \
+    DEVELOPMENT_TEAM= \
     -quiet
   echo "$fingerprint" >"$fingerprint_file"
 fi

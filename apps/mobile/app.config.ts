@@ -26,9 +26,33 @@ const config: ExpoConfig = {
     supportsTablet: false,
     infoPlist: {
       ITSAppUsesNonExemptEncryption: false,
+      NSHealthShareUsageDescription: "svett reads your workouts from Apple Health.",
+    },
+    entitlements: {
+      "com.apple.developer.healthkit": true,
+      "com.apple.developer.healthkit.access": [],
     },
   },
-  plugins: [["expo-build-properties", { ios: { deploymentTarget: "27.0" } }], "expo-sqlite"],
+  plugins: [
+    ["expo-build-properties", { ios: { deploymentTarget: "27.0" } }],
+    "expo-sqlite",
+    [
+      "expo-location",
+      {
+        locationWhenInUsePermission: "svett uses your location to record the route of a run.",
+        locationAlwaysAndWhenInUsePermission:
+          "svett keeps recording the route of a run while the screen is locked.",
+        locationAlwaysPermission:
+          "svett keeps recording the route of a run while the screen is locked.",
+        locationFullAccuracyPermission: "svett needs your precise location to map a run.",
+        motionUsagePermission: false,
+        isIosBackgroundLocationEnabled: true,
+      },
+    ],
+    // svett schedules only local notifications. Push needs aps-environment, which a
+    // free Apple account cannot sign, so AltStore could not install the app.
+    ["expo-notifications", { enableRemoteNotifications: false }],
+  ],
 };
 
 export default config;
