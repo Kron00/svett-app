@@ -53,15 +53,18 @@ export const cleanTrack = (
   const kept: Array<TrackPoint> = [];
   let rejected: Array<TrackPoint> = [];
   let held: TrackPoint | undefined;
+  let accepted = 0;
   for (const point of points) {
     if ((point.accuracyMeters ?? 0) > MAX_ACCURACY_METERS) continue;
     const last = kept.at(-1);
-    if (last !== undefined && last.at >= point.at) continue;
+    const latest = held ?? last;
+    if (latest !== undefined && latest.at >= point.at) continue;
     const jitter = (last?.accuracyMeters ?? 0) + (point.accuracyMeters ?? 0);
     if (last !== undefined && distanceMeters(last, point) <= jitter) {
       // Two fixes of one spot can sit up to both error radii apart. Only the last one's time is kept.
       held = { ...last, at: point.at };
       rejected = [];
+      accepted += 1;
     } else if (
       last === undefined ||
       // After a stop, a jump must also be plausible from the latest still fix, not only from
@@ -71,14 +74,16 @@ export const cleanTrack = (
       kept.push(point);
       rejected = [];
       held = undefined;
+      accepted += 1;
     } else {
       const previous = rejected.at(-1);
       rejected =
         previous !== undefined && plausible(previous, point) ? [...rejected, point] : [point];
-      // A run of at least three agreeing fixes, longer than what came before, outvotes it,
-      // such as stale cached fixes at the start of a recording.
-      if (rejected.length >= 3 && rejected.length > kept.length) {
+      // A run of at least three agreeing fixes outvotes every fix accepted before it, such as
+      // stale cached fixes at the start of a recording.
+      if (rejected.length >= 3 && rejected.length > accepted) {
         kept.splice(0, kept.length, ...rejected);
+        accepted = rejected.length;
         rejected = [];
         held = undefined;
       }

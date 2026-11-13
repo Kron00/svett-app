@@ -23,6 +23,11 @@ const point = (seconds: number, north: number, extra: Partial<TrackPoint> = {}):
   ...extra,
 });
 
+const slowWalk = (from: number, seconds: number): Array<TrackPoint> =>
+  Array.from({ length: seconds }, (_, i) =>
+    point(from + i, (from + i) * 1.5, { accuracyMeters: 5 }),
+  );
+
 const tenSecondRun = (from: number, start: number): Array<TrackPoint> =>
   Array.from({ length: 11 }, (_, i) => point(from + i, start + i * 3, { accuracyMeters: 1 }));
 
@@ -142,6 +147,32 @@ describe("cleanTrack", () => {
     const cleaned = cleanTrack(track, "run");
     expect(trackDistanceMeters(cleaned)).toBeCloseTo(30, 6);
     expect(movingSeconds(cleaned)).toBe(10);
+  });
+
+  it("keeps a wait at the start when a few bad fixes follow it", () => {
+    const wait = Array.from({ length: 121 }, (_, i) =>
+      point(i, (i % 2) * 3, { accuracyMeters: 5 }),
+    );
+    const bad = [121, 122, 123, 124].map((second) =>
+      point(second, 0, { lon: 80 / METERS_PER_DEGREE, accuracyMeters: 5 }),
+    );
+    const walk = Array.from({ length: 121 }, (_, i) =>
+      point(125 + i, i * 1.5, { accuracyMeters: 5 }),
+    );
+    const cleaned = cleanTrack([...wait, ...bad, ...walk], "walk");
+    expect(cleaned[0]?.at).toBe(0);
+    expect(elapsedSeconds(cleaned)).toBe(245);
+  });
+
+  it("keeps the walk before a run of bad fixes in the middle", () => {
+    const bad = Array.from({ length: 7 }, (_, i) =>
+      point(40 + i, 60, { lon: 80 / METERS_PER_DEGREE, accuracyMeters: 5 }),
+    );
+    const meters = trackDistanceMeters(
+      cleanTrack([...slowWalk(0, 40), ...bad, ...slowWalk(47, 54)], "walk"),
+    );
+    expect(meters).toBeGreaterThan(150 - 10);
+    expect(meters).toBeLessThan(150 + 1e-6);
   });
 
   it("adds no distance for random jitter within the accuracy while standing still", () => {
