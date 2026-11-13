@@ -42,7 +42,7 @@ svg .d{fill:#a3a3a3;font-size:12px}
 
 <div class="box">
 <p><strong>The short version.</strong> svett is one iPhone app for lifting and cardio. It has one feed for every kind of workout. You can take all your data out and bring it back in. A coach inside the app runs on your own ChatGPT plan after you tap <strong>Continue with ChatGPT</strong>, so nobody pays svett for AI.</p>
-<p>This plan builds the app in 8 phases and 26 pull requests. Each pull request is built, run in the iPhone 16 Pro Max simulator, reviewed by GPT Sol in a loop, and then scored by a council of Claude Opus and GPT Sol. A pull request merges only when both score it 9 or higher. Every merge ships a new version to your phone through AltStore.</p>
+<p>This plan builds the app in 8 phases and 27 pull requests. Each pull request is built, run in the iPhone 16 Pro Max simulator, reviewed by GPT Sol in a loop, and then scored by a council of Claude Opus and GPT Sol. A pull request merges only when both score it 9 or higher. Every merge ships a new version to your phone through AltStore.</p>
 </div>
 
 <nav aria-label="Contents">
@@ -131,20 +131,22 @@ svg .d{fill:#a3a3a3;font-size:12px}
 <p>The right column is the reason to switch. Each point answers a gap seen in the Hevy and Strava screenshots.</p>
 <div class="scroll"><table>
 <tr><th>Area</th><th>In version 1</th><th>Better than Hevy or Strava because</th></tr>
-<tr><td>Lifting</td><td>Exercise library with search and filters. Custom exercises. Routines and folders. A workout logger with warm-up, normal, failure and drop sets, supersets, optional RPE, notes, previous values, a rest timer, a plate calculator and a warm-up calculator.</td><td>No limits on routines, custom exercises or history. Hevy charges for those.</td></tr>
+<tr><td>Lifting</td><td>Exercise library with search and filters. Custom exercises. Routines and folders. A workout logger with warm-up, normal, failure and drop sets, supersets, optional RPE, notes, previous values, a rest timer set per exercise or per set, a plate calculator and a warm-up calculator. A workout in progress survives the app being killed.</td><td>No limits on routines, custom exercises or history. Hevy charges for those. Hevy sets rest only per exercise.</td></tr>
 <tr><td>Progress</td><td>History, calendar and streak. Charts per exercise. Personal records. Weekly sets per muscle. Body measurements.</td><td>The app shows the rule behind every number. Hevy shows 36.5 sets for a muscle and does not say how it counted.</td></tr>
 <tr><td>Your data</td><td>Export everything as one file. Import that file back. Import from Hevy.</td><td>Hevy's export cannot be imported back, and its import works once, from Strong only. svett imports are repeatable, skip duplicates, and can be undone.</td></tr>
 <tr><td>Coach</td><td>Continue with ChatGPT. A chat that answers from your own training data. It can draft a routine or a program, and you approve each change before it is saved. A program is a folder of routines, such as a three-day split. Version 1 has no calendar scheduling.</td><td>It runs on your ChatGPT plan at no extra cost. Strava sells its AI. Hevy's ChatGPT app lives outside Hevy and only covers lifting.</td></tr>
-<tr><td>Cardio</td><td>Record a run, walk, hike or ride with GPS, with the screen locked. Map, splits and elevation. Manual entry for other sports. Import from Apple Health.</td><td>A Health import shows a preview and asks first. Strava imported a workout on one tap, with no preview and no confirmation.</td></tr>
+<tr><td>Cardio</td><td>Record a run, walk, hike or ride with GPS, with the screen locked. Map, splits and elevation. Manual entry for other sports. Import from Apple Health. GPS points that drift or jump are dropped, and you can correct the distance. Pace by moving time or by elapsed time. Units per sport.</td><td>A Health import shows a preview and asks first. Strava imported a workout on one tap, with no preview and no confirmation.</td></tr>
+<tr><td>Intervals</td><td>Timed workouts such as Norwegian 4x4, 20/20 HIIT, Tabata and stretching. They count down, move on by themselves and speak each cue with the screen locked. Heart-rate zones, time in each zone and average heart rate when Health has heart rate.</td><td>Hevy has no timed workouts and no heart-rate zones. Strava sells its zones. The session lands in the same history as lifting.</td></tr>
 <tr><td>Social</td><td>Profiles, search by username, follows, one feed, likes, comments, an inbox. Privacy per post and per field.</td><td>One feed shows a lifting session and a run each in full. Privacy covers weight lifted, heart rate, start time and where a route starts. Body measurements never appear in the feed.</td></tr>
 <tr><td>Open access</td><td>A connector that lets ChatGPT read and write your svett data. A screen that lists connected apps, what each can do, and when it last read your data.</td><td>Read access and write access are separate choices. Access for an assistant never widens what followers see.</td></tr>
 </table></div>
 
 <h3>Left out of version 1</h3>
 <ul>
-<li>Android, a web app and an Apple Watch app.</li>
+<li>Android, a web app and an Apple Watch app. The phone records every workout alone, so nothing depends on a watch connection.</li>
+<li>A food log. Calories eaten stay in the apps made for them.</li>
 <li>Import from Strong and other apps. Hevy is the one you use. Others can follow.</li>
-<li>Writing svett workouts into Apple Health. Version 1 only reads from Health, so a workout cannot loop back in.</li>
+<li>Writing svett workouts into Apple Health. Version 1 only reads from Health, so a workout cannot loop back in. When writing comes, it uses the delivery ledger in the rules below, so each workout shows sent, waiting or failed, and Retry works for past workouts.</li>
 <li>Strava's community features: segments, leaderboards, clubs, events, challenges, a route builder and heat maps.</li>
 <li>Photos and video on posts. They need file storage on the server. They are the first item after version 1.</li>
 <li>Push notifications. Apple allows them only with a paid developer account. Version 1 uses an in-app inbox and local notifications, which work with a free account.</li>
@@ -220,6 +222,10 @@ svg .d{fill:#a3a3a3;font-size:12px}
 <li><strong>ChatGPT plan tokens stay on the phone.</strong> The svett server never receives them and never calls a model.</li>
 <li><strong>One function decides who sees what.</strong> Every server read goes through it. Tests list every combination of audience, follow state and hidden field.</li>
 <li><strong>One account's data never mixes with another's.</strong> Each account has its own database file and its own queue of unsent changes on the phone. The server sets the owner of every row from the signed-in session and ignores any owner the phone sends.</li>
+<li><strong>Nothing is paid for.</strong> No feature, limit or part of your history is held back, and no screen asks you to pay, upgrade or start a trial. Your records, history, calendar and export stay free. <code>scripts/test/no-upsell.test.sh</code> fails any pull request that adds upsell wording.</li>
+<li><strong>A workout in progress survives a crash.</strong> Each change to it is saved as it happens, and replaying a change after a crash adds nothing twice. Timers are deadlines, not counters, so a relaunch shows the right time and the notification rings on time. <code>packages/core/src/workout.ts</code> holds the model.</li>
+<li><strong>Battery is a feature.</strong> A strength or interval workout never starts GPS. No timer keeps the app awake to count, because a scheduled local notification or cue rings instead. Low Power Mode coarsens GPS. <code>packages/core/src/track.ts</code> holds the table.</li>
+<li><strong>Every delivery shows its state.</strong> A workout bound for the server, or later for Apple Health, is waiting, sending, sent, or failed with its reason. A failure is never dropped, it retries with back-off, and Retry works for any past workout. <code>packages/core/src/delivery.ts</code> holds the ledger.</li>
 </ol>
 
 <h3 id="siwc">Continue with ChatGPT</h3>
@@ -361,7 +367,7 @@ svg .d{fill:#a3a3a3;font-size:12px}
 <tr><td class="id">L1</td><td>Exercise library: search, filters by muscle and equipment, exercise detail, custom exercises with no limit.</td><td>Search finds an exercise in the bundled library. A custom exercise survives an app restart.</td></tr>
 <tr><td class="id">L2</td><td>Routines: create, edit, reorder, duplicate, delete, folders, target sets and reps.</td><td>A routine built in the simulator starts a workout with its exercises and targets filled in.</td></tr>
 <tr><td class="id">L3</td><td>The logger: start empty or from a routine. Add, reorder, replace and remove exercises. Sets by weight, reps, time or distance. Set types. Previous values. Notes. Finish and discard.</td><td>A full workout logged in the simulator appears in the database with every set. Killing the app mid-workout and reopening it restores the workout.</td></tr>
-<tr><td class="id">L4</td><td>Logger tools: rest timer with a notification, supersets, optional RPE, plate calculator with your own plates and bars, warm-up calculator, kg and lb.</td><td>The rest timer notification fires with the app in the background. Plate and warm-up maths match a table of worked examples in the tests.</td></tr>
+<tr><td class="id">L4</td><td>Logger tools: rest timer with a notification, set per exercise and overridable per set, supersets, optional RPE, plate calculator with your own plates and bars, warm-up calculator, kg and lb.</td><td>The rest timer notification fires with the app in the background. A set with its own 3-minute rest is followed by a set that uses the exercise's 2 minutes. Plate and warm-up maths match a table of worked examples in the tests.</td></tr>
 </table></div>
 <p><span class="tag you">checkpoint 2</span> You log one real gym session with svett next to Hevy.</p>
 
@@ -403,8 +409,9 @@ svg .d{fill:#a3a3a3;font-size:12px}
 <h3>Phase 5. Cardio</h3>
 <div class="scroll"><table>
 <tr><th>ID</th><th>Builds</th><th>Proof</th></tr>
-<tr><td class="id">K1</td><td>Record a run, walk, hike or ride: live time, distance and pace, pause and resume, screen locked. Activity detail with an Apple Maps map, through Expo's <code>expo-maps</code>, plus splits and elevation. Route start and end hiding.</td><td>The simulator plays a recorded GPS route. The saved activity's distance is within 1% of the route's known length, and the splits add up to the total.</td></tr>
-<tr><td class="id">K2</td><td>Apple Health import with preview, confirm and duplicate detection. Manual cardio entry. Heart rate when Health has it.</td><td>Sample Health workouts import once and only once. Declining the preview imports nothing. A Hevy workout already imported and its Health copy, with overlapping times, show as one possible duplicate. Linking them keeps one activity with all its sets and the Health heart rate.</td></tr>
+<tr><td class="id">K1</td><td>Record a run, walk, hike or ride: live time, distance and pace, pause and resume, screen locked. Activity detail with an Apple Maps map, through Expo's <code>expo-maps</code>, plus splits and elevation. Route start and end hiding. GPS points that drift or jump are dropped. Pace by moving or elapsed time. Distance can be corrected by hand. A finished recording is saved on the phone before anything else runs, so a later failure cannot lose it.</td><td>The simulator plays a recorded GPS route. The saved activity's distance is within 1% of the route's known length, and the splits add up to the total. The same route with a planted 500-metre jump gives the same distance.</td></tr>
+<tr><td class="id">K2</td><td>Apple Health import with preview, confirm and duplicate detection. Manual cardio entry. Heart rate when Health has it, with heart-rate zones, time in each zone and average heart rate.</td><td>Sample Health workouts import once and only once. Declining the preview imports nothing. A Hevy workout already imported and its Health copy, with overlapping times, show as one possible duplicate. Linking them keeps one activity with all its sets and the Health heart rate.</td></tr>
+<tr><td class="id">K3</td><td>Timed interval workouts: Norwegian 4x4, Tabata, a work and rest builder such as 20/20, and stretching. A countdown that moves on by itself, with spoken cues for each step, halfway, the next step and the last three seconds, with the screen locked. Each step can target a heart-rate zone. The session saves as an activity with its steps, heart rate and time in each zone. It records no GPS.</td><td>A Tabata session runs in the simulator with the app in the background, and the cue log shows every cue once, at its second. The saved activity shows each step and its time in each zone from sample heart rate.</td></tr>
 </table></div>
 <p><span class="tag you">checkpoint 5</span> You record a real walk or run with the phone locked.</p>
 
@@ -436,6 +443,8 @@ svg .d{fill:#a3a3a3;font-size:12px}
 <tr><td>History list of 300 workouts</td><td>No blank rows while scrolling</td><td>P1</td></tr>
 <tr><td>Importing 300 workouts from a Hevy file</td><td>Under 10 seconds</td><td>D2</td></tr>
 <tr><td>First words of a coach answer</td><td>Shown as soon as OpenAI sends them</td><td>C2</td></tr>
+<tr><td>Battery for a 60-minute logged strength workout, on the phone</td><td>Under 5 percent of a full charge</td><td>checkpoint 2</td></tr>
+<tr><td>Battery for a 60-minute GPS run with the screen locked, on the phone</td><td>Under 10 percent of a full charge</td><td>checkpoint 5</td></tr>
 </table></div>
 
 <h2 id="verify">9. How each pull request is checked and reviewed</h2>
@@ -510,7 +519,7 @@ svg .d{fill:#a3a3a3;font-size:12px}
 <tr><td>Build the server first</td><td>Nothing in phases 0 to 5 needs it, and you can use the app daily long before the feed exists.</td></tr>
 <tr><td>Expo's cloud builds and over-the-air updates</td><td>They add an account and a cost. AltStore already delivers updates.</td></tr>
 <tr><td>Copy Strava's community features in version 1</td><td>Segments, clubs and heat maps are each large. The research shows the gap is a combined feed and open data, so those come first.</td></tr>
-<tr><td>One pull request per phase</td><td>A pull request that large cannot be reviewed to a 9. Twenty-six small ones each end in a check.</td></tr>
+<tr><td>One pull request per phase</td><td>A pull request that large cannot be reviewed to a 9. Twenty-seven small ones each end in a check.</td></tr>
 </table></div>
 
 <p class="meta">Sources read on 13 November 2026: OpenAI's Sign in with ChatGPT developer docs, the T3 Code repository, the Kron00/interval-tracker repository, the AltStore FAQ, and this project's feature research.</p>
