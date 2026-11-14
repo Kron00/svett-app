@@ -8,16 +8,30 @@
 # it into the app's data container, as progress.sh does, so every screen has
 # real content under its title whatever an earlier run left in the container.
 # At the largest text size it relaunches svett on the fixture and opens each
-# screen under a large title: the five tabs through the tab bar, then Exercises,
-# Your data and the design gallery through their svett:// links, because
-# agent-device refuses taps in screen content on iOS 27. It checks the Progress
-# tab counts the fixture's 300 workouts and the Train tab lists its routines.
-# It shoots each screen at rest, scrolls it down 60% of the screen and shoots it
-# again. Scrolled, the title should sit collapsed in the bar with the content
-# blurred under it, not drawn over the content. It fails when a screen does not
-# show, when the fixture did not open, or when a screen longer than the phone
-# looks the same after the scroll. Home and the signed-out Coach tab are shorter
-# than the phone, so they need not move. Screenshots are NN-<screen>-<top|scrolled>.png in
+# screen under a large title: Home, Train, Progress and You through the tab bar,
+# then Exercises, Your data and the design gallery through their svett:// links,
+# because agent-device refuses taps in screen content on iOS 27. It checks the
+# Progress tab counts the fixture's 300 workouts and the Train tab lists its
+# routines. It shoots each screen at rest, scrolls it down 60% of the screen and
+# shoots it again. Scrolled, the title should sit collapsed in the bar with the
+# content blurred under it, not drawn over the content. Home is shorter than the
+# phone, so it need not move.
+#
+# Coach comes last, because the keyboard it raises covers the tab bar. svett
+# relaunches on the fixture signed in on the ChatGPT stand-in, with the coach
+# answering from coach-best-squat.json, as coach.sh does. It asks three
+# questions through svett://coach?ask=..., and fails when New chat at the top of
+# the chat still shows once the chat has scrolled to its end, since then the
+# chat fits on the screen. It shoots the chat from the top with the title
+# expanded, then scrolled with the title collapsed over the chat. Then it
+# presses the question field, types a few characters and fails unless the field
+# took them, the composer rose above the keyboard and stays whole on screen, and
+# the latest answer scrolls into view above the composer. It shoots that.
+#
+# It fails when a screen does not show, when the fixture did not open, or when a
+# screen longer than the phone looks the same after the scroll. It presses screen
+# content only at an element's centre once two reads of its frame agree, and only
+# clear of the screen's bottom edge. Screenshots are NN-<screen>-<state>.png in
 # out-dir, by default ~/svett-proof/<branch>/headers/. Like tabs.sh, Debug opens
 # the development client on Metro at SVETT_METRO, --release opens the installed
 # Release build, and every step runs through SVETT_DEVICE_CMD when it is set.
@@ -66,6 +80,8 @@ mkdir -p "$data/Documents"
 rm -f "$fixture-wal" "$fixture-shm"
 cp "$out/svett-fixture.db" "$fixture"
 echo "Copied the fixture to $fixture"
+coach_stub="$data/Documents/coach-best-squat.json"
+cp packages/tools/fixtures/coach-best-squat.json "$coach_stub"
 
 restore() {
   agent_device settings text-size large || true
@@ -111,16 +127,65 @@ link() {
   shoot "$1" long
 }
 
+fail() {
+  echo "$1" >&2
+  exit 1
+}
+
+# frame <selector> prints the element's frame as "x y width height".
+frame() {
+  local attrs
+  attrs=$(agent_device get attrs "$1") || return 1
+  node -e '
+    const { x, y, width, height } = JSON.parse(process.argv[1]).rect;
+    console.log([x, y, width, height].map(Math.round).join(" "));
+  ' "$attrs"
+}
+
+# steady_frame <selector> prints the element's frame once two reads half a second
+# apart agree. iOS takes a tap on a screen still gliding after a drag as a stop.
+steady_frame() {
+  local before after
+  before=$(frame "$1") || return 1
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    agent_device wait 500 >/dev/null
+    after=$(frame "$1") || return 1
+    [[ "$after" != "$before" ]] || {
+      echo "$after"
+      return 0
+    }
+    before=$after
+  done
+  return 1
+}
+
+# Below this line a press lands on the screen's bottom edge, where iOS 27 keeps the
+# home indicator, so a control merely peeking up from there takes no press.
+safe_bottom=${SVETT_SAFE_BOTTOM:-840}
+
+# ask <question> asks through the coach's link and waits until it is answered. The
+# question showing means the coach took the link, so the next link is not lost.
+ask() {
+  agent_device open "$bundle_id" "svett://coach?ask=$(node -e 'process.stdout.write(encodeURIComponent(process.argv[1]))' "$1")"
+  agent_device wait text "$1" 15000 >/dev/null || fail "The coach did not take the question \"$1\"."
+  agent_device wait absent 'id="coach-pending"' 60000 >/dev/null || fail "The coach did not answer \"$1\"."
+  agent_device wait 'id="coach-answer"' 10000 >/dev/null || fail "The coach's answer to \"$1\" did not show."
+}
+
 # Proof is at the largest text size. A running app adopts it only when it relaunches.
 agent_device settings text-size accessibility-extra-extra-extra-large
-if [[ "$release" == true ]]; then
-  scripts/sim/launch.sh --release -svettFixture "$fixture"
-else
-  scripts/sim/launch.sh -svettFixture "$fixture"
-fi
-agent_device wait "$(tab_label 0) selected=true" 120000
+# relaunch [app-argument...] relaunches svett on the fixture and waits for its tabs.
+relaunch() {
+  local flags=()
+  [[ "$release" == false ]] || flags=(--release)
+  scripts/sim/launch.sh ${flags[@]+"${flags[@]}"} -svettFixture "$fixture" "$@"
+  agent_device wait "$(tab_label 0) selected=true" 120000
+}
 
-for i in "${!tabs[@]}"; do
+relaunch
+
+# Coach is index 3 and comes last, below.
+for i in 0 1 2 4; do
   name=$(tr '[:upper:]' '[:lower:]' <<<"${tabs[i]}")
   # The tab bar takes selector presses.
   agent_device press "$(tab_label "$i")"
@@ -148,5 +213,55 @@ done
 link exercises svett://exercises exercise-library
 link data svett://data data
 link gallery svett://gallery gallery
+
+# Signed in on the stand-in, the coach answers from coach-best-squat.json, with its
+# read tools on the fixture. The relaunch also leaves the gallery for the tabs.
+relaunch -svettChatGPTStub signedIn -svettCoachStub "$coach_stub"
+agent_device press "$(tab_label 3)"
+agent_device wait "$(tab_label 3) selected=true" 10000
+agent_device wait 'id="coach-composer"' 30000 >/dev/null || fail "The signed-in coach did not show."
+ask "What was my best squat set last month?"
+ask "Remind me, what was my best squat set last month?"
+ask "Once more, what was my best squat set last month?"
+# The chat scrolls to its end after each answer, so New chat at its top is off the
+# screen only when the chat is longer than the screen.
+if agent_device is visible 'id="coach-new"' >/dev/null 2>&1; then
+  fail "The chat still fits on the screen after three answers, so the coach's title has nothing to collapse over."
+fi
+agent_device scroll up --until 'id="coach-new"' >/dev/null || fail "Scrolling up did not reach the top of the chat."
+# One more drag pulls the chat fully down, so the title shows expanded.
+agent_device scroll up 0.6
+steady_frame 'id="coach-new"' >/dev/null || fail "The chat did not hold still at its top."
+shoot coach long
+
+read -r input_x input_y input_width input_height < <(steady_frame 'id="coach-input"') ||
+  fail "The question field did not hold still."
+read -r _ composer_y _ composer_height < <(frame 'id="coach-composer"') ||
+  fail "The composer did not show."
+input_centre=$((input_y + input_height / 2))
+((input_centre <= safe_bottom)) ||
+  fail "The question field's centre is at y=$input_centre, on the screen's bottom edge, where a press does not land."
+agent_device press $((input_x + input_width / 2)) "$input_centre"
+typed=Bench
+agent_device type "$typed"
+agent_device wait 1000
+field=$(agent_device get text 'id="coach-input"') || fail "Could not read the question field."
+[[ "$field" == *"$typed"* ]] ||
+  fail "The question field did not take the typed \"$typed\", so the keyboard is not up: it shows \"$field\"."
+read -r _ raised_y _ raised_height < <(steady_frame 'id="coach-composer"') ||
+  fail "The composer did not hold still above the keyboard."
+# The keyboard is far taller than the tab bar it covers, so a composer that avoids it
+# rises well above where it sat.
+((composer_y - raised_y >= 150)) ||
+  fail "The composer stayed at y=$raised_y under the keyboard instead of rising from y=$composer_y."
+((raised_y >= 0 && raised_y + raised_height <= composer_y + composer_height)) ||
+  fail "The composer at y=$raised_y, $raised_height points tall, is not whole on the screen above the keyboard."
+agent_device is visible 'id="coach-answer"' >/dev/null 2>&1 ||
+  agent_device scroll down --until 'id="coach-answer"' >/dev/null ||
+  fail "The latest answer did not scroll into view above the keyboard."
+read -r _ answer_y _ _ < <(steady_frame 'id="coach-answer"') || fail "The latest answer did not hold still."
+((answer_y < raised_y)) ||
+  fail "The latest answer starts at y=$answer_y, behind the composer at y=$raised_y."
+screenshot coach-keyboard
 
 echo "Screenshots are in $out"

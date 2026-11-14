@@ -1,33 +1,55 @@
+import { createNativeStackNavigator } from "@react-navigation/native-stack";
 import { createElement, type ComponentType, type ReactNode } from "react";
+import { ScrollView, View } from "react-native";
 import { act, create, type ReactTestRendererJSON } from "react-test-renderer";
 import { beforeAll, describe, expect, it, vi } from "vite-plus/test";
 
 import App from "./App";
-import { TabNavigator } from "./TabNavigator";
+
+type Options = object | ((props: object) => object);
 
 type ScreenProps = {
   readonly name: string;
   readonly component?: ComponentType<{ readonly navigation: object; readonly route: object }>;
   readonly children?: () => ReactNode;
-  readonly options?: object | ((props: object) => object);
+  readonly options?: Options;
 };
 
+/** A screen as its navigator declared it, with the screenOptions above it, outermost first. */
+type Recorded = { readonly screen: ScreenProps; readonly layers: ReadonlyArray<Options> };
+
 // The navigators record their screens instead of drawing them, so the test can
-// draw each large-title screen on its own and look at its first view.
-const { screens, navigation } = vi.hoisted(() => ({
-  screens: new Map<string, ScreenProps>(),
+// draw each screen on its own, look for navigators inside it, and look at the
+// first view of each large-title screen.
+const { recorded, navigation, stableRoute } = vi.hoisted(() => ({
+  recorded: [] as Array<Recorded>,
   navigation: { navigate: () => {}, setOptions: () => {}, setParams: () => {}, goBack: () => {} },
+  // One object, as React Navigation keeps it, so effects that depend on params run once.
+  stableRoute: { key: "screen", params: {} },
 }));
 
-vi.mock("@react-navigation/native-stack", () => ({
-  createNativeStackNavigator: () => ({
-    Navigator: ({ children }: { readonly children: ReactNode }) => children,
-    Screen: (props: ScreenProps) => {
-      screens.set(props.name, props);
-      return null;
-    },
-  }),
-}));
+vi.mock("@react-navigation/native-stack", async () => {
+  const { createContext, createElement: element, useContext } = await import("react");
+  const Layers = createContext<ReadonlyArray<Options>>([]);
+  type LayerProps = { readonly children: ReactNode; readonly screenOptions?: Options };
+  const Layer = ({ children, screenOptions }: LayerProps) => {
+    const outer = useContext(Layers);
+    const layers = screenOptions === undefined ? outer : [...outer, screenOptions];
+    return element(Layers.Provider, { value: layers }, children);
+  };
+  return {
+    createNativeStackNavigator: () => ({
+      // A navigator inside a screen does not inherit the outer navigator's screenOptions.
+      Navigator: ({ children, screenOptions }: LayerProps) =>
+        element(Layers.Provider, { value: [] }, element(Layer, { screenOptions, children })),
+      Group: Layer,
+      Screen: (props: ScreenProps) => {
+        recorded.push({ screen: props, layers: useContext(Layers) });
+        return null;
+      },
+    }),
+  };
+});
 vi.mock("@react-navigation/bottom-tabs", () => ({
   createBottomTabNavigator: () => ({
     Navigator: ({ children }: { readonly children: ReactNode }) => children,
@@ -40,7 +62,7 @@ vi.mock("@react-navigation/native", () => ({
   getFocusedRouteNameFromRoute: () => undefined,
   useFocusEffect: () => {},
   useNavigation: () => navigation,
-  useRoute: () => ({ params: undefined }),
+  useRoute: () => stableRoute,
 }));
 // A scroll view or list draws only itself, since the test checks which view comes first.
 vi.mock("react-native", async () => {
@@ -144,18 +166,86 @@ const draw = (node: ReactNode) => {
 const firstView = (json: ReactTestRendererJSON | ReactTestRendererJSON[] | null) =>
   Array.isArray(json) ? json[0] : json;
 
-const largeTitleScreens = () => {
-  screens.clear();
-  draw(<App />);
-  draw(<TabNavigator />);
-  return [...screens.values()].filter((screen) => {
-    const options =
-      typeof screen.options === "function"
-        ? screen.options({ navigation, route: { name: screen.name, params: {} } })
-        : screen.options;
-    return (options as { readonly headerLargeTitle?: boolean } | undefined)?.headerLargeTitle;
-  });
+const resolve = (options: Options | undefined, route: object) =>
+  typeof options === "function" ? options({ navigation, route }) : options;
+
+/** The options a screen ends up with: its navigator's and groups' screenOptions, then its own. */
+const screenOptionsOf = ({ screen, layers }: Recorded) => {
+  const route = { name: screen.name, params: {} };
+  return Object.assign(
+    {},
+    ...layers.map((layer) => resolve(layer, route)),
+    resolve(screen.options, route),
+  ) as { readonly headerLargeTitle?: boolean };
 };
+
+const content = (screen: ScreenProps) =>
+  screen.component
+    ? createElement(screen.component, { navigation, route: { name: screen.name, params: {} } })
+    : screen.children?.();
+
+/** Every native-stack screen under `root`, including those of navigators nested in a screen. */
+const allScreens = (root: ReactNode) => {
+  recorded.length = 0;
+  draw(root);
+  // Drawing a screen records the screens of any navigator inside it, which this loop then reaches.
+  for (let index = 0; index < recorded.length; index++) {
+    const entry = recorded[index];
+    if (entry) draw(content(entry.screen)).unmount();
+  }
+  return [...recorded];
+};
+
+const largeTitleScreens = (root: ReactNode) =>
+  allScreens(root).filter((entry) => screenOptionsOf(entry).headerLargeTitle === true);
+
+/** The large-title screens whose first view is not a scroll view that insets itself below the bar. */
+const drawnUnderTheTitle = (found: ReadonlyArray<Recorded>) =>
+  found
+    .filter(({ screen }) => {
+      const first = firstView(draw(content(screen)).toJSON());
+      return !(
+        (first?.type === "ScrollView" || first?.type === "LegendList") &&
+        first.props.contentInsetAdjustmentBehavior === "automatic"
+      );
+    })
+    .map(({ screen }) => screen.name);
+
+// Small apps that show the guard finds what it must.
+const Outer = createNativeStackNavigator();
+const Inner = createNativeStackNavigator();
+const Plain = () => <View />;
+const Scrolls = () => <ScrollView contentInsetAdjustmentBehavior="automatic" />;
+
+const nested = (component: ComponentType) => {
+  const Nested = () => (
+    <Inner.Navigator>
+      <Inner.Screen name="Inside" component={component} options={{ headerLargeTitle: true }} />
+    </Inner.Navigator>
+  );
+  return (
+    <Outer.Navigator screenOptions={{ headerShown: false }}>
+      <Outer.Screen name="Holder" component={Nested} />
+    </Outer.Navigator>
+  );
+};
+
+const fromScreenOptions = (component: ComponentType) => (
+  <Outer.Navigator screenOptions={() => ({ headerLargeTitle: true })}>
+    <Outer.Screen name="Titled" component={component} />
+    <Outer.Screen name="Untitled" component={Plain} options={{ headerLargeTitle: false }} />
+    <Outer.Group screenOptions={{ headerLargeTitle: false }}>
+      <Outer.Screen name="Grouped" component={Plain} />
+    </Outer.Group>
+  </Outer.Navigator>
+);
+
+/** A navigator whose one screen sets no large title of its own. */
+const Untitled = () => (
+  <Inner.Navigator>
+    <Inner.Screen name="Inside" component={Plain} />
+  </Inner.Navigator>
+);
 
 describe("screens under a native large title", () => {
   // A large title makes the header translucent, so a screen's content starts under
@@ -164,8 +254,8 @@ describe("screens under a native large title", () => {
   // a scroll view that is the screen's first view, as in the design gallery, but
   // not a list inside a View, as on Progress.
   it("start with a scroll view that insets itself below the bar", () => {
-    const found = largeTitleScreens();
-    expect(found.map((screen) => screen.name).sort()).toEqual(
+    const found = largeTitleScreens(<App />);
+    expect(found.map(({ screen }) => screen.name).sort()).toEqual(
       [
         "AddWorkoutExercise",
         "Data",
@@ -183,19 +273,29 @@ describe("screens under a native large title", () => {
         "YouRoot",
       ].sort(),
     );
-    const firstViews = found.map((screen) => {
-      const content = screen.component
-        ? createElement(screen.component, { navigation, route: { name: screen.name } })
-        : screen.children?.();
-      const first = firstView(draw(content).toJSON());
-      return [screen.name, first?.type, first?.props.contentInsetAdjustmentBehavior];
-    });
-    expect(firstViews).toEqual(
-      found.map((screen) => [
-        screen.name,
-        expect.stringMatching(/^(ScrollView|LegendList)$/),
-        "automatic",
-      ]),
+    expect(drawnUnderTheTitle(found)).toEqual([]);
+  });
+
+  it("finds a large title in a navigator nested inside a screen", () => {
+    const found = largeTitleScreens(nested(Plain));
+    expect(found.map(({ screen }) => screen.name)).toEqual(["Inside"]);
+    expect(drawnUnderTheTitle(found)).toEqual(["Inside"]);
+    expect(drawnUnderTheTitle(largeTitleScreens(nested(Scrolls)))).toEqual([]);
+  });
+
+  it("finds a large title set in a navigator's screenOptions", () => {
+    const found = largeTitleScreens(fromScreenOptions(Plain));
+    expect(found.map(({ screen }) => screen.name)).toEqual(["Titled"]);
+    expect(drawnUnderTheTitle(found)).toEqual(["Titled"]);
+    expect(drawnUnderTheTitle(largeTitleScreens(fromScreenOptions(Scrolls)))).toEqual([]);
+  });
+
+  it("does not hand a navigator's screenOptions to a navigator nested inside it", () => {
+    const found = largeTitleScreens(
+      <Outer.Navigator screenOptions={{ headerLargeTitle: true }}>
+        <Outer.Screen name="Holder" component={Untitled} options={{ headerLargeTitle: false }} />
+      </Outer.Navigator>,
     );
+    expect(found).toEqual([]);
   });
 });

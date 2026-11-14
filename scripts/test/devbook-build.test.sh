@@ -765,13 +765,26 @@ check "progress.sh stops after 40 pages when a screen's closing rule never shows
 # the screen in front, the one the last press or open brought up, and how far it
 # has scrolled since then. FAKE_STUCK names a press or open whose screen never
 # scrolls. A wait for FAKE_MISSING times out. The Progress tab counts FAKE_COUNTS,
-# by default the fixture's.
+# by default the fixture's. On Coach, New chat stays on screen with FAKE_SHORT_CHAT,
+# the question field sits at y=FAKE_INPUT_Y, and once text is typed the composer
+# rises above the keyboard, unless FAKE_COVERED leaves it under the keyboard.
 cat >"$fake/headers-device" <<EOF
 #!/usr/bin/env bash
 echo "\$*" >>"$root/bound-calls"
+typed() { grep -q ' type ' "$root/bound-calls"; }
+raised() { typed && [[ -z "\${FAKE_COVERED:-}" ]]; }
+rect() { printf '{"rect":{"x":%s,"y":%s,"width":%s,"height":%s}}\n' "\$@"; }
 case "\$*" in
   *" wait "*) [[ -z "\${FAKE_MISSING:-}" || "\$*" != *"\$FAKE_MISSING"* ]] ;;
   *' get text id="workout-counts"') echo "\${FAKE_COUNTS:-300 workouts, 6,012 sets}" ;;
+  *' get text id="coach-input"') if typed; then echo Bench; fi ;;
+  *' is visible id="coach-new"') [[ -n "\${FAKE_SHORT_CHAT:-}" ]] ;;
+  *' get attrs id="coach-new"') rect 20 160 400 60 ;;
+  *' get attrs id="coach-answer"') rect 20 120 400 200 ;;
+  *' get attrs id="coach-input"')
+    if raised; then rect 20 370 400 80; else rect 20 "\${FAKE_INPUT_Y:-700}" 400 80; fi ;;
+  *' get attrs id="coach-composer"')
+    if raised; then rect 0 360 440 160; else rect 0 690 440 160; fi ;;
   *" screenshot "*)
     awk -v stuck="\${FAKE_STUCK:-}" '
       / (press|open) / { screen = \$0; n = 0 }
@@ -799,35 +812,52 @@ header_links=(
   "com.kron00.svett svett://data"
   "com.kron00.svett svett://gallery"
 )
-header_tabs=(
+coach_stub="$root/data container/Documents/coach-best-squat.json"
+coach_args="--launch-args=-svettChatGPTStub --launch-args=signedIn --launch-args=-svettCoachStub --launch-args=$coach_stub"
+coach_asks=(
+  "com.kron00.svett svett://coach?ask=What%20was%20my%20best%20squat%20set%20last%20month%3F"
+  "com.kron00.svett svett://coach?ask=Remind%20me%2C%20what%20was%20my%20best%20squat%20set%20last%20month%3F"
+  "com.kron00.svett svett://coach?ask=Once%20more%2C%20what%20was%20my%20best%20squat%20set%20last%20month%3F"
+)
+header_presses=(
   'press label="Home, tab, 1 of 5"' 'press label="Train, tab, 2 of 5"'
-  'press label="Progress, tab, 3 of 5"' 'press label="Coach, tab, 4 of 5"'
-  'press label="You, tab, 5 of 5"'
+  'press label="Progress, tab, 3 of 5"' 'press label="You, tab, 5 of 5"'
+  'press label="Coach, tab, 4 of 5"' 'press 220 740'
 )
 header_shots=()
 shot_number=0
-for screen in home train progress coach you exercises data gallery; do
+for screen in home train progress you exercises data gallery coach; do
   for state in top scrolled; do
     shot_number=$((shot_number + 1))
     header_shots+=("$(printf 'screenshot %s/proof headers/%02d-%s-%s.png' "$root" "$shot_number" "$screen" "$state")")
   done
 done
+header_shots+=("$(printf 'screenshot %s/proof headers/17-coach-keyboard.png' "$root")")
 
 fixture_launch="--launch-args=-svettFixture --launch-args=$container_fixture"
+
+# headers_fails <message> checks headers.sh stopped with exactly that line.
+headers_fails() {
+  [[ "$headers_status" != 0 ]] || fail "headers.sh succeeded"
+  grep -qxF -- "$1" "$output" || fail "headers.sh did not print \"$1\""
+}
 
 case_name="headers.sh Debug with SVETT_DEVICE_CMD"
 run_headers "$root/proof headers"
 [[ "$headers_status" == 0 ]] || fail "headers.sh failed"
-check "headers.sh copies the generated fixture into the app's data container" \
+check "headers.sh copies the generated fixture and the coach's stand-in into the app's data container" \
   grep -qxF "fake fixture" "$container_fixture"
-check "headers.sh relaunches into the dev client on the fixture, then opens each pushed large-title screen's link" \
-  only_open "$debug_open $fixture_launch" "${header_links[@]}"
+check "headers.sh copies the coach's stand-in unchanged" \
+  cmp -s "$repo/packages/tools/fixtures/coach-best-squat.json" "$coach_stub"
+check "headers.sh relaunches on the fixture, opens each pushed screen's link, then relaunches signed in on the stand-ins and asks three questions" \
+  only_open "$debug_open $fixture_launch" "${header_links[@]}" \
+  "$debug_open $fixture_launch $coach_args" "${coach_asks[@]}"
 check "headers.sh shoots at the largest text size and restores the default" \
   only_calls "settings" "$largest_text" "settings text-size large"
-check "headers.sh presses only the five tab buttons, since agent-device refuses presses in screen content" \
-  only_calls "press" "${header_tabs[@]}"
-check "headers.sh shoots every large-title screen at rest and after scrolling 60% of the screen" \
-  only_calls "screenshot|scroll" \
+check "headers.sh presses the tab buttons, then the question field at its centre" \
+  only_calls "press" "${header_presses[@]}"
+check "headers.sh shoots every large-title screen at rest and after scrolling 60% of the screen, then the composer above the keyboard" \
+  only_calls "screenshot|scroll|type" \
   "${header_shots[0]}" "scroll down 0.6" "${header_shots[1]}" \
   "${header_shots[2]}" "scroll down 0.6" "${header_shots[3]}" \
   "${header_shots[4]}" "scroll down 0.6" "${header_shots[5]}" \
@@ -835,28 +865,76 @@ check "headers.sh shoots every large-title screen at rest and after scrolling 60
   "${header_shots[8]}" "scroll down 0.6" "${header_shots[9]}" \
   "${header_shots[10]}" "scroll down 0.6" "${header_shots[11]}" \
   "${header_shots[12]}" "scroll down 0.6" "${header_shots[13]}" \
-  "${header_shots[14]}" "scroll down 0.6" "${header_shots[15]}"
-check "headers.sh waits for each tab to be selected and each screen to show its fixture content" \
-  only_calls 'wait (absent )?(label|id)' \
+  'scroll up --until id="coach-new"' "scroll up 0.6" \
+  "${header_shots[14]}" "scroll down 0.6" "${header_shots[15]}" \
+  "type Bench" "${header_shots[16]}"
+check "headers.sh waits for each tab to be selected, each screen's content and each answer" \
+  only_calls 'wait (absent )?(label|id|text)' \
   'wait label="Home, tab, 1 of 5" selected=true 120000' \
   'wait label="Home, tab, 1 of 5" selected=true 10000' \
   'wait label="Train, tab, 2 of 5" selected=true 10000' 'wait id="routine-list" 30000' \
   'wait label="Progress, tab, 3 of 5" selected=true 10000' 'wait id="progress" 10000' \
   'wait absent id="workout-counts" label="Opening the database" 30000' \
-  'wait label="Coach, tab, 4 of 5" selected=true 10000' \
   'wait label="You, tab, 5 of 5" selected=true 10000' \
-  'wait id="exercise-library" 10000' 'wait id="data" 10000' 'wait id="gallery" 10000'
+  'wait id="exercise-library" 10000' 'wait id="data" 10000' 'wait id="gallery" 10000' \
+  'wait label="Home, tab, 1 of 5" selected=true 120000' \
+  'wait label="Coach, tab, 4 of 5" selected=true 10000' 'wait id="coach-composer" 30000' \
+  'wait text What was my best squat set last month? 15000' 'wait absent id="coach-pending" 60000' \
+  'wait id="coach-answer" 10000' \
+  'wait text Remind me, what was my best squat set last month? 15000' \
+  'wait absent id="coach-pending" 60000' 'wait id="coach-answer" 10000' \
+  'wait text Once more, what was my best squat set last month? 15000' \
+  'wait absent id="coach-pending" 60000' 'wait id="coach-answer" 10000'
+check "headers.sh checks the chat is longer than the screen, the field took the text and the latest answer shows" \
+  only_calls 'is visible|get text id="coach' \
+  'is visible id="coach-new"' 'get text id="coach-input"' 'is visible id="coach-answer"'
 check "headers.sh with SVETT_DEVICE_CMD calls neither simctl launch nor openurl" no_simctl_launch_or_openurl
 
 case_name="headers.sh Release with SVETT_DEVICE_CMD"
 run_headers --release "$root/proof-headers-release"
 [[ "$headers_status" == 0 ]] || fail "headers.sh --release failed"
-check "headers.sh Release relaunches the installed app on the fixture without Metro" \
-  only_open "com.kron00.svett --relaunch $fixture_launch" "${header_links[@]}"
+check "headers.sh Release relaunches the installed app on the fixture without Metro, both times" \
+  only_open "com.kron00.svett --relaunch $fixture_launch" "${header_links[@]}" \
+  "com.kron00.svett --relaunch $fixture_launch $coach_args" "${coach_asks[@]}"
 
 case_name="headers.sh when a short tab does not scroll"
 run_headers FAKE_STUCK="Home, tab" "$root/proof-headers-short"
 check "headers.sh accepts a tab whose content fits on the screen" test "$headers_status" -eq 0
+
+case_name="headers.sh when the coach's title does not collapse"
+run_headers FAKE_STUCK=svett://coach "$root/proof-headers-coach-stuck"
+check "headers.sh fails when the long chat does not move under the title" \
+  headers_fails "coach: the scrolled screenshot matches the one at rest, so the screen did not scroll"
+
+case_name="headers.sh when the chat fits on the screen"
+run_headers FAKE_SHORT_CHAT=1 "$root/proof-headers-coach-short"
+short_shots=("${header_shots[@]/proof headers/proof-headers-coach-short}")
+check "headers.sh fails when New chat still shows after three answers" \
+  headers_fails "The chat still fits on the screen after three answers, so the coach's title has nothing to collapse over."
+check "headers.sh shoots no coach screen when the chat is short" \
+  only_calls "screenshot" "${short_shots[@]:0:14}"
+
+case_name="headers.sh when the keyboard hides the composer"
+run_headers FAKE_COVERED=1 "$root/proof-headers-coach-covered"
+covered_shots=("${header_shots[@]/proof headers/proof-headers-coach-covered}")
+check "headers.sh fails when the composer does not rise above the keyboard" \
+  headers_fails "The composer stayed at y=690 under the keyboard instead of rising from y=690."
+check "headers.sh shoots no keyboard screen when the composer is hidden" \
+  only_calls "screenshot" "${covered_shots[@]:0:16}"
+check "headers.sh restores the default text size after the composer check fails" \
+  only_calls "settings" "$largest_text" "settings text-size large"
+
+case_name="headers.sh when the question field is at the bottom edge"
+run_headers FAKE_INPUT_Y=820 "$root/proof-headers-coach-low"
+check "headers.sh never presses the question field on the bottom edge" \
+  headers_fails "The question field's centre is at y=860, on the screen's bottom edge, where a press does not land."
+check "headers.sh presses only the tab buttons when the question field is on the bottom edge" \
+  only_calls "press" "${header_presses[@]:0:5}"
+
+case_name="headers.sh when a coach answer does not arrive"
+run_headers FAKE_MISSING='id="coach-pending"' "$root/proof-headers-coach-pending"
+check "headers.sh fails naming the question the coach did not answer" \
+  headers_fails 'The coach did not answer "What was my best squat set last month?".'
 
 case_name="headers.sh when a long screen does not scroll"
 run_headers FAKE_STUCK=svett://data "$root/proof-headers-stuck"
@@ -893,7 +971,7 @@ check "headers.sh fails when a large-title screen does not show" test "$headers_
 check "headers.sh shoots nothing after the missing screen" \
   only_calls "screenshot" "$(printf "screenshot $root/proof-headers-missing/%02d-%s.png\n" \
     1 home-top 2 home-scrolled 3 train-top 4 train-scrolled 5 progress-top 6 progress-scrolled \
-    7 coach-top 8 coach-scrolled 9 you-top 10 you-scrolled)"
+    7 you-top 8 you-scrolled)"
 check "headers.sh restores the default text size when a screen does not show" \
   only_calls "settings" "$largest_text" "settings text-size large"
 
