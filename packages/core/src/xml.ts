@@ -106,6 +106,8 @@ const nameEnd = (tag: string): number => {
 export class XmlScanner {
   private pending = "";
   private readonly handler: XmlHandler;
+  /** The elements open now, outermost first, so a file cut short between tags is caught. */
+  private readonly elements: Array<string> = [];
 
   constructor(handler: XmlHandler) {
     this.handler = handler;
@@ -154,7 +156,13 @@ export class XmlScanner {
       } else if (next === "/") {
         end = data.indexOf(">", lt + 2);
         if (end !== -1) {
-          handler.close(data.slice(lt + 2, end).trim());
+          const name = data.slice(lt + 2, end).trim();
+          if (this.elements.pop() !== name) {
+            throw new XmlError({
+              message: `The file closes <${name}> where it should not, so it may be damaged.`,
+            });
+          }
+          handler.close(name);
           end++;
         }
       } else {
@@ -163,7 +171,9 @@ export class XmlScanner {
           const selfClosing = data[end - 2] === "/";
           const tag = data.slice(lt + 1, selfClosing ? end - 2 : end - 1);
           const split = nameEnd(tag);
-          handler.open(tag.slice(0, split), tag.slice(split), selfClosing);
+          const name = tag.slice(0, split);
+          if (!selfClosing) this.elements.push(name);
+          handler.open(name, tag.slice(split), selfClosing);
         }
       }
       if (end === -1) {
@@ -174,11 +184,11 @@ export class XmlScanner {
     }
   }
 
-  /** Fails when the input stopped partway through a tag. */
+  /** Fails when the input stopped partway through a tag, or before every element closed. */
   end(): void {
     const left = this.pending.trim();
     this.pending = "";
-    if (left.startsWith("<")) {
+    if (left.startsWith("<") || this.elements.length > 0) {
       throw new XmlError({ message: "The file ends partway through, so it may be cut short." });
     }
   }

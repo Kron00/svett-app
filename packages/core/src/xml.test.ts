@@ -67,6 +67,19 @@ describe("XmlScanner", () => {
   it("refuses a file that stops partway through a tag", () => {
     expect(() => scan(['<HealthData><Record type="A'])).toThrow(XmlError);
   });
+
+  it("refuses a file cut short between two complete tags", () => {
+    const cut = DOCUMENT.slice(0, DOCUMENT.indexOf("</HealthData>"));
+    expect(() => scan([cut])).toThrow("The file ends partway through, so it may be cut short.");
+    expect(() => scan(["<a><b></b>"])).toThrow(XmlError);
+  });
+
+  it("refuses a tag that closes an element that is not open", () => {
+    expect(() => scan(["<a><b></a></b>"])).toThrow(
+      "The file closes <a> where it should not, so it may be damaged.",
+    );
+    expect(() => scan(["<a></a></a>"])).toThrow(XmlError);
+  });
 });
 
 describe("decodeEntities", () => {

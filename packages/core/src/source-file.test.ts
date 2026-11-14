@@ -84,4 +84,17 @@ describe("readSourceFile", () => {
       "The file ends partway through, so it may be cut short.",
     );
   });
+
+  it("refuses an export.xml or a GPX file cut short just after a complete tag", async () => {
+    const xml = sampleExportXml();
+    const afterWorkout = xml.indexOf("</Workout>") + "</Workout>".length;
+    expect(await refusal(strToU8(xml.slice(0, afterWorkout)))).toBe(
+      "The file ends partway through, so it may be cut short.",
+    );
+    const gpx = sampleGpx();
+    const afterPoint = gpx.indexOf("</trkpt>") + "</trkpt>".length;
+    expect(await refusal(strToU8(gpx.slice(0, afterPoint)))).toBe(
+      "The file ends partway through, so it may be cut short.",
+    );
+  });
 });
