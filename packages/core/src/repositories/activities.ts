@@ -1,4 +1,4 @@
-import { Context, Effect, Layer, Option } from "effect";
+import { Context, Data, Effect, Layer, Option } from "effect";
 
 import { Ids } from "../ids.ts";
 import {
@@ -13,6 +13,7 @@ import {
   type ActivityTrack,
   ActivityTrackId,
   type EpochMillis,
+  type RoutineId,
 } from "../schema.ts";
 import { Sql } from "../sql.ts";
 import {
@@ -28,23 +29,49 @@ import {
   TABLES,
   updateRow,
 } from "../table.ts";
-import { type Origin, provenance, rowId } from "./origin.ts";
+import { DurationSeconds } from "../duration.ts";
+import { MADE_HERE, type Origin, provenance, rowId } from "./origin.ts";
 
 type Draft<A, Parent extends string = never> = Omit<
   A,
   "id" | "updatedAt" | "deletedAt" | "position" | Parent
 >;
 
-export type SetDraft = Draft<ActivitySet, "activityExerciseId">;
+/** A set of a finished workout. It is done and has no target. */
+export type SetDraft = Omit<
+  Draft<ActivitySet, "activityExerciseId">,
+  "done" | "targetRepsMin" | "targetRepsMax"
+>;
+
+/** A set still to do in a workout that is starting, with the values a routine filled in. */
+export type PlannedSet = Pick<
+  ActivitySet,
+  "setType" | "weightKg" | "reps" | "durationS" | "distanceM" | "targetRepsMin" | "targetRepsMax"
+>;
+
+/** A strength workout to start now. It stays in progress until it is finished or discarded. */
+export interface WorkoutStart {
+  readonly title: string;
+  readonly routineId: RoutineId | null;
+  readonly exercises: ReadonlyArray<
+    Draft<ActivityExercise, "activityId"> & { readonly sets: ReadonlyArray<PlannedSet> }
+  >;
+}
+
+/** Only one workout is in progress at a time. */
+export class WorkoutInProgressError extends Data.TaggedError("WorkoutInProgressError")<{
+  readonly activityId: ActivityId;
+}> {}
 export type SampleDraft = ActivitySample extends infer S
   ? S extends ActivitySample
     ? Omit<S, "id" | "updatedAt" | "deletedAt" | "activityTrackId">
     : never
   : never;
 
+/** A finished activity, logged or imported. */
 export interface ActivityDraft extends Omit<
   Draft<Activity>,
-  "source" | "sourceId" | "fingerprint" | "importBatchId"
+  "source" | "sourceId" | "fingerprint" | "importBatchId" | "status" | "routineId"
 > {
   readonly origin: Origin;
   readonly exercises: ReadonlyArray<
@@ -73,6 +100,48 @@ const childrenOf = {
   samples: "activity_track_id IN (SELECT id FROM activity_track WHERE activity_id = ?)",
 };
 
+/** Writes an activity's exercises and sets in order. Done sets belong to a finished workout. */
+const insertExercises = (
+  activityId: ActivityId,
+  origin: Origin,
+  exercises: ReadonlyArray<
+    Draft<ActivityExercise, "activityId"> & {
+      readonly sets: ReadonlyArray<SetDraft | PlannedSet>;
+    }
+  >,
+  done: boolean,
+  updatedAt: EpochMillis,
+) =>
+  Effect.gen(function* () {
+    for (const [position, { sets, ...exercise }] of exercises.entries()) {
+      const exerciseId = ActivityExerciseId.make(
+        yield* rowId(TABLES.activityExercise, origin, `/exercise/${position}`),
+      );
+      yield* insertRows(TABLES.activityExercise, [
+        { ...exercise, id: exerciseId, activityId, position, updatedAt, deletedAt: null },
+      ]);
+      for (const [setPosition, set] of sets.entries()) {
+        const setId = ActivitySetId.make(
+          yield* rowId(TABLES.activitySet, origin, `/exercise/${position}/set/${setPosition}`),
+        );
+        yield* insertRows(TABLES.activitySet, [
+          {
+            rpe: null,
+            targetRepsMin: null,
+            targetRepsMax: null,
+            ...set,
+            done,
+            id: setId,
+            activityExerciseId: exerciseId,
+            position: setPosition,
+            updatedAt,
+            deletedAt: null,
+          },
+        ]);
+      }
+    }
+  });
+
 const makeActivityRepository = Effect.gen(function* () {
   const sql = yield* Sql;
   const ids = yield* Ids;
@@ -87,35 +156,17 @@ const makeActivityRepository = Effect.gen(function* () {
           const { origin, exercises, track, ...fields } = draft;
           const id = ActivityId.make(yield* rowId(TABLES.activity, origin));
           yield* insertRows(TABLES.activity, [
-            { ...fields, ...provenance(origin), id, updatedAt, deletedAt: null },
+            {
+              ...fields,
+              ...provenance(origin),
+              status: "finished",
+              routineId: null,
+              id,
+              updatedAt,
+              deletedAt: null,
+            },
           ]);
-          for (const [position, { sets, ...exercise }] of exercises.entries()) {
-            const exerciseId = ActivityExerciseId.make(
-              yield* rowId(TABLES.activityExercise, origin, `/exercise/${position}`),
-            );
-            yield* insertRows(TABLES.activityExercise, [
-              { ...exercise, id: exerciseId, activityId: id, position, updatedAt, deletedAt: null },
-            ]);
-            for (const [setPosition, set] of sets.entries()) {
-              const setId = ActivitySetId.make(
-                yield* rowId(
-                  TABLES.activitySet,
-                  origin,
-                  `/exercise/${position}/set/${setPosition}`,
-                ),
-              );
-              yield* insertRows(TABLES.activitySet, [
-                {
-                  ...set,
-                  id: setId,
-                  activityExerciseId: exerciseId,
-                  position: setPosition,
-                  updatedAt,
-                  deletedAt: null,
-                },
-              ]);
-            }
-          }
+          yield* insertExercises(id, origin, exercises, true, updatedAt);
           if (track !== null) {
             const { samples, ...trackFields } = track;
             const trackId = ActivityTrackId.make(
@@ -133,6 +184,46 @@ const makeActivityRepository = Effect.gen(function* () {
               ]);
             }
           }
+          return id;
+        }),
+      ),
+    );
+
+  const inProgressId = Effect.map(
+    selectRows(TABLES.activity, "status = 'in_progress'", [], "started_at DESC, id DESC LIMIT 1"),
+    (rows) => Option.fromNullishOr(rows[0]?.id),
+  );
+
+  /** Starts a strength workout now, with every set still to do. */
+  const startWorkout = ({ title, routineId, exercises }: WorkoutStart) =>
+    run(
+      sql.transaction(
+        Effect.gen(function* () {
+          const running = yield* inProgressId;
+          if (Option.isSome(running)) {
+            return yield* new WorkoutInProgressError({ activityId: running.value });
+          }
+          const updatedAt = yield* currentTime;
+          const id = ActivityId.make(yield* rowId(TABLES.activity, MADE_HERE));
+          yield* insertRows(TABLES.activity, [
+            {
+              kind: "strength",
+              status: "in_progress",
+              routineId,
+              startedAt: updatedAt,
+              durationS: DurationSeconds.make(0),
+              title,
+              notes: "",
+              energyKcal: null,
+              audience: "only_you",
+              hiddenFields: [],
+              ...provenance(MADE_HERE),
+              id,
+              updatedAt,
+              deletedAt: null,
+            },
+          ]);
+          yield* insertExercises(id, MADE_HERE, exercises, false, updatedAt);
           return id;
         }),
       ),
@@ -171,7 +262,7 @@ const makeActivityRepository = Effect.gen(function* () {
     run(
       selectRows(
         TABLES.activity,
-        "(started_at, id) < (?, ?)",
+        "status = 'finished' AND (started_at, id) < (?, ?)",
         [
           options.before?.startedAt ?? Number.MAX_SAFE_INTEGER,
           options.before?.id ?? "",
@@ -219,6 +310,13 @@ const makeActivityRepository = Effect.gen(function* () {
 
   return {
     create,
+    startWorkout,
+    /** The workout in progress, if there is one. */
+    inProgress: run(
+      Effect.flatMap(inProgressId, (id) =>
+        Option.isSome(id) ? get(id.value) : Effect.succeed(Option.none<ActivityDetail>()),
+      ),
+    ),
     get,
     list,
     remove,
@@ -233,8 +331,12 @@ const makeActivityRepository = Effect.gen(function* () {
       run(selectRows(TABLES.activitySample, "activity_track_id = ?", [trackId], "recorded_at, id")),
     counts: run(
       Effect.all({
-        activities: countRows(TABLES.activity),
-        sets: countRows(TABLES.activitySet),
+        activities: countRows(TABLES.activity, "status = 'finished'"),
+        sets: countRows(
+          TABLES.activitySet,
+          `activity_exercise_id IN (SELECT e.id FROM activity_exercise e JOIN activity a ON a.id = e.activity_id
+            WHERE e.deleted_at IS NULL AND a.deleted_at IS NULL AND a.status = 'finished')`,
+        ),
       }),
     ),
   };

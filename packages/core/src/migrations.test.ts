@@ -64,7 +64,7 @@ describe("migrate", () => {
 
   it("moves a database made by the first release to the current version", async () => {
     const { database, run } = open();
-    await run(migrate(MIGRATIONS.slice(0, 1)));
+    await run(migrate(MIGRATIONS.slice(0, 2)));
     database.exec(
       "INSERT INTO folder (id, updated_at, deleted_at, name, position) VALUES ('f', 1, NULL, 'Push', 0)",
     );
@@ -107,5 +107,23 @@ describe("migrate", () => {
         reasons: [{ error: { _tag: "DatabaseTooNewError", databaseVersion: NEXT.version } }],
       },
     });
+  });
+
+  it("keeps every activity saved before workouts could be in progress finished, with its sets done", async () => {
+    const { database, run } = open();
+    await run(migrate(MIGRATIONS.slice(0, 2)));
+    database.exec(
+      `INSERT INTO activity (id, updated_at, kind, started_at, duration_s, title, notes, source)
+       VALUES ('a', 1, 'strength', 1, 60, 'Push', '', 'svett');
+       INSERT INTO activity_set (id, updated_at, activity_exercise_id, position, set_type, reps)
+       VALUES ('s', 1, 'e', 0, 'normal', 5)`,
+    );
+    await run(migrate());
+    expect(database.prepare("SELECT status, routine_id FROM activity").all()).toEqual([
+      { status: "finished", routine_id: null },
+    ]);
+    expect(
+      database.prepare("SELECT done, target_reps_min, target_reps_max FROM activity_set").all(),
+    ).toEqual([{ done: 1, target_reps_min: null, target_reps_max: null }]);
   });
 });
