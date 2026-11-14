@@ -133,6 +133,6 @@ Screens build on the components in `apps/mobile/src/ui` and the tokens in `apps/
 
 **Controls.** Every control has an accessibility role and label, and a target of at least 44 points (`min-h-target`). Controls used mid-set, such as the keypad and stepper, use the larger `key` size. Native controls come from `@expo/ui` where one fits, such as the segmented control and the sheet.
 
-**Runtime.** The app runs on the Hermes that React Native 0.88.1 pins. It lacks `Array.prototype.toSorted`, `Array.fromAsync` and the resizable and transferable `ArrayBuffer` methods, though it has `toReversed`, `toSpliced` and `with`. Tests run on Node, which has them all, so lint refuses the missing ones in app code.
+**Runtime.** The app runs on the Hermes that React Native 0.88.1 pins, which lacks some newer JavaScript, such as `Array.prototype.toSorted`, `Temporal` and `Uint8Array`'s base64 methods. Tests run on Node, which has them, so code can pass every test and still throw on the phone. Lint refuses the missing APIs in app code; the list and how to recheck it after a Hermes bump are in `vite.config.ts`.
 
 **Logic.** Components show values and report presses. Formatting and input rules live in `packages/core` with tests, such as `setBadge`, `editNumberEntry` and `niceTicks`.
