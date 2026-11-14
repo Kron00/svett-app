@@ -36,6 +36,8 @@ export const MeasurementId = Uuid.pipe(Schema.brand("MeasurementId"));
 export type MeasurementId = typeof MeasurementId.Type;
 export const ImportBatchId = Uuid.pipe(Schema.brand("ImportBatchId"));
 export type ImportBatchId = typeof ImportBatchId.Type;
+export const ImportChangeId = Uuid.pipe(Schema.brand("ImportChangeId"));
+export type ImportChangeId = typeof ImportChangeId.Type;
 export const ProposalId = Uuid.pipe(Schema.brand("ProposalId"));
 export type ProposalId = typeof ProposalId.Type;
 export const CoachMessageId = Uuid.pipe(Schema.brand("CoachMessageId"));
@@ -393,6 +395,46 @@ export const ImportBatch = Schema.Struct({
   status: ImportStatus,
 });
 export type ImportBatch = typeof ImportBatch.Type;
+
+export const ImportChangeKind = Schema.Literals(["added", "replaced"]);
+export type ImportChangeKind = typeof ImportChangeKind.Type;
+
+/** A record's rows by table name, as a svett file holds them. */
+export const RowsByTable = Schema.Record(Schema.String, Schema.Array(Schema.Unknown));
+export type RowsByTable = typeof RowsByTable.Type;
+
+/** Row IDs by table name. */
+export const RowIdsByTable = Schema.Record(Schema.String, Schema.Array(Uuid));
+export type RowIdsByTable = typeof RowIdsByTable.Type;
+
+/**
+ * One record an import added or replaced, kept so Undo can take the import back. Undo works
+ * from the rows listed here, so it can take back a row whose parent the import never had.
+ * Rows from a file pass their tables' schemas through `journalProblem` in transfer.ts.
+ */
+export const ImportChange = Schema.Struct({
+  ...rowFields(ImportChangeId),
+  importBatchId: ImportBatchId,
+  change: ImportChangeKind,
+  /** The table and ID of the record's top row, such as the activity of a workout. */
+  itemTable: Schema.NonEmptyString,
+  itemId: Uuid,
+  title: Schema.String,
+  itemAt: Schema.NullOr(EpochMillis),
+  /** The rows the import wrote, live or marked deleted. */
+  rowIds: Schema.fromJsonString(RowIdsByTable),
+  /** The versions of those rows here before the import. Undo puts them back. */
+  replaced: Schema.NullOr(Schema.fromJsonString(RowsByTable)),
+  /** The fingerprint of the record's rows as the import left them. Any later edit changes it. */
+  written: Fingerprint,
+}).check(
+  Schema.makeFilter((row) =>
+    row.change === "replaced" && row.replaced === null
+      ? "a replaced record keeps the rows it replaced"
+      : undefined,
+  ),
+);
+export type ImportChange = typeof ImportChange.Type;
 
 export const ProposalOrigin = Schema.Literals(["coach", "assistant"]);
 export type ProposalOrigin = typeof ProposalOrigin.Type;

@@ -16,6 +16,10 @@ export type RootStackParamList = {
   ExerciseProgress: { exerciseId: string; range?: string };
   MuscleSets: { week?: string; muscle?: string } | undefined;
   Measurements: { kind?: string; range?: string; sheet?: "open" } | undefined;
+  Data: undefined;
+  /** `uri` is a picked file. `file` names a file in svett's documents, for svett://import links. */
+  ImportPreview: { uri?: string; file?: string };
+  UndoImport: { importBatchId: string };
 };
 
 export type RootNavigation = NativeStackNavigationProp<RootStackParamList>;

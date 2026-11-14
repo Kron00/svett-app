@@ -65,7 +65,8 @@ export const importedId = (table: string, source: string, identity: string): Uui
 export const contentFingerprint = (content: unknown): string =>
   bytesToHex(sha256(utf8ToBytes(canonicalJson(content))));
 
-const canonicalJson = (value: unknown): string => {
+/** JSON with object keys sorted, so equal content always gives the same text. */
+export const canonicalJson = (value: unknown): string => {
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
   if (value !== null && typeof value === "object") {
     const entries = Object.entries(value)
