@@ -57,8 +57,11 @@ const pairs: ReadonlyArray<readonly [ColorToken, ColorToken, number]> = [
   ]),
   ...graphicColors.map((token) => [token, "surface", GRAPHIC] as const),
   ["label", "control", TEXT],
-  // An empty field shows the previous set's value as its placeholder.
+  // An empty field shows the previous set's value as its placeholder, and an
+  // unticked set shows its checkmark in the same colour.
   ["secondary-label", "control", TEXT],
+  // Secondary buttons, and the checkmark on a segmented control row.
+  ["accent", "control", TEXT],
   ["on-accent", "accent-fill", TEXT],
   ...TINT_COLORS.map((token) => ["on-tint", token, GRAPHIC] as const),
   ["destructive", "destructive-fill", TEXT],

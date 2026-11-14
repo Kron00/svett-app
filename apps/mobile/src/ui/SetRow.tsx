@@ -122,7 +122,7 @@ export function SetRow(props: SetRowProps) {
         <View className={`rounded-lg p-1.5 ${props.done ? "bg-success" : "bg-control"}`}>
           <Icon
             name="checkmark"
-            color={props.done ? "surface" : "tertiary-label"}
+            color={props.done ? "surface" : "secondary-label"}
             size={16}
             weight="bold"
           />
