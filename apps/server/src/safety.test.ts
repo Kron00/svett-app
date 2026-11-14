@@ -294,14 +294,14 @@ const failCommits = async (url: Redacted.Redacted, id: string) => {
 const commitAgain = (url: Redacted.Redacted) =>
   query(url, "drop trigger fail_commit on deleted_account");
 
-/** Waits up to 30 seconds for `check` to hold. */
+/** Waits up to 30 seconds for `check` to hold, asking four times a second. */
 const eventually = async (
   check: () => Promise<boolean>,
   deadline = Date.now() + 30_000,
 ): Promise<void> => {
   if (await check()) return;
   if (Date.now() > deadline) throw new Error("It never happened.");
-  await new Promise((resolve) => setTimeout(resolve, 100));
+  await new Promise((resolve) => setTimeout(resolve, 250));
   return eventually(check, deadline);
 };
 
@@ -905,19 +905,21 @@ describe("deleting an account", { timeout: 60_000 }, () => {
     expect(issuer.deletedUsers()).not.toContain(anna);
     expect(await ledgerReceipts(url)).toEqual([receiptHash(receipt)]);
 
-    const restarted = client((await start(url)).base);
+    const again = await start(url);
+    const restarted = client(again.base);
 
     expect(issuer.deletedUsers()).toContain(anna);
     expect(await sessionsEnded(url, anna)).toBe(true);
     await expectDeleted(restarted, held, receipt);
+    await again.stop();
   });
 
   it("refuses the account at once when the commit fails after the rename, and finishes the deletion in the background", async () => {
     const url = await freshDatabase();
     const anna = account("anna");
     const receipt = receiptFor("commit");
-    const { base } = await start(url);
-    const api = client(base);
+    const server = await start(url);
+    const api = client(server.base);
     await api.write(anna, [activity("Gone")]);
     const held = { token: await issuer.sessionToken(anna) };
     await failCommits(url, anna);
@@ -939,14 +941,15 @@ describe("deleting an account", { timeout: 60_000 }, () => {
     expect(nothingLeft(await rowsNaming(url, anna))).toBe(true);
     expect(issuer.deletedUsers()).toContain(anna);
     await expectDeleted(api, held, receipt);
+    await server.stop();
   });
 
   it("keeps trying Clerk for an accepted deletion, and refuses the account meanwhile", async () => {
     const url = await freshDatabase();
     const anna = account("anna");
     const receipt = receiptFor("clerk");
-    const { base } = await start(url);
-    const api = client(base);
+    const server = await start(url);
+    const api = client(server.base);
     await api.write(anna, [activity("Gone")]);
     const held = { token: await issuer.sessionToken(anna) };
     await failCommits(url, anna);
@@ -956,7 +959,8 @@ describe("deleting an account", { timeout: 60_000 }, () => {
       expect((await api.call(held, "DELETE", "/v1/me", { receipt })).status).toBe(500);
       await commitAgain(url);
       // The background finishes the database's part, and Clerk keeps failing.
-      await eventually(async () => nothingLeft(await rowsNaming(url, anna)));
+      await eventually(async () => (await sessionsEnded(url, anna)) === false);
+      expect(nothingLeft(await rowsNaming(url, anna))).toBe(true);
       await new Promise((resolve) => setTimeout(resolve, 2_500));
       expect(await sessionsEnded(url, anna)).toBe(false);
       await expectRefused(api, held, url, anna);
@@ -970,6 +974,7 @@ describe("deleting an account", { timeout: 60_000 }, () => {
 
     expect(issuer.deletedUsers()).toContain(anna);
     await expectDeleted(api, held, receipt);
+    await server.stop();
   });
 
   it("keeps the account when the ledger's write stalls, and leaves nothing in the ledger", async () => {
