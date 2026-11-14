@@ -12,6 +12,7 @@ import { Option, Schema } from "effect";
 import { useEffect, useState } from "react";
 import { ScrollView, View } from "react-native";
 
+import { type OpenDatabase, sameDatabase, useCurrentDatabase } from "../data/current";
 import type { RootNavigation, RootStackParamList } from "../navigation";
 import { AppText } from "../ui/AppText";
 import { Button } from "../ui/Button";
@@ -22,12 +23,23 @@ import { formatDay } from "./format";
 
 type State =
   | { readonly kind: "loading" }
-  | { readonly kind: "ready"; readonly preview: UndoPreview }
+  | {
+      readonly kind: "ready";
+      readonly preview: UndoPreview;
+      /** The data that holds the import, the only data Undo may change. */
+      readonly database: OpenDatabase;
+    }
+  /** The import could not be read, for whoever is signed in now. */
+  | { readonly kind: "missing"; readonly message: string }
   | { readonly kind: "undoing" }
   | { readonly kind: "undone"; readonly result: UndoResult }
   | { readonly kind: "failed"; readonly message: string };
 
 const decodeBatchId = Schema.decodeUnknownOption(ImportBatchId);
+
+/** Before Undo, a new preview replaces the old one when someone signs in or out. */
+const previewing = (state: State) =>
+  state.kind === "loading" || state.kind === "missing" || state.kind === "ready";
 
 function Plan({
   preview,
@@ -114,23 +126,29 @@ export function UndoImportScreen() {
   const { params } = useRoute<RouteProp<RootStackParamList, "UndoImport">>();
   const [state, setState] = useState<State>({ kind: "loading" });
   const { importBatchId } = params;
+  const { owner, handle } = useCurrentDatabase();
 
+  // Reads the import again for whoever is signed in. A preview made for someone else never shows.
   useEffect(() => {
     let current = true;
+    const show = (next: State) =>
+      current && setState((shown) => (previewing(shown) ? next : shown));
     const batchId = decodeBatchId(importBatchId);
+    const database = { owner, handle };
     (Option.isSome(batchId)
-      ? withTransfers((transfers) => transfers.previewUndo(batchId.value))
+      ? withTransfers((transfers) => transfers.previewUndo(batchId.value), database)
       : Promise.reject(new Error("This import does not exist."))
     ).then(
-      (preview) => current && setState({ kind: "ready", preview }),
-      (error: unknown) => current && setState({ kind: "failed", message: String(error) }),
+      (preview) => show({ kind: "ready", preview, database }),
+      (error: unknown) => show({ kind: "missing", message: String(error) }),
     );
     return () => {
       current = false;
     };
-  }, [importBatchId]);
+  }, [importBatchId, owner, handle]);
 
   const done = () => (navigation.canGoBack() ? navigation.goBack() : navigation.navigate("Tabs"));
+  const stale = state.kind === "ready" && !sameDatabase(state.database, { owner, handle });
 
   return (
     <ScrollView
@@ -139,17 +157,17 @@ export function UndoImportScreen() {
       contentContainerClassName="gap-6 pt-4 pb-12"
       contentInsetAdjustmentBehavior="automatic"
     >
-      {state.kind === "loading" || state.kind === "undoing" ? (
+      {state.kind === "loading" || state.kind === "undoing" || stale ? (
         <AppText tone="secondary" className="px-gutter">
-          {state.kind === "loading" ? "Reading the import" : "Undoing"}
+          {state.kind === "undoing" ? "Undoing" : "Reading the import"}
         </AppText>
       ) : null}
-      {state.kind === "ready" ? (
+      {state.kind === "ready" && !stale ? (
         <Plan
           preview={state.preview}
           onUndo={(alsoEdited) => {
             setState({ kind: "undoing" });
-            changeTransfers((transfers) =>
+            changeTransfers(state.database, (transfers) =>
               transfers.undoImport(state.preview.batch.id, alsoEdited),
             ).then(
               (result) => setState({ kind: "undone", result }),
@@ -169,7 +187,7 @@ export function UndoImportScreen() {
           </View>
         </View>
       ) : null}
-      {state.kind === "failed" ? (
+      {state.kind === "failed" || state.kind === "missing" ? (
         <EmptyState
           symbol="exclamationmark.triangle"
           title="Undo did not run"

@@ -16,15 +16,18 @@ import {
 import { Effect, Option, Schema } from "effect";
 import { useCallback } from "react";
 
-import { appDatabase } from "../data/database";
+import type { OpenDatabase } from "../data/current";
 import { markLaunch } from "../data/launch-timing";
 import { useOnFocus } from "../data/loaded";
+import { readFrom, writeTo } from "../data/store";
 
 type Repositories = RoutineRepository | ActivityRepository | ExerciseRepository;
 
-/** Runs one effect on the repositories of the database this launch opened. */
-export const runOnDatabase = <A, E>(effect: Effect.Effect<A, E, Repositories>): Promise<A> =>
-  appDatabase().runPromise(effect);
+/** Reads through the repositories of `database`. */
+export const runOnDatabase = <A, E>(
+  database: OpenDatabase,
+  effect: Effect.Effect<A, E, Repositories>,
+): Promise<A> => readFrom(database, effect);
 
 /** The names of exercises by ID. A missing exercise, such as one deleted since, has none. */
 const exerciseNames = (ids: Iterable<ExerciseId>) =>
@@ -34,8 +37,8 @@ export { exerciseName };
 
 export type RoutineOverview = TrainOverview;
 
-const loadOverview = () =>
-  runOnDatabase(trainOverview).then((overview) => {
+const loadOverview = (database: OpenDatabase) =>
+  runOnDatabase(database, trainOverview).then((overview) => {
     markLaunch("queried");
     return overview;
   });
@@ -54,9 +57,10 @@ export interface RoutineView {
 /** A routine with its exercise names, or null when a link names no routine. */
 export function useRoutine(id: string) {
   const load = useCallback(
-    () =>
+    (database: OpenDatabase) =>
       Schema.is(RoutineId)(id)
         ? runOnDatabase(
+            database,
             Effect.gen(function* () {
               const routines = yield* RoutineRepository;
               const detail = yield* routines.getRoutine(id);
@@ -77,9 +81,17 @@ export function useRoutine(id: string) {
   return useOnFocus(load);
 }
 
-/** Saves the editor's routine, new or edited, and gives back its ID. */
-export const saveRoutine = (id: RoutineId | null, routine: Omit<RoutineDraft, "position">) =>
-  runOnDatabase(
+/**
+ * Saves the editor's routine, new or edited, into `database`, the one the editor opened in,
+ * and gives back its ID.
+ */
+export const saveRoutine = (
+  database: OpenDatabase,
+  id: RoutineId | null,
+  routine: Omit<RoutineDraft, "position">,
+) =>
+  writeTo(
+    database,
     Effect.gen(function* () {
       const routines = yield* RoutineRepository;
       const position = routinePosition(yield* routines.listRoutines, id, routine.folderId);
@@ -89,6 +101,16 @@ export const saveRoutine = (id: RoutineId | null, routine: Omit<RoutineDraft, "p
     }),
   );
 
-export const withRoutines = <A, E>(
+export const readRoutines = <A, E>(
+  database: OpenDatabase,
   body: (routines: typeof RoutineRepository.Service) => Effect.Effect<A, E>,
-): Promise<A> => runOnDatabase(Effect.flatMap(Effect.service(RoutineRepository), body));
+): Promise<A> => runOnDatabase(database, Effect.flatMap(Effect.service(RoutineRepository), body));
+
+/**
+ * Changes routines or folders in `database`, the one the screen read them from. It refuses once
+ * someone signed in or out, so a button on the previous owner's routines never changes another's.
+ */
+export const changeRoutines = <A, E>(
+  database: OpenDatabase,
+  body: (routines: typeof RoutineRepository.Service) => Effect.Effect<A, E>,
+): Promise<A> => writeTo(database, Effect.flatMap(Effect.service(RoutineRepository), body));

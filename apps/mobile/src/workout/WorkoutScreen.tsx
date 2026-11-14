@@ -453,6 +453,11 @@ export function WorkoutScreen() {
           action={{ label: "Start empty workout", onPress: () => void startEmpty() }}
         />
       ) : null}
+      {workout.status === "ready" && workout.problem !== null ? (
+        <AppText tone="destructive" className="px-gutter" testID="workout-problem">
+          {`That change was not saved. ${workout.problem}`}
+        </AppText>
+      ) : null}
       {workout.status === "failed" ? (
         <EmptyState
           symbol="exclamationmark.triangle"

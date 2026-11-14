@@ -48,7 +48,26 @@ vi.mock("@react-navigation/native", async () => {
     },
   };
 });
-vi.mock("../data/database", () => ({ appDatabase: () => app.runtime }));
+// One owner's database, open the whole time.
+vi.mock("../data/current", () => {
+  const database = {
+    owner: { kind: "anonymous" },
+    handle: {
+      target: { kind: "owner", owner: { kind: "anonymous" } },
+      get runtime() {
+        return app.runtime;
+      },
+    },
+  };
+  return {
+    currentDatabase: () => database,
+    movePending: () => false,
+    sameDatabase: (a: unknown, b: unknown) => a === b,
+    stillOpen: (shown: unknown) => shown === database,
+    subscribeDatabase: () => () => undefined,
+    useCurrentDatabase: () => database,
+  };
+});
 
 type Runtime = ManagedRuntime.ManagedRuntime<never, never>;
 const run = <A, E>(effect: Effect.Effect<A, E, any>) =>
