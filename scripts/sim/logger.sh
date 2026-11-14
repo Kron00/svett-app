@@ -35,16 +35,19 @@
 # because at the largest text size the workout is several screens tall. It
 # opens screens through svett:// links and presses an element at the centre of
 # its frame, because agent-device 0.21.37 refuses a selector press inside
-# screen content on iOS 27. It presses only where nothing covers the workout:
-# above the bottom edge, the open keypad and the running rest. An element below
-# that line is dragged up first, and its frame is read until two reads agree. So
-# it never presses the keypad's Next and Done, which sit at the bottom edge. It
-# moves to a set's reps by pressing the field, and leaves the keypad open. It
-# types only once the field it pressed is selected with the keypad open.
+# screen content on iOS 27. It reads that frame until two reads agree, because
+# the screen glides on after a scroll or a drag. It presses only where nothing
+# covers the workout: above the bottom edge, the open keypad and the running
+# rest. An element below that line is dragged up first. So it never presses the
+# keypad's Next and Done, which sit at the bottom edge. It moves to a set's reps
+# by pressing the field, and leaves the keypad open. It types only once the field
+# it pressed is selected with the keypad open.
 #
-# When svett's tabs do not show after a launch, it saves a screenshot and the
-# screen's elements as launch-<n>.png and launch-<n>.txt, answers a system
-# prompt over svett if one shows, and launches once more before it fails.
+# When svett's tabs do not show within 120 seconds of a launch, it saves a
+# screenshot and the screen's elements as launch-<n>.png and launch-<n>.txt. It
+# goes on only when a system prompt over svett explains the wait, after it answers
+# it. A launch that hung with nothing over it fails. At any failure it saves the
+# screen as failure.png and its elements as failure.txt.
 # Numbered screenshots go to out-dir, by default
 # ~/svett-proof/<branch>/logger/. Like tabs.sh, Debug opens the development
 # client on Metro at SVETT_METRO, --release opens the installed Release build,
@@ -115,8 +118,14 @@ restore() {
 }
 trap restore EXIT
 
+# fail <message>: keeps the screen as failure.png and its elements as failure.txt,
+# so a failed run shows what was on screen at the step that failed. It writes only
+# to stderr and files, because it also runs inside $(...).
 fail() {
   echo "$1" >&2
+  agent_device screenshot "$out/failure.png" >/dev/null 2>&1 || true
+  agent_device snapshot >"$out/failure.txt" 2>&1 || true
+  echo "The screen at the failure is in $out/failure.png and $out/failure.txt" >&2
   exit 1
 }
 
@@ -135,23 +144,25 @@ encode() {
 
 launches=0
 # relaunch: launches svett on the fixture and waits for its tabs. When they do not
-# show, it keeps what the screen held, answers a system prompt if one is over
-# svett, and launches once more.
+# show, it keeps what the screen held. A system prompt over svett explains the
+# wait, so it answers the prompt and waits again. A launch that hung with no prompt
+# fails, because a user would hit the same hang.
 relaunch() {
-  local attempt
-  for attempt in 1 2; do
-    launches=$((launches + 1))
-    agent_device open "$bundle_id" "${open_flags[@]}"
-    agent_device wait "$train_tab" 120000 >/dev/null 2>&1 && return 0
-    agent_device screenshot "$out/launch-$launches.png" >/dev/null 2>&1 || true
-    agent_device snapshot >"$out/launch-$launches.txt" 2>&1 || true
-    echo "svett did not show its tabs after launch $launches. The screen is in $out/launch-$launches.png and .txt" >&2
-    if agent_device alert wait 1000 >/dev/null 2>&1 && agent_device alert accept >/dev/null 2>&1; then
-      echo "Answered a system prompt over svett after launch $launches" >&2
-      agent_device wait "$train_tab" 30000 >/dev/null 2>&1 && return 0
-    fi
-  done
-  fail "svett did not show its tabs after the launch"
+  launches=$((launches + 1))
+  agent_device open "$bundle_id" "${open_flags[@]}"
+  agent_device wait "$train_tab" 120000 >/dev/null 2>&1 && return 0
+  local screen="$out/launch-$launches"
+  agent_device screenshot "$screen.png" >/dev/null 2>&1 || true
+  agent_device snapshot >"$screen.txt" 2>&1 || true
+  echo "svett did not show its tabs within 120 seconds of launch $launches. The screen is in $screen.png and $screen.txt" >&2
+  if ! agent_device alert wait 1000 >/dev/null 2>&1; then
+    fail "svett hung on launch $launches with no system prompt over it. See $screen.png and $screen.txt"
+  fi
+  agent_device alert accept >/dev/null 2>&1 ||
+    fail "Could not answer the system prompt over launch $launches. See $screen.png and $screen.txt"
+  echo "Answered a system prompt over svett after launch $launches" >&2
+  agent_device wait "$train_tab" 30000 >/dev/null 2>&1 ||
+    fail "svett did not show its tabs after the system prompt over launch $launches was answered. See $screen.png and $screen.txt"
 }
 
 link() {
@@ -191,14 +202,14 @@ centre_of() {
 }
 
 # settled_centre <selector>: the centre of the element's frame once two reads in
-# a row agree, because the workout keeps gliding for a moment after a drag, and a
-# press at a frame read during the glide lands beside the element.
+# a row agree, because the workout keeps gliding for a moment after a scroll or a
+# drag, and a press at a frame read during the glide lands beside the element.
 settled_centre() {
   local before after reads=0
-  before=$(centre_of "$1") || return 1
+  before=$(centre_of "$1") || fail "$1 is not on screen"
   while ((reads < 10)); do
     agent_device wait 250 >/dev/null
-    after=$(centre_of "$1") || return 1
+    after=$(centre_of "$1") || fail "$1 is not on screen"
     if [[ "$after" == "$before" ]]; then
       echo "$after"
       return 0
@@ -206,7 +217,7 @@ settled_centre() {
     before=$after
     reads=$((reads + 1))
   done
-  return 1
+  fail "$1 kept moving on screen"
 }
 
 # top_of <selector>: the top of the element's frame, or nothing when it is not on screen.
@@ -229,20 +240,15 @@ clear_bottom() {
   echo "$bottom"
 }
 
-# clear_point <selector> [settle]: prints the centre of the element's frame once
-# nothing covers it. An element below the clear bottom is dragged up from just
-# above that line toward the middle of the workout, and its frame is then read
-# until it settles. With settle it is read until it settles anyway. The frame is
-# read last, after any other element's, so the press goes where it was read.
+# clear_point <selector>: prints the centre of the element's frame once nothing
+# covers it and two reads agree. An element below the clear bottom is dragged up
+# from just above that line toward the middle of the workout. The frame is read
+# last, after any other element's, so the press goes where it was read.
 clear_point() {
-  local point bottom y start by drags=0 settle=${2:-}
+  local point bottom y start by drags=0
   while :; do
     bottom=$(clear_bottom)
-    if [[ -n "$settle" ]]; then
-      point=$(settled_centre "$1") || fail "$1 kept moving on screen"
-    else
-      point=$(centre_of "$1") || fail "$1 is not on screen"
-    fi
+    point=$(settled_centre "$1") || exit 1
     y=${point#* }
     ((y > bottom)) || break
     ((drags < 4)) || fail "$1 stayed under the keypad, the rest timer or the bottom edge of the screen"
@@ -252,13 +258,14 @@ clear_point() {
     ((start + by >= 60)) || by=$((60 - start))
     agent_device gesture pan 20 "$start" 0 "$by" 400 >/dev/null
     drags=$((drags + 1))
-    settle=true
   done
   echo "$point"
 }
 
 # tap <selector> [what is missing]: brings the element on screen and presses the
-# centre of its frame, once nothing covers it.
+# centre of its frame, once nothing covers it. bring may have scrolled, and the
+# screen glides on after a scroll as after a drag, so the frame is read until two
+# reads agree.
 tap() {
   local point
   bring "$@"
@@ -273,7 +280,7 @@ field() {
   local selector="id=\"$1\"" point attempt
   for attempt in 1 2; do
     bring "$selector" "$2 never came on screen"
-    point=$(clear_point "$selector" settle)
+    point=$(clear_point "$selector")
     agent_device press "${point% *}" "${point#* }"
     if agent_device wait "$selector selected=true" 3000 >/dev/null 2>&1 &&
       agent_device wait 'id="key-1"' 3000 >/dev/null 2>&1; then

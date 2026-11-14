@@ -2609,13 +2609,15 @@ check "startup.sh says what SVETT_LAUNCHES must be" \
 # bottom edge. The open keypad covers the screen from y=524, with Next and Done
 # at its foot, and a running rest sits right above it, so a press there reaches
 # the keypad or the rest instead of the workout. A drag from inside the workout
-# brings the element it is for clear of them, gliding for two reads. A press
-# acts on the element whose frame was read last, if it lands on its centre.
+# brings the element it is for clear of them. After a scroll or a drag the next
+# element read glides for two reads. A press acts on the element whose frame was
+# read last, if it lands on its centre, so a press at a gliding frame misses.
 # Every set marked done starts a rest, and the first rest asks for notifications
 # with a system prompt that hides svett until alert accept answers it, unless
 # settings permission granted them ahead. FAKE_GRANT_FAILS refuses that grant.
 # FAKE_LAUNCH_PROMPT puts a system prompt over the first launch, and
-# FAKE_FIRST_LAUNCH_HANGS never shows the tabs on the first launch.
+# FAKE_FIRST_LAUNCH_HANGS never shows the tabs on the first launch, with nothing
+# over svett, though a second launch would show them.
 # FAKE_LOSES_WORKOUT forgets the workout when svett is killed, FAKE_DROPS_DONE
 # forgets the last exercise's done sets then, FAKE_KEEPS_UNDONE keeps the sets
 # not done when it finishes, and FAKE_NO_TIMING never times a set marked done.
@@ -2802,13 +2804,15 @@ const inFocusedSet = (id) => state.focus !== null &&
   new RegExp(`^(set|workout-set)-${state.focus.e}-${state.focus.s}(-|$)`).test(id ?? "");
 // Where a content element is. The first set's weight field starts at the foot of the screen.
 // Opening the keypad scrolls the set being typed into near the top, and leaves the rest
-// below the keypad. A drag brings the element it was for, the next one read, to y=250, gliding
-// for its first two reads.
+// below the keypad. A drag brings the element it was for, the next one read, to y=250. After a
+// scroll or a drag the next content element read is still gliding 40 and then 20 points below
+// where it stops, so a press at its first read lands beside it.
 const centreY = (id) => {
+  const glide = state.glide?.id === id ? 20 * Math.max(0, 2 - state.glide.reads) : 0;
   if (state.low === id) return 880;
-  if (state.panned) return 250 + (state.glide?.id === id ? 20 * Math.max(0, 2 - state.glide.reads) : 0);
-  if (inFocusedSet(id)) return /-weight$|-time$/.test(id) ? 336 : 420;
-  return 625;
+  if (state.panned) return 250 + glide;
+  if (inFocusedSet(id)) return (/-weight$|-time$/.test(id) ? 336 : 420) + glide;
+  return 625 + glide;
 };
 const frame = (element) => {
   const id = element.id ?? "";
@@ -2820,6 +2824,7 @@ const frame = (element) => {
 const centre = (rect) => `${Math.round(rect.x + rect.width / 2)} ${Math.round(rect.y + rect.height / 2)}`;
 const show = (screen) => {
   state.screen = screen; state.scrolled = []; state.focus = null; state.low = null; state.panned = false;
+  state.glide = null;
 };
 const startWorkout = (title, exercises) => {
   state.workouts.push({ title, status: "in_progress", exercises });
@@ -2975,6 +2980,7 @@ switch (command[0]) {
     state.scrolled.push(element.id);
     state.low = null;
     state.panned = false;
+    state.glide = { id: null, reads: 0 };
     break;
   }
   case "gesture": {
@@ -3038,6 +3044,19 @@ run_logger() {
     "${vars[@]}" "$repo/scripts/sim/logger.sh" "$@" >"$output" 2>&1 || logger_status=$?
 }
 
+# logger_from <call> <expected call>...: the bound command calls from the first
+# that is exactly <call> through the next press are exactly these, without the prefix.
+logger_from() {
+  local calls expected
+  calls=$(sed "s/^$bound_prefix //" "$root/bound-calls" |
+    awk -v first="$1" '$0 == first { on = 1 } on { print } on && /^press / { exit }')
+  expected=$(printf '%s\n' "$@")
+  [[ "$calls" == "$expected" ]] || {
+    { echo "bound command calls from $1:"; echo "$calls"; } >>"$output"
+    fail "the bound command did not get exactly these calls: $expected"
+  }
+}
+
 # logger_presses_clear checks every press point sits above y=840.
 logger_presses_clear() {
   ! grep -E "^$bound_prefix press " "$root/bound-calls" | awk '$NF > 840 { found = 1 } END { exit !found }'
@@ -3075,6 +3094,10 @@ check "logger.sh drags the first set's weight field up from the bottom edge befo
 check "logger.sh drags a set up from under the keypad and the rest, from just above them" \
   bound_got "$bound_prefix gesture pan 20 298 0 -238 400"
 check "logger.sh presses nothing at the bottom edge" logger_presses_clear
+check "logger.sh presses Start workout only once two reads agree after the scroll that found it" \
+  logger_from 'scroll down --until id="start-routine"' 'is visible id="key-1"' 'is visible id="rest-timer"' \
+  'get attrs id="start-routine"' "wait 250" 'get attrs id="start-routine"' "wait 250" \
+  'get attrs id="start-routine"' "wait 250" 'get attrs id="start-routine"' "press 220 625"
 check "logger.sh leaves the first rest's prompt alone when notifications were granted ahead" \
   only_calls "alert" "alert wait 3000" "alert wait 5000" "alert wait 5000"
 check "logger.sh scrolls down to a set below the fold before it checks it" \
@@ -3125,13 +3148,15 @@ check "logger.sh launches only as often as without the prompt" \
   only_open "$debug_open $logger_args" "com.kron00.svett svett://train" "${logger_links[@]}" \
   "$debug_open $logger_args" "${empty_links[@]}"
 
-case_name="logger.sh when the first launch never shows the tabs"
+case_name="logger.sh when the first launch hangs with nothing over svett"
 run_logger FAKE_FIRST_LAUNCH_HANGS=1 "$root/logger-hangs"
-[[ "$logger_status" == 0 ]] || fail "logger.sh failed when the first launch hung"
-check "logger.sh keeps the screen of the launch that hung" test -s "$root/logger-hangs/launch-1.txt"
-check "logger.sh launches once more when the tabs never show" \
-  only_open "$debug_open $logger_args" "$debug_open $logger_args" "com.kron00.svett svett://train" \
-  "${logger_links[@]}" "$debug_open $logger_args" "${empty_links[@]}"
+check "logger.sh fails when a launch hangs with no system prompt to explain it" test "$logger_status" -ne 0
+check "logger.sh keeps the screen of the launch that hung" \
+  bound_got "$bound_prefix screenshot $root/logger-hangs/launch-1.png"
+check "logger.sh keeps the elements of the launch that hung" test -s "$root/logger-hangs/launch-1.txt"
+check "logger.sh names the saved files of the launch that hung" \
+  grep -qxF "svett hung on launch 1 with no system prompt over it. See $root/logger-hangs/launch-1.png and $root/logger-hangs/launch-1.txt" "$output"
+check "logger.sh does not hide the hang behind a second launch" only_open "$debug_open $logger_args"
 
 case_name="logger.sh when the workout does not survive the kill"
 run_logger FAKE_LOSES_WORKOUT=1 "$root/logger-loses"
@@ -3141,12 +3166,20 @@ check "logger.sh says the workout did not come back" \
 check "logger.sh restores the default text size after a failure" \
   only_calls "settings" "settings permission grant notifications" \
   "settings text-size accessibility-extra-extra-extra-large" "settings text-size large"
+check "logger.sh shoots the screen at the failing check" \
+  only_calls "screenshot $root/logger-loses/failure" "screenshot $root/logger-loses/failure.png"
+check "logger.sh saves the screen's elements at the failing check" \
+  grep -qF '"screen":"tabs"' "$root/logger-loses/failure.txt"
+check "logger.sh says where the screen at the failure is" \
+  grep -qxF "The screen at the failure is in $root/logger-loses/failure.png and $root/logger-loses/failure.txt" "$output"
 
 case_name="logger.sh when a done set does not survive the kill"
 run_logger FAKE_DROPS_DONE=1 "$root/logger-drops"
 check "logger.sh fails when a set comes back not done" test "$logger_status" -ne 0
 check "logger.sh names the set that came back wrong" \
   grep -qxF 'Set 1 of exercise 6 does not read "Set 1, 60 seconds, Done"' "$output"
+check "logger.sh keeps the screen of the workout where the set came back wrong" \
+  grep -qF '"screen":"workout"' "$root/logger-drops/failure.txt"
 
 case_name="logger.sh when finishing keeps the sets not done"
 run_logger FAKE_KEEPS_UNDONE=1 "$root/logger-undone"
