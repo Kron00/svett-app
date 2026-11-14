@@ -31,6 +31,10 @@ export type PerformedSet = typeof PerformedSet.Type;
 export const isWorkingSet = (set: Pick<PerformedSet, "setType">): boolean =>
   set.setType !== "warm_up";
 
+/** A set that moved a weight at least once. Only these count towards the weight records. */
+export const isLiftedSet = (set: Pick<PerformedSet, "weightKg" | "reps">): boolean =>
+  set.weightKg !== null && set.weightKg > 0 && set.reps !== null && set.reps >= 1;
+
 /**
  * On an exercise done with body weight, such as a pull-up or a dip, a set's
  * weight is what was added to the body, not the whole load.

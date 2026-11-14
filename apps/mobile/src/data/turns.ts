@@ -10,7 +10,10 @@ export const inTurn = <A>(task: () => Promise<A>): Promise<A> => {
   return run;
 };
 
-/** Like `inTurn`, for an import or an undo, which `transfersSettled` then waits for. */
+/**
+ * Like `inTurn`, for an import, an undo or a coach answer, which `transfersSettled` then
+ * waits for.
+ */
 export const transferInTurn = <A>(task: () => Promise<A>): Promise<A> =>
   inTurn(() => {
     const run = task();
@@ -22,7 +25,7 @@ export const transferInTurn = <A>(task: () => Promise<A>): Promise<A> =>
     return run;
   });
 
-/** Waits for the import or undo being applied now, so its database is not closed under it. */
+/** Waits for the import, undo or coach answer being saved now, so its database is not closed under it. */
 export const transfersSettled = async () => {
   await Promise.all([...applying].map((run) => run.catch(() => undefined)));
 };

@@ -9,7 +9,8 @@
     "typecheck": "vp run -r typecheck",
     "test": "vp run -r test",
     "icon": "node scripts/render-app-icon.ts",
-    "fixture": "node scripts/fixture.ts"
+    "fixture": "node scripts/fixture.ts",
+    "coach-stand-in": "node scripts/coach-stand-in.ts"
   },
   "devDependencies": {
     "@effect/tsgo": "0.67.1",
