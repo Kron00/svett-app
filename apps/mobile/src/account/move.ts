@@ -25,6 +25,7 @@ import {
   sameOwner,
 } from "../data/current";
 import { type DatabaseRuntime, openDatabaseHandle } from "../data/database";
+import { inTurn } from "../data/turns";
 import { storedMoveJournal, storeMoveJournal } from "./journal";
 
 /** Runs `use` on the database of `owner`, sharing the open one when it is that owner's. */
@@ -64,14 +65,6 @@ const deleteAnonymous = async () => {
   await deleteDatabaseAsync(name);
 };
 
-// One move step at a time, so a launch's resume and the Account screen never copy at once.
-let queue: Promise<unknown> = Promise.resolve();
-const serially = <A>(task: () => Promise<A>) => {
-  const run = queue.then(task, task);
-  queue = run.catch(() => undefined);
-  return run;
-};
-
 const steps: MoveSteps<unknown> = {
   read: Effect.sync(storedMoveJournal),
   record: (journal) =>
@@ -108,10 +101,11 @@ export const pendingMoveOffer = async (): Promise<MoveCounts | undefined> => {
 /**
  * Moves every row of the anonymous database into `account`, with their IDs, then deletes the
  * anonymous file, so the data belongs to the account alone. The journal names the account
- * before the copy, so a crash part way finishes into it at the next launch.
+ * before the copy, so a crash part way finishes into it at the next launch. Each move waits for
+ * an import or undo being applied, and for a launch's resume, so no two copy at once.
  */
 export const moveIntoAccount = (account: AccountId) =>
-  serially(async () => {
+  inTurn(async () => {
     try {
       await Effect.runPromise(startMove(steps, account));
     } finally {
@@ -121,7 +115,7 @@ export const moveIntoAccount = (account: AccountId) =>
 
 /** Finishes a move a crash cut short, into the account it named, whoever is signed in now. */
 export const resumeMove = () =>
-  serially(async () => {
+  inTurn(async () => {
     if (!anonymousDataLocked(storedMoveJournal())) return;
     try {
       await Effect.runPromise(finishMove(steps));

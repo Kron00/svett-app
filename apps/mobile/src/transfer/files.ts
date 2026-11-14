@@ -6,16 +6,21 @@ import * as Sharing from "expo-sharing";
 
 import { appDatabase } from "../data/current";
 import { write } from "../data/store";
+import { transferInTurn } from "../data/turns";
 
 /** Runs `body` with the transfer repository of the database this launch opened. */
 export const withTransfers = <A, E>(
   body: (transfers: typeof TransferRepository.Service) => Effect.Effect<A, E>,
 ) => appDatabase().runPromise(Effect.flatMap(Effect.service(TransferRepository), body));
 
-/** Like `withTransfers`, for an import or an undo, so history and every other screen read again. */
+/**
+ * Like `withTransfers`, for an import or an undo, so history and every other screen read again.
+ * It takes its turn with a move into an account, so a move never copies the phone's data while
+ * an import is being applied to it.
+ */
 export const changeTransfers = <A, E>(
   body: (transfers: typeof TransferRepository.Service) => Effect.Effect<A, E>,
-) => write(Effect.flatMap(Effect.service(TransferRepository), body));
+) => transferInTurn(() => write(Effect.flatMap(Effect.service(TransferRepository), body)));
 
 /**
  * Writes the export to the cache folder and opens the share sheet on it. The copy stays in

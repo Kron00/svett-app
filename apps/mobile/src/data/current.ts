@@ -12,6 +12,7 @@ import {
   launchFixture,
   openDatabaseHandle,
 } from "./database";
+import { transfersSettled } from "./turns";
 
 export interface CurrentDatabase {
   readonly owner: DatabaseOwner;
@@ -61,10 +62,13 @@ const targetOf = (owner: DatabaseOwner): DatabaseTarget =>
     : { kind: "owner", owner });
 
 const closeLater = (handle: DatabaseHandle) => {
-  const closed = handle.close().then(
-    () => undefined,
-    () => undefined,
-  );
+  // Signing in or out while an import is being applied closes its file only once it is done.
+  const closed = transfersSettled()
+    .then(() => handle.close())
+    .then(
+      () => undefined,
+      () => undefined,
+    );
   closing.add(closed);
   void closed.then(() => closing.delete(closed));
 };
