@@ -1,6 +1,6 @@
 import { Data, Effect, Option, Schema } from "effect";
 
-import { ActivityView, FollowState } from "./privacy.ts";
+import { ActivityView, FollowState, type SocialActivityId } from "./privacy.ts";
 import { usernamePrefix } from "./username.ts";
 
 /** The signed-in account's own profile. `username` is null until they choose one. */
@@ -24,6 +24,16 @@ export type ProfileSummary = typeof ProfileSummary.Type;
 
 export const ProfileList = Schema.Struct({ profiles: Schema.Array(ProfileSummary) });
 export type ProfileList = typeof ProfileList.Type;
+
+/**
+ * One page of a profile's followers or follows, by username. `next` asks for the page after
+ * it, and is null on the last page.
+ */
+export const ProfilePage = Schema.Struct({
+  profiles: Schema.Array(ProfileSummary),
+  next: Schema.NullOr(Schema.String),
+});
+export type ProfilePage = typeof ProfilePage.Type;
 
 /**
  * Someone waiting for the signed-in account to approve their follow. Approve and Decline
@@ -125,6 +135,8 @@ const isServerProblem = (code: string): code is (typeof SERVER_PROBLEMS)[number]
   (SERVER_PROBLEMS as ReadonlyArray<string>).includes(code);
 
 const at = (username: string) => `/v1/profiles/${encodeURIComponent(username)}`;
+const page = (after: string | undefined) =>
+  after === undefined ? "" : `?after=${encodeURIComponent(after)}`;
 
 /** Profiles, follows and follow requests on the svett server. Answers pass their schemas. */
 export const httpSocialApi = (options: HttpSocialOptions) => {
@@ -159,14 +171,15 @@ export const httpSocialApi = (options: HttpSocialOptions) => {
         },
         catch: () => failed("offline", "Could not reach the svett server."),
       });
-      const answer: unknown = yield* Effect.tryPromise({
-        try: () => response.json(),
-        catch: () => failed("server", `The server answered ${response.status} without JSON.`),
-      });
+      // A proxy in front of the server can answer these without JSON.
       if (response.status === 401) return yield* failed("signed_out", "The session has ended.");
       if (response.status === 503) {
         return yield* failed("sign_in_unavailable", "Sign-in is not set up on the server yet.");
       }
+      const answer: unknown = yield* Effect.tryPromise({
+        try: () => response.json(),
+        catch: () => failed("server", `The server answered ${response.status} without JSON.`),
+      });
       if (!response.ok) {
         const error = Schema.decodeUnknownOption(ErrorBody)(answer);
         if (Option.isSome(error) && isServerProblem(error.value.error)) {
@@ -193,8 +206,15 @@ export const httpSocialApi = (options: HttpSocialOptions) => {
     profile: (username: string) => call(ProfileView, "GET", at(username)),
     follow: (username: string) => call(FollowResult, "PUT", `${at(username)}/follow`),
     unfollow: (username: string) => call(FollowResult, "DELETE", `${at(username)}/follow`),
-    followers: (username: string) => call(ProfileList, "GET", `${at(username)}/followers`),
-    following: (username: string) => call(ProfileList, "GET", `${at(username)}/following`),
+    /** A page of the profile's followers, after the page whose `next` is `after`. */
+    followers: (username: string, after?: string) =>
+      call(ProfilePage, "GET", `${at(username)}/followers${page(after)}`),
+    /** A page of the accounts the profile follows, after the page whose `next` is `after`. */
+    following: (username: string, after?: string) =>
+      call(ProfilePage, "GET", `${at(username)}/following${page(after)}`),
+    /** Another account's activity by its social ID, when the privacy rule lets you see it. */
+    activity: (id: SocialActivityId) =>
+      call(ActivityView, "GET", `/v1/activities/${encodeURIComponent(id)}`),
     requests: () => call(FollowRequestList, "GET", "/v1/follow-requests"),
     /** Approves the request with this `FollowRequest.id`. */
     approve: (request: string) =>

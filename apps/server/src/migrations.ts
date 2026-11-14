@@ -83,4 +83,19 @@ export const MIGRATIONS: Record<string, Effect.Effect<void, unknown, SqlClient>>
     yield* sql`create unique index follow_id on follow (id)`;
     yield* sql`create index follow_followee on follow (followee_id, state)`;
   }),
+  // Another account names an activity by a random ID minted here the first time anyone is
+  // shown it. An activity's own ID can come from its start time, as an imported workout's
+  // does, so it never leaves the server for anyone but its owner.
+  "4_activity_social": Effect.gen(function* () {
+    const sql = yield* SqlClient;
+    yield* sql`
+      create table activity_social (
+        account_id text not null,
+        activity_id text not null,
+        social_id text not null default gen_random_uuid()::text,
+        primary key (account_id, activity_id)
+      )
+    `;
+    yield* sql`create unique index activity_social_id on activity_social (social_id)`;
+  }),
 };

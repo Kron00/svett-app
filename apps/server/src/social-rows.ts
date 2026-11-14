@@ -1,15 +1,17 @@
 import { PgClient } from "@effect/sql-pg";
 import {
+  AccountId,
   Activity,
-  type AccountId,
   type ActivityView,
   type FollowRequest,
   type FollowState,
   type OwnProfile,
+  type ProfilePage,
   type ProfileSummary,
   type ProfileView,
   privacy,
   type Relation,
+  SocialActivityId,
   type Username,
   usernameKey,
   viewActivity,
@@ -24,7 +26,7 @@ export class UsernameRequired extends Data.TaggedError("UsernameRequired")<{}> {
 export class CannotFollowSelf extends Data.TaggedError("CannotFollowSelf")<{}> {}
 export class RequestNotFound extends Data.TaggedError("RequestNotFound")<{}> {}
 
-/** The most profiles a search or a list returns, and the most activities a profile shows. */
+/** The most profiles a search or a page of a list returns, and the most activities a profile shows. */
 export const PAGE = 50;
 
 interface Account {
@@ -64,14 +66,29 @@ export interface SocialRowsShape {
     viewer: AccountId,
     username: string,
   ) => Effect.Effect<FollowState, SqlError | NotFound>;
+  /**
+   * One page of the profile's followers, by username. `after` is the `next` of the page
+   * before, and the last page's `next` is null.
+   */
   readonly followers: (
     viewer: AccountId,
     username: string,
-  ) => Effect.Effect<ReadonlyArray<ProfileSummary>, SqlError | NotFound>;
+    after?: string,
+  ) => Effect.Effect<ProfilePage, SqlError | NotFound>;
+  /** One page of the accounts the profile follows, paged like `followers`. */
   readonly following: (
     viewer: AccountId,
     username: string,
-  ) => Effect.Effect<ReadonlyArray<ProfileSummary>, SqlError | NotFound>;
+    after?: string,
+  ) => Effect.Effect<ProfilePage, SqlError | NotFound>;
+  /**
+   * The activity with this social ID, as the privacy rule lets `viewer` see it. One the
+   * viewer may not see answers NotFound, as one that does not exist does.
+   */
+  readonly activity: (
+    viewer: AccountId,
+    socialId: SocialActivityId,
+  ) => Effect.Effect<ActivityView, SqlError | NotFound>;
   /** The requests waiting for `owner` to approve them, oldest first. */
   readonly requests: (owner: AccountId) => Effect.Effect<ReadonlyArray<FollowRequest>, SqlError>;
   /**
@@ -89,11 +106,17 @@ export interface SocialRowsShape {
 }
 
 const decodeActivity = Schema.decodeUnknownOption(Activity);
+const decodeAccountId = Schema.decodeUnknownOption(AccountId);
 
 // A username prefix may hold an underscore, which LIKE reads as any one character.
 const likePrefix = (prefix: string) => `${prefix.replace(/[\\%_]/g, "\\$&")}%`;
 
 type SummaryRow = { readonly username: string; readonly private: boolean; readonly follow: string };
+
+type OwnedRelation = Relation & { readonly owner: AccountId };
+
+const visibilityOf = (relation: Relation, activity: Activity) =>
+  privacy({ ...relation, audience: activity.audience, hiddenFields: activity.hiddenFields });
 
 const summary = (row: SummaryRow): ProfileSummary => ({
   username: row.username,
@@ -128,7 +151,7 @@ export class SocialRows extends Context.Service<SocialRows, SocialRowsShape>()(
         `.pipe(Effect.map(([row]) => row?.state ?? "none"));
 
       const relationTo = (viewer: AccountId, owner: AccountId) =>
-        Effect.map(followState(viewer, owner), (follow): Relation => ({
+        Effect.map(followState(viewer, owner), (follow): OwnedRelation => ({
           viewer,
           owner,
           follow,
@@ -160,19 +183,56 @@ export class SocialRows extends Context.Service<SocialRows, SocialRowsShape>()(
 
       // The viewer's follow state of each listed account comes with it, so a list can show
       // a Follow button. Accounts without a username yet cannot follow, so all have one.
-      const listOf = (viewer: AccountId, where: "followers" | "following", owner: AccountId) =>
-        sql<SummaryRow>`
-          select p.username, p.private, coalesce(mine.state, 'none') as follow
+      // A page ends at a username key, and the next starts after it.
+      const listOf = (
+        viewer: AccountId,
+        where: "followers" | "following",
+        owner: AccountId,
+        after: string | undefined,
+      ) =>
+        sql<SummaryRow & { readonly key: string }>`
+          select p.username, p.private, coalesce(mine.state, 'none') as follow,
+            p.username_key as key
           from follow f
           join profile p on p.account_id = ${where === "followers" ? sql`f.follower_id` : sql`f.followee_id`}
           left join follow mine on mine.follower_id = ${viewer} and mine.followee_id = p.account_id
           where ${where === "followers" ? sql`f.followee_id` : sql`f.follower_id`} = ${owner}
             and f.state = 'following'
+            ${after === undefined ? sql`` : sql`and p.username_key collate "C" > ${after}`}
           order by p.username_key collate "C"
-          limit ${PAGE}
-        `.pipe(Effect.map((rows) => rows.map(summary)));
+          limit ${PAGE + 1}
+        `.pipe(
+          Effect.map((rows): ProfilePage => {
+            const page = rows.slice(0, PAGE);
+            return {
+              profiles: page.map(summary),
+              next: rows.length > PAGE ? (page.at(-1)?.key ?? null) : null,
+            };
+          }),
+        );
 
-      const activities = (relation: Relation) =>
+      // Mints the social ID of each activity that has none yet, and gives back every one.
+      const socialIds = (owner: AccountId, activityIds: ReadonlyArray<string>) =>
+        Effect.gen(function* () {
+          const [first, ...rest] = activityIds.map((id) => ({
+            account_id: owner,
+            activity_id: id,
+          }));
+          if (first === undefined) return new Map<string, SocialActivityId>();
+          yield* sql`
+            insert into activity_social ${sql.insert([first, ...rest])}
+            on conflict do nothing
+          `;
+          const rows = yield* sql<{ readonly activity_id: string; readonly social_id: string }>`
+            select activity_id, social_id from activity_social
+            where account_id = ${owner} and activity_id in ${sql.in(activityIds)}
+          `;
+          return new Map(
+            rows.map((row) => [row.activity_id, SocialActivityId.make(row.social_id)]),
+          );
+        });
+
+      const activities = (relation: OwnedRelation) =>
         Effect.gen(function* () {
           const audiences = visibleAudiences(relation);
           if (audiences.length === 0) return [];
@@ -183,21 +243,21 @@ export class SocialRows extends Context.Service<SocialRows, SocialRowsShape>()(
             order by (data->>'startedAt')::bigint desc, row_id desc
             limit ${PAGE}
           `;
-          const views: Array<ActivityView> = [];
-          for (const { data } of rows) {
+          const shown = rows.flatMap(({ data }) => {
             const activity = Option.getOrUndefined(decodeActivity(data));
-            if (activity === undefined) continue;
-            const view = viewActivity(
-              activity,
-              privacy({
-                ...relation,
-                audience: activity.audience,
-                hiddenFields: activity.hiddenFields,
-              }),
-            );
-            if (view !== undefined) views.push(view);
-          }
-          return views;
+            if (activity === undefined) return [];
+            const visibility = visibilityOf(relation, activity);
+            return visibility.visible ? [{ activity, visibility }] : [];
+          });
+          const ids = yield* socialIds(
+            relation.owner,
+            shown.map(({ activity }) => activity.id),
+          );
+          return shown.flatMap(({ activity, visibility }): ReadonlyArray<ActivityView> => {
+            const socialId = ids.get(activity.id);
+            const view = socialId && viewActivity(activity, socialId, visibility);
+            return view ? [view] : [];
+          });
         });
 
       return SocialRows.of({
@@ -282,10 +342,30 @@ export class SocialRows extends Context.Service<SocialRows, SocialRowsShape>()(
             yield* sql`delete from follow where follower_id = ${viewer} and followee_id = ${owner.id}`;
             return "none" as const;
           }),
-        followers: (viewer, username) =>
-          Effect.flatMap(findAccount(username), (owner) => listOf(viewer, "followers", owner.id)),
-        following: (viewer, username) =>
-          Effect.flatMap(findAccount(username), (owner) => listOf(viewer, "following", owner.id)),
+        followers: (viewer, username, after) =>
+          Effect.flatMap(findAccount(username), (owner) =>
+            listOf(viewer, "followers", owner.id, after),
+          ),
+        following: (viewer, username, after) =>
+          Effect.flatMap(findAccount(username), (owner) =>
+            listOf(viewer, "following", owner.id, after),
+          ),
+        activity: (viewer, socialId) =>
+          Effect.gen(function* () {
+            const [found] = yield* sql<{ readonly account_id: string; readonly data: unknown }>`
+              select s.account_id, r.data from activity_social s
+              join account_row r on r.account_id = s.account_id and r.table_name = 'activity'
+                and r.row_id = s.activity_id
+              where s.social_id = ${socialId} and r.deleted_at is null
+            `;
+            const owner = Option.getOrUndefined(decodeAccountId(found?.account_id));
+            const activity = Option.getOrUndefined(decodeActivity(found?.data));
+            if (owner === undefined || activity === undefined) return yield* new NotFound();
+            const relation = yield* relationTo(viewer, owner);
+            const view = viewActivity(activity, socialId, visibilityOf(relation, activity));
+            if (view === undefined) return yield* new NotFound();
+            return view;
+          }),
         requests: (owner) =>
           sql<SummaryRow & { readonly id: string }>`
             select f.id, p.username, p.private, coalesce(mine.state, 'none') as follow

@@ -1,14 +1,8 @@
 import { Schema } from "effect";
 
 import { DurationSeconds } from "./duration.ts";
-import {
-  type Activity,
-  ActivityId,
-  ActivityKind,
-  type Audience,
-  EpochMillis,
-  HiddenField,
-} from "./schema.ts";
+import { Uuid } from "./ids.ts";
+import { type Activity, ActivityKind, type Audience, EpochMillis, HiddenField } from "./schema.ts";
 
 /** Where one account's follow of another stands. */
 export const FollowState = Schema.Literals(["none", "requested", "following"]);
@@ -38,7 +32,7 @@ const NOTHING: Visibility = { visible: false };
 const EVERYTHING: Visibility = { visible: true, hidden: [] };
 
 /**
- * The privacy rule. The server runs every read of another account's data through it.
+ * The privacy rule. The server runs every read of another account's activities through it.
  * The owner sees everything. A block hides everything. Otherwise `everyone` reaches every
  * account, `followers` only accounts whose follow was accepted, and `only_you` nobody else.
  * Anyone but the owner sees the activity without its hidden fields.
@@ -68,12 +62,21 @@ export const visibleAudiences = (relation: Relation): ReadonlyArray<Audience> =>
   );
 
 /**
+ * How another account names an activity. The server mints it at random the first time it
+ * shows the activity, and keeps it, so it stays the same across reads and likes and
+ * comments can point at it. An activity's own ID can be derived from its start time, as
+ * an imported workout's is, so it never leaves the server for anyone else.
+ */
+export const SocialActivityId = Uuid.pipe(Schema.brand("SocialActivityId"));
+export type SocialActivityId = typeof SocialActivityId.Type;
+
+/**
  * An activity as another account receives it. A hidden field's value is not in it at all,
  * and `hiddenFields` names what the owner hid, so the app can say so. Weight, heart rate and
  * pace live in an activity's sets and samples, which this view does not carry.
  */
 export const ActivityView = Schema.Struct({
-  id: ActivityId,
+  id: SocialActivityId,
   kind: ActivityKind,
   startedAt: Schema.NullOr(EpochMillis),
   durationS: DurationSeconds,
@@ -84,15 +87,19 @@ export const ActivityView = Schema.Struct({
 });
 export type ActivityView = typeof ActivityView.Type;
 
-/** What `visibility` lets a viewer see of `activity`, or undefined when it is not theirs to see. */
+/**
+ * What `visibility` lets a viewer see of `activity`, named by its `socialId`, or undefined
+ * when it is not theirs to see.
+ */
 export const viewActivity = (
   activity: Activity,
+  socialId: SocialActivityId,
   visibility: Visibility,
 ): ActivityView | undefined => {
   if (!visibility.visible) return undefined;
   const hidden = new Set(visibility.hidden);
   return {
-    id: activity.id,
+    id: socialId,
     kind: activity.kind,
     startedAt: hidden.has("start_time") ? null : activity.startedAt,
     durationS: activity.durationS,

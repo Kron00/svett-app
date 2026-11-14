@@ -2,7 +2,9 @@ import { type RouteProp, useNavigation, useRoute } from "@react-navigation/nativ
 import {
   type FollowRequest,
   type OwnProfile,
+  type ProfilePage,
   type ProfileSummary,
+  countOf,
   profileLine,
   type SocialApi,
   USERNAME_MAX,
@@ -116,7 +118,9 @@ function EditProfileForm({
         footer={
           isPrivate
             ? "You approve each follower. Only followers you approve see what you share with followers."
-            : "Anyone can follow you at once and see what you share with followers. Turning this on later keeps the followers you have."
+            : own.private && own.requests > 0
+              ? `Anyone can follow you at once and see what you share with followers. Saving approves ${countOf(own.requests, "waiting request", "waiting requests")}.`
+              : "Anyone can follow you at once and see what you share with followers. Turning this on later keeps the followers you have."
         }
       >
         <ListRow
@@ -225,15 +229,77 @@ export function PeopleScreen() {
 const isList = (list: string): list is "followers" | "following" =>
   list === "followers" || list === "following";
 
-function ConnectionsRead({
-  api,
-  username,
-  list,
-}: {
+type ConnectionsProps = {
   readonly api: SocialApi;
   readonly username: string;
   readonly list: "followers" | "following";
-}) {
+};
+
+/** The list's first page, and the pages after it as Show more reads them. */
+function ConnectionsPages({
+  api,
+  username,
+  list,
+  first,
+}: ConnectionsProps & { first: ProfilePage }) {
+  // Pages read after an older first page are dropped when the screen reads it again.
+  const [more, setMore] = useState<{ readonly after: ProfilePage; readonly page: ProfilePage }>();
+  const [loading, setLoading] = useState(false);
+  const [problem, setProblem] = useState<string>();
+  const shown = more !== undefined && more.after === first ? more.page : first;
+  const showMore = () => {
+    if (shown.next === null) return;
+    setLoading(true);
+    setProblem(undefined);
+    const next =
+      list === "followers"
+        ? api.followers(username, shown.next)
+        : api.following(username, shown.next);
+    void runSocial(next).then((result) => {
+      setLoading(false);
+      if (!result.ok) setProblem(result.message);
+      else {
+        setMore({
+          after: first,
+          page: {
+            profiles: [...shown.profiles, ...result.value.profiles],
+            next: result.value.next,
+          },
+        });
+      }
+    });
+  };
+  return (
+    <>
+      <People
+        profiles={shown.profiles}
+        empty={
+          list === "followers"
+            ? `Nobody follows ${username} yet.`
+            : `${username} does not follow anyone yet.`
+        }
+        testID="connections"
+      />
+      {problem === undefined ? null : (
+        <AppText tone="destructive" className="mx-gutter" testID="connections-more-failed">
+          {problem}
+        </AppText>
+      )}
+      {shown.next === null ? null : (
+        <View className="mx-gutter">
+          <Button
+            label={loading ? "Loading" : "Show more"}
+            disabled={loading}
+            onPress={showMore}
+            testID="connections-more"
+          />
+        </View>
+      )}
+    </>
+  );
+}
+
+function ConnectionsRead({ api, username, list }: ConnectionsProps) {
   const read = useCallback(
     () => (list === "followers" ? api.followers(username) : api.following(username)),
     [api, list, username],
@@ -241,17 +307,7 @@ function ConnectionsRead({
   const { state } = useSocialRead(read);
   return (
     <SocialView state={state} testID="connections">
-      {({ profiles }) => (
-        <People
-          profiles={profiles}
-          empty={
-            list === "followers"
-              ? `Nobody follows ${username} yet.`
-              : `${username} does not follow anyone yet.`
-          }
-          testID="connections"
-        />
-      )}
+      {(first) => <ConnectionsPages api={api} username={username} list={list} first={first} />}
     </SocialView>
   );
 }

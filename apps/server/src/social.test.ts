@@ -2,7 +2,7 @@ import { createServer } from "node:http";
 
 import { NodeHttpServer } from "@effect/platform-node";
 import { PgClient } from "@effect/sql-pg";
-import { type AccountId, Username } from "@svett/core";
+import { type AccountId, importedId, TABLES, Username } from "@svett/core";
 import { Data, Deferred, Effect, Fiber, Layer } from "effect";
 import { HttpClient, HttpClientRequest, HttpRouter, HttpServer } from "effect/http";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
@@ -14,7 +14,7 @@ import { ClerkConfig } from "./clerk-config.ts";
 import { databaseLayer, migrate } from "./database.ts";
 import { socialProof } from "./social-proof.ts";
 import { SocialRoutes } from "./social-routes.ts";
-import { SocialRows, type SocialRowsShape } from "./social-rows.ts";
+import { PAGE, SocialRows, type SocialRowsShape } from "./social-rows.ts";
 import { type StandInIssuer, startStandInIssuer } from "./test-issuer.ts";
 import { startTestPostgres, type TestPostgres } from "./test-postgres.ts";
 
@@ -133,7 +133,7 @@ const activity = (
   ...overrides,
 });
 
-const write = (account: string, rows: ReadonlyArray<ReturnType<typeof activity>>) =>
+const write = (account: string, rows: ReadonlyArray<Record<string, unknown>>) =>
   body(as(account, "PUT", "/v1/rows", { rows: rows.map((row) => ({ table: "activity", row })) }));
 
 type Seen = { readonly activities: ReadonlyArray<{ readonly title: string }> };
@@ -255,7 +255,7 @@ describe("follows", { timeout: 60_000 }, () => {
       },
       benBefore: { followers: 0, follow: "requested" },
       benAfter: { followers: 1, follow: "following", self: false, followsYou: false },
-      followers: { profiles: [{ username: "cara", private: true, follow: "none" }] },
+      followers: { profiles: [{ username: "cara", private: true, follow: "none" }], next: null },
       following: {
         profiles: [
           { username: "anna", private: false, follow: "none" },
@@ -559,6 +559,41 @@ describe("a follow racing a privacy change", { timeout: 60_000 }, () => {
   });
 });
 
+describe("follow lists", { timeout: 60_000 }, () => {
+  it("pages followers by username until the last page", async () => {
+    const layer = await socialRows();
+    const pages = await Effect.runPromise(
+      Effect.gen(function* () {
+        const rows = yield* SocialRows;
+        yield* rows.saveProfile(ANNA as AccountId, {
+          username: Username.make("anna"),
+          private: false,
+        });
+        const followers = Array.from(
+          { length: PAGE + 1 },
+          (_, n) => `f${String(n).padStart(3, "0")}`,
+        );
+        for (const follower of followers) {
+          const account = `user_${follower}` as AccountId;
+          yield* rows.saveProfile(account, { username: Username.make(follower), private: true });
+          yield* rows.follow(account, "anna");
+        }
+        const first = yield* rows.followers(BEN as AccountId, "anna");
+        const second = yield* rows.followers(BEN as AccountId, "anna", first.next ?? undefined);
+        return { followers, first, second };
+      }).pipe(Effect.provide(layer)),
+    );
+    expect(pages.first.profiles.map(({ username }) => username)).toEqual(
+      pages.followers.slice(0, PAGE),
+    );
+    expect(pages.first.next).toBe(pages.followers[PAGE - 1]);
+    expect(pages.second).toEqual({
+      profiles: [{ username: pages.followers[PAGE], private: true, follow: "none" }],
+      next: null,
+    });
+  });
+});
+
 describe("a profile's activities", { timeout: 60_000 }, () => {
   it("shows each viewer what the privacy rule allows, newest first", async () => {
     const seen = await withServer(
@@ -613,7 +648,7 @@ describe("a profile's activities", { timeout: 60_000 }, () => {
     ]);
     expect(other.activities).toEqual([
       {
-        id: hidden.id,
+        id: expect.any(String),
         kind: "run",
         startedAt: null,
         durationS: 1800,
@@ -624,9 +659,116 @@ describe("a profile's activities", { timeout: 60_000 }, () => {
       },
     ]);
     const sent = JSON.stringify(other);
+    expect(sent).not.toContain(hidden.id);
     expect(sent).not.toContain(String(hidden.startedAt));
     expect(sent).not.toContain("410");
     expect(sent).not.toContain("audience");
+  });
+
+  it("names an imported workout with a hidden start by an ID that does not reveal the start", async () => {
+    // A Hevy workout's own ID is a UUIDv5 of its start as the file writes it, in a public
+    // namespace, so anyone holding it could find the start by trying each minute of a day.
+    const start = "3 Nov 2026, 18:30";
+    const imported = activity("everyone", ["start_time"], {
+      id: importedId(TABLES.activity.name, "hevy", start),
+      kind: "strength",
+      startedAt: Date.UTC(2026, 10, 3, 18, 30),
+      source: "hevy",
+      sourceId: start,
+      fingerprint: "f".repeat(64),
+    });
+    const sent = await withServer(
+      Effect.gen(function* () {
+        yield* name(ANNA, "anna", false);
+        yield* name(BEN, "ben");
+        yield* write(ANNA, [imported]);
+        const profile = yield* body<{
+          readonly activities: ReadonlyArray<{ readonly id: string }>;
+        }>(as(BEN, "GET", "/v1/profiles/anna"));
+        const id = profile.activities[0]?.id ?? "";
+        const one = yield* body(as(BEN, "GET", `/v1/activities/${id}`));
+        return { id, text: JSON.stringify([profile, one]) };
+      }),
+    );
+    expect(sent.id).not.toBe(imported.id);
+    for (const secret of [imported.id, imported.sourceId, String(imported.startedAt), "18:30"]) {
+      expect(sent.text).not.toContain(secret);
+    }
+    const day = Array.from({ length: 24 * 60 }, (_, minute) => {
+      const time = `${String(Math.floor(minute / 60)).padStart(2, "0")}:${String(minute % 60).padStart(2, "0")}`;
+      return importedId(TABLES.activity.name, "hevy", `3 Nov 2026, ${time}`);
+    });
+    expect(day).toContain(imported.id);
+    expect(day.filter((guess) => sent.text.includes(guess))).toEqual([]);
+  });
+
+  it("keeps each activity's social ID across reads and viewers, and looks it up through privacy", async () => {
+    const open = activity("everyone");
+    const close = activity("followers");
+    const result = await withServer(
+      Effect.gen(function* () {
+        yield* name(ANNA, "anna", false);
+        yield* name(BEN, "ben");
+        yield* name(CARA, "cara");
+        yield* write(ANNA, [open, close]);
+        yield* body(as(BEN, "PUT", "/v1/profiles/anna/follow"));
+        type Listed = {
+          readonly activities: ReadonlyArray<{ readonly id: string; readonly title: string }>;
+        };
+        const idsFor = (viewer: string) =>
+          Effect.map(body<Listed>(as(viewer, "GET", "/v1/profiles/anna")), (profile) =>
+            Object.fromEntries(profile.activities.map(({ id, title }) => [title, id])),
+          );
+        const first = yield* idsFor(BEN);
+        const again = yield* idsFor(BEN);
+        const stranger = yield* idsFor(CARA);
+        const owner = yield* idsFor(ANNA);
+        const openId = first[open.title] ?? "";
+        const closeId = first[close.title] ?? "";
+        const lookups = {
+          follower: yield* as(BEN, "GET", `/v1/activities/${closeId}`),
+          stranger: yield* as(CARA, "GET", `/v1/activities/${closeId}`),
+          strangerOpen: yield* as(CARA, "GET", `/v1/activities/${openId}`),
+          ownId: yield* as(BEN, "GET", `/v1/activities/${close.id}`),
+          garbage: yield* as(BEN, "GET", "/v1/activities/not-an-id"),
+        };
+        yield* write(ANNA, [{ ...open, audience: "only_you", updatedAt: 2 }]);
+        const madeOnlyYou = yield* as(CARA, "GET", `/v1/activities/${openId}`);
+        yield* write(ANNA, [{ ...open, updatedAt: 3 }]);
+        const sharedAgain = yield* idsFor(CARA);
+        yield* write(ANNA, [{ ...close, updatedAt: 4, deletedAt: 4 }]);
+        const deleted = yield* as(BEN, "GET", `/v1/activities/${closeId}`);
+        return {
+          first,
+          again,
+          stranger,
+          owner,
+          lookups,
+          madeOnlyYou,
+          sharedAgain,
+          deleted,
+        };
+      }),
+    );
+    const openId = result.first[open.title];
+    const closeId = result.first[close.title];
+    expect(openId).not.toBe(closeId);
+    expect(result).toMatchObject({
+      again: result.first,
+      stranger: { [open.title]: openId },
+      owner: { [open.title]: openId, [close.title]: closeId },
+      lookups: {
+        follower: { status: 200, body: { id: closeId, title: close.title } },
+        stranger: { status: 404, body: { error: "not_found" } },
+        strangerOpen: { status: 200, body: { id: openId, title: open.title } },
+        ownId: { status: 404, body: { error: "not_found" } },
+        garbage: { status: 400, body: { error: "invalid_request" } },
+      },
+      madeOnlyYou: { status: 404, body: { error: "not_found" } },
+      sharedAgain: { [open.title]: openId },
+      deleted: { status: 404, body: { error: "not_found" } },
+    });
+    expect(Object.keys(result.stranger)).toEqual([open.title]);
   });
 
   it("shows nothing from another account that holds the same activity ID", async () => {

@@ -32,7 +32,7 @@ const expect = (holds: boolean, message: string) => {
   if (!holds) throw new ProofFailed(message);
 };
 
-type Activity = { readonly id: string; readonly startedAt: number | null };
+type Activity = { readonly id: string; readonly title: string; readonly startedAt: number | null };
 
 /** Runs the proof, and throws with what went wrong when any step does not hold. */
 export const socialProof = async (options: SocialProofOptions) => {
@@ -100,18 +100,34 @@ export const socialProof = async (options: SocialProofOptions) => {
   options.log(`${owner} wrote a followers-only, an everyone and an only-you activity`);
 
   try {
+    // Another account knows an activity only by its social ID, which the owner's own
+    // profile shows too. Newest first, so a copy an interrupted run left behind loses.
+    const mine = (await ok("owner", "GET", `/v1/profiles/${owner}`)) as {
+      readonly activities: ReadonlyArray<Activity>;
+    };
+    const socialId = new Map<string, string>();
+    for (const { id, title } of mine.activities) if (!socialId.has(title)) socialId.set(title, id);
+    for (const row of written) {
+      expect(socialId.has(row.title), `${owner}'s own profile does not show "${row.title}"`);
+    }
+    const idOf = (row: { readonly title: string }) => socialId.get(row.title);
+
     const seen = async () => {
       const profile = (await ok("follower", "GET", `/v1/profiles/${owner}`)) as {
         readonly activities: ReadonlyArray<Activity>;
       };
+      const sent = JSON.stringify(profile);
+      expect(!written.some(({ id }) => sent.includes(id)), "An activity's own ID left the server");
       const ids = new Set(profile.activities.map(({ id }) => id));
-      return { profile, has: (row: { readonly id: string }) => ids.has(row.id) };
+      return { profile, has: (row: { readonly title: string }) => ids.has(idOf(row) ?? "") };
     };
 
     const stranger = await seen();
     expect(stranger.has(forEveryone), "A stranger should see the everyone activity");
     expect(!stranger.has(forFollowers), "A stranger saw the followers-only activity");
     expect(!stranger.has(forOwner), "A stranger saw the only-you activity");
+    const lookup = await call("follower", "GET", `/v1/activities/${idOf(forFollowers) ?? ""}`);
+    expect(lookup.status === 404, "A stranger read the followers-only activity by its social ID");
     options.log(`Stranger: the followers-only activity is absent, the everyone one present`);
 
     const followed = (await ok("follower", "PUT", `/v1/profiles/${owner}/follow`)) as {
@@ -132,7 +148,7 @@ export const socialProof = async (options: SocialProofOptions) => {
     const following = await seen();
     expect(following.has(forFollowers), "A follower should see the followers-only activity");
     expect(!following.has(forOwner), "A follower saw the only-you activity");
-    const shown = following.profile.activities.find(({ id }) => id === forFollowers.id);
+    const shown = following.profile.activities.find(({ id }) => id === idOf(forFollowers));
     expect(shown?.startedAt === null, "The follower got the hidden start time");
     expect(
       !JSON.stringify(following.profile).includes(String(forFollowers.startedAt)),

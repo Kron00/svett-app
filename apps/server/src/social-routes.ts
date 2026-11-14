@@ -1,8 +1,13 @@
-import { type AccountId, Username, usernamePrefix, usernameProblem } from "@svett/core";
+import {
+  type AccountId,
+  SocialActivityId,
+  Username,
+  usernamePrefix,
+  usernameProblem,
+} from "@svett/core";
 import { Data, Effect, Layer, Schema } from "effect";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 
-import { AccountRows } from "./account-rows.ts";
 import { SignInUnavailable, signedInAccount, Unauthorized } from "./auth.ts";
 import {
   CannotFollowSelf,
@@ -21,6 +26,8 @@ class InvalidUsername extends Data.TaggedError("InvalidUsername")<{
 const SearchQuery = Schema.Struct({ prefix: Schema.String });
 const UsernamePath = Schema.Struct({ username: Schema.String });
 const RequestPath = Schema.Struct({ request: Schema.String });
+const ActivityPath = Schema.Struct({ activity: SocialActivityId });
+const PageQuery = Schema.Struct({ after: Schema.optional(Schema.String) });
 
 const refuse = (error: string, status: number, message?: string) =>
   HttpServerResponse.jsonUnsafe(message === undefined ? { error } : { error, message }, {
@@ -77,7 +84,6 @@ const saveProfile = route((account) =>
     const body = yield* HttpServerRequest.schemaBodyJson(SaveProfile);
     const problem = usernameProblem(body.username);
     if (problem !== undefined) return yield* new InvalidUsername({ message: problem });
-    yield* (yield* AccountRows).ensureAccount(account);
     return yield* (yield* SocialRows).saveProfile(account, {
       username: Username.make(body.username),
       private: body.private,
@@ -113,15 +119,24 @@ const unfollow = route((account) =>
   }),
 );
 
+const after = Effect.map(HttpServerRequest.schemaSearchParams(PageQuery), (query) => query.after);
+
 const followers = route((account) =>
   Effect.gen(function* () {
-    return { profiles: yield* (yield* SocialRows).followers(account, yield* username) };
+    return yield* (yield* SocialRows).followers(account, yield* username, yield* after);
   }),
 );
 
 const following = route((account) =>
   Effect.gen(function* () {
-    return { profiles: yield* (yield* SocialRows).following(account, yield* username) };
+    return yield* (yield* SocialRows).following(account, yield* username, yield* after);
+  }),
+);
+
+const activity = route((account) =>
+  Effect.gen(function* () {
+    const path = yield* HttpRouter.schemaPathParams(ActivityPath);
+    return yield* (yield* SocialRows).activity(account, path.activity);
   }),
 );
 
@@ -145,7 +160,10 @@ const decline = route((account) =>
   }),
 );
 
-/** Profiles, search by username, follows and follow requests, for the signed-in account. */
+/**
+ * Profiles, search by username, follows, follow requests and other accounts' activities by
+ * their social IDs, for the signed-in account.
+ */
 export const SocialRoutes = Layer.mergeAll(
   HttpRouter.add("GET", "/v1/profile", ownProfile),
   HttpRouter.add("PUT", "/v1/profile", saveProfile),
@@ -155,6 +173,7 @@ export const SocialRoutes = Layer.mergeAll(
   HttpRouter.add("DELETE", "/v1/profiles/:username/follow", unfollow),
   HttpRouter.add("GET", "/v1/profiles/:username/followers", followers),
   HttpRouter.add("GET", "/v1/profiles/:username/following", following),
+  HttpRouter.add("GET", "/v1/activities/:activity", activity),
   HttpRouter.add("GET", "/v1/follow-requests", requests),
   HttpRouter.add("PUT", "/v1/follow-requests/:request", approve),
   HttpRouter.add("DELETE", "/v1/follow-requests/:request", decline),

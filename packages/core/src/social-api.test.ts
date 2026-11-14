@@ -1,6 +1,7 @@
 import { Cause, Effect, Exit, Option } from "effect";
 import { describe, expect, it } from "vite-plus/test";
 
+import { SocialActivityId } from "./privacy.ts";
 import { httpSocialApi, SocialFailed, socialProblemMessage } from "./social-api.ts";
 
 interface Sent {
@@ -10,7 +11,10 @@ interface Sent {
   readonly authorization: string | undefined;
 }
 
-/** A server that answers each request with `status` and `body`, and records what it got. */
+/**
+ * A server that answers each request with `status` and `body`, as JSON unless `body` is a
+ * string, and records what it got.
+ */
 const server = (status: number, body: unknown, token: string | null = "token-1") => {
   const sent: Array<Sent> = [];
   const api = httpSocialApi({
@@ -24,7 +28,7 @@ const server = (status: number, body: unknown, token: string | null = "token-1")
         body: (init?.body as string | null) ?? null,
         authorization: headers["authorization"],
       });
-      return new Response(JSON.stringify(body), { status });
+      return new Response(typeof body === "string" ? body : JSON.stringify(body), { status });
     },
   });
   return { api, sent };
@@ -143,6 +147,42 @@ describe("httpSocialApi", () => {
     const error = await failure(server(status, body).api.follow("anna"));
     expect(error.problem).toBe(problem);
     expect(socialProblemMessage(error)).toBe(message);
+  });
+
+  it.each([
+    [401, "signed_out"],
+    [503, "sign_in_unavailable"],
+  ])("reads a %i from a proxy that answers without JSON as %s", async (status, problem) => {
+    const error = await failure(server(status, "<html>Unauthorized</html>").api.follow("anna"));
+    expect(error.problem).toBe(problem);
+  });
+
+  it("asks for the page after a list's `next`", async () => {
+    const page = { profiles: [{ username: "ben", private: true, follow: "none" }], next: "ben" };
+    const { api, sent } = server(200, page);
+    expect(await Effect.runPromise(api.followers("Anna.K"))).toEqual(page);
+    await Effect.runPromise(api.following("Anna.K", "a&b"));
+    expect(sent.map(({ url }) => url)).toEqual([
+      "https://svett.test/v1/profiles/Anna.K/followers",
+      "https://svett.test/v1/profiles/Anna.K/following?after=a%26b",
+    ]);
+  });
+
+  it("reads another account's activity by its social ID", async () => {
+    const id = SocialActivityId.make("6f1c2a4e-93b0-4d5e-8a71-0c9e4b2d7f13");
+    const view = {
+      id,
+      kind: "run",
+      startedAt: null,
+      durationS: 1800,
+      title: "Easy run",
+      notes: "",
+      energyKcal: null,
+      hiddenFields: ["start_time"],
+    };
+    const { api, sent } = server(200, view);
+    expect(await Effect.runPromise(api.activity(id))).toEqual(view);
+    expect(sent.map(({ url }) => url)).toEqual([`https://svett.test/v1/activities/${id}`]);
   });
 
   it("asks nothing when nobody is signed in", async () => {

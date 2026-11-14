@@ -1,7 +1,12 @@
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
-import { EditProfileScreen, FollowRequestsScreen, PeopleScreen } from "./PeopleScreens";
+import {
+  ConnectionsScreen,
+  EditProfileScreen,
+  FollowRequestsScreen,
+  PeopleScreen,
+} from "./PeopleScreens";
 import { ProfileScreen } from "./ProfileScreens";
 
 type Answer = { readonly status: number; readonly body: unknown };
@@ -164,7 +169,7 @@ describe("someone's profile", () => {
           followsYou: true,
           activities: [
             {
-              id: "0190a0b2-0000-7000-8000-000000000001",
+              id: "6f1c2a4e-93b0-4d5e-8a71-0c9e4b2d7f13",
               kind: "run",
               startedAt: null,
               durationS: 1800,
@@ -177,8 +182,8 @@ describe("someone's profile", () => {
         }),
       ),
     );
-    const root = await render(<ProfileScreen />, "activity-0190a0b2-0000-7000-8000-000000000001");
-    const row = find(root, "activity-0190a0b2-0000-7000-8000-000000000001");
+    const root = await render(<ProfileScreen />, "activity-6f1c2a4e-93b0-4d5e-8a71-0c9e4b2d7f13");
+    const row = find(root, "activity-6f1c2a4e-93b0-4d5e-8a71-0c9e4b2d7f13");
     expect(row.props.accessibilityLabel).toBe("Easy run, Run · 30 min · Start time hidden");
     expect(texts(root)).toContain("Private profile · Follows you");
     expect(find(root, "follow-button").props.accessibilityLabel).toBe("Following");
@@ -227,6 +232,15 @@ describe("editing your profile", () => {
     ]);
   });
 
+  it("says that going public approves the requests waiting", async () => {
+    app.route.params = {};
+    answer("GET /v1/profile", ok({ ...own, username: "Anna.K", requests: 2 }));
+    const root = await render(<EditProfileScreen />, "username-field");
+    expect(texts(root)).not.toContain("Saving approves");
+    await press(root, "private-switch");
+    expect(texts(root)).toContain("Saving approves 2 waiting requests.");
+  });
+
   it("says when someone already has the username", async () => {
     app.route.params = { username: "taken" };
     answer("GET /v1/profile", ok(own));
@@ -258,6 +272,28 @@ describe("finding people", () => {
     answer("GET /v1/profiles?prefix=zz", ok({ profiles: [] }));
     const root = await render(<PeopleScreen />, "people-empty");
     expect(texts(root)).toContain("Nobody's username starts with “zz”.");
+  });
+});
+
+const person = (username: string) => ({ username, private: true, follow: "none" });
+
+describe("followers", () => {
+  it("shows more followers a page at a time until the last page", async () => {
+    app.route.params = { username: "Anna.K", list: "followers" };
+    answer("GET /v1/profiles/Anna.K/followers", ok({ profiles: [person("ben")], next: "ben" }));
+    answer(
+      "GET /v1/profiles/Anna.K/followers?after=ben",
+      ok({ profiles: [person("cara")], next: null }),
+    );
+    const root = await render(<ConnectionsScreen />, "person-ben");
+    await press(root, "connections-more");
+    await until(() => has(root, "person-cara"), "the second page");
+    expect(has(root, "person-ben")).toBe(true);
+    expect(has(root, "connections-more")).toBe(false);
+    expect(app.sent).toEqual([
+      "GET /v1/profiles/Anna.K/followers",
+      "GET /v1/profiles/Anna.K/followers?after=ben",
+    ]);
   });
 });
 

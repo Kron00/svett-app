@@ -1,7 +1,13 @@
 import { describe, expect, it } from "vite-plus/test";
 
 import { DurationSeconds } from "./duration.ts";
-import { type FollowState, privacy, viewActivity, visibleAudiences } from "./privacy.ts";
+import {
+  type FollowState,
+  privacy,
+  SocialActivityId,
+  viewActivity,
+  visibleAudiences,
+} from "./privacy.ts";
 import { type Activity, ActivityId, type Audience, EpochMillis, HiddenField } from "./schema.ts";
 
 const OWNER = "user_owner";
@@ -150,19 +156,28 @@ describe("visibleAudiences", () => {
   });
 });
 
+const SOCIAL_ID = SocialActivityId.make("6f1c2a4e-93b0-4d5e-8a71-0c9e4b2d7f13");
+
 describe("viewActivity", () => {
   it("gives nothing when the activity is not the viewer's to see", () => {
-    expect(viewActivity(activity([], "only_you"), { visible: false })).toBeUndefined();
+    expect(viewActivity(activity([], "only_you"), SOCIAL_ID, { visible: false })).toBeUndefined();
+  });
+
+  it("names the activity by its social ID, never by its own", () => {
+    const own = activity([], "everyone");
+    const view = viewActivity(own, SOCIAL_ID, { visible: true, hidden: [] });
+    expect(view?.id).toBe(SOCIAL_ID);
+    expect(JSON.stringify(view)).not.toContain(own.id);
   });
 
   it("leaves the start time and calories out when they are hidden", () => {
     const hidden = activity(["start_time", "calories"], "everyone");
-    const view = viewActivity(hidden, {
+    const view = viewActivity(hidden, SOCIAL_ID, {
       visible: true,
       hidden: ["start_time", "calories"],
     });
     expect(view).toEqual({
-      id: hidden.id,
+      id: SOCIAL_ID,
       kind: "run",
       startedAt: null,
       durationS: 1800,
@@ -178,7 +193,7 @@ describe("viewActivity", () => {
 
   it("shows the owner everything, hidden fields included", () => {
     const own = activity(["start_time", "calories"], "only_you");
-    expect(viewActivity(own, { visible: true, hidden: [] })).toMatchObject({
+    expect(viewActivity(own, SOCIAL_ID, { visible: true, hidden: [] })).toMatchObject({
       startedAt: own.startedAt,
       energyKcal: 420,
       hiddenFields: [],
@@ -186,7 +201,10 @@ describe("viewActivity", () => {
   });
 
   it("leaves out the owner's audience and where the activity came from", () => {
-    const view = viewActivity(activity([], "followers"), { visible: true, hidden: [] });
+    const view = viewActivity(activity([], "followers"), SOCIAL_ID, {
+      visible: true,
+      hidden: [],
+    });
     expect(Object.keys(view ?? {}).sort()).toEqual([
       "durationS",
       "energyKcal",

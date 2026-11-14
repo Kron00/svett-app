@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vite-plus/test";
 
 import { DurationSeconds } from "./duration.ts";
-import type { ActivityView } from "./privacy.ts";
-import { ActivityId, EpochMillis } from "./schema.ts";
+import { type ActivityView, SocialActivityId } from "./privacy.ts";
+import { EpochMillis } from "./schema.ts";
 import { activityLine, countOf, followButton, profileLine } from "./social-format.ts";
 
 describe("followButton", () => {
@@ -24,7 +24,7 @@ const day = (millis: number) => `day ${millis}`;
 
 describe("activityLine", () => {
   const view: ActivityView = {
-    id: ActivityId.make("0190a0b2-0000-7000-8000-000000000001"),
+    id: SocialActivityId.make("6f1c2a4e-93b0-4d5e-8a71-0c9e4b2d7f13"),
     kind: "run",
     startedAt: EpochMillis.make(1_790_000_000_000),
     durationS: DurationSeconds.make(1830),
