@@ -345,12 +345,11 @@ export const feedProof = async (options: FeedProofOptions) => {
     };
     expect(route?.type === "route", `The run's detail is ${JSON.stringify(route)}`);
     expect(route.distanceM === 4440, `The run's distance is ${route.distanceM}`);
+    // Its start is hidden, so every duration and the pace stay back, as they would date it.
+    expect(runPost?.activity.durationS === null, "The run carries the duration of a hidden start");
+    expect(route.paceSPerKm === null, `The run's pace is ${route.paceSPerKm}`);
     expect(
-      route.paceSPerKm !== null && Math.round(route.paceSPerKm) === 338,
-      `The run's pace is ${route.paceSPerKm}`,
-    );
-    expect(
-      route.splits.map(({ durationS }) => durationS).join(",") === "330,335,340,345",
+      route.splits.length === 4 && route.splits.every(({ durationS }) => durationS === null),
       `The run's splits are ${JSON.stringify(route.splits)}`,
     );
     const positions = route.route.flat();
@@ -365,7 +364,7 @@ export const feedProof = async (options: FeedProofOptions) => {
     expect(route.averageHeartRateBpm === null, "The run carries its hidden heart rate");
     expect(runPost?.activity.startedAt === null, "The run carries its hidden start time");
     options.log(
-      `${lifter}'s feed shows ${runner}'s run with distance, pace, splits and a route without its ends`,
+      `${lifter}'s feed shows ${runner}'s run with distance, splits and a route without its ends, and no time that dates its hidden start`,
     );
 
     const liftAt = `/v1/posts/${liftPost?.activity.id}`;

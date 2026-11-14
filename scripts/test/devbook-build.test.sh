@@ -2206,7 +2206,8 @@ on_screen() {
     feed:post-route-\$run) [[ "\$theirs" == "\$run" ]] && below ;;
     feed:post-muscles-\$lift) [[ "\$theirs" == "\$lift" ]] && below ;;
     post-\$run:post-title | post-\$run:post-route | post-\$run:post-line) true ;;
-    post-\$run:post-distance | post-\$run:post-pace | post-\$run:post-split-4 | post-\$run:post-hidden) below ;;
+    post-\$run:post-distance | post-\$run:post-time | post-\$run:post-pace | post-\$run:post-split-4 | \
+      post-\$run:post-hidden) below ;;
     post-\$run:post-heart-rate) [[ -n "\${FAKE_LEAK:-}" ]] && below ;;
     post-\$lift:post-title | post-\$lift:post-hidden) true ;;
     post-\$lift:muscle-split | post-\$lift:post-exercises) below ;;
@@ -2216,13 +2217,15 @@ on_screen() {
 }
 label() {
   case "\$screen:\$1" in
-    feed:post-numbers-\$run) echo "4.44 km · 5:38 /km" ;;
+    feed:post-numbers-\$run) echo "4.44 km" ;;
     feed:post-numbers-\$lift) echo "2 exercises · 6 sets · 2,700 kg" ;;
     feed:post-muscles-\$lift) echo "Quadriceps 60% · Chest 40%" ;;
     post-\$run:post-title) echo "Feed proof, river loop" ;;
     post-\$run:post-distance) echo "Distance, 4.44 km" ;;
-    post-\$run:post-pace) echo "Pace, 5:38 /km" ;;
-    post-\$run:post-line) echo "Run · 25 min · Start time hidden" ;;
+    post-\$run:post-time) echo "Time, Hidden" ;;
+    post-\$run:post-pace) echo "Pace, Hidden" ;;
+    post-\$run:post-split-4) echo "Split 4, 1.00 km, Hidden" ;;
+    post-\$run:post-line) echo "Run · Duration hidden · Start time hidden" ;;
     post-\$run:post-hidden) echo "feed_proof_b hides heart rate and start time." ;;
     post-\$lift:post-title) echo "Feed proof, legs and bench" ;;
     post-\$lift:post-hidden) echo "feed_proof_a hides calories." ;;
@@ -2320,12 +2323,18 @@ check "feed.sh screenshots both feeds, both posts and both inboxes" \
   "screenshot $root/feed/03-run-detail.png" "screenshot $root/feed/04-lifter-inbox.png" \
   "screenshot $root/feed/05-runner-feed.png" "screenshot $root/feed/06-lifting-split.png" \
   "screenshot $root/feed/07-lifting-sets.png" "screenshot $root/feed/08-runner-inbox.png"
-check "feed.sh says the run shows its distance and pace in the lifter's feed" \
-  grep -qxF "The run's distance and pace on Home reads \"4.44 km · 5:38 /km\"" "$output"
+check "feed.sh says the run shows its distance without its pace in the lifter's feed" \
+  grep -qxF "The run's distance, without its pace, on Home reads \"4.44 km\"" "$output"
 check "feed.sh says the lifting session shows its muscles in the runner's feed" \
   grep -qxF "The lifting post's muscles on Home reads \"Quadriceps 60% · Chest 40%\"" "$output"
 check "feed.sh says the run's start time is hidden" \
-  grep -qxF "The line under the run's title reads \"Run · 25 min · Start time hidden\"" "$output"
+  grep -qxF "The line under the run's title reads \"Run · Duration hidden · Start time hidden\"" "$output"
+check "feed.sh says the run's time is hidden with its start" \
+  grep -qxF "The run's time reads \"Time, Hidden\"" "$output"
+check "feed.sh says the run's pace is hidden with its start" \
+  grep -qxF "The run's pace reads \"Pace, Hidden\"" "$output"
+check "feed.sh says the run's split times are hidden with its start" \
+  grep -qxF "The run's fourth split reads \"Split 4, 1.00 km, Hidden\"" "$output"
 check "feed.sh says the run's heart rate does not show" \
   grep -qxF "The run's heart rate does not show" "$output"
 check "feed.sh with SVETT_DEVICE_CMD calls neither simctl launch nor openurl" no_simctl_launch_or_openurl

@@ -17,8 +17,8 @@
 # resetting the simulator's Keychain and svett's data. Signed in as one, it opens
 # Home through svett://feed, scrolls to the other's post and checks its numbers,
 # then opens the post through svett://post/<id> and checks its detail:
-# the run's route, distance and pace, with no heart rate and its start time hidden,
-# or the lifting session's exercises and muscle split, with its calories named as
+# the run's route, distance and splits, with no heart rate and its start time hidden,
+# and no time or pace, which would date the hidden start, or the lifting session's exercises and muscle split, with its calories named as
 # hidden. Last it opens the inbox through svett://inbox. It fails when any screen,
 # post, number or note it expects does not show, or a hidden field does.
 #
@@ -244,7 +244,7 @@ agent_device settings text-size accessibility-extra-extra-extra-large
 
 sign_in "$lifter_email"
 open_feed_post "$run_id" "run from $runner"
-expect_label "id=\"post-numbers-$run_id\"" "4.44 km · 5:38 /km" "The run's distance and pace on Home"
+expect_label "id=\"post-numbers-$run_id\"" "4.44 km" "The run's distance, without its pace, on Home"
 expect_shown "id=\"post-route-$run_id\"" "The run's route on Home"
 screenshot lifter-feed
 open_link "svett://post/$run_id" 'id="post-title"'
@@ -252,9 +252,10 @@ expect_label 'id="post-title"' "Feed proof, river loop" "The run's title"
 expect_shown 'id="post-route"' "The run's route"
 screenshot run-route
 expect_label 'id="post-distance"' "Distance, 4.44 km" "The run's distance"
-expect_label 'id="post-pace"' "Pace, 5:38 /km" "The run's pace"
-expect_shown 'id="post-split-4"' "The run's fourth split"
-expect_label 'id="post-line"' "Run · 25 min · Start time hidden" "The line under the run's title"
+expect_label 'id="post-time"' "Time, Hidden" "The run's time"
+expect_label 'id="post-pace"' "Pace, Hidden" "The run's pace"
+expect_label 'id="post-split-4"' "Split 4, 1.00 km, Hidden" "The run's fourth split"
+expect_label 'id="post-line"' "Run · Duration hidden · Start time hidden" "The line under the run's title"
 expect_label 'id="post-hidden"' "$runner hides heart rate and start time." "The run's hidden note"
 expect_hidden 'id="post-heart-rate"' "The run's heart rate"
 screenshot run-detail

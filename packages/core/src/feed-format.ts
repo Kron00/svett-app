@@ -21,7 +21,7 @@ export const formatPostDistance = (metres: number): string =>
 export const formatPostPace = (secondsPerKm: number): string =>
   `${formatDuration(DurationSeconds.make(Math.round(secondsPerKm)))} /km`;
 
-/** A post's duration, or "Hidden" when the owner hides pace. */
+/** A post's duration, or "Hidden" when the owner hides pace or the start time. */
 export const formatPostDuration = (seconds: number | null): string =>
   seconds === null ? "Hidden" : formatWorkoutDuration(seconds);
 

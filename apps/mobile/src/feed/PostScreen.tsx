@@ -96,6 +96,7 @@ function LiftingSection({ post, detail }: { readonly post: Post; readonly detail
           label="Duration"
           value={formatPostDuration(post.activity.durationS)}
           symbol="clock"
+          testID="post-duration"
         />
         <StatTile
           label="Volume"
@@ -135,7 +136,12 @@ function RouteSection({ post, detail }: { readonly post: Post; readonly detail: 
           symbol="point.topleft.down.to.point.bottomright.curvepath"
           testID="post-distance"
         />
-        <StatTile label="Time" value={formatPostDuration(post.activity.durationS)} symbol="clock" />
+        <StatTile
+          label="Time"
+          value={formatPostDuration(post.activity.durationS)}
+          symbol="clock"
+          testID="post-time"
+        />
         <StatTile
           label="Pace"
           value={detail.paceSPerKm === null ? "Hidden" : formatPostPace(detail.paceSPerKm)}

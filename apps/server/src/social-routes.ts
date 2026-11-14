@@ -9,7 +9,8 @@ import { Data, Effect, Layer, Schema } from "effect";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 
 import { SignInUnavailable, signedInAccount, Unauthorized } from "./auth.ts";
-import { InvalidComment, InvalidCursor, PostNotFound } from "./feed-rows.ts";
+import { InvalidComment, PostNotFound } from "./feed-rows.ts";
+import { InvalidCursor } from "./paging.ts";
 import {
   CannotFollowSelf,
   NotFound,
@@ -29,6 +30,7 @@ const UsernamePath = Schema.Struct({ username: Schema.String });
 const RequestPath = Schema.Struct({ request: Schema.String });
 const ActivityPath = Schema.Struct({ activity: SocialActivityId });
 const PageQuery = Schema.Struct({ after: Schema.optional(Schema.String) });
+const CursorQuery = Schema.Struct({ cursor: Schema.optional(Schema.String) });
 
 const refuse = (error: string, status: number, message?: string) =>
   HttpServerResponse.jsonUnsafe(message === undefined ? { error } : { error, message }, {
@@ -137,6 +139,13 @@ const following = route((account) =>
   }),
 );
 
+const activities = route((account) =>
+  Effect.gen(function* () {
+    const { cursor } = yield* HttpServerRequest.schemaSearchParams(CursorQuery);
+    return yield* (yield* SocialRows).activities(account, yield* username, cursor);
+  }),
+);
+
 const activity = route((account) =>
   Effect.gen(function* () {
     const path = yield* HttpRouter.schemaPathParams(ActivityPath);
@@ -177,6 +186,7 @@ export const SocialRoutes = Layer.mergeAll(
   HttpRouter.add("DELETE", "/v1/profiles/:username/follow", unfollow),
   HttpRouter.add("GET", "/v1/profiles/:username/followers", followers),
   HttpRouter.add("GET", "/v1/profiles/:username/following", following),
+  HttpRouter.add("GET", "/v1/profiles/:username/activities", activities),
   HttpRouter.add("GET", "/v1/activities/:activity", activity),
   HttpRouter.add("GET", "/v1/follow-requests", requests),
   HttpRouter.add("PUT", "/v1/follow-requests/:request", approve),

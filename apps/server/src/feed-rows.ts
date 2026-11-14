@@ -36,6 +36,16 @@ import {
 import { Clock, Context, Data, Effect, Layer, Option, Schema } from "effect";
 import type { SqlError } from "effect/sql/SqlError";
 
+import {
+  decodeCursor,
+  encodeCursor,
+  firstVisible,
+  InvalidCursor,
+  postCursor,
+  readPostCursor,
+  SCAN,
+  type SharedAnchor,
+} from "./paging.ts";
 import { UsernameRequired } from "./social-rows.ts";
 
 /** The post is not there, or the privacy rule does not let the account see it. */
@@ -43,7 +53,6 @@ export class PostNotFound extends Data.TaggedError("PostNotFound")<{}> {}
 export class InvalidComment extends Data.TaggedError("InvalidComment")<{
   readonly message: string;
 }> {}
-export class InvalidCursor extends Data.TaggedError("InvalidCursor")<{}> {}
 
 type PostError = SqlError | PostNotFound;
 
@@ -93,55 +102,8 @@ const decodeAll = <A>(
   rows: ReadonlyArray<{ readonly data: unknown }>,
 ): Array<A> => rows.flatMap(({ data }) => Option.toArray(decode(data)));
 
-// A cursor names a post or an inbox item and nothing more. A feed cursor names the last post
-// by its social ID alone, so no time leaves the server in it.
-const FeedCursor = Schema.Struct({ id: Schema.String });
 const InboxCursor = Schema.Struct({ at: Schema.Int, key: Schema.String });
-
-const encodeCursor = (value: unknown) => Buffer.from(JSON.stringify(value)).toString("base64url");
-
-const decodeCursor =
-  <A>(schema: Schema.Codec<A, unknown>) =>
-  (cursor: string) =>
-    Effect.try({
-      try: () => JSON.parse(Buffer.from(cursor, "base64url").toString("utf8")) as unknown,
-      catch: () => new InvalidCursor(),
-    }).pipe(
-      Effect.flatMap((value) =>
-        Schema.decodeUnknownEffect(schema)(value).pipe(Effect.mapError(() => new InvalidCursor())),
-      ),
-    );
-
-const readFeedCursor = decodeCursor(FeedCursor);
 const readInboxCursor = decodeCursor(InboxCursor);
-
-/** Rows read at a time while skipping ones the viewer may not see. */
-const SCAN = 100;
-
-/**
- * The first `want` rows that `toItem` turns into an item, each with its item. `fetch` reads up
- * to SCAN rows in order after the row it is given, so rows the viewer may not see never
- * shorten a page or end it early.
- */
-const firstVisible = <Row, Item, E>(
-  fetch: (after: Row | undefined) => Effect.Effect<ReadonlyArray<Row>, E>,
-  toItem: (row: Row) => Item | undefined,
-  want: number,
-) =>
-  Effect.gen(function* () {
-    const kept: Array<{ readonly row: Row; readonly item: Item }> = [];
-    let after: Row | undefined;
-    while (true) {
-      const rows = yield* fetch(after);
-      for (const row of rows) {
-        const item = toItem(row);
-        if (item !== undefined) kept.push({ row, item });
-        if (kept.length === want) return kept;
-      }
-      if (rows.length < SCAN) return kept;
-      after = rows.at(-1);
-    }
-  });
 
 /** Where `viewer` stands to an account they follow, or to themself. */
 const relation = (viewer: AccountId, owner: string, follow: FollowState): Relation => ({
@@ -154,9 +116,7 @@ const relation = (viewer: AccountId, owner: string, follow: FollowState): Relati
 /** Where an inbox row sits in the inbox's order. */
 const position = (row: InboxRow) => ({ at: Number(row.at), key: row.key });
 
-type FeedAnchor = { readonly sharedMs: string; readonly socialId: string };
-
-type FeedRow = FeedAnchor & {
+type FeedRow = SharedAnchor & {
   readonly ownerId: string;
   readonly username: string;
   readonly data: unknown;
@@ -423,8 +383,8 @@ export class FeedRows extends Context.Service<FeedRows, FeedRowsShape>()("svett/
       const feedAfter = (viewer: AccountId, cursor: string | undefined) =>
         Effect.gen(function* () {
           if (cursor === undefined) return undefined;
-          const { id } = yield* readFeedCursor(cursor);
-          const [anchor] = yield* sql<FeedAnchor>`
+          const id = yield* readPostCursor(cursor);
+          const [anchor] = yield* sql<SharedAnchor>`
             select s.shared_ms as "sharedMs", s.social_id as "socialId"
             ${feedScope(viewer)} and s.social_id = ${id}
           `;
@@ -532,7 +492,7 @@ export class FeedRows extends Context.Service<FeedRows, FeedRowsShape>()("svett/
               posts: posts.filter((post) => post !== undefined),
               next:
                 shown.length > FEED_PAGE && last !== undefined
-                  ? encodeCursor({ id: last.row.socialId })
+                  ? postCursor(last.row.socialId)
                   : null,
             };
           }),

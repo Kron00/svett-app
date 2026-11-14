@@ -332,7 +332,15 @@ describe("viewPostDetail", () => {
     const expected: Record<HiddenField, ReadonlyArray<string>> = {
       weight: ["lifting.sets.weightKg", "lifting.volumeKg"],
       heart_rate: ["route.averageHeartRateBpm"],
-      start_time: ["activity.startedAt"],
+      // A post reaches the feed about when its workout ends, so a duration, or a pace over a
+      // distance, would date the hidden start.
+      start_time: [
+        "activity.startedAt",
+        "activity.durationS",
+        "lifting.sets.durationS",
+        "route.paceSPerKm",
+        "route.splits.durationS",
+      ],
       calories: ["activity.energyKcal"],
       // A duration over a distance is a pace, so every duration goes with it.
       pace: [

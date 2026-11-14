@@ -1,7 +1,7 @@
 import { type RouteProp, useNavigation, useRoute } from "@react-navigation/native";
 import {
+  type ActivityPage,
   activityLine,
-  countOf,
   followButton,
   type OwnProfile,
   type ProfileView,
@@ -186,6 +186,82 @@ function FollowControl({
   );
 }
 
+/** The profile's first page of activities, and the pages after it as Show more reads them. */
+function ProfileActivities({
+  api,
+  profile,
+}: {
+  readonly api: SocialApi;
+  readonly profile: ProfileView;
+}) {
+  const navigation = useNavigation<RootNavigation>();
+  // Pages read after an older first page are dropped when the screen reads it again.
+  const [more, setMore] = useState<{ readonly after: ProfileView; readonly page: ActivityPage }>();
+  const [loading, setLoading] = useState(false);
+  const [problem, setProblem] = useState<string>();
+  const shown: ActivityPage = more !== undefined && more.after === profile ? more.page : profile;
+  const showMore = () => {
+    if (shown.next === null) return;
+    setLoading(true);
+    setProblem(undefined);
+    void runSocial(api.profileActivities(profile.username, shown.next)).then((result) => {
+      setLoading(false);
+      if (!result.ok) setProblem(result.message);
+      else {
+        setMore({
+          after: profile,
+          page: {
+            activities: [...shown.activities, ...result.value.activities],
+            next: result.value.next,
+          },
+        });
+      }
+    });
+  };
+  if (shown.activities.length === 0) {
+    return (
+      <AppText tone="secondary" className="mx-gutter" testID="no-activities">
+        {profile.follow === "following" || profile.self
+          ? "No activities to show yet."
+          : "Nothing shared with everyone yet. Followers may see more."}
+      </AppText>
+    );
+  }
+  return (
+    <>
+      <ListSection header="Activities">
+        {shown.activities.map((activity) => (
+          <ListRow
+            key={activity.id}
+            title={activity.title}
+            subtitle={activityLine(activity, formatDay)}
+            testID={`activity-${activity.id}`}
+            trailing={{
+              type: "chevron",
+              onPress: () => navigation.push("Post", { id: activity.id }),
+            }}
+          />
+        ))}
+      </ListSection>
+      {problem === undefined ? null : (
+        <AppText tone="destructive" className="mx-gutter" testID="activities-more-failed">
+          {problem}
+        </AppText>
+      )}
+      {shown.next === null ? null : (
+        <View className="mx-gutter">
+          <Button
+            label={loading ? "Loading" : "Show more"}
+            disabled={loading}
+            onPress={showMore}
+            testID="activities-more"
+          />
+        </View>
+      )}
+    </>
+  );
+}
+
 function ProfileContent({
   api,
   profile,
@@ -195,7 +271,6 @@ function ProfileContent({
   readonly profile: ProfileView;
   readonly reload: () => void;
 }) {
-  const navigation = useNavigation<RootNavigation>();
   const notes = [
     profile.private ? "Private profile" : "Public profile",
     profile.followsYou ? "Follows you" : undefined,
@@ -214,28 +289,7 @@ function ProfileContent({
         followers={profile.followers}
         following={profile.following}
       />
-      {profile.activities.length === 0 ? (
-        <AppText tone="secondary" className="mx-gutter" testID="no-activities">
-          {profile.follow === "following" || profile.self
-            ? "No activities to show yet."
-            : "Nothing shared with everyone yet. Followers may see more."}
-        </AppText>
-      ) : (
-        <ListSection header={countOf(profile.activities.length, "activity", "activities")}>
-          {profile.activities.map((activity) => (
-            <ListRow
-              key={activity.id}
-              title={activity.title}
-              subtitle={activityLine(activity, formatDay)}
-              testID={`activity-${activity.id}`}
-              trailing={{
-                type: "chevron",
-                onPress: () => navigation.push("Post", { id: activity.id }),
-              }}
-            />
-          ))}
-        </ListSection>
-      )}
+      <ProfileActivities api={api} profile={profile} />
     </>
   );
 }

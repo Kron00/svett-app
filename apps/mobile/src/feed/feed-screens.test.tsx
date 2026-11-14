@@ -317,6 +317,30 @@ describe("a post", () => {
     expect(has(root, "post-hidden")).toBe(false);
   });
 
+  it("shows neither time nor pace of a run whose start is hidden, and the rest as usual", async () => {
+    const hiddenStart = {
+      ...runPost,
+      username: "anna",
+      mine: false,
+      audience: null,
+      activity: { ...activity(RUN_ID, "run", "River loop", ["start_time"]), durationS: null },
+      detail: {
+        ...runPost.detail,
+        paceSPerKm: null,
+        splits: [{ distanceM: 1000, endM: 1000, durationS: null }],
+      },
+    };
+    answer(`GET /v1/posts/${RUN_ID}`, ok({ post: hiddenStart, comments: [] }));
+    const root = await render(<PostScreen {...props(RUN_ID)} />, "post-route");
+    expect(find(root, "post-time").props.accessibilityLabel).toBe("Time, Hidden");
+    expect(find(root, "post-pace").props.accessibilityLabel).toBe("Pace, Hidden");
+    expect(find(root, "post-split-1").props.accessibilityLabel).toBe("Split 1, 1.00 km, Hidden");
+    expect(texts(find(root, "post-line"))).toBe("Run · Duration hidden · Start time hidden");
+    expect(find(root, "post-distance").props.accessibilityLabel).toBe("Distance, 4.44 km");
+    expect(find(root, "post-heart-rate").props.accessibilityLabel).toBe("Heart rate, 151 bpm");
+    expect(texts(find(root, "post-hidden"))).toBe("anna hides start time.");
+  });
+
   it("posts a comment as plain text and shows it", async () => {
     answer(`GET /v1/posts/${LIFT_ID}`, ok({ post: liftingPost, comments: [] }));
     answer(

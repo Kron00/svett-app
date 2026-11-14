@@ -42,7 +42,7 @@ export const PostSet = Schema.Struct({
   /** Null when the set has none, and when the owner hides weight. */
   weightKg: Schema.NullOr(Schema.Finite),
   reps: Schema.NullOr(Schema.Int),
-  /** Null when the set has none, and when the owner hides pace. */
+  /** Null when the set has none, and when the owner hides pace or the start time. */
   durationS: Schema.NullOr(DurationSeconds),
   distanceM: Schema.NullOr(Schema.Finite),
   rpe: Schema.NullOr(Schema.Finite),
@@ -75,9 +75,12 @@ export const RouteDetail = Schema.Struct({
   type: Schema.Literal("route"),
   distanceM: Schema.NullOr(Schema.Finite),
   elevationGainM: Schema.NullOr(Schema.Finite),
-  /** Seconds per kilometre. Null without a distance, and when the owner hides pace. */
+  /**
+   * Seconds per kilometre. Null without a distance, and when the owner hides pace or the start
+   * time.
+   */
   paceSPerKm: Schema.NullOr(Schema.Finite),
-  /** Each split's time is null when the owner hides pace. */
+  /** Each split's time is null when the owner hides pace or the start time. */
   splits: Schema.Array(
     Schema.Struct({
       distanceM: Schema.Finite,

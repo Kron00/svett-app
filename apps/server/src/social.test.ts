@@ -142,6 +142,16 @@ const titles = (viewer: string, username: string) =>
     profile.activities.map(({ title }) => title),
   );
 
+type Shown = {
+  readonly id: string;
+  readonly title: string;
+  readonly startedAt: number | null;
+  readonly durationS: number | null;
+};
+
+/** A cursor naming the activity with social ID `id`, as the server makes one. */
+const cursorFor = (id: string) => Buffer.from(JSON.stringify({ id })).toString("base64url");
+
 /** An account's own profile, as a newly named account reads it. */
 const own = (username: string | null, isPrivate: boolean) => ({
   status: 200,
@@ -601,12 +611,16 @@ describe("a profile's activities", { timeout: 60_000 }, () => {
         yield* name(ANNA, "anna");
         yield* name(BEN, "ben");
         yield* name(CARA, "cara");
-        yield* write(ANNA, [
+        // Shared one after another, the newest first, whatever their start times.
+        for (const each of [
           activity("everyone"),
           activity("followers"),
           activity("only_you"),
           activity("followers", [], { deletedAt: 5, updatedAt: 5 }),
-        ]);
+        ]) {
+          yield* write(ANNA, [each]);
+          yield* Effect.sleep("5 millis");
+        }
         yield* body(as(BEN, "PUT", "/v1/profiles/anna/follow"));
         yield* body(as(CARA, "PUT", "/v1/profiles/anna/follow"));
         const requested = yield* titles(BEN, "anna");
@@ -651,7 +665,7 @@ describe("a profile's activities", { timeout: 60_000 }, () => {
         id: expect.any(String),
         kind: "run",
         startedAt: null,
-        durationS: 1800,
+        durationS: null,
         title: hidden.title,
         notes: "",
         energyKcal: null,
@@ -769,6 +783,130 @@ describe("a profile's activities", { timeout: 60_000 }, () => {
       deleted: { status: 404, body: { error: "not_found" } },
     });
     expect(Object.keys(result.stranger)).toEqual([open.title]);
+  });
+
+  it("places an activity whose start is hidden by when it was shared, so its neighbours tell nothing", async () => {
+    // The same three activities, shared in the same order, with the hidden start long before
+    // or long after its neighbours'.
+    const profiles = await Promise.all(
+      [1_600_000_000_000, 1_900_000_000_000].map((hiddenStart) =>
+        withServer(
+          Effect.gen(function* () {
+            yield* name(ANNA, "anna", false);
+            yield* name(BEN, "ben");
+            const tick = Effect.sleep("5 millis");
+            yield* write(ANNA, [
+              activity("everyone", [], { title: "Before", startedAt: 1_790_000_000_000 }),
+            ]);
+            yield* tick;
+            yield* write(ANNA, [
+              activity("everyone", ["start_time"], { title: "Hidden", startedAt: hiddenStart }),
+            ]);
+            yield* tick;
+            yield* write(ANNA, [
+              activity("everyone", [], { title: "After", startedAt: 1_790_000_100_000 }),
+            ]);
+            const first = yield* as(BEN, "GET", "/v1/profiles/anna");
+            const ids = (first.body as { activities: ReadonlyArray<{ id: string }> }).activities;
+            const answers = [
+              first,
+              ...(yield* Effect.forEach(ids, ({ id }) =>
+                as(BEN, "GET", `/v1/profiles/anna/activities?cursor=${cursorFor(id)}`),
+              )),
+            ];
+            return {
+              text: JSON.stringify(answers),
+              order: (first.body as { activities: ReadonlyArray<Shown> }).activities.map(
+                (shown) => [shown.title, shown.startedAt, shown.durationS],
+              ),
+              after: answers
+                .slice(1)
+                .map(({ body }) =>
+                  (body as { activities: ReadonlyArray<Shown> }).activities.map(
+                    ({ title }) => title,
+                  ),
+                ),
+            };
+          }),
+        ),
+      ),
+    );
+    for (const profile of profiles) {
+      expect(profile.order).toEqual([
+        ["After", 1_790_000_100_000, 1800],
+        ["Hidden", null, null],
+        ["Before", 1_790_000_000_000, 1800],
+      ]);
+      expect(profile.after).toEqual([["Hidden", "Before"], ["Before"], []]);
+    }
+    expect(profiles[0]?.text).not.toContain("1600000000");
+    expect(profiles[1]?.text).not.toContain("1900000000");
+  });
+
+  it("pages by a cursor that names only the social ID, and refuses one the viewer may no longer see", async () => {
+    // Each write starts earlier than the one before, so an order by start would differ.
+    const writes = [0, 1, 2].map((batch) =>
+      Array.from({ length: batch === 2 ? 5 : PAGE / 2 }, (_, index) =>
+        activity("everyone", ["start_time"], {
+          startedAt: 1_790_123_456_000 - batch * 86_400_000 + index,
+          title: `Write ${batch} #${index}`,
+        }),
+      ),
+    );
+    const result = await withServer(
+      Effect.gen(function* () {
+        yield* name(ANNA, "anna", false);
+        yield* name(BEN, "ben");
+        for (const rows of writes) {
+          yield* write(ANNA, rows);
+          yield* Effect.sleep("5 millis");
+        }
+        type Page = { readonly activities: ReadonlyArray<Shown>; readonly next: string | null };
+        const first = yield* body<Page>(as(BEN, "GET", "/v1/profiles/anna"));
+        const firstAgain = yield* body<Page>(as(BEN, "GET", "/v1/profiles/anna/activities"));
+        const second = yield* body<Page>(
+          as(BEN, "GET", `/v1/profiles/anna/activities?cursor=${first.next}`),
+        );
+        const anchor = first.activities.at(-1)?.title;
+        const hidden = writes.flat().find((row) => row.title === anchor);
+        if (hidden === undefined) throw new Error("No activity named by the cursor");
+        yield* write(ANNA, [{ ...hidden, audience: "only_you", updatedAt: 2 }]);
+        const pageAfter = (account: string, cursor: string) =>
+          as(account, "GET", `/v1/profiles/anna/activities?cursor=${cursor}`);
+        return {
+          first,
+          firstAgain,
+          second,
+          cursor: Buffer.from(first.next ?? "", "base64url").toString(),
+          owner: yield* pageAfter(ANNA, first.next ?? ""),
+          madeOnlyYou: yield* pageAfter(BEN, first.next ?? ""),
+          nothing: yield* pageAfter(BEN, cursorFor("6f1c2a4e-93b0-4d5e-8a71-0c9e4b2d7f13")),
+          garbage: yield* pageAfter(BEN, "bm9wZQ"),
+        };
+      }),
+    );
+    expect(result.first.activities).toHaveLength(PAGE);
+    expect({ ...result.firstAgain, activities: result.firstAgain.activities.length }).toEqual({
+      activities: PAGE,
+      next: result.first.next,
+    });
+    expect(result.second.next).toBeNull();
+    const all = [...result.first.activities, ...result.second.activities];
+    expect(new Set(all.map(({ id }) => id)).size).toBe(PAGE + 5);
+    expect(all.map(({ title }) => title.split(" #")[0])).toEqual(
+      [2, 1, 0].flatMap((batch) =>
+        Array.from({ length: batch === 2 ? 5 : PAGE / 2 }, () => `Write ${batch}`),
+      ),
+    );
+    expect(JSON.parse(result.cursor)).toEqual({ id: result.first.activities.at(-1)?.id });
+    expect(result.cursor).not.toContain("1790123");
+    expect(result.owner.status).toBe(200);
+    expect(
+      [result.madeOnlyYou, result.nothing, result.garbage].map(({ status, body }) => [
+        status,
+        body,
+      ]),
+    ).toEqual(Array.from({ length: 3 }, () => [400, { error: "invalid_cursor" }]));
   });
 
   it("shows nothing from another account that holds the same activity ID", async () => {

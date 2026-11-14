@@ -52,7 +52,10 @@ export type FollowRequest = typeof FollowRequest.Type;
 export const FollowRequestList = Schema.Struct({ requests: Schema.Array(FollowRequest) });
 export type FollowRequestList = typeof FollowRequestList.Type;
 
-/** A profile and the activities the privacy rule lets the signed-in account see, newest first. */
+/**
+ * A profile and the first page of the activities the privacy rule lets the signed-in account
+ * see, newest first by when each was shared, as the feed orders them.
+ */
 export const ProfileView = Schema.Struct({
   username: Schema.String,
   private: Schema.Boolean,
@@ -63,8 +66,17 @@ export const ProfileView = Schema.Struct({
   /** The owner follows the signed-in account. */
   followsYou: Schema.Boolean,
   activities: Schema.Array(ActivityView),
+  /** Asks `profileActivities` for the activities after these. Null when there are no more. */
+  next: Schema.NullOr(Schema.String),
 });
 export type ProfileView = typeof ProfileView.Type;
+
+/** A page of a profile's activities after a cursor, ordered as ProfileView orders them. */
+export const ActivityPage = Schema.Struct({
+  activities: Schema.Array(ActivityView),
+  next: Schema.NullOr(Schema.String),
+});
+export type ActivityPage = typeof ActivityPage.Type;
 
 export const FollowResult = Schema.Struct({ follow: FollowState });
 export type FollowResult = typeof FollowResult.Type;
@@ -215,6 +227,15 @@ export const httpSocialApi = (options: HttpSocialOptions) => {
         : call(ProfileList, "GET", `/v1/profiles?prefix=${encodeURIComponent(prefix)}`);
     },
     profile: (username: string) => call(ProfileView, "GET", at(username)),
+    /** The profile's activities after `cursor`, a `next` from the profile or a page before. */
+    profileActivities: (username: string, cursor?: string) =>
+      call(
+        ActivityPage,
+        "GET",
+        cursor === undefined
+          ? `${at(username)}/activities`
+          : `${at(username)}/activities?cursor=${encodeURIComponent(cursor)}`,
+      ),
     follow: (username: string) => call(FollowResult, "PUT", `${at(username)}/follow`),
     unfollow: (username: string) => call(FollowResult, "DELETE", `${at(username)}/follow`),
     /** A page of the profile's followers, after the page whose `next` is `after`. */

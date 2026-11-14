@@ -133,6 +133,7 @@ const profile = (overrides: Record<string, unknown>) => ({
   follow: "none",
   followsYou: false,
   activities: [],
+  next: null,
   ...overrides,
 });
 
@@ -172,7 +173,7 @@ describe("someone's profile", () => {
               id: "6f1c2a4e-93b0-4d5e-8a71-0c9e4b2d7f13",
               kind: "run",
               startedAt: null,
-              durationS: 1800,
+              durationS: null,
               title: "Easy run",
               notes: "",
               energyKcal: null,
@@ -184,9 +185,41 @@ describe("someone's profile", () => {
     );
     const root = await render(<ProfileScreen />, "activity-6f1c2a4e-93b0-4d5e-8a71-0c9e4b2d7f13");
     const row = find(root, "activity-6f1c2a4e-93b0-4d5e-8a71-0c9e4b2d7f13");
-    expect(row.props.accessibilityLabel).toBe("Easy run, Run · 30 min · Start time hidden");
+    expect(row.props.accessibilityLabel).toBe(
+      "Easy run, Run · Duration hidden · Start time hidden",
+    );
     expect(texts(root)).toContain("Private profile · Follows you");
     expect(find(root, "follow-button").props.accessibilityLabel).toBe("Following");
+  });
+
+  it("shows more activities a page at a time until the last page", async () => {
+    const run = (n: number) => ({
+      id: `6f1c2a4e-93b0-4d5e-8a71-0c9e4b2d7f1${n}`,
+      kind: "run",
+      startedAt: 1_790_000_000_000,
+      durationS: 1800,
+      title: `Run ${n}`,
+      notes: "",
+      energyKcal: null,
+      hiddenFields: [],
+    });
+    answer(
+      "GET /v1/profiles/Anna.K",
+      ok(profile({ follow: "following", activities: [run(1)], next: "after-1" })),
+    );
+    answer(
+      "GET /v1/profiles/Anna.K/activities?cursor=after-1",
+      ok({ activities: [run(2)], next: null }),
+    );
+    const root = await render(<ProfileScreen />, `activity-${run(1).id}`);
+    await press(root, "activities-more");
+    await until(() => has(root, `activity-${run(2).id}`), "the second page");
+    expect(has(root, `activity-${run(1).id}`)).toBe(true);
+    expect(has(root, "activities-more")).toBe(false);
+    expect(app.sent).toEqual([
+      "GET /v1/profiles/Anna.K",
+      "GET /v1/profiles/Anna.K/activities?cursor=after-1",
+    ]);
   });
 
   it("says why it did not load", async () => {
