@@ -145,8 +145,8 @@ export const writtenOf = (rows: TableRows): Fingerprint =>
   Fingerprint.make(
     contentFingerprint(
       TABLE_KEYS.flatMap((table) =>
-        (rows[table] ?? [])
-          .toSorted((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
+        [...(rows[table] ?? [])]
+          .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
           .map((row) => [TABLES[table].name, row]),
       ),
     ),
@@ -326,7 +326,7 @@ export const planImport = (local: TableRows, incoming: TableRows): ImportPlan =>
     changed: items
       .filter((item) => item.status === "changed")
       .map((item) => item.summary)
-      .toSorted(byTimeThenTitle),
+      .sort(byTimeThenTitle),
     unchanged: items.filter((item) => item.status === "unchanged").length,
   };
 };
