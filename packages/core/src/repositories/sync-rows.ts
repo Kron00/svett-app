@@ -113,7 +113,10 @@ const lookupWithAside = (table: SyncedTable, id: string) =>
  * The workout in progress here that a pulled row belongs to, by its copy here or by the
  * pulled copy, such as a set another phone added to one of its exercises.
  */
-export const draftWorkoutHere = (row: CheckedRow, here: Readonly<Record<string, unknown>> | undefined) =>
+export const draftWorkoutHere = (
+  row: CheckedRow,
+  here: Readonly<Record<string, unknown>> | undefined,
+) =>
   Effect.gen(function* () {
     const byHere =
       here === undefined ? undefined : yield* draftWorkoutOf(row.table, here, lookupWithAside);

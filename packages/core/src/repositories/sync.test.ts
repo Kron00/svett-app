@@ -485,6 +485,11 @@ const serverCopies = (
     }),
   );
 
+const setsOf = async (on: Phone, id: ActivityId) =>
+  Option.getOrThrow(
+    await on.run(Effect.flatMap(activities, (repository) => repository.get(id))),
+  ).exercises.flatMap((exercise) => exercise.sets.map(({ id: setId, reps }) => ({ setId, reps })));
+
 /** Every order of `items`. */
 const orders = <A>(items: ReadonlyArray<A>): Array<ReadonlyArray<A>> =>
   items.length <= 1
@@ -641,11 +646,6 @@ describe("a workout in progress", () => {
     }
     return { activity, set, "added set": added };
   };
-
-  const setsOf = async (on: Phone, id: ActivityId) =>
-    Option.getOrThrow(
-      await on.run(Effect.flatMap(activities, (repository) => repository.get(id))),
-    ).exercises.flatMap((exercise) => exercise.sets.map(({ id: setId, reps }) => ({ setId, reps })));
 
   const cases = (["one", "several"] as const).flatMap((pages) =>
     orders(["activity", "set", "added set"] as const).map((order) => ({ pages, order })),

@@ -624,9 +624,10 @@ const makeActivityRepository = Effect.gen(function* () {
           TABLES.activityExercise,
           childrenOf.exercises,
           [id],
-          "position",
+          "position, id",
         );
-        const sets = yield* selectRows(TABLES.activitySet, childrenOf.sets, [id], "position");
+        // Two phones can each add a set at the same position, and both show them in one order.
+        const sets = yield* selectRows(TABLES.activitySet, childrenOf.sets, [id], "position, id");
         const [track] = yield* selectRows(TABLES.activityTrack, childrenOf.tracks, [id]);
         return Option.some<ActivityDetail>({
           activity: activity.value,

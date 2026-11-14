@@ -149,6 +149,42 @@ const activityIds = async (phone: Phone) =>
 const counts = (phone: Phone) =>
   phone.run(Effect.flatMap(activities, (repository) => repository.counts));
 
+const reopen = (phone: Phone, id: ActivityId) =>
+  phone.run(
+    Effect.flatMap(activities, (repository) => repository.update(id, { status: "in_progress" })),
+  );
+
+const finish = (phone: Phone, id: ActivityId) =>
+  phone.run(Effect.flatMap(activities, (repository) => repository.finishWorkout(id)));
+
+/** Adds a done set of `reps` to the first exercise of the workout in progress `id`. */
+const addDoneSet = (phone: Phone, id: ActivityId, reps: number) =>
+  phone.run(
+    Effect.flatMap(activities, (repository) =>
+      Effect.gen(function* () {
+        const workout = Option.getOrThrow(yield* repository.get(id));
+        const exercise = workout.exercises[0]?.exercise;
+        if (exercise === undefined) throw new Error("The workout has no exercises");
+        const setId = yield* repository.addSet(exercise.id, {
+          setType: "normal",
+          weightKg: 110,
+          reps,
+          durationS: null,
+          distanceM: null,
+          targetRepsMin: null,
+          targetRepsMax: null,
+        });
+        yield* repository.updateWorkoutSet(setId, { done: true });
+        return setId;
+      }),
+    ),
+  );
+
+const setsOf = async (phone: Phone, id: ActivityId) =>
+  Option.getOrThrow(await detail(phone, id)).exercises.flatMap(({ sets }) =>
+    sets.map(({ id: setId, reps }) => ({ setId, reps })),
+  );
+
 /** Every order of `items`. */
 const orders = <A>(items: ReadonlyArray<A>): Array<ReadonlyArray<A>> =>
   items.length <= 1
@@ -659,34 +695,149 @@ describe("sync", { timeout: 120_000 }, () => {
     expect(await counts(a)).toEqual({ activities: 2, sets: 6 });
   });
 
-  it("keeps a workout reopened on one phone over another phone's edits to it, and brings it to both once finished", async () => {
+  it("keeps a set another phone added to a workout in progress here, on both phones once it is finished", async () => {
     const server = await startServer();
     const a = openPhone(server, ALICE, 1);
     const b = openPhone(server, ALICE, 2);
     const id = await sharedLegDay(a, [b]);
 
     await a.at(T0 + MINUTE);
-    await a.run(
-      Effect.flatMap(activities, (repository) => repository.update(id, { status: "in_progress" })),
-    );
-    const set = await firstSet(a, id);
-    await a.run(
-      Effect.flatMap(activities, (repository) => repository.updateWorkoutSet(set.id, { reps: 99 })),
-    );
-    const draft = await workoutRows(a.runtime, id);
-
+    await reopen(a, id);
+    const fromA = await addDoneSet(a, id, 7);
     await b.at(T0 + 2 * MINUTE);
-    await editFirstSet(b, id, 3);
-    await b.run(Effect.flatMap(activities, (repository) => repository.update(id, { title: "B" })));
+    await reopen(b, id);
+    const fromB = await addDoneSet(b, id, 8);
+    await finish(b, id);
+    const draft = await workoutRows(a.runtime, id);
     await syncAll([a, b]);
     expect(await workoutRows(a.runtime, id)).toEqual(draft);
 
     await a.at(T0 + 3 * MINUTE);
-    await a.run(Effect.flatMap(activities, (repository) => repository.finishWorkout(id)));
+    await finish(a, id);
     await syncAll([a, b]);
     expect(await a.rows()).toEqual(await b.rows());
-    const onB = Option.getOrThrow(await detail(b, id));
-    expect(onB.activity).toMatchObject({ title: "Legs", status: "finished" });
-    expect(onB.exercises[0]?.sets[0]?.reps).toBe(99);
+    const [onA, onB] = await Promise.all([setsOf(a, id), setsOf(b, id)]);
+    expect(onA).toEqual(onB);
+    expect(onA).toHaveLength(6);
+    expect(onA).toEqual(
+      expect.arrayContaining([
+        { setId: fromA, reps: 7 },
+        { setId: fromB, reps: 8 },
+      ]),
+    );
+  });
+
+  it.each([
+    { later: "a", first: "a" },
+    { later: "a", first: "b" },
+    { later: "b", first: "a" },
+    { later: "b", first: "b" },
+  ] as const)(
+    "takes the later edit to a set changed on both phones, from $later, when $first finishes first",
+    async ({ later, first }) => {
+      const server = await startServer();
+      const a = openPhone(server, ALICE, 1);
+      const b = openPhone(server, ALICE, 2);
+      const phones = { a, b };
+      const id = await sharedLegDay(a, [b]);
+      const set = await firstSet(a, id);
+      await Promise.all(
+        [a, b].map(async (phone) => {
+          await phone.at(T0 + MINUTE);
+          await reopen(phone, id);
+        }),
+      );
+      const earlier = later === "a" ? b : a;
+      await earlier.at(T0 + 2 * MINUTE);
+      await earlier.run(
+        Effect.flatMap(activities, (repository) =>
+          repository.updateWorkoutSet(set.id, { reps: 3 }),
+        ),
+      );
+      await phones[later].at(T0 + 3 * MINUTE);
+      await phones[later].run(
+        Effect.flatMap(activities, (repository) =>
+          repository.updateWorkoutSet(set.id, { reps: 9 }),
+        ),
+      );
+
+      const second = first === "a" ? b : a;
+      await phones[first].at(T0 + 4 * MINUTE);
+      await finish(phones[first], id);
+      await syncAll([a, b]);
+      await second.at(T0 + 5 * MINUTE);
+      await finish(second, id);
+      await syncAll([a, b]);
+
+      expect(await a.rows()).toEqual(await b.rows());
+      expect((await firstSet(a, id)).reps).toBe(9);
+      expect((await firstSet(b, id)).reps).toBe(9);
+    },
+  );
+
+  it("deletes a workout another phone deleted while it was in progress here, and Undo brings it back as it was", async () => {
+    const server = await startServer();
+    const a = openPhone(server, ALICE, 1);
+    const b = openPhone(server, ALICE, 2);
+    const id = await sharedLegDay(a, [b]);
+    const set = await firstSet(a, id);
+
+    await a.at(T0 + MINUTE);
+    await reopen(a, id);
+    await a.run(
+      Effect.flatMap(activities, (repository) => repository.updateWorkoutSet(set.id, { reps: 99 })),
+    );
+    await b.at(T0 + 2 * MINUTE);
+    await b.run(Effect.flatMap(activities, (repository) => repository.remove(id)));
+    const draft = await workoutRows(a.runtime, id);
+    await syncAll([a, b]);
+    expect(await workoutRows(a.runtime, id)).toEqual(draft);
+
+    // An edit made after the delete, under the deleted workout, is dropped with it.
+    await a.at(T0 + 3 * MINUTE);
+    await a.run(
+      Effect.flatMap(activities, (repository) => repository.updateWorkoutSet(set.id, { reps: 77 })),
+    );
+    await finish(a, id);
+    await syncAll([a, b]);
+    expect(await a.rows()).toEqual(await b.rows());
+    expect(await detail(a, id)).toEqual(Option.none());
+    expect(await counts(a)).toEqual({ activities: 0, sets: 0 });
+
+    await b.at(T0 + 4 * MINUTE);
+    await b.run(Effect.flatMap(activities, (repository) => repository.restore(id)));
+    await syncAll([a, b]);
+    expect(await a.rows()).toEqual(await b.rows());
+    expect(await setsOf(a, id)).toHaveLength(4);
+    expect((await firstSet(a, id)).reps).toBe(5);
+  });
+
+  it("puts a workout discarded here back as the other phone has it, with that phone's changes", async () => {
+    const server = await startServer();
+    const a = openPhone(server, ALICE, 1);
+    const b = openPhone(server, ALICE, 2);
+    const id = await sharedLegDay(a, [b]);
+
+    await a.at(T0 + MINUTE);
+    await reopen(a, id);
+    const set = await firstSet(a, id);
+    await a.run(
+      Effect.flatMap(activities, (repository) => repository.updateWorkoutSet(set.id, { reps: 99 })),
+    );
+    const fromA = await addDoneSet(a, id, 7);
+    await b.at(T0 + 2 * MINUTE);
+    await editFirstSet(b, id, 3);
+    await b.run(Effect.flatMap(activities, (repository) => repository.update(id, { title: "B" })));
+    await syncAll([a, b]);
+
+    await a.at(T0 + 3 * MINUTE);
+    await a.run(Effect.flatMap(activities, (repository) => repository.remove(id)));
+    await syncAll([a, b]);
+    expect(await detail(a, id)).toEqual(await detail(b, id));
+    const kept = Option.getOrThrow(await detail(a, id));
+    expect(kept.activity).toMatchObject({ title: "B", status: "finished" });
+    expect((await firstSet(a, id)).reps).toBe(3);
+    expect((await setsOf(a, id)).some(({ setId }) => setId === fromA)).toBe(false);
+    expect(await counts(a)).toEqual(await counts(b));
   });
 });
