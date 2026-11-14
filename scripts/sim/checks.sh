@@ -11,7 +11,8 @@
 # opens the ChatGPT sign-in sheet and cancels it. After each step that leaves svett it brings svett back to Phone
 # checks, and it stops before a scroll or press when svett is not in front. Last
 # it relaunches, copies the report and saves the clipboard as report.txt, with a
-# note on what the simulator cannot show.
+# note on what the simulator cannot show. It fails when Keychain, the notification
+# or GPS did not pass.
 # Screenshots are numbered PNGs. Both go to out-dir, by default
 # ~/svett-proof/<branch>/checks/. Like tabs.sh, Debug opens the development client
 # on Metro at SVETT_METRO, --release opens the installed Release build, and every
@@ -239,3 +240,14 @@ echo "Saved $out/report.txt"
 screenshot report
 
 echo "Screenshots and the report are in $out"
+
+# Health stays INCONCLUSIVE with no workouts in the simulator, and the script cancels
+# the ChatGPT sign-in, so these are the checks the simulator can pass.
+unpassed=()
+for check in "Keychain after restart" "Notification in the background" "GPS with the screen locked"; do
+  grep -qF "$check: PASSED." "$out/report.txt" || unpassed+=("$check")
+done
+if ((${#unpassed[@]} > 0)); then
+  printf 'Did not pass: %s\n' "${unpassed[@]}" >&2
+  exit 1
+fi

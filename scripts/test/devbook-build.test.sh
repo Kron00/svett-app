@@ -447,7 +447,8 @@ check "gallery.sh restores the default text size after a failure" \
 # brings svett back on the screen it left, or on its tab root with FAKE_RELOAD,
 # or not at all with FAKE_STAYS_HOME. A scroll or press while the Home Screen is
 # in front fails and is logged. Every element has the same frame, the clipboard
-# holds a report, no permission prompt shows, and the Apple Health sheet shows
+# holds a report whose notification check reads FAKE_NOTIFICATION, by default
+# PASSED, no permission prompt shows, and the Apple Health sheet shows
 # only with FAKE_HEALTH_SHEET. FAKE_NO_GRANT refuses a permission grant ahead.
 # With FAKE_CHATGPT_SHEET the ChatGPT sign-in sheet covers Phone checks, refuses
 # alert dismiss and closes on a Cancel press.
@@ -496,7 +497,11 @@ case "\$args" in
   *' id="phone-checks-row" '*) [[ "\$screen" == you ]] ;;
   *' label="Turn On All" '*) [[ -n "\${FAKE_HEALTH_SHEET:-}" ]] ;;
   *" is visible "* | *' wait id='*) [[ "\$screen" == checks ]] ;;
-  *" clipboard read "*) echo "fake phone check report" ;;
+  *" clipboard read "*)
+    echo "fake phone check report"
+    echo "Keychain after restart: PASSED. Read back."
+    echo "Notification in the background: \${FAKE_NOTIFICATION:-PASSED}. Arrived."
+    echo "GPS with the screen locked: PASSED. 70 points." ;;
   *" alert wait "*) exit 1 ;;
 esac
 EOF
@@ -627,5 +632,15 @@ check "checks.sh presses Cancel on the sheet that covers Phone checks" \
   only_calls "get attrs label" 'get attrs label="Cancel"'
 check "checks.sh still saves the report after cancelling the sheet" \
   grep -qxF "fake phone check report" "$root/checks-chatgpt/report.txt"
+
+case_name="checks.sh when the notification check did not pass"
+run_checks FAKE_RELEASE=1 FAKE_NOTIFICATION=WAITING --release "$root/checks-unpassed"
+check "checks.sh fails when a check the simulator can pass did not" test "$checks_status" -ne 0
+check "checks.sh names the check that did not pass" \
+  grep -qxF "Did not pass: Notification in the background" "$output"
+check "checks.sh still saves the report when a check did not pass" \
+  grep -qF "Notification in the background: WAITING." "$root/checks-unpassed/report.txt"
+check "checks.sh still screenshots the report when a check did not pass" \
+  bound_got "$bound_prefix screenshot $root/checks-unpassed/08-report.png"
 
 echo "$passed passed"
