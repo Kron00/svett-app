@@ -3,7 +3,7 @@ import { Clock } from "effect";
 import { useCallback, useEffect, useState } from "react";
 import { AppState } from "react-native";
 
-import { appDatabase } from "../data/database";
+import { appDatabase } from "../data/current";
 
 /** The phone's own time zone, with daylight saving time. */
 export const PHONE_OFFSET: UtcOffset = (millis) => -new Date(millis).getTimezoneOffset();

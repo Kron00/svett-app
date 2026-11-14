@@ -14,8 +14,8 @@ import type { ReactElement, ReactNode } from "react";
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
-import { appDatabase } from "../data/database";
-import { write } from "../data/store";
+import { appDatabase, currentDatabase } from "../data/current";
+import { writeTo } from "../data/store";
 import type { RootStackParamList } from "../navigation";
 import { changeWorkoutSettings } from "../settings/store";
 import { CalendarScreen } from "./CalendarScreen";
@@ -82,7 +82,7 @@ vi.mock("@expo/ui/community/segmented-control", () => ({
 vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 vi.mock("uniwind", () => ({ useCSSVariable: () => "#000000" }));
 vi.mock("@react-navigation/native", () => ({ DarkTheme: {}, useNavigation: () => navigation }));
-vi.mock("../data/database", async () => {
+vi.mock("../data/current", async () => {
   const effect = await import("effect");
   const { databaseLayer, Ids } = await import("@svett/core");
   const { manualClock, openNodeDatabase } = await import("@svett/core/node");
@@ -94,7 +94,19 @@ vi.mock("../data/database", async () => {
       clock.layer,
     ),
   );
-  return { appDatabase: () => runtime };
+  const database = {
+    owner: { kind: "anonymous" },
+    handle: { target: { kind: "owner", owner: { kind: "anonymous" } }, runtime },
+  };
+  return {
+    appDatabase: () => runtime,
+    currentDatabase: () => database,
+    movePending: () => false,
+    sameDatabase: (a: unknown, b: unknown) => a === b,
+    stillOpen: (open: unknown) => open === database,
+    subscribeDatabase: () => () => undefined,
+    useCurrentDatabase: () => database,
+  };
 });
 
 const DAY = 86_400_000;
@@ -437,7 +449,8 @@ describe("the streak across midnight", () => {
 describe("a recorded run in history", () => {
   it("opens on its route screen, and a workout opens on its sets", async () => {
     const history = await render(<ProgressScreen />);
-    const run = await write(
+    const run = await writeTo(
+      currentDatabase(),
       Effect.flatMap(Effect.service(ActivityRepository), (activities) =>
         activities.create({
           kind: "run",

@@ -25,6 +25,7 @@ vi.mock("@react-navigation/native-stack", () => ({
 vi.mock("react-native", () => ({ Text: "Text", View: "View" }));
 vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 vi.mock("./progress/ProgressScreen", () => ({ ProgressScreen: () => "progress screen" }));
+vi.mock("./account/AccountRow", () => ({ AccountRow: () => "account row" }));
 vi.mock("./coach/CoachScreen", () => ({ CoachScreen: () => "coach screen" }));
 vi.mock("./chatgpt/ChatGPTRow", () => ({ ChatGPTRow: () => "chatgpt row" }));
 vi.mock("./PhoneChecksRow", () => ({ PhoneChecksRow: () => "phone checks row" }));

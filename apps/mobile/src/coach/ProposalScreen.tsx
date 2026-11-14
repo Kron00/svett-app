@@ -115,16 +115,18 @@ export function ProposalScreen() {
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string>();
   const view = loaded.state === "ready" ? loaded.value : null;
+  // Apply and Undo write into the database the preview was read from, or nowhere.
+  const readFrom = loaded.state === "ready" ? loaded.database : null;
   const { reload } = loaded;
   const status = view?.status;
 
   useLayoutEffect(() => {
     const act = (action: "apply" | "undo") => {
-      if (busy || view === null) return;
+      if (busy || view === null || readFrom === null) return;
       setBusy(true);
       setProblem(undefined);
       const proposalId: ProposalId = view.id;
-      (action === "apply" ? apply(proposalId) : undo(proposalId))
+      (action === "apply" ? apply(readFrom, proposalId) : undo(readFrom, proposalId))
         .then((result: ProposalOutcome) => {
           if (!result.done) setProblem(result.why);
         })
@@ -137,7 +139,7 @@ export function ProposalScreen() {
     navigation.setOptions({
       unstable_headerRightItems: () => (busy ? [] : proposalItems(status, act)),
     });
-  }, [navigation, busy, status, view, reload]);
+  }, [navigation, busy, status, view, readFrom, reload]);
 
   return (
     <ScrollView
