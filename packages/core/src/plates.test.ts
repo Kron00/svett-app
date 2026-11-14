@@ -187,6 +187,44 @@ describe("the plate calculator", () => {
     });
   }
 
+  it("loads a plate mix too odd to search heaviest plate first, at once", () => {
+    const odd = [
+      { weight: 997, pairs: 20 },
+      { weight: 0.01, pairs: 20 },
+    ];
+    const started = performance.now();
+    expect(loadPlates(2014.02, 20, odd)).toEqual({
+      kind: "exact",
+      load: {
+        perSide: [
+          { weight: 997, count: 1 },
+          { weight: 0.01, count: 1 },
+        ],
+        total: 2014.02,
+      },
+    });
+    expect(loadPlates(2015, 20, odd)).toEqual({
+      kind: "inexact",
+      lighter: {
+        perSide: [
+          { weight: 997, count: 1 },
+          { weight: 0.01, count: 20 },
+        ],
+        total: 2014.4,
+      },
+      heavier: {
+        perSide: [{ weight: 997, count: 2 }],
+        total: 4008,
+      },
+    });
+    expect(loadPlates(10, 20, odd)).toEqual({
+      kind: "inexact",
+      lighter: null,
+      heavier: { perSide: [], total: 20 },
+    });
+    expect(performance.now() - started).toBeLessThan(100);
+  });
+
   it("takes the nearer of the two loads it cannot match, the lighter on a tie", () => {
     expect(nearestLoad(101, 20, KG)?.total).toBe(100);
     expect(nearestLoad(102, 20, KG)?.total).toBe(102.5);

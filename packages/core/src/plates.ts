@@ -85,10 +85,16 @@ const hundredths = (weight: number): number => Math.round(weight * 100);
 
 const gcd = (a: number, b: number): number => (b === 0 ? a : gcd(b, a % b));
 
+// The fewest-plates search does about this much work for a phone's tap. Plate mixes with no
+// common step, such as 0.01 and 997, would take far more, and load heaviest first instead.
+const MAX_SEARCH_STEPS = 2_000_000;
+
 /**
  * The plates on each side that load `target` on `bar`. Each side takes the fewest plates,
  * and among those the heaviest first, as you would load them. When your plates cannot make
- * the weight, it gives the nearest lighter and heavier loads instead.
+ * the weight, it gives the nearest lighter and heavier loads instead. A plate mix too odd to
+ * search loads each side heaviest plate first, and then the loads either side are near ones,
+ * not always the nearest.
  */
 export const loadPlates = (
   target: number,
@@ -106,6 +112,8 @@ export const loadPlates = (
   const steps = sizes.map((size) => size / unit);
   const counts = sizes.map((size) => pairs.get(size)!);
   const most = steps.reduce((sum, step, index) => sum + step * counts[index]!, 0);
+  const work = most * counts.reduce((sum, count) => sum + count, 0);
+  if (work > MAX_SEARCH_STEPS) return loadHeaviestFirst(target, bar, sizes, counts);
 
   // fewest[i][s]: the fewest plates from the sizes at i and lighter that make s steps a side.
   const fewest: Array<Array<number>> = [];
@@ -157,6 +165,40 @@ export const loadPlates = (
     lighter: lighter === null ? null : loadOf(lighter),
     heavier: heavier === null ? null : loadOf(heavier),
   };
+};
+
+/** loadPlates for a plate mix too odd to search: each side takes the heaviest plates that fit. */
+const loadHeaviestFirst = (
+  target: number,
+  bar: number,
+  sizes: ReadonlyArray<number>,
+  counts: ReadonlyArray<number>,
+): PlateResult => {
+  const barHundredths = hundredths(bar);
+  const loadOf = (taken: ReadonlyArray<number>): PlateLoad => ({
+    perSide: taken.flatMap((count, i) => (count > 0 ? [{ weight: sizes[i]! / 100, count }] : [])),
+    total: (barHundredths + 2 * taken.reduce((sum, count, i) => sum + count * sizes[i]!, 0)) / 100,
+  });
+  const difference = hundredths(target) - barHundredths;
+  if (difference < 0) {
+    return { kind: "inexact", lighter: null, heavier: loadOf(sizes.map(() => 0)) };
+  }
+  let left = Math.floor(difference / 2);
+  const taken = sizes.map((size, i) => {
+    const count = Math.min(counts[i]!, Math.floor(left / size));
+    left -= count * size;
+    return count;
+  });
+  const lighter = loadOf(taken);
+  if (left === 0 && difference % 2 === 0) return { kind: "exact", load: lighter };
+  // One more of the lightest plate that has a pair left goes over the target with the heavier
+  // plates alone, so the lighter ones come off.
+  const spare = sizes.findLastIndex((_, i) => taken[i]! < counts[i]!);
+  const heavier =
+    spare === -1
+      ? null
+      : loadOf(taken.map((count, i) => (i < spare ? count : i === spare ? count + 1 : 0)));
+  return { kind: "inexact", lighter, heavier };
 };
 
 /** The load nearest `target` your plates make, the lighter one on a tie, or null for none. */
