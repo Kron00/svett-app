@@ -1240,6 +1240,10 @@ database.exec(`
 EOF
 node "$root/history-fixture.cjs" "$history_fixture" 2>/dev/null
 
+for ((element = 100; element < 10100; element++)); do
+  echo "@e$element [other] \"element-$element\""
+done >"$root/snapshot-tail"
+
 # Stands in for the bound command on the Progress screens. It counts 300 workouts,
 # 299 after a press on Delete workout and 300 again after Undo, unless
 # FAKE_UNDO_BROKEN. The set reads its new weight after Save unless FAKE_EDIT_LOST.
@@ -1294,7 +1298,9 @@ case "\$args" in
     if [[ -z "\${FAKE_BLANK_AFTER:-}" ]] || ((scrolls < FAKE_BLANK_AFTER)); then
       echo '@e11 [other] "history-row"'
       echo '@e13 [other] "history-row"'
-    fi ;;
+    fi
+    # The rest of the screen's tree, more than a pipe holds, as a real snapshot can be.
+    cat "$root/snapshot-tail" ;;
   *' is visible id="workout-older" '*)
     scrolls=\$(grep -c ' scroll down\$' "$root/bound-calls" || true)
     oldest_after=\${FAKE_OLDEST_AFTER:-120}
@@ -1886,7 +1892,7 @@ fixture_args="--launch-args=-svettFixture --launch-args=$container_fixture $timi
 debug_fixture_open="$debug_open $fixture_args"
 cold_start_lines=(
   "^agent-device's calls alone, against the running app: [0-9]+ ms$"
-  "^svett's own start-up, the difference: about -?[0-9]+ ms$"
+  "^The difference, an upper bound on svett's start-up that still includes the script's wait before it opens the Train tab: about -?[0-9]+ ms$"
 )
 fake_in_app="svett's own cold start: 640 ms. Routine list drawn 1540 ms after launch, less 900 ms waiting for the Train tab."
 
@@ -1898,7 +1904,7 @@ cold_start_says() {
     sed -n 1p "$1" | grep -qE "^Cold start to the Train tab's routine list: [0-9]+ ms \($2, on the 300-workout fixture, an upper bound that includes agent-device's calls\)$" &&
     sed -n 2p "$1" | grep -qE "${cold_start_lines[0]}" &&
     sed -n 3p "$1" | grep -qE "${cold_start_lines[1]}" &&
-    [[ "$(sed -n 4p "$1")" == "Measured in the app: $fake_in_app" ]]
+    [[ "$(sed -n 4p "$1")" == "Measured in the app, the number the plan's 2 second target is judged by: $fake_in_app" ]]
 }
 
 case_name="routines.sh Debug with SVETT_DEVICE_CMD"

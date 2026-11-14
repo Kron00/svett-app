@@ -23,12 +23,14 @@
 # It times a cold start from the relaunch until the Train tab lists the
 # routines, which it renders once they have loaded. That time includes
 # agent-device's calls, so it is an upper bound. Then it times the same calls
-# against the running app, which shows the automation's own share. svett is
-# launched with -svettTiming 1, so the Train tab also shows the time svett
-# measured itself, from the process start to the first frame with the routine
-# list, without the wait for the svett://train link, and each step on the way.
-# All of it goes to cold-start.txt. Only a Release build's time counts against
-# the plan's target.
+# against the running app, which shows the automation's own share. Their
+# difference still includes the script's wait before it opens the Train tab, so
+# it is an upper bound too. svett is launched with -svettTiming 1, so the Train
+# tab also shows the time svett measured itself, from the process start to the
+# first frame with the routine list, without the wait for the svett://train link,
+# and each step on the way. That in-app time is the number the plan's 2 second
+# target is judged by, and only on a Release build. All of it goes to
+# cold-start.txt.
 #
 # It opens screens through svett:// links and presses an element at the centre
 # of its frame, because agent-device 0.21.37 refuses a selector press inside
@@ -220,8 +222,8 @@ build=$([[ "$release" == true ]] && echo Release || echo "Debug, loaded from Met
 {
   echo "Cold start to the Train tab's routine list: $cold_start ms ($build, on the 300-workout fixture, an upper bound that includes agent-device's calls)"
   echo "agent-device's calls alone, against the running app: $overhead ms"
-  echo "svett's own start-up, the difference: about $((cold_start - overhead)) ms"
-  echo "Measured in the app: $in_app"
+  echo "The difference, an upper bound on svett's start-up that still includes the script's wait before it opens the Train tab: about $((cold_start - overhead)) ms"
+  echo "Measured in the app, the number the plan's 2 second target is judged by: $in_app"
 } | tee "$out/cold-start.txt"
 screenshot train
 
