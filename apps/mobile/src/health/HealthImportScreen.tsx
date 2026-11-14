@@ -1,5 +1,6 @@
 import { type RouteProp, useNavigation, useRoute } from "@react-navigation/native";
 import {
+  formatDuration,
   isNothingFromSource,
   type SourceChoices,
   type SourceFile,
@@ -130,13 +131,34 @@ function Plan({
                   <ListRow
                     key={item.key}
                     title={item.workout.title}
-                    subtitle={subtitle(item)}
+                    subtitle={
+                      item.linked
+                        ? `${subtitle(item)}, linked to a workout from another source`
+                        : subtitle(item)
+                    }
                     value={take.has(item.key) ? "File's version" : "Yours"}
                     trailing={{
                       type: "switch",
                       value: take.has(item.key),
                       onValueChange: () => setTake(toggled(item.key)),
                     }}
+                  />
+                ))}
+              </ListSection>
+            </View>
+          )}
+          {plan.collisions.length === 0 ? null : (
+            <View testID="health-collisions">
+              <ListSection
+                header="Same start in this file"
+                footer="These share a start, a type and a source, but not their content. svett keeps each as its own workout."
+              >
+                {plan.collisions.slice(0, LISTED).map((item) => (
+                  <ListRow
+                    key={item.key}
+                    title={item.workout.title}
+                    subtitle={subtitle(item)}
+                    value={formatDuration(item.workout.durationS)}
                   />
                 ))}
               </ListSection>

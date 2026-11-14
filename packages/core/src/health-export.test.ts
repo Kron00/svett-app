@@ -110,6 +110,9 @@ describe("HealthExportReader", () => {
   });
 });
 
+const trackPoint = (lat: number) =>
+  `<trkpt lat="${lat}" lon="18"><time>2026-11-07T09:0${lat}:00Z</time></trkpt>`;
+
 describe("parseGpx", () => {
   it("reads the track's name, type and points with their heart rate", () => {
     const parsed = parseGpx(sampleGpx());
@@ -134,12 +137,10 @@ describe("parseGpx", () => {
   });
 
   it("keeps each segment of each track apart, and takes the first track's name", () => {
-    const point = (lat: number) =>
-      `<trkpt lat="${lat}" lon="18"><time>2026-11-07T09:0${lat}:00Z</time></trkpt>`;
     const track = Result.getOrThrow(
       parseGpx(
-        `<gpx><trk><name>Out</name><trkseg>${point(1)}${point(2)}</trkseg><trkseg></trkseg><trkseg>${point(3)}</trkseg></trk>` +
-          `<trk><name>Back</name><trkseg>${point(4)}${point(5)}</trkseg></trk></gpx>`,
+        `<gpx><trk><name>Out</name><trkseg>${trackPoint(1)}${trackPoint(2)}</trkseg><trkseg></trkseg><trkseg>${trackPoint(3)}</trkseg></trk>` +
+          `<trk><name>Back</name><trkseg>${trackPoint(4)}${trackPoint(5)}</trkseg></trk></gpx>`,
       ),
     );
     expect(track.name).toBe("Out");

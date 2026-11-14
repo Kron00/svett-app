@@ -243,7 +243,7 @@ export type LocalActivity = Pick<
   "id" | "kind" | "title" | "startedAt" | "durationS" | "source" | "sourceId" | "fingerprint"
 >;
 
-export type LocalLink = Pick<ActivitySource, "activityId" | "source" | "sourceId">;
+export type LocalLink = Pick<ActivitySource, "activityId" | "source" | "sourceId" | "fingerprint">;
 
 export type SourcePlanItem =
   | { readonly status: "new"; readonly key: string; readonly workout: SourceWorkout }
@@ -253,6 +253,8 @@ export type SourcePlanItem =
       readonly key: string;
       readonly workout: SourceWorkout;
       readonly local: ActivityId;
+      /** True when the workout is linked to an activity from another source, not its own. */
+      readonly linked: boolean;
     }
   | {
       readonly status: "duplicate";
@@ -268,6 +270,8 @@ export interface SourcePlan {
   readonly duplicates: ReadonlyArray<Extract<SourcePlanItem, { status: "duplicate" }>>;
   readonly changed: ReadonlyArray<Extract<SourcePlanItem, { status: "changed" }>>;
   readonly unchanged: number;
+  /** Workouts that share a source, start and type with another in the file, with other content. */
+  readonly collisions: ReadonlyArray<SourcePlanItem>;
 }
 
 /** What the person chose in the preview. Duplicates link unless kept apart, and changed ones keep yours unless taken. */
@@ -284,6 +288,40 @@ export const sourceKey = (workout: Pick<SourceWorkout, "source" | "identity">): 
 export const sourceActivityId = (workout: Pick<SourceWorkout, "source" | "identity">) =>
   ActivityId.make(importedId(TABLES.activity.name, workout.source, workout.identity));
 
+/**
+ * Gives workouts in the file that share an identity, but not their content, identities
+ * of their own. They are ordered by fingerprint, the first keeps the identity, and the
+ * others add "#2", "#3" and so on, so the same file gives the same IDs every time.
+ * Copies with the same content are one workout.
+ */
+export const distinctIdentities = (
+  incoming: ReadonlyArray<SourceWorkout>,
+): { readonly workouts: ReadonlyArray<SourceWorkout>; readonly collided: ReadonlySet<string> } => {
+  const groups = new Map<string, Map<Fingerprint, SourceWorkout>>();
+  for (const workout of incoming) {
+    const key = sourceKey(workout);
+    const group = groups.get(key) ?? new Map<Fingerprint, SourceWorkout>();
+    if (!group.has(workout.fingerprint)) group.set(workout.fingerprint, workout);
+    groups.set(key, group);
+  }
+  const workouts: Array<SourceWorkout> = [];
+  const collided = new Set<string>();
+  for (const group of groups.values()) {
+    const ordered = [...group.values()].sort((a, b) =>
+      a.fingerprint < b.fingerprint ? -1 : a.fingerprint > b.fingerprint ? 1 : 0,
+    );
+    for (const [index, workout] of ordered.entries()) {
+      const distinct =
+        index === 0
+          ? workout
+          : { ...workout, identity: SourceIdentity.make(`${workout.identity} #${index + 1}`) };
+      workouts.push(distinct);
+      if (ordered.length > 1) collided.add(sourceKey(distinct));
+    }
+  }
+  return { workouts, collided };
+};
+
 const overlapMs = (local: LocalActivity, workout: SourceWorkout) =>
   Math.min(local.startedAt + local.durationS * 1000, workout.endedAt) -
   Math.max(local.startedAt, workout.startedAt);
@@ -292,10 +330,11 @@ const newestFirst = (a: SourcePlanItem, b: SourcePlanItem) =>
   b.workout.startedAt - a.workout.startedAt || a.key.localeCompare(b.key);
 
 /**
- * Compares workouts from a source with the activities here. One already here with the
- * same content, or already linked to an activity from another source, is unchanged.
- * One here with other content is changed. One that overlaps the time of an activity
- * from another source is a possible duplicate. The rest are new.
+ * Compares workouts from a source with the activities here. One already here, or
+ * linked to an activity from another source, is unchanged when its content is the same
+ * as when it was saved or linked, and changed when not. One that overlaps the time of
+ * an activity from another source is a possible duplicate. The rest are new. Workouts
+ * in the file that share an identity get their own first, as `distinctIdentities` says.
  */
 export const planSourceImport = (
   local: {
@@ -305,24 +344,27 @@ export const planSourceImport = (
   incoming: ReadonlyArray<SourceWorkout>,
 ): SourcePlan => {
   const byId = new Map(local.activities.map((activity) => [activity.id, activity]));
-  const linked = new Set(local.links.map((link) => `${link.source}:${link.sourceId}`));
-  const seen = new Set<string>();
+  const linked = new Map(local.links.map((link) => [`${link.source}:${link.sourceId}`, link]));
+  const { workouts, collided } = distinctIdentities(incoming);
   const items: Array<SourcePlanItem> = [];
-  for (const workout of incoming) {
+  for (const workout of workouts) {
     const key = sourceKey(workout);
-    if (seen.has(key)) continue;
-    seen.add(key);
     const here = byId.get(sourceActivityId(workout));
     if (here !== undefined) {
       items.push(
         here.fingerprint === workout.fingerprint
           ? { status: "unchanged", key, workout }
-          : { status: "changed", key, workout, local: here.id },
+          : { status: "changed", key, workout, local: here.id, linked: false },
       );
       continue;
     }
-    if (linked.has(key)) {
-      items.push({ status: "unchanged", key, workout });
+    const link = linked.get(key);
+    if (link !== undefined) {
+      items.push(
+        link.fingerprint === workout.fingerprint
+          ? { status: "unchanged", key, workout }
+          : { status: "changed", key, workout, local: link.activityId, linked: true },
+      );
       continue;
     }
     let match: LocalActivity | undefined;
@@ -348,13 +390,14 @@ export const planSourceImport = (
     duplicates: items.filter((item) => item.status === "duplicate"),
     changed: items.filter((item) => item.status === "changed"),
     unchanged: items.filter((item) => item.status === "unchanged").length,
+    collisions: items.filter((item) => collided.has(item.key)),
   };
 };
 
 export const isNothingFromSource = (plan: SourcePlan): boolean =>
   plan.added === 0 && plan.duplicates.length === 0 && plan.changed.length === 0;
 
-const idIn = (table: TableKey, workout: SourceWorkout, path = "") =>
+const idIn = (table: TableKey, workout: Pick<SourceWorkout, "source" | "identity">, path = "") =>
   importedId(TABLES[table].name, workout.source, `${workout.identity}${path}`);
 
 const heartSamples = (
@@ -506,9 +549,13 @@ export const linkRows = (
     fingerprint: workout.fingerprint,
     importBatchId,
   };
-  const hasHeart = (activity.rows.activitySample ?? []).some((row) => row["kind"] === "heart_rate");
+  const hasHeart = (activity.rows.activitySample ?? []).some(
+    (row) => row.deletedAt === null && row["kind"] === "heart_rate",
+  );
   if (workout.heartRate.length === 0 || hasHeart) return { activitySource: [link] };
-  const existing = activity.rows.activityTrack?.[0] as ActivityTrack | undefined;
+  const existing = activity.rows.activityTrack?.find((row) => row.deletedAt === null) as
+    | ActivityTrack
+    | undefined;
   const track: ActivityTrack = existing ?? {
     id: ActivityTrackId.make(idIn("activityTrack", workout, "/track")),
     updatedAt: at,
@@ -524,6 +571,33 @@ export const linkRows = (
     ...(existing === undefined ? { activityTrack: [track] } : {}),
     activitySample: heartSamples(workout, track.id, at, (index) => `/track/heart_rate/${index}`),
   };
+};
+
+/**
+ * The rows that `linkRows` added to an activity for one source's workout, found among
+ * the activity's rows by the IDs it gives them: the link, and the track and heart rate
+ * it brought.
+ */
+export const linkContribution = (
+  rows: TableRows,
+  link: Pick<SourceWorkout, "source" | "identity">,
+): TableRows => {
+  const linkId = idIn("activitySource", link);
+  const trackId = idIn("activityTrack", link, "/track");
+  const samples = rows.activitySample ?? [];
+  const heartIds = new Set<string>(
+    Array.from({ length: samples.filter((row) => row["kind"] === "heart_rate").length }, (_, i) =>
+      idIn("activitySample", link, `/track/heart_rate/${i}`),
+    ),
+  );
+  const contribution: TableRows = {
+    activitySource: (rows.activitySource ?? []).filter((row) => row.id === linkId),
+    activityTrack: (rows.activityTrack ?? []).filter((row) => row.id === trackId),
+    activitySample: samples.filter((row) => heartIds.has(row.id)),
+  };
+  return Object.fromEntries(
+    Object.entries(contribution).filter(([, list]) => list.length > 0),
+  ) as TableRows;
 };
 
 const SOURCE_NAME: Readonly<Record<Source, string>> = {

@@ -3,6 +3,8 @@ import { Context, Data, Effect, Layer, Option, Schema } from "effect";
 import { Ids } from "../ids.ts";
 import {
   type ActivityId,
+  type ActivitySource,
+  type ActivityTrack,
   type EpochMillis,
   type ImportBatch,
   type ImportBatchId,
@@ -13,6 +15,7 @@ import {
   type RowsByTable,
 } from "../schema.ts";
 import {
+  linkContribution,
   linkRows,
   type SourceChoices,
   type SourceImportResult,
@@ -378,6 +381,40 @@ const mergeRows = (...parts: ReadonlyArray<TableRows>): TableRows =>
     }),
   );
 
+/** The rows of `rows` that are not in `without`, matched by table and ID. */
+const withoutRows = (rows: TableRows, without: TableRows): TableRows => {
+  const drop = new Set(
+    TABLE_KEYS.flatMap((key) => (without[key] ?? []).map((row) => `${key}/${row.id}`)),
+  );
+  return Object.fromEntries(
+    TABLE_KEYS.flatMap((key) => {
+      const kept = (rows[key] ?? []).filter((row) => !drop.has(`${key}/${row.id}`));
+      return kept.length === 0 ? [] : [[key, kept]];
+    }),
+  ) as TableRows;
+};
+
+/**
+ * What the other sources linked to an activity added to it, with any track their heart
+ * rate is on, so a new version from the activity's own source leaves them in place.
+ */
+const linkedContributions = (rows: TableRows): TableRows => {
+  const links = (rows.activitySource ?? []) as ReadonlyArray<ActivitySource>;
+  const contributions = mergeRows(
+    ...links
+      .filter((link) => link.deletedAt === null)
+      .map((link) => linkContribution(rows, { source: link.source, identity: link.sourceId })),
+  );
+  const tracks = new Set(
+    (contributions.activitySample ?? []).map((row) => row["activityTrackId"] as string),
+  );
+  return mergeRows(contributions, {
+    activityTrack: ((rows.activityTrack ?? []) as ReadonlyArray<ActivityTrack>).filter((track) =>
+      tracks.has(track.id),
+    ),
+  });
+};
+
 const activityItem = (id: string, rows: TableRows): Item => ({
   key: `${TABLES.activity.name}/${id}`,
   table: "activity",
@@ -516,22 +553,34 @@ const makeTransferRepository = Effect.gen(function* () {
             yield* recordChange(importBatchId, "replaced", item, summarize(item), written, {});
           }
 
-          for (const { workout, local } of taken) {
-            const before = yield* journalRows({ [TABLES.activity.name]: [local] });
-            const written = mergeRows(sourceActivityRows(workout, importBatchId, at), {
-              activitySource: before.activitySource ?? [],
-            });
+          for (const { workout, local, linked } of taken) {
+            const before = yield* journalRows({}, { table: TABLES.activity.name, id: local });
+            if (linked) {
+              // A new version of a linked workout replaces only what its link added.
+              const old = linkContribution(before, workout);
+              const written = linkRows(
+                workout,
+                { id: local, rows: withoutRows(before, old) },
+                importBatchId,
+                at,
+              );
+              yield* putAll(written);
+              yield* deleteWithChildren(withoutRows(old, written), at);
+              const item = activityItem(local, before);
+              yield* recordChange(
+                importBatchId,
+                "replaced",
+                item,
+                summarizeItem(item),
+                written,
+                old,
+              );
+              continue;
+            }
+            const written = sourceActivityRows(workout, importBatchId, at);
             yield* putAll(written);
-            const kept = new Set(
-              TABLE_KEYS.flatMap((key) => (written[key] ?? []).map((row) => `${key}/${row.id}`)),
-            );
             yield* deleteWithChildren(
-              Object.fromEntries(
-                TABLE_KEYS.map((key) => [
-                  key,
-                  (before[key] ?? []).filter((row) => !kept.has(`${key}/${row.id}`)),
-                ]),
-              ) as TableRows,
+              withoutRows(before, mergeRows(written, linkedContributions(before))),
               at,
             );
             const item = activityItem(local, written);

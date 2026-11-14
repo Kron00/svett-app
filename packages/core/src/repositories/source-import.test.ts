@@ -3,12 +3,14 @@ import { describe, expect, it } from "vite-plus/test";
 
 import { DurationSeconds } from "../duration.ts";
 import {
+  SAMPLE_GPX_START,
+  sampleExportXml,
   sampleGpx,
   sampleHealthZip,
   sampleHevyDraft,
   SAMPLE_STRENGTH_START,
 } from "../health-sample.ts";
-import { EpochMillis, Fingerprint, SourceIdentity } from "../schema.ts";
+import { EpochMillis, Fingerprint, type ImportBatchId, SourceIdentity } from "../schema.ts";
 import { readSourceFile, type SourceFile } from "../source-file.ts";
 import {
   heartRateSummary,
@@ -30,8 +32,16 @@ const read = async (bytes: Uint8Array): Promise<SourceFile> =>
     await readSourceFile(bytesSource(bytes), { hourOf: (at) => new Date(at).getUTCHours() }),
   );
 
+const text = (value: string) => read(new TextEncoder().encode(value));
 const health = () => read(sampleHealthZip());
-const gpx = () => read(new TextEncoder().encode(sampleGpx()));
+const gpx = () => text(sampleGpx());
+/** The sample ride with no heart rate in its points, and another name when given one. */
+const plainGpx = (name = "Saturday ride & coffee") =>
+  text(
+    sampleGpx()
+      .replaceAll(/<extensions>.*?<\/extensions>/g, "")
+      .replace("Saturday ride &amp; coffee", name),
+  );
 
 const transfers = <A, E>(
   database: Database,
@@ -63,6 +73,41 @@ const importAll = (database: Database, file: SourceFile, choices = NO_CHOICES) =
   transfers(database, (repository) =>
     repository.applySourceImport(file.source, file.workouts, choices),
   );
+
+const planOf = (database: Database, file: SourceFile) =>
+  transfers(database, (repository) => repository.previewSourceImport(file.workouts));
+
+const heartOf = async (database: Database, id: Parameters<typeof sourceActivityId>[0] | string) => {
+  const activityId = typeof id === "string" ? id : sourceActivityId(id);
+  const detail = Option.getOrThrow(
+    await activities(database, (repository) => repository.get(activityId as never)),
+  );
+  if (detail.track === null) return null;
+  return heartRateSummary(
+    await activities(database, (repository) => repository.samples(detail.track!.id)),
+  );
+};
+
+const otherIds = (database: Database) =>
+  database.database
+    .prepare("SELECT id, duration_s FROM activity WHERE kind = 'other' ORDER BY id")
+    .all();
+
+const linkFingerprints = (database: Database) =>
+  database.database
+    .prepare("SELECT fingerprint FROM activity_source WHERE deleted_at IS NULL ORDER BY id")
+    .all()
+    .map((row) => row["fingerprint"]);
+
+/** The sample strength workout from Health with its heart rate 10 beats higher. */
+const correctedStrength = (file: SourceFile): SourceWorkout => {
+  const strength = file.workouts.find((workout) => workout.kind === "strength")!;
+  return {
+    ...strength,
+    heartRate: strength.heartRate.map(({ recordedAt, bpm }) => ({ recordedAt, bpm: bpm + 10 })),
+    fingerprint: Fingerprint.make("e".repeat(64)),
+  };
+};
 
 describe("importing from Apple Health and GPX", () => {
   it("previews the new workouts, and declining saves nothing", async () => {
@@ -310,5 +355,159 @@ describe("importing from Apple Health and GPX", () => {
     expect(liveRows(database, "activity_source")).toBe(0);
     await activities(database, (repository) => repository.restore(hevyId));
     expect(liveRows(database, "activity_source")).toBe(1);
+  });
+
+  it("imports Health workouts that share a source, start and type as two, with the same IDs every time", async () => {
+    const yoga = sampleExportXml()
+      .split("\n")
+      .find((line) => line.includes("HKWorkoutActivityTypeYoga"))!;
+    const longer = yoga.replace('duration="20"', 'duration="25"');
+    const xml = (order: ReadonlyArray<string>) =>
+      text(sampleExportXml().replace(yoga, order.join("\n")));
+
+    const database = openTestDatabase();
+    const file = await xml([yoga, longer]);
+    const plan = await planOf(database, file);
+    expect(plan.added).toBe(5);
+    expect(plan.collisions.map((item) => item.workout.durationS).toSorted()).toEqual([1200, 1500]);
+    const result = Option.getOrThrow(await importAll(database, file));
+    expect(result.added).toBe(5);
+    expect(await counts(database)).toEqual({ activities: 5, sets: 0 });
+    expect(isNothingFromSource(await planOf(database, file))).toBe(true);
+
+    const swapped = await xml([longer, yoga]);
+    expect(isNothingFromSource(await planOf(database, swapped))).toBe(true);
+    const other = openTestDatabase();
+    await importAll(other, swapped);
+    expect(otherIds(other)).toEqual(otherIds(database));
+  });
+
+  it("lists a linked workout whose heart rate was corrected, takes it when asked, and Undo puts the old one back", async () => {
+    const database = openTestDatabase();
+    const hevyId = await seedHevy(database);
+    const file = await health();
+    await importAll(database, file);
+    expect(await heartOf(database, hevyId)).toEqual({ averageBpm: 112, maxBpm: 124 });
+    const linkedBefore = linkFingerprints(database);
+
+    const corrected = { ...file, workouts: [correctedStrength(file)] };
+    const plan = await planOf(database, corrected);
+    expect(plan.changed).toMatchObject([{ local: hevyId, linked: true }]);
+    expect(plan.unchanged).toBe(0);
+    // Kept by default.
+    expect(await importAll(database, corrected)).toEqual(Option.none());
+    expect(await heartOf(database, hevyId)).toEqual({ averageBpm: 112, maxBpm: 124 });
+
+    const taken = Option.getOrThrow(
+      await importAll(database, corrected, { take: [plan.changed[0]!.key], keepBoth: [] }),
+    );
+    expect(taken).toMatchObject({ added: 0, linked: 0, replaced: 1 });
+    expect(await heartOf(database, hevyId)).toEqual({ averageBpm: 122, maxBpm: 134 });
+    expect(linkFingerprints(database)).toEqual(["e".repeat(64)]);
+    expect(await counts(database)).toEqual({ activities: 4, sets: 9 });
+    expect(isNothingFromSource(await planOf(database, corrected))).toBe(true);
+
+    expect(
+      await transfers(database, (repository) => repository.undoImport(taken.importBatchId, [])),
+    ).toEqual({ removed: 0, restored: 1, left: 0 });
+    expect(await heartOf(database, hevyId)).toEqual({ averageBpm: 112, maxBpm: 124 });
+    expect(linkFingerprints(database)).toEqual(linkedBefore);
+    expect(await counts(database)).toEqual({ activities: 4, sets: 9 });
+  });
+
+  it("keeps the heart rate a Health link brought when a GPX ride is replaced by its renamed version", async () => {
+    const database = openTestDatabase();
+    const ride = await plainGpx();
+    await importAll(database, ride);
+    const rideWorkout = ride.workouts[0]!;
+    expect(await heartOf(database, rideWorkout)).toBeNull();
+
+    const healthRide: SourceWorkout = {
+      ...correctedStrength(await health()),
+      source: "apple_health",
+      identity: SourceIdentity.make("health ride"),
+      kind: "ride",
+      startedAt: EpochMillis.make(SAMPLE_GPX_START),
+      endedAt: EpochMillis.make(SAMPLE_GPX_START + 40 * 60_000),
+      heartRate: [0, 1, 2].map((minute) => ({
+        recordedAt: EpochMillis.make(SAMPLE_GPX_START + minute * 60_000),
+        bpm: 130 + minute,
+      })),
+    };
+    const healthFile: SourceFile = { source: "apple_health", workouts: [healthRide], skipped: 0 };
+    expect((await planOf(database, healthFile)).duplicates).toHaveLength(1);
+    await importAll(database, healthFile);
+    const linkedHeart = { averageBpm: 131, maxBpm: 132 };
+    expect(await heartOf(database, rideWorkout)).toEqual(linkedHeart);
+
+    const renamed = await plainGpx("Ride to the lake");
+    const plan = await planOf(database, renamed);
+    expect(plan.changed).toMatchObject([{ local: sourceActivityId(rideWorkout), linked: false }]);
+    const taken = Option.getOrThrow(
+      await importAll(database, renamed, { take: [plan.changed[0]!.key], keepBoth: [] }),
+    );
+    const detail = Option.getOrThrow(
+      await activities(database, (repository) => repository.get(sourceActivityId(rideWorkout))),
+    );
+    expect(detail.activity.title).toBe("Ride to the lake");
+    expect(await heartOf(database, rideWorkout)).toEqual(linkedHeart);
+    expect(liveRows(database, "activity_source")).toBe(1);
+    expect(isNothingFromSource(await planOf(database, healthFile))).toBe(true);
+
+    await transfers(database, (repository) => repository.undoImport(taken.importBatchId, []));
+    const back = Option.getOrThrow(
+      await activities(database, (repository) => repository.get(sourceActivityId(rideWorkout))),
+    );
+    expect(back.activity.title).toBe("Saturday ride & coffee");
+    expect(await heartOf(database, rideWorkout)).toEqual(linkedHeart);
+  });
+
+  it("asks before Undo takes back a link to a workout edited since, and then removes only the link", async () => {
+    const linked = async () => {
+      const database = openTestDatabase();
+      const hevyId = await seedHevy(database);
+      const result = Option.getOrThrow(await importAll(database, await health()));
+      const change = (
+        await transfers(database, (repository) => repository.previewUndo(result.importBatchId))
+      ).changes.find((row) => row.change.change === "replaced")!;
+      expect(change.edited).toBe(false);
+      return { database, hevyId, result, changeId: change.change.id };
+    };
+    const editedOf = async (database: Database, importBatchId: typeof ImportBatchId.Type) =>
+      (
+        await transfers(database, (repository) => repository.previewUndo(importBatchId))
+      ).changes.find((row) => row.change.change === "replaced")!.edited;
+
+    const titled = await linked();
+    await activities(titled.database, (repository) =>
+      repository.update(titled.hevyId, { title: "Push day, heavy" }),
+    );
+    expect(await editedOf(titled.database, titled.result.importBatchId)).toBe(true);
+    expect(
+      await transfers(titled.database, (repository) =>
+        repository.undoImport(titled.result.importBatchId, []),
+      ),
+    ).toEqual({ removed: 3, restored: 0, left: 1 });
+    expect(liveRows(titled.database, "activity_source")).toBe(1);
+
+    const set = await linked();
+    const detail = Option.getOrThrow(
+      await activities(set.database, (repository) => repository.get(set.hevyId)),
+    );
+    const firstSet = detail.exercises[0]!.sets[0]!;
+    await activities(set.database, (repository) => repository.updateSet(firstSet.id, { reps: 10 }));
+    expect(await editedOf(set.database, set.result.importBatchId)).toBe(true);
+    expect(
+      await transfers(set.database, (repository) =>
+        repository.undoImport(set.result.importBatchId, [set.changeId]),
+      ),
+    ).toEqual({ removed: 3, restored: 1, left: 0 });
+    expect(liveRows(set.database, "activity_source")).toBe(0);
+    expect(await heartOf(set.database, set.hevyId)).toBeNull();
+    const after = Option.getOrThrow(
+      await activities(set.database, (repository) => repository.get(set.hevyId)),
+    );
+    expect(after.exercises[0]!.sets[0]!.reps).toBe(10);
+    expect(after.exercises.flatMap((exercise) => exercise.sets)).toHaveLength(9);
   });
 });
