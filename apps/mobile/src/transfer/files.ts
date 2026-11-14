@@ -1,4 +1,4 @@
-import { TransferRepository } from "@svett/core";
+import { ExerciseAliasRepository, ExerciseRepository, TransferRepository } from "@svett/core";
 import { Effect } from "effect";
 import * as DocumentPicker from "expo-document-picker";
 import { File, Paths } from "expo-file-system";
@@ -16,6 +16,14 @@ export const withTransfers = <A, E>(
 export const changeTransfers = <A, E>(
   body: (transfers: typeof TransferRepository.Service) => Effect.Effect<A, E>,
 ) => write(Effect.flatMap(Effect.service(TransferRepository), body));
+
+export const withAliases = <A, E>(
+  body: (aliases: typeof ExerciseAliasRepository.Service) => Effect.Effect<A, E>,
+) => appDatabase().runPromise(Effect.flatMap(Effect.service(ExerciseAliasRepository), body));
+
+export const withExercises = <A, E>(
+  body: (exercises: typeof ExerciseRepository.Service) => Effect.Effect<A, E>,
+) => appDatabase().runPromise(Effect.flatMap(Effect.service(ExerciseRepository), body));
 
 /**
  * Writes the export to the cache folder and opens the share sheet on it. The copy stays in
@@ -38,10 +46,18 @@ export const exportAndShare = async () => {
 /** Where an import's file comes from: the document picker, or a file in svett's documents. */
 export type ImportFileSource = { readonly uri: string } | { readonly file: string };
 
+/** What a file to import holds: a svett export, or Hevy's workout CSV. */
+export type ImportKind = "svett" | "hevy";
+
+const PICKER_TYPES: Readonly<Record<ImportKind, ReadonlyArray<string>>> = {
+  svett: ["application/json"],
+  hevy: ["text/csv", "text/comma-separated-values"],
+};
+
 /** Opens the document picker and returns the picked file, or nothing when cancelled. */
-export const pickImportFile = async (): Promise<ImportFileSource | null> => {
+export const pickImportFile = async (kind: ImportKind): Promise<ImportFileSource | null> => {
   const picked = await DocumentPicker.getDocumentAsync({
-    type: "application/json",
+    type: [...PICKER_TYPES[kind]],
     copyToCacheDirectory: true,
   });
   const asset = picked.canceled ? undefined : picked.assets[0];
