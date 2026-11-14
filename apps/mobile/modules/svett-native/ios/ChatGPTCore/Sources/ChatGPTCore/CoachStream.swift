@@ -76,7 +76,7 @@ struct ResponsesStreamParser {
         var payload = line.dropFirst(5)
         if payload.hasPrefix(" ") { payload = payload.dropFirst() }
         if payload == "[DONE]" { return nil }
-        data += data.isEmpty ? String(payload) : "\n" + payload
+        data += data.isEmpty ? String(payload) : "\n" + String(payload)
         guard let object = (try? JSONSerialization.jsonObject(with: Data(data.utf8))) as? [String: Any] else {
             // Part of an event that spans several data lines. The next line completes it.
             return nil
