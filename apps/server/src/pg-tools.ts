@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
-import { open } from "node:fs/promises";
+import { open, rm } from "node:fs/promises";
 
-import { Context, Data, Effect, Layer, Redacted } from "effect";
+import { Context, Data, Effect, Exit, Layer, Redacted } from "effect";
 
 export class PgToolError extends Data.TaggedError("PgToolError")<{
   readonly tool: string;
@@ -15,7 +15,10 @@ export interface PgToolCommands {
 }
 
 export interface PgToolsService {
-  /** Writes a custom-format dump of the database at `url` to `file`. */
+  /**
+   * Writes a custom-format dump of the database at `url` to the new file `file`. It
+   * refuses a file that already exists, and removes the file it made when it fails.
+   */
   readonly dump: (url: Redacted.Redacted, file: string) => Effect.Effect<void, PgToolError>;
   /** Loads the dump in `file` into the database at `url` in one transaction. */
   readonly restore: (url: Redacted.Redacted, file: string) => Effect.Effect<void, PgToolError>;
@@ -95,10 +98,12 @@ const run = (
         );
         return Effect.sync(() => child.kill("SIGTERM"));
       }),
-    ({ input, output }) =>
+    ({ input, output }, exit) =>
       Effect.promise(async () => {
         await input?.close();
         await output?.close();
+        // The "wx" open proves this run created the file, so it is safe to remove.
+        if (output !== undefined && Exit.isFailure(exit)) await rm(io.stdout!, { force: true });
       }),
   );
 };

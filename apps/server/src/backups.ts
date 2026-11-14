@@ -1,4 +1,5 @@
-import { mkdir, readdir, rename, rm } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { link, mkdir, readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 
 import { backupFileName, backupsToPrune, backupTakenAt, newestBackupsFirst } from "@svett/core";
@@ -14,12 +15,19 @@ import {
   Schedule,
   Semaphore,
 } from "effect";
+import { SqlClient } from "effect/sql/SqlClient";
 
 import { ServerConfig } from "./config.ts";
+import { databaseLayer } from "./database.ts";
 import { PgTools, type PgToolError } from "./pg-tools.ts";
-import { checkRestore } from "./restore.ts";
+import { checkRestore, dropStaleRestoreDatabases } from "./restore.ts";
 
 export class BackupError extends Data.TaggedError("BackupError")<{
+  readonly message: string;
+}> {}
+
+/** Another server or the command line is backing up the same database right now. */
+export class BackupSkipped extends Data.TaggedError("BackupSkipped")<{
   readonly message: string;
 }> {}
 
@@ -36,8 +44,12 @@ export interface RestoreCheck {
 }
 
 export interface BackupsService {
-  /** Dumps the database to a new file, then deletes backups past the kept number. */
-  readonly takeNow: Effect.Effect<LatestBackup, BackupError | PgToolError>;
+  /**
+   * Dumps the database to a new file, then deletes backups past the kept number. Only
+   * one backup of a database runs at a time, across every process. Another one fails
+   * with BackupSkipped.
+   */
+  readonly takeNow: Effect.Effect<LatestBackup, BackupError | BackupSkipped | PgToolError>;
   /** The newest finished backup, if there is one. */
   readonly latest: Effect.Effect<LatestBackup | undefined, BackupError>;
   /**
@@ -50,6 +62,48 @@ export interface BackupsService {
 }
 
 const DAY_MILLIS = 24 * 60 * 60 * 1000;
+
+/** The advisory lock key every svett process takes before it backs up a database. */
+const BACKUP_LOCK = 0x7376_6574_7462;
+
+/**
+ * Runs `effect` while this session holds the database's backup lock, or fails with
+ * BackupSkipped when another session holds it. The lock belongs to a connection of
+ * its own, so it ends with that connection even if the unlock never runs.
+ */
+const withBackupLock = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const sql = yield* SqlClient;
+      const connection = yield* sql.reserve;
+      const locked = yield* Effect.acquireRelease(
+        Effect.map(
+          connection.executeUnprepared(
+            "select pg_try_advisory_lock($1::bigint) as locked",
+            [BACKUP_LOCK],
+            undefined,
+          ),
+          (rows) => rows[0]?.locked === true,
+        ),
+        (held) =>
+          held
+            ? Effect.ignore(
+                connection.executeUnprepared(
+                  "select pg_advisory_unlock($1::bigint)",
+                  [BACKUP_LOCK],
+                  undefined,
+                ),
+              )
+            : Effect.void,
+      );
+      if (!locked) {
+        return yield* new BackupSkipped({
+          message: "Backup skipped. Another backup of this database is running.",
+        });
+      }
+      return yield* effect;
+    }),
+  );
 
 const fs = <A>(message: string, use: () => Promise<A>) =>
   Effect.tryPromise({
@@ -79,24 +133,36 @@ export class Backups extends Context.Service<Backups, BackupsService>()("svett/s
       });
 
       const takeNow = lock.withPermits(1)(
-        Effect.gen(function* () {
-          yield* list;
-          const now = yield* Clock.currentTimeMillis;
-          const name = backupFileName(now);
-          const file = join(dir, name);
-          // Only a complete dump gets a backup's name, so a crash mid-dump never
-          // leaves a file that looks restorable.
-          const partial = `${file}.partial`;
-          yield* tools
-            .dump(config.databaseUrl, partial)
-            .pipe(Effect.onError(() => Effect.promise(() => rm(partial, { force: true }))));
-          yield* fs(`could not finish ${name}`, () => rename(partial, file));
-          const stale = backupsToPrune(yield* list, config.backupKeep);
-          yield* Effect.forEach(stale, (old) =>
-            fs(`could not delete ${old}`, () => rm(join(dir, old), { force: true })),
-          );
-          return { file, takenAt: backupTakenAt(name)! };
-        }),
+        withBackupLock(
+          Effect.gen(function* () {
+            yield* list;
+            const now = yield* Clock.currentTimeMillis;
+            const name = backupFileName(now);
+            const file = join(dir, name);
+            // Only a complete dump gets a backup's name, so a crash mid-dump never
+            // leaves a file that looks restorable. The partial file's name is this
+            // run's own, and the link refuses to replace a backup that exists.
+            const partial = `${file}.${randomUUID()}.partial`;
+            yield* tools.dump(config.databaseUrl, partial);
+            yield* fs(`could not finish ${name}`, () => link(partial, file)).pipe(
+              Effect.ensuring(Effect.ignore(fs(`could not delete ${partial}`, () => rm(partial)))),
+            );
+            const stale = backupsToPrune(yield* list, config.backupKeep);
+            yield* Effect.forEach(stale, (old) =>
+              fs(`could not delete ${old}`, () => rm(join(dir, old), { force: true })),
+            );
+            return { file, takenAt: backupTakenAt(name)! };
+          }),
+        ).pipe(
+          Effect.provide(databaseLayer(config.databaseUrl)),
+          Effect.catchTag("SqlError", (error) =>
+            Effect.fail(
+              new BackupError({
+                message: `could not take the backup lock: ${String(error.reason.cause)}`,
+              }),
+            ),
+          ),
+        ),
       );
 
       const lastCheck = yield* Ref.make<RestoreCheck | undefined>(undefined);
@@ -133,7 +199,8 @@ export class Backups extends Context.Service<Backups, BackupsService>()("svett/s
  * Takes a backup at every tick of the configured cron schedule, in UTC, and proves
  * each one restores. On start it takes one at once when the newest is more than a
  * day old, so a server that was down overnight does not skip a day, and checks the
- * newest backup restores.
+ * newest backup restores. Before that it drops the scratch databases of restore
+ * checks that crashed more than a day ago.
  */
 export const NightlyBackups: Layer.Layer<never, BackupError, Backups | ServerConfig> =
   Layer.effectDiscard(
@@ -157,7 +224,19 @@ export const NightlyBackups: Layer.Layer<never, BackupError, Backups | ServerCon
       const takeOne = backups.takeNow.pipe(
         Effect.tap(({ file }) => Effect.logInfo(`Backup written to ${file}`)),
         Effect.flatMap(check),
+        Effect.catchTag("BackupSkipped", ({ message }) => Effect.logInfo(message)),
         Effect.catchCause((cause) => Effect.logError("Backup failed", cause)),
+      );
+
+      const dropStale = dropStaleRestoreDatabases(config.databaseUrl).pipe(
+        Effect.tap((dropped) =>
+          Effect.forEach(dropped, (name) =>
+            Effect.logInfo(`Dropped stale restore database ${name}`),
+          ),
+        ),
+        Effect.catchCause((cause) =>
+          Effect.logError("Could not drop stale restore databases", cause),
+        ),
       );
 
       const catchUp = Effect.gen(function* () {
@@ -168,7 +247,10 @@ export const NightlyBackups: Layer.Layer<never, BackupError, Backups | ServerCon
       }).pipe(Effect.catchCause((cause) => Effect.logError("Backup failed", cause)));
 
       yield* Effect.forkScoped(
-        Effect.andThen(catchUp, Effect.schedule(takeOne, Schedule.cron(cron.success))),
+        dropStale.pipe(
+          Effect.andThen(catchUp),
+          Effect.andThen(Effect.schedule(takeOne, Schedule.cron(cron.success))),
+        ),
       );
     }),
   );

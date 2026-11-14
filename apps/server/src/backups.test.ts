@@ -1,16 +1,17 @@
-import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { Effect, Exit, Fiber, Layer, type Redacted, Schedule } from "effect";
+import { backupFileName, restoreScratchName } from "@svett/core";
+import { Clock, Effect, Exit, Fiber, Layer, type Redacted, Schedule } from "effect";
 import { SqlClient } from "effect/sql/SqlClient";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 
 import { Backups, NightlyBackups } from "./backups.ts";
 import { ServerConfig } from "./config.ts";
 import { databaseLayer, migrate } from "./database.ts";
-import { PgTools } from "./pg-tools.ts";
-import { RESTORE_CHECK_DATABASE, restoreBackup } from "./restore.ts";
+import { type PgToolCommands, PgTools } from "./pg-tools.ts";
+import { restoreBackup } from "./restore.ts";
 import { startTestPostgres, type TestPostgres } from "./test-postgres.ts";
 
 let postgres: TestPostgres;
@@ -31,13 +32,42 @@ const tempDir = async () => mkdtemp(join(tmpdir(), "svett-backups-"));
 const run = <A, E>(url: Redacted.Redacted, effect: Effect.Effect<A, E, SqlClient>) =>
   Effect.runPromise(effect.pipe(Effect.provide(databaseLayer(url))));
 
+const scratchDatabases = () =>
+  run(
+    postgres.url("postgres"),
+    Effect.flatMap(Effect.service(SqlClient), (sql) =>
+      sql<{ readonly datname: string }>`
+        select datname from pg_database where datname like 'svett\_restore\_%' order by datname
+      `.pipe(Effect.map((rows) => rows.map(({ datname }) => datname))),
+    ),
+  );
+
+/** Runs `effect` with the wall clock stopped at `millis`. */
+const frozenAt =
+  (millis: number) =>
+  <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+    Effect.gen(function* () {
+      const clock = yield* Clock.Clock;
+      const frozen: Clock.Clock = Object.assign(Object.create(clock), {
+        currentTimeMillis: Effect.succeed(millis),
+        currentTimeMillisUnsafe: () => millis,
+      });
+      return yield* effect.pipe(Effect.provideService(Clock.Clock, frozen));
+    });
+
+const takeNow = Effect.flatMap(Effect.service(Backups), (backups) => backups.takeNow);
+
 const backupsLayer = (
   url: Redacted.Redacted,
   backupDir: string,
-  options: { readonly backupKeep?: number; readonly backupCron?: string } = {},
+  options: {
+    readonly backupKeep?: number;
+    readonly backupCron?: string;
+    readonly tools?: PgToolCommands;
+  } = {},
 ) =>
   Backups.layer.pipe(
-    Layer.provideMerge(PgTools.layer(postgres.tools)),
+    Layer.provideMerge(PgTools.layer(options.tools ?? postgres.tools)),
     Layer.provideMerge(
       Layer.succeed(
         ServerConfig,
@@ -199,14 +229,6 @@ describe("server backups", { timeout: 120_000 }, () => {
     const source = await newDatabase();
     await seed(source);
     const dir = await tempDir();
-    const scratchDatabases = () =>
-      run(
-        source,
-        Effect.flatMap(
-          Effect.service(SqlClient),
-          (sql) => sql`select datname from pg_database where datname = ${RESTORE_CHECK_DATABASE}`,
-        ),
-      );
 
     const [good, broken] = await Effect.runPromise(
       Effect.gen(function* () {
@@ -226,16 +248,140 @@ describe("server backups", { timeout: 120_000 }, () => {
     expect((await snapshot(source)).rows).toHaveLength(3);
   });
 
+  it("lets one backup run at a time across servers, and the others skip", async () => {
+    const source = await newDatabase();
+    await seed(source);
+    const dir = await tempDir();
+    // Both start in the same second, so they would pick the same backup name.
+    const now = Date.parse("2026-11-14T03:00:00Z");
+    const onServer = () =>
+      Effect.runPromiseExit(takeNow.pipe(frozenAt(now), Effect.provide(backupsLayer(source, dir))));
+
+    const exits = await Promise.all([onServer(), onServer()]);
+
+    const written = exits.filter(Exit.isSuccess);
+    const skipped = exits.filter(Exit.isFailure).map((exit) => String(exit.cause));
+    expect(written).toHaveLength(1);
+    expect(skipped).toHaveLength(1);
+    expect(skipped[0]).toContain("Backup skipped");
+    expect(await readdir(dir)).toEqual([backupFileName(now)]);
+    const check = await Effect.runPromise(
+      Effect.flatMap(Effect.service(Backups), (backups) =>
+        backups.checkRestore(written[0]!.value),
+      ).pipe(Effect.provide(backupsLayer(source, dir))),
+    );
+    expect(check.tables).toBe(2);
+  });
+
+  it("never replaces a backup that already has the name", async () => {
+    const source = await newDatabase();
+    await seed(source);
+    const dir = await tempDir();
+    const now = Date.parse("2026-11-14T03:00:00Z");
+    const existing = join(dir, backupFileName(now));
+    await writeFile(existing, "a finished backup");
+
+    const exit = await Effect.runPromiseExit(
+      takeNow.pipe(frozenAt(now), Effect.provide(backupsLayer(source, dir))),
+    );
+
+    expect(Exit.isFailure(exit) && String(exit.cause)).toContain("could not finish");
+    expect(await readdir(dir)).toEqual([backupFileName(now)]);
+    expect(await readFile(existing, "utf8")).toBe("a finished backup");
+  });
+
+  it("runs overlapping restore checks from several servers without touching each other", async () => {
+    const source = await newDatabase();
+    await seed(source);
+    const dir = await tempDir();
+    const backup = await Effect.runPromise(takeNow.pipe(Effect.provide(backupsLayer(source, dir))));
+    const onServer = () =>
+      Effect.runPromise(
+        Effect.flatMap(Effect.service(Backups), (backups) => backups.checkRestore(backup)).pipe(
+          Effect.provide(backupsLayer(source, dir)),
+        ),
+      );
+
+    const checks = await Promise.all([onServer(), onServer(), onServer()]);
+
+    expect(checks.map(({ tables }) => tables)).toEqual([2, 2, 2]);
+    expect(await scratchDatabases()).toEqual([]);
+  });
+
+  it("drops the scratch database when a restore check is interrupted", async () => {
+    const source = await newDatabase();
+    await seed(source);
+    const dir = await tempDir();
+
+    const seen = await Effect.runPromise(
+      Effect.gen(function* () {
+        const backups = yield* Effect.service(Backups);
+        const backup = yield* backups.takeNow;
+        const fiber = yield* Effect.forkChild(backups.checkRestore(backup));
+        const names = yield* Effect.promise(scratchDatabases).pipe(
+          Effect.flatMap((found) =>
+            found.length === 0 ? Effect.fail("not yet" as const) : Effect.succeed(found),
+          ),
+          Effect.retry({ schedule: Schedule.spaced("10 millis"), times: 1000 }),
+        );
+        yield* Fiber.interrupt(fiber);
+        return names;
+      }).pipe(Effect.provide(backupsLayer(source, dir))),
+    );
+
+    expect(seen).toHaveLength(1);
+    expect(await scratchDatabases()).toEqual([]);
+  });
+
+  it("drops scratch databases older than a day on start and keeps younger ones", async () => {
+    const source = await newDatabase();
+    await seed(source);
+    const dir = await tempDir();
+    const hour = 60 * 60 * 1000;
+    const crashed = restoreScratchName(Date.now() - 25 * hour, "aaaaaaaaaaaa");
+    const running = restoreScratchName(Date.now() - hour, "bbbbbbbbbbbb");
+    await postgres.createDatabase(crashed);
+    await postgres.createDatabase(running);
+    const layer = backupsLayer(source, dir);
+    await Effect.runPromise(takeNow.pipe(Effect.provide(layer)));
+
+    const check = await runNightly(
+      layer,
+      Effect.flatMap(Effect.service(Backups), (backups) => backups.lastRestoreCheck),
+    );
+
+    expect(check.tables).toBe(2);
+    expect(await scratchDatabases()).toEqual([running]);
+    await run(
+      postgres.url("postgres"),
+      Effect.flatMap(Effect.service(SqlClient), (sql) => sql.unsafe(`drop database ${running}`)),
+    );
+  });
+
   it("leaves no backup file behind when the dump fails", async () => {
+    const source = await newDatabase();
     const dir = await tempDir();
     await writeFile(join(dir, "README"), "not a backup\n");
     const exit = await Effect.runPromiseExit(
-      Effect.flatMap(Effect.service(Backups), (backups) => backups.takeNow).pipe(
-        Effect.provide(backupsLayer(postgres.url("missing_database"), dir)),
+      takeNow.pipe(
+        Effect.provide(
+          backupsLayer(source, dir, {
+            tools: { ...postgres.tools, pgDump: ["sh", "-c", "echo half a dump; exit 3", "sh"] },
+          }),
+        ),
       ),
     );
-    expect(Exit.isFailure(exit) && String(exit.cause)).toContain("missing_database");
+    expect(Exit.isFailure(exit) && String(exit.cause)).toContain("exited with 3");
     expect(await readdir(dir)).toEqual(["README"]);
+  });
+
+  it("says why it could not reach the database", async () => {
+    const dir = await tempDir();
+    const exit = await Effect.runPromiseExit(
+      takeNow.pipe(Effect.provide(backupsLayer(postgres.url("missing_database"), dir))),
+    );
+    expect(Exit.isFailure(exit) && String(exit.cause)).toContain("missing_database");
+    expect(await readdir(dir)).toEqual([]);
   });
 
   it("backs up at once on start when the newest is old, then on every tick, keeping the newest", async () => {

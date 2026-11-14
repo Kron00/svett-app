@@ -5,6 +5,8 @@ import {
   backupsToPrune,
   backupTakenAt,
   newestBackupsFirst,
+  restoreScratchName,
+  staleRestoreScratches,
 } from "./backup-files.ts";
 
 const at = (iso: string) => Date.parse(iso);
@@ -59,5 +61,27 @@ describe("backupsToPrune", () => {
       "svett-20261113T030000Z.dump",
       "svett-20261112T030000Z.dump",
     ]);
+  });
+});
+
+describe("restore scratch databases", () => {
+  const now = at("2026-11-14T03:00:00Z");
+  const hour = 60 * 60 * 1000;
+
+  it("names a scratch database by when it was made and a random suffix", () => {
+    expect(restoreScratchName(now, "0123456789ab")).toBe(
+      "svett_restore_1794625200000_0123456789ab",
+    );
+  });
+
+  it("lists only scratch databases made more than a day ago", () => {
+    const old = restoreScratchName(now - 25 * hour, "aaaaaaaaaaaa");
+    const running = restoreScratchName(now - 23 * hour, "bbbbbbbbbbbb");
+    expect(
+      staleRestoreScratches(
+        [old, running, "svett", "svett_restore_check", "svett_restore_1_aaaaaaaaaaaa", "postgres"],
+        now,
+      ),
+    ).toEqual([old]);
   });
 });
