@@ -6,11 +6,12 @@ import {
   summarizeWorkout,
   type WorkoutView,
 } from "../history.ts";
-import type { ScoredSet } from "../records.ts";
-import type { Activity, ActivityExercise, ActivityId, ExerciseId } from "../schema.ts";
+import { workoutRecords } from "../records.ts";
+import type { Activity, ActivityId } from "../schema.ts";
 import { Sql } from "../sql.ts";
 import { RowNotFoundError, selectById, selectRows, TABLES } from "../table.ts";
 import { type ActivityDetail, ActivityRepository } from "./activities.ts";
+import { ProgressRepository } from "./progress.ts";
 import { RoutineRepository } from "./routines.ts";
 
 const inList = (column: string) => `${column} IN (SELECT value FROM json_each(?))`;
@@ -59,31 +60,9 @@ const details = (activities: ReadonlyArray<Activity>) =>
     };
   });
 
-/** Each exercise's sets from the live workouts that started before `before`. */
-const earlierSets = (exerciseIds: ReadonlyArray<ExerciseId>, before: HistoryCursor) =>
-  Effect.gen(function* () {
-    const scope = `${inList("exercise_id")} AND activity_id IN (SELECT id FROM activity WHERE deleted_at IS NULL AND (started_at, id) < (?, ?))`;
-    const params = [JSON.stringify(exerciseIds), before.startedAt, before.id];
-    const exercises = yield* selectRows(TABLES.activityExercise, scope, params);
-    const exerciseOf = new Map<string, ActivityExercise>(
-      exercises.map((exercise) => [exercise.id, exercise]),
-    );
-    const sets = yield* selectRows(
-      TABLES.activitySet,
-      `activity_exercise_id IN (SELECT id FROM activity_exercise WHERE deleted_at IS NULL AND ${scope})`,
-      params,
-    );
-    const earlier = new Map<ExerciseId, Array<ScoredSet>>();
-    for (const set of sets) {
-      const exerciseId = exerciseOf.get(set.activityExerciseId)?.exerciseId;
-      if (exerciseId !== undefined)
-        earlier.set(exerciseId, [...(earlier.get(exerciseId) ?? []), set]);
-    }
-    return earlier;
-  });
-
 const makeHistoryRepository = Effect.gen(function* () {
   const sql = yield* Sql;
+  const progress = yield* ProgressRepository;
   const run = <A, E>(effect: Effect.Effect<A, E, Sql>) => Effect.provideService(effect, Sql, sql);
 
   return {
@@ -116,11 +95,13 @@ const makeHistoryRepository = Effect.gen(function* () {
           const { library, details: found } = yield* details([activity.value]);
           const [detail] = found;
           if (detail === undefined) return Option.none<WorkoutView>();
-          const exerciseIds = [
-            ...new Set(detail.exercises.map((entry) => entry.exercise.exerciseId)),
-          ];
-          const earlier = yield* earlierSets(exerciseIds, activity.value);
-          return Option.some(describeWorkout(detail, library, earlier));
+          const exerciseIds = new Set(detail.exercises.map((entry) => entry.exercise.exerciseId));
+          // A workout that started at the same time but sorts after this one cannot take its records.
+          const sets = yield* Effect.forEach(exerciseIds, (exerciseId) =>
+            progress.performedSets({ exerciseId, until: activity.value.startedAt + 1 }),
+          );
+          const records = workoutRecords(sets.flat(), activity.value.id);
+          return Option.some(describeWorkout(detail, library, records));
         }),
       ),
 
@@ -140,7 +121,9 @@ export class HistoryRepository extends Context.Service<
   HistoryRepository,
   Effect.Success<typeof makeHistoryRepository>
 >()("svett/HistoryRepository") {
-  static readonly layer = Layer.effect(HistoryRepository, makeHistoryRepository);
+  static readonly layer = Layer.effect(HistoryRepository, makeHistoryRepository).pipe(
+    Layer.provide(ProgressRepository.layer),
+  );
 }
 
 /** Saves a past workout as a new routine at the end of the routine list. */

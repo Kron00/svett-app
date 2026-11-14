@@ -1,6 +1,6 @@
 import { formatDuration } from "./duration.ts";
 import { type MuscleShare, muscleSplit } from "./muscle-split.ts";
-import { type RecordKind, type ScoredSet, workoutRecords } from "./records.ts";
+import type { RecordKind } from "./records.ts";
 import type { ActivityDetail } from "./repositories/activities.ts";
 import type { RoutineDraft } from "./repositories/routines.ts";
 import type {
@@ -108,26 +108,14 @@ export type WorkoutView = {
 };
 
 /**
- * Puts a workout together for its detail screen. `earlier` holds each
- * exercise's sets from workouts that started before this one, which its
- * record badges are measured against. An exercise done twice in one workout
- * competes for records as one.
+ * Puts a workout together for its detail screen. `records` holds the records
+ * each set set, keyed by set ID, as workoutRecords finds them.
  */
 export const describeWorkout = (
   detail: ActivityDetail,
   library: ReadonlyMap<ExerciseId, Exercise>,
-  earlier: ReadonlyMap<ExerciseId, ReadonlyArray<ScoredSet>>,
+  records: ReadonlyMap<string, ReadonlyArray<RecordKind>>,
 ): WorkoutView => {
-  const records = new Map<string, ReadonlyArray<RecordKind>>();
-  for (const exerciseId of new Set(detail.exercises.map((entry) => entry.exercise.exerciseId))) {
-    const sets = detail.exercises
-      .filter((entry) => entry.exercise.exerciseId === exerciseId)
-      .flatMap((entry) => entry.sets);
-    for (const [id, kinds] of workoutRecords(earlier.get(exerciseId) ?? [], sets)) {
-      records.set(id, kinds);
-    }
-  }
-
   const exercises = detail.exercises.map(({ exercise, sets }): WorkoutExercise => {
     const info = library.get(exercise.exerciseId);
     let normal = 0;

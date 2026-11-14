@@ -8,7 +8,7 @@ import {
   MUSCLE_LABELS,
   MUSCLE_SPLIT_RULE,
   type MuscleShare,
-  RECORD_LABELS,
+  RECORD_RULES,
   type RecordKind,
   saveWorkoutAsRoutine,
   type WorkoutExercise,
@@ -41,7 +41,7 @@ function RecordBadge({ kind }: { readonly kind: RecordKind }) {
     <View className="flex-row items-center gap-1">
       <Icon name="trophy.fill" color="warning" size={12} />
       <AppText variant="caption1" tone="warning">
-        {RECORD_LABELS[kind]}
+        {RECORD_RULES[kind].label}
       </AppText>
     </View>
   );
@@ -49,7 +49,7 @@ function RecordBadge({ kind }: { readonly kind: RecordKind }) {
 
 function SetLine({ set, onPress }: { readonly set: WorkoutSet; readonly onPress: () => void }) {
   const badgeColor = useColor(SET_TYPE_COLOR[set.setType]);
-  const records = set.records.map((kind) => `${RECORD_LABELS[kind]} record`);
+  const records = set.records.map((kind) => `${RECORD_RULES[kind].label} record`);
   return (
     <Pressable
       testID={`set-${set.id}`}

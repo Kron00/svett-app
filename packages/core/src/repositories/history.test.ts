@@ -9,10 +9,12 @@ import type { WorkoutSummary } from "../history.ts";
 import { Ids } from "../ids.ts";
 import { openNodeDatabase } from "../node-sqlite.ts";
 import { type ActivityId, EpochMillis } from "../schema.ts";
+import { personalRecords } from "../records.ts";
 import { openTestDatabase, T0 } from "../test-database.ts";
 import { type ActivityDraft, ActivityRepository, type SetDraft } from "./activities.ts";
 import { type HistoryCursor, HistoryRepository, saveWorkoutAsRoutine } from "./history.ts";
 import { MADE_HERE } from "./origin.ts";
+import { ProgressRepository } from "./progress.ts";
 import { RoutineRepository } from "./routines.ts";
 
 const DAY = 86_400_000;
@@ -153,8 +155,8 @@ describe("HistoryRepository.workout", () => {
     expect(squat.sets.map((row) => [row.badge.text, row.text, row.records])).toEqual([
       ["W", "60 kg × 8", []],
       // 105 × 5: 1RM 122.5, volume 525. 100 × 6: 1RM 120, volume 600. 80 × 6: volume 480.
-      ["1", "105 kg × 5", ["weight", "one_rep_max"]],
-      ["2", "100 kg × 6", ["set_volume"]],
+      ["1", "105 kg × 5", ["best_one_rep_max", "heaviest_weight"]],
+      ["2", "100 kg × 6", ["best_set_volume"]],
       ["D", "80 kg × 6", []],
     ]);
   });
@@ -194,7 +196,7 @@ describe("HistoryRepository.workout", () => {
     await run(({ activities }) => activities.updateSet(edited.id, { weightKg: 122.5, reps: 4 }));
     const after = (await view(id)).exercises[0]!.sets[0]!;
     expect(after.text).toBe("122.5 kg × 4");
-    expect(after.records).toEqual(["weight", "one_rep_max"]);
+    expect(after.records).toEqual(["best_one_rep_max", "heaviest_weight"]);
   });
 
   it("is none for a workout that does not exist", async () => {
@@ -260,6 +262,31 @@ describe("the 300-workout fixture", () => {
     const newest = Option.getOrThrow(await runtime.runPromise(history.workout(ids[0]!)));
     expect(newest.exercises.length).toBeGreaterThanOrEqual(4);
     expect(newest.split.reduce((total, share) => total + share.percent, 0)).toBe(100);
+    await runtime.dispose();
+  });
+
+  it("badges the same records the exercise charts list", async () => {
+    const { driver } = openNodeDatabase();
+    await buildFixture(driver);
+    const runtime = ManagedRuntime.make(databaseLayer(driver, Ids.layerSeeded(1)));
+    const history = await runtime.runPromise(Effect.service(HistoryRepository));
+    const progress = await runtime.runPromise(Effect.service(ProgressRepository));
+    const { records } = personalRecords(await runtime.runPromise(progress.performedSets()));
+
+    const page = await runtime.runPromise(history.page({ limit: 40 }));
+    const badged = await Promise.all(
+      page.map(async ({ activity }) =>
+        Option.getOrThrow(await runtime.runPromise(history.workout(activity.id))).exercises.flatMap(
+          ({ sets }) => sets.flatMap((row) => row.records.map((kind) => `${row.id} ${kind}`)),
+        ),
+      ),
+    );
+    const shown = new Set(page.map(({ activity }) => activity.id as string));
+    const charted = records
+      .filter((record) => shown.has(record.activityId))
+      .map((record) => `${record.setId} ${record.kind}`);
+    expect(charted.length).toBeGreaterThan(0);
+    expect(badged.flat().toSorted()).toEqual(charted.toSorted());
     await runtime.dispose();
   });
 });

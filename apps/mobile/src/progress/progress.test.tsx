@@ -193,9 +193,7 @@ describe("a past workout", () => {
     const tree = await render(<WorkoutScreen {...screenProps("Workout", { id: newest })} />);
     const shown = lines(tree);
     expect(shown).toEqual(expect.arrayContaining(["60 kg × 8", "105 kg × 5", "100 kg × 5"]));
-    expect(shown).toEqual(
-      expect.arrayContaining(["Heaviest weight", "Best estimated 1RM", "Quads"]),
-    );
+    expect(shown).toEqual(expect.arrayContaining(["Heaviest weight", "Estimated 1RM", "Quads"]));
     expect(shown).toContain("100% · 2 sets");
     expect(navigation.setOptions).toHaveBeenCalledWith({ title: "Heavy legs" });
   });
