@@ -137,7 +137,8 @@ const overlaps = (aStart: number, aEnd: number, bStart: number, bEnd: number) =>
  * sets as one here, and one whose time overlaps a workout here from another source. Each is
  * imported only when its key is in `keep`. A kept second workout's identity adds its number
  * among the workouts that share its start, #1 for the second, so the two get different IDs and
- * keep them when Hevy writes newer workouts above them.
+ * keep them when Hevy writes newer workouts above them. One edited in Hevy since takes a number
+ * no workout here holds, so it asks again and never replaces another workout at that start.
  *
  * A custom exercise an earlier import made, and Undo or you deleted, comes back with any
  * workout taken from the file that uses it.
@@ -194,7 +195,8 @@ export const hevyImport = (file: HevyFile, keep: ReadonlySet<string> = new Set()
     const claimed = new Set<string>();
     /**
      * The identity of the workout numbered `number` among those that share its start: its
-     * workout here with the same Hevy content, whatever number it was given, or else the number.
+     * workout here with the same Hevy content, whatever number it was given, or else the first
+     * number from its own that no workout here holds.
      */
     const twinIdentity = (workout: HevyWorkout, number: number) => {
       const same = (numberedHere.get(workout.start) ?? []).find(
@@ -202,8 +204,10 @@ export const hevyImport = (file: HevyFile, keep: ReadonlySet<string> = new Set()
           row["fingerprint"] === workout.fingerprint && !claimed.has(String(row["sourceId"])),
       );
       if (same !== undefined) return String(same["sourceId"]);
+      const taken = (identity: string) =>
+        claimed.has(identity) || activities.has(importedId(TABLES.activity.name, "hevy", identity));
       let free = number;
-      while (claimed.has(`${workout.start}#${free}`)) free += 1;
+      while (taken(`${workout.start}#${free}`)) free += 1;
       return `${workout.start}#${free}`;
     };
 
