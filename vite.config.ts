@@ -33,18 +33,26 @@ export default defineConfig({
     },
     overrides: [
       {
-        // The app runs on Hermes, which has no ES2023 copying array methods. Node has
-        // them, so tests pass while the app fails as it loads.
-        files: ["apps/mobile/src/**", "packages/core/src/**", "packages/tools/src/**"],
+        // The app runs on the Hermes that React Native 0.88.1 pins, which lacks these
+        // newer APIs. Tests run on Node, which has them, so they pass while the app
+        // throws as it loads.
+        files: ["apps/mobile/**", "packages/core/src/**", "packages/tools/**"],
         rules: {
           "unicorn/no-array-sort": "off",
-          "unicorn/no-array-reverse": "off",
           "no-restricted-properties": [
             "error",
-            ...["toSorted", "toReversed", "toSpliced"].map((property) => ({
+            {
+              property: "toSorted",
+              message: "Hermes has no Array.prototype.toSorted. Sort a copy: [...array].sort().",
+            },
+            {
+              object: "Array",
+              property: "fromAsync",
+              message: "Hermes has no Array.fromAsync.",
+            },
+            ...["resize", "transfer", "transferToFixedLength"].map((property) => ({
               property,
-              message:
-                "Hermes has no ES2023 copying array methods. Copy with [...array], then sort, reverse or splice.",
+              message: "Hermes has no resizable or transferable ArrayBuffer.",
             })),
           ],
         },
