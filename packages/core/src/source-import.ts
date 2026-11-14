@@ -21,6 +21,7 @@ import {
   Fingerprint,
   type ImportBatchId,
   type ImportedSource,
+  type Source,
   SourceIdentity,
 } from "./schema.ts";
 import { TABLES } from "./table.ts";
@@ -472,6 +473,17 @@ export const linkRows = (
     activitySample: heartSamples(workout, track.id, at, (index) => `/track/heart_rate/${index}`),
   };
 };
+
+const SOURCE_NAME: Readonly<Record<Source, string>> = {
+  svett: "svett",
+  library: "the exercise library",
+  hevy: "Hevy",
+  apple_health: "Apple Health",
+  gpx: "a GPX file",
+};
+
+/** Where an activity came from, as a sentence names it. */
+export const sourceName = (source: Source): string => SOURCE_NAME[source];
 
 export interface HeartRateSummary {
   readonly averageBpm: number;

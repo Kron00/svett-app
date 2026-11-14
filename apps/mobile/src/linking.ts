@@ -9,7 +9,9 @@ import type { RootStackParamList } from "./navigation";
 // touch-transparent floating bar containers as toolbars that cover the whole screen.
 // scripts/sim/data.sh reaches export and import the same way, through svett://data,
 // svett://import?file=<name> and svett://imports/<id>/undo. scripts/sim/hevy.sh
-// adds &kind=hevy for a Hevy CSV.
+// adds &kind=hevy for a Hevy CSV. scripts/sim/health.sh uses
+// svett://health-import?file=<name> and svett://manual?kind=...&duration=..., which
+// fills manual entry's fields.
 export const linking: LinkingOptions<RootStackParamList> = {
   prefixes: ["svett://"],
   filter: (url) => !url.includes("expo-development-client"),
@@ -35,6 +37,8 @@ export const linking: LinkingOptions<RootStackParamList> = {
       Data: "data",
       ImportPreview: "import",
       UndoImport: "imports/:importBatchId/undo",
+      HealthImport: "health-import",
+      ManualCardio: "manual",
     },
   },
 };

@@ -66,6 +66,8 @@ const pairs: ReadonlyArray<readonly [ColorToken, ColorToken, number]> = [
   ["on-accent", "accent-fill", TEXT],
   ...TINT_COLORS.map((token) => ["on-tint", token, GRAPHIC] as const),
   ["destructive", "destructive-fill", TEXT],
+  // A text field with a problem takes a destructive border.
+  ["destructive", "control", GRAPHIC],
   // A finished set's row takes the success fill, and its badge keeps the set type's colour.
   ["label", "success-fill", TEXT],
   ["surface", "success", GRAPHIC],
