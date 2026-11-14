@@ -73,10 +73,8 @@ const loggedDatabase = async (finishIt: boolean) => {
         targetRepsMin: null,
         targetRepsMax: null,
       });
-      yield* activities.updateExercise(log.exercises[1]!.row.id, {
-        setFields: "time",
-        notes: "Hold",
-      });
+      yield* activities.changeSetFields(log.exercises[1]!.row.id, "time");
+      yield* activities.updateExercise(log.exercises[1]!.row.id, { notes: "Hold" });
       yield* activities.updateSet(log.exercises[1]!.sets[0]!.id, {
         durationS: DurationSeconds.make(60),
         done: true,

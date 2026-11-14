@@ -32,7 +32,7 @@ import {
   updateRow,
 } from "../table.ts";
 import { DurationSeconds } from "../duration.ts";
-import { finishPlan, setFieldsFromSets } from "../logger.ts";
+import { finishPlan, setFieldsFromSets, setsForFields } from "../logger.ts";
 import { MADE_HERE, type Origin, provenance, rowId } from "./origin.ts";
 
 type Draft<A, Parent extends string = never> = Omit<
@@ -200,19 +200,40 @@ const liveExercises = (activityId: ActivityId) =>
 const exerciseSets = (id: ActivityExerciseId) =>
   selectRows(TABLES.activitySet, "activity_exercise_id = ?", [id], "position, id");
 
-/** The workout an exercise belongs to, if it is the one in progress. */
+/** The workout, if it is live and in progress. The logger changes no other. */
+const inProgressActivity = (id: ActivityId) =>
+  Effect.gen(function* () {
+    const activity = yield* selectById(TABLES.activity, id);
+    if (Option.isNone(activity) || activity.value.status !== "in_progress") {
+      return yield* new RowNotFoundError({ table: "activity", id });
+    }
+    return activity.value;
+  });
+
+/** A live exercise of the workout in progress. */
 const inProgressExercise = (id: ActivityExerciseId) =>
   Effect.gen(function* () {
     const exercise = yield* selectById(TABLES.activityExercise, id);
     if (Option.isNone(exercise)) {
       return yield* new RowNotFoundError({ table: "activity_exercise", id });
     }
-    const activity = yield* selectById(TABLES.activity, exercise.value.activityId);
-    if (Option.isNone(activity) || activity.value.status !== "in_progress") {
-      return yield* new RowNotFoundError({ table: "activity", id: exercise.value.activityId });
-    }
+    yield* inProgressActivity(exercise.value.activityId);
     return exercise.value;
   });
+
+/** A live set of the workout in progress. */
+const inProgressSet = (id: ActivitySetId) =>
+  Effect.gen(function* () {
+    const set = yield* selectById(TABLES.activitySet, id);
+    if (Option.isNone(set)) return yield* new RowNotFoundError({ table: "activity_set", id });
+    yield* inProgressExercise(set.value.activityExerciseId);
+    return set.value;
+  });
+
+/** The new order names each exercise exactly once. */
+export class ExerciseOrderError extends Data.TaggedError("ExerciseOrderError")<{
+  readonly activityId: ActivityId;
+}> {}
 
 /** Fails when a live workout other than `id` is in progress. */
 const noOtherInProgress = (id: ActivityId) =>
@@ -320,10 +341,7 @@ const makeActivityRepository = Effect.gen(function* () {
     run(
       sql.transaction(
         Effect.gen(function* () {
-          const activity = yield* selectById(TABLES.activity, activityId);
-          if (Option.isNone(activity) || activity.value.status !== "in_progress") {
-            return yield* new RowNotFoundError({ table: "activity", id: activityId });
-          }
+          yield* inProgressActivity(activityId);
           const current = yield* liveExercises(activityId);
           const from = current.reduce((end, row) => Math.max(end, row.position + 1), 0);
           return yield* insertExercises(
@@ -351,21 +369,45 @@ const makeActivityRepository = Effect.gen(function* () {
       ),
     );
 
-  /** Puts the workout's exercises in the order of `ids`. */
+  /**
+   * Puts the exercises of the workout in progress in the order of `order`, which names each
+   * of them exactly once. Fails with ExerciseOrderError otherwise.
+   */
   const orderExercises = (activityId: ActivityId, order: ReadonlyArray<ActivityExerciseId>) =>
     run(
       sql.transaction(
         Effect.gen(function* () {
-          const current = yield* liveExercises(activityId);
-          const known = new Set<string>(current.map((row) => row.id));
-          if (order.length !== known.size || order.some((id) => !known.has(id))) {
-            return yield* Effect.die(new Error("The new order must name each exercise once"));
+          yield* inProgressActivity(activityId);
+          const current = new Map((yield* liveExercises(activityId)).map((row) => [row.id, row]));
+          const named = new Set(order);
+          if (
+            named.size !== order.length ||
+            named.size !== current.size ||
+            order.some((id) => !current.has(id))
+          ) {
+            return yield* new ExerciseOrderError({ activityId });
           }
           for (const [position, id] of order.entries()) {
-            const row = current.find((exercise) => exercise.id === id);
-            if (row !== undefined && row.position !== position) {
+            if (current.get(id)!.position !== position) {
               yield* updateRow(TABLES.activityExercise, id, { position });
             }
+          }
+        }),
+      ),
+    );
+
+  /**
+   * Logs an exercise of the workout in progress by other fields, such as time instead of
+   * reps. Values its sets no longer show are cleared, all in one transaction.
+   */
+  const changeSetFields = (id: ActivityExerciseId, setFields: SetFields) =>
+    run(
+      sql.transaction(
+        Effect.gen(function* () {
+          yield* inProgressExercise(id);
+          yield* updateRow(TABLES.activityExercise, id, { setFields });
+          for (const { id: setId, patch } of setsForFields(yield* exerciseSets(id), setFields)) {
+            yield* updateRow(TABLES.activitySet, setId, patch);
           }
         }),
       ),
@@ -408,9 +450,7 @@ const makeActivityRepository = Effect.gen(function* () {
     run(
       sql.transaction(
         Effect.gen(function* () {
-          const set = yield* selectById(TABLES.activitySet, id);
-          if (Option.isNone(set)) return yield* new RowNotFoundError({ table: "activity_set", id });
-          yield* inProgressExercise(set.value.activityExerciseId);
+          yield* inProgressSet(id);
           yield* softDeleteRows(TABLES.activitySet, "id = ?", [id], yield* currentTime);
         }),
       ),
@@ -424,10 +464,7 @@ const makeActivityRepository = Effect.gen(function* () {
     run(
       sql.transaction(
         Effect.gen(function* () {
-          const activity = yield* selectById(TABLES.activity, id);
-          if (Option.isNone(activity) || activity.value.status !== "in_progress") {
-            return yield* new RowNotFoundError({ table: "activity", id });
-          }
+          const activity = yield* inProgressActivity(id);
           const exercises = yield* liveExercises(id);
           const sets = yield* selectRows(TABLES.activitySet, childrenOf.sets, [id], "position, id");
           const plan = finishPlan(
@@ -462,7 +499,7 @@ const makeActivityRepository = Effect.gen(function* () {
           }
           return yield* updateRow(TABLES.activity, id, {
             status: "finished",
-            durationS: DurationSeconds.make(Math.max(0, (at - activity.value.startedAt) / 1000)),
+            durationS: DurationSeconds.make(Math.max(0, (at - activity.startedAt) / 1000)),
           });
         }),
       ),
@@ -603,10 +640,31 @@ const makeActivityRepository = Effect.gen(function* () {
     removeExercise,
     orderExercises,
     replaceExercise,
+    changeSetFields,
+    /** Changes an exercise of the workout in progress. */
     updateExercise: (
       id: ActivityExerciseId,
-      patch: Pick<Patch<ActivityExercise>, "notes" | "setFields" | "supersetGroup">,
-    ) => run(updateRow(TABLES.activityExercise, id, patch)),
+      patch: Pick<Patch<ActivityExercise>, "notes" | "supersetGroup">,
+    ) =>
+      run(
+        sql.transaction(
+          Effect.andThen(inProgressExercise(id), updateRow(TABLES.activityExercise, id, patch)),
+        ),
+      ),
+    /** Changes the title or notes of the workout in progress. */
+    updateWorkout: (id: ActivityId, patch: Pick<Patch<Activity>, "title" | "notes">) =>
+      run(
+        sql.transaction(
+          Effect.andThen(inProgressActivity(id), updateRow(TABLES.activity, id, patch)),
+        ),
+      ),
+    /** Changes a set of the workout in progress. */
+    updateWorkoutSet: (id: ActivitySetId, patch: Omit<Patch<ActivitySet>, "activityExerciseId">) =>
+      run(
+        sql.transaction(
+          Effect.andThen(inProgressSet(id), updateRow(TABLES.activitySet, id, patch)),
+        ),
+      ),
     addSet,
     removeSet,
     finishWorkout,

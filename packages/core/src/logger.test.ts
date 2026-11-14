@@ -71,7 +71,7 @@ describe("set fields", () => {
     expect(defaultSetFields({ category: "strength", equipment: "barbell" })).toBe("weight_reps");
   });
 
-  it("prefers what the routine plans, then last time, then the exercise's kind", () => {
+  it("prefers last time, then the exercise's kind, when either shows what the routine plans", () => {
     const squat = { category: "strength", equipment: "barbell" } as const;
     expect(
       chooseSetFields({
@@ -85,6 +85,28 @@ describe("set fields", () => {
     );
     expect(chooseSetFields({ planned: [], previous: null, exercise: squat })).toBe("weight_reps");
     expect(chooseSetFields({ planned: [], previous: null, exercise: null })).toBe("weight_reps");
+  });
+
+  it("keeps the weight a lift logs when a routine plans only its reps", () => {
+    const squat = { category: "strength", equipment: "barbell" } as const;
+    const pushUp = { category: "strength", equipment: "none" } as const;
+    const reps = [values({ reps: 5 })];
+    expect(chooseSetFields({ planned: reps, previous: "weight_reps", exercise: squat })).toBe(
+      "weight_reps",
+    );
+    expect(chooseSetFields({ planned: reps, previous: null, exercise: squat })).toBe("weight_reps");
+    expect(chooseSetFields({ planned: reps, previous: "time", exercise: squat })).toBe(
+      "weight_reps",
+    );
+    expect(chooseSetFields({ planned: reps, previous: null, exercise: pushUp })).toBe("reps");
+    expect(chooseSetFields({ planned: reps, previous: "time", exercise: pushUp })).toBe("reps");
+    expect(
+      chooseSetFields({
+        planned: [values({ weightKg: 20, reps: 10 })],
+        previous: "reps",
+        exercise: pushUp,
+      }),
+    ).toBe("weight_reps");
   });
 });
 

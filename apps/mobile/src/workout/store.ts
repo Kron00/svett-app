@@ -24,17 +24,32 @@ export type WorkoutState =
   | { readonly status: "failed"; readonly message: string };
 
 type Services = ActivityRepository | ExerciseRepository;
+type Change = (log: WorkoutLog) => WorkoutLog;
 
-let state: WorkoutState = { status: "loading" };
+/** What the database holds: the last read, with each change saved since. */
+let saved: WorkoutState = { status: "loading" };
+/** Changes shown before they are saved, oldest first. Each read is shown with them on top. */
+let unsaved: ReadonlyArray<{ readonly change: Change }> = [];
+let state: WorkoutState = saved;
 const listeners = new Set<() => void>();
 
-const publish = (next: WorkoutState) => {
-  state = next;
+const show = () => {
+  state =
+    saved.status === "ready" && saved.log !== null
+      ? { ...saved, log: unsaved.reduce((log, { change }) => change(log), saved.log) }
+      : saved;
   for (const listener of listeners) listener();
 };
 
+const keepSaved = (change: Change, problem: string | null = null) => {
+  if (saved.status === "ready") {
+    saved = { ...saved, problem, log: saved.log === null ? null : change(saved.log) };
+  }
+};
+
 // Writes and reads run one at a time in the order they were asked for, so a read sees every
-// change before it and a set typed fast is saved in the order typed.
+// change before it and a set typed fast is saved in the order typed. A change still waiting
+// in the queue is newer than any read ahead of it, so it stays on top of what that read shows.
 let queue: Promise<unknown> = Promise.resolve();
 const enqueue = <A>(task: () => Promise<A>): Promise<A> => {
   const next = queue.then(task);
@@ -42,13 +57,16 @@ const enqueue = <A>(task: () => Promise<A>): Promise<A> => {
   return next;
 };
 
+const run = <A>(effect: Effect.Effect<A, unknown, Services>) => appDatabase().runPromise(effect);
+
 const read = async () => {
   try {
-    const log = await appDatabase().runPromise(loadWorkoutLog);
-    publish({ status: "ready", log: Option.getOrNull(log), problem: null });
+    const log = await run(loadWorkoutLog);
+    saved = { status: "ready", log: Option.getOrNull(log), problem: null };
   } catch (error) {
-    publish({ status: "failed", message: String(error) });
+    saved = { status: "failed", message: String(error) };
   }
+  show();
 };
 
 /** Reads the workout in progress again, after every change already asked for is saved. */
@@ -57,7 +75,8 @@ export const reloadWorkout = (): Promise<void> => enqueue(read);
 const failed = (error: unknown) =>
   enqueue(async () => {
     await read();
-    if (state.status === "ready") publish({ ...state, problem: String(error) });
+    keepSaved((log) => log, String(error));
+    show();
   });
 
 /**
@@ -66,7 +85,7 @@ const failed = (error: unknown) =>
  */
 export const saveWorkout = <A>(effect: Effect.Effect<A, unknown, Services>): Promise<A | null> =>
   enqueue(async () => {
-    const result = await appDatabase().runPromise(effect);
+    const result = await run(effect);
     await read();
     return result;
   }).catch(async (error: unknown) => {
@@ -75,24 +94,38 @@ export const saveWorkout = <A>(effect: Effect.Effect<A, unknown, Services>): Pro
   });
 
 /**
- * Shows a change at once and saves it behind, so a set marked done shows done within a frame
- * and a note keeps up with typing. A save that fails shows what the database holds, and why.
+ * Saves a change and shows it. Typing shows at once and saves behind, so a note keeps up with
+ * the keys. A change the user is told is kept, such as a set marked done, shows only once it
+ * is saved, so a killed app never loses what it showed. A save that fails shows what the
+ * database holds, and why.
  */
 export const changeWorkout = (
-  change: (log: WorkoutLog) => WorkoutLog,
+  change: Change,
   save: Effect.Effect<unknown, unknown, Services>,
+  shown: "now" | "once saved" = "now",
 ) => {
-  if (state.status === "ready" && state.log !== null) {
-    publish({ ...state, problem: null, log: change(state.log) });
+  const edit = { change };
+  if (shown === "now") {
+    unsaved = [...unsaved, edit];
+    show();
   }
-  void enqueue(() => appDatabase().runPromise(save)).catch(failed);
+  void enqueue(async () => {
+    try {
+      await run(save);
+    } finally {
+      unsaved = unsaved.filter((other) => other !== edit);
+    }
+    keepSaved(change);
+    show();
+  }).catch(failed);
 };
 
-/** Shows a change to one set at once, with last time's sets lined up again, and saves it behind. */
+/** Shows a change to one set, with last time's sets lined up again, and saves it. */
 export const changeSet = (
   id: ActivitySetId,
   patch: Partial<ActivitySet>,
   save: Effect.Effect<unknown, unknown, Services>,
+  shown: "now" | "once saved" = "now",
 ) =>
   changeWorkout(
     (log) => ({
@@ -110,6 +143,7 @@ export const changeSet = (
       ),
     }),
     save,
+    shown,
   );
 
 const subscribe = (listener: () => void) => {

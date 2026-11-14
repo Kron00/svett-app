@@ -23,16 +23,8 @@ import { IconButton } from "../ui/IconButton";
 import { SetRow, SetRowHeader } from "../ui/SetRow";
 import { TextField } from "../ui/TextField";
 import { addSet, moveExercise, removeExercise, setExerciseNotes, toggleSetDone } from "./actions";
+import type { Focus } from "./focus";
 import { shownDone, timeDonePress } from "./timing";
-
-/** The field the keypad types into, and the text typed so far. */
-export interface Focus {
-  readonly setId: ActivitySet["id"];
-  readonly column: SetColumn;
-  readonly text: string;
-  /** True until the first key, which replaces the stored value instead of adding to it. */
-  readonly fresh: boolean;
-}
 
 /** What VoiceOver reads for a set's done box, such as "Set 1, 60 kg, 8 reps, Done". */
 const doneLabel = (badge: string, set: ActivitySet) =>
@@ -53,7 +45,7 @@ function LoggedSetRow({
   readonly index: number;
   readonly badge: { readonly label: string; readonly normal: number };
   readonly focus: Focus | null;
-  readonly onFocus: (set: ActivitySet, column: SetColumn) => void;
+  readonly onFocus: (exercise: LoggedExercise, set: ActivitySet, column: SetColumn) => void;
   readonly onPressSetType: (set: ActivitySet) => void;
   readonly measure: (row: HostInstance) => void;
 }) {
@@ -102,7 +94,7 @@ function LoggedSetRow({
         done={set.done}
         focusedField={focused ? columns.indexOf(focus.column) : undefined}
         onPressSetType={() => onPressSetType(set)}
-        onPressField={(field) => onFocus(set, columns[field]!)}
+        onPressField={(field) => onFocus(exercise, set, columns[field]!)}
         onToggleDone={() => {
           timeDonePress(set.id);
           const problem = toggleSetDone(exercise, index);
@@ -134,7 +126,7 @@ export const ExerciseCard = memo(function ExerciseCard({
   readonly index: number;
   readonly count: number;
   readonly focus: Focus | null;
-  readonly onFocus: (set: ActivitySet, column: SetColumn) => void;
+  readonly onFocus: (exercise: LoggedExercise, set: ActivitySet, column: SetColumn) => void;
   readonly onPressSetType: (set: ActivitySet) => void;
   readonly onReplace: (exercise: LoggedExercise) => void;
   readonly onLogBy: (exercise: LoggedExercise) => void;

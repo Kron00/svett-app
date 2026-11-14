@@ -7,7 +7,6 @@ import {
   matchPrevious,
   nextSet,
   REPLACED_SET,
-  setsForFields,
 } from "./logger.ts";
 import {
   ActivityRepository,
@@ -127,20 +126,6 @@ export const replaceWorkoutExercise = (
       }),
       REPLACED_SET,
     );
-  });
-
-/** Logs an exercise by other fields, such as time instead of reps. Values it no longer shows are cleared. */
-export const changeSetFields = (
-  id: ActivityExerciseId,
-  sets: ReadonlyArray<ActivitySet>,
-  setFields: SetFields,
-) =>
-  Effect.gen(function* () {
-    const activities = yield* ActivityRepository;
-    yield* activities.updateExercise(id, { setFields });
-    for (const { id: setId, patch } of setsForFields(sets, setFields)) {
-      yield* activities.updateSet(setId, patch);
-    }
   });
 
 /** One exercise of the workout in progress, as the logger shows it. */

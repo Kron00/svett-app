@@ -3,7 +3,6 @@ import {
   ActivityRepository,
   type ActivitySet,
   addExercisesToWorkout,
-  changeSetFields,
   type ExerciseId,
   fieldPatch,
   type LoggedExercise,
@@ -62,7 +61,9 @@ export const moveExercise = (from: number, to: number) => {
 };
 
 export const logBy = (exercise: LoggedExercise, fields: SetFields) =>
-  void saveWorkout(changeSetFields(exercise.row.id, exercise.sets, fields));
+  void saveWorkout(
+    withActivities((activities) => activities.changeSetFields(exercise.row.id, fields)),
+  );
 
 export const addSet = (exercise: LoggedExercise) =>
   void saveWorkout(
@@ -76,10 +77,13 @@ export const setSetType = (set: ActivitySet, setType: SetType) =>
   changeSet(
     set.id,
     { setType },
-    withActivities((activities) => activities.updateSet(set.id, { setType })),
+    withActivities((activities) => activities.updateWorkoutSet(set.id, { setType })),
   );
 
-/** Marks a set done, or to do again. Returns why it cannot be done yet, or null. */
+/**
+ * Marks a set done, or to do again, and shows it once it is saved. Returns why it cannot be
+ * done yet, or null.
+ */
 export const toggleSetDone = (exercise: LoggedExercise, index: number): string | null => {
   const set = exercise.sets[index];
   if (set === undefined) return null;
@@ -88,7 +92,8 @@ export const toggleSetDone = (exercise: LoggedExercise, index: number): string |
   changeSet(
     set.id,
     result.patch,
-    withActivities((activities) => activities.updateSet(set.id, result.patch)),
+    withActivities((activities) => activities.updateWorkoutSet(set.id, result.patch)),
+    "once saved",
   );
   return null;
 };
@@ -103,7 +108,7 @@ export const typeValue = (
   changeSet(
     set.id,
     patch,
-    withActivities((activities) => activities.updateSet(set.id, patch)),
+    withActivities((activities) => activities.updateWorkoutSet(set.id, patch)),
   );
 };
 
@@ -112,7 +117,7 @@ export const renameWorkout = (title: string) => {
   if (id === null) return;
   changeWorkout(
     (log) => ({ ...log, activity: { ...log.activity, title } }),
-    withActivities((activities) => activities.update(id, { title })),
+    withActivities((activities) => activities.updateWorkout(id, { title })),
   );
 };
 
@@ -121,7 +126,7 @@ export const setWorkoutNotes = (notes: string) => {
   if (id === null) return;
   changeWorkout(
     (log) => ({ ...log, activity: { ...log.activity, notes } }),
-    withActivities((activities) => activities.update(id, { notes })),
+    withActivities((activities) => activities.updateWorkout(id, { notes })),
   );
 };
 

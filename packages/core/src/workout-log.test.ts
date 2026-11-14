@@ -7,14 +7,21 @@ import { libraryExerciseId } from "./exercise-library.ts";
 import { Ids } from "./ids.ts";
 import { nextSet, REPLACED_SET } from "./logger.ts";
 import { manualClock } from "./manual-clock.ts";
+import { openNodeDatabase } from "./node-sqlite.ts";
 import { ActivityRepository, type SetDraft } from "./repositories/activities.ts";
+import type { SqlDriver } from "./sql.ts";
 import { MADE_HERE } from "./repositories/origin.ts";
 import { RoutineRepository } from "./repositories/routines.ts";
 import { EMPTY_TARGET } from "./routine-plan.ts";
-import { EpochMillis, type ExerciseId } from "./schema.ts";
+import {
+  type ActivityExerciseId,
+  type ActivityId,
+  type ActivitySetId,
+  EpochMillis,
+  type ExerciseId,
+} from "./schema.ts";
 import {
   addExercisesToWorkout,
-  changeSetFields,
   loadWorkoutLog,
   replaceWorkoutExercise,
   startEmptyWorkout,
@@ -73,6 +80,39 @@ const shape = (workout: WorkoutLog) =>
       previous[index] === null ? null : [previous[index]!.weightKg, previous[index]!.reps],
     ]),
   }));
+
+/** Every activity row as stored, deleted or not, to show a refused change wrote nothing. */
+const storedRows = (database: ReturnType<typeof openTestDatabase>) =>
+  ["activity", "activity_exercise", "activity_set"].map((table) =>
+    database.database.prepare(`SELECT * FROM ${table} ORDER BY id`).all(),
+  );
+
+const refusals = (target: {
+  readonly activityId: ActivityId;
+  readonly exerciseId: ActivityExerciseId;
+  readonly setId: ActivitySetId;
+}) =>
+  Effect.flatMap(Effect.service(ActivityRepository), (activities) => {
+    const { activityId, exerciseId, setId } = target;
+    const changes = {
+      addExercises: activities.addExercises(activityId, [
+        { exerciseId: plank, supersetGroup: null, notes: "", sets: [nextSet([])] },
+      ]),
+      removeExercise: activities.removeExercise(exerciseId),
+      orderExercises: activities.orderExercises(activityId, [exerciseId]),
+      replaceExercise: activities.replaceExercise(exerciseId, row, "weight_reps", REPLACED_SET),
+      updateExercise: activities.updateExercise(exerciseId, { notes: "Too late" }),
+      changeSetFields: activities.changeSetFields(exerciseId, "time"),
+      addSet: activities.addSet(exerciseId, nextSet([])),
+      removeSet: activities.removeSet(setId),
+      updateWorkoutSet: activities.updateWorkoutSet(setId, { reps: 9 }),
+      updateWorkout: activities.updateWorkout(activityId, { title: "Too late", notes: "No" }),
+      finishWorkout: activities.finishWorkout(activityId),
+    };
+    return Effect.forEach(Object.entries(changes), ([name, change]) =>
+      Effect.map(Effect.exit(change), (exit) => [name, exit] as const),
+    );
+  });
 
 describe("logging a workout", () => {
   it("starts empty, adds exercises as they were last time, and lines up last time's sets", async () => {
@@ -137,7 +177,7 @@ describe("logging a workout", () => {
         ]);
         expect(workout.exercises[2]!.row.notes).toBe("");
         const plankSet = workout.exercises[0]!.sets[0]!;
-        yield* changeSetFields(plankId!, workout.exercises[0]!.sets, "time");
+        yield* activities.changeSetFields(plankId!, "time");
         yield* activities.updateSet(plankSet.id, {
           durationS: DurationSeconds.make(75),
           done: true,
@@ -267,7 +307,7 @@ describe("logging a workout", () => {
         const first = yield* startEmptyWorkout(9);
         const [plankId] = yield* addExercisesToWorkout(first, [plank]);
         const before = (yield* log).exercises[0]!;
-        yield* changeSetFields(plankId!, before.sets, "time");
+        yield* activities.changeSetFields(plankId!, "time");
         yield* activities.updateSet(before.sets[0]!.id, {
           durationS: DurationSeconds.make(60),
           done: true,
@@ -281,7 +321,7 @@ describe("logging a workout", () => {
     expect(fields).toEqual(["reps", "time"]);
   });
 
-  it("starts a routine with each exercise logged by what its targets hold", async () => {
+  it("starts a routine with each exercise logged as last time, when that shows its targets", async () => {
     const database = openTestDatabase();
     const workout = await database.runtime.runPromise(
       Effect.gen(function* () {
@@ -308,12 +348,125 @@ describe("logging a workout", () => {
         return yield* log;
       }),
     );
+    // The squat's reps target keeps last week's weight. The plank's time target needs time.
     expect(workout.exercises.map(({ row: exercise }) => exercise.setFields)).toEqual([
-      "reps",
+      "weight_reps",
       "time",
     ]);
     expect(workout.exercises[0]!.previous).toHaveLength(1);
     expect(workout.exercises[0]!.previous[0]).toMatchObject({ weightKg: 100, reps: 5 });
+  });
+
+  it("refuses every logger change to a finished or discarded workout and writes nothing", async () => {
+    const database = openTestDatabase();
+    const targets = await database.runtime.runPromise(
+      Effect.gen(function* () {
+        const activities = yield* ActivityRepository;
+        const finishedId = yield* lastWeek;
+        const finished = Option.getOrThrow(yield* activities.get(finishedId)).exercises[0]!;
+        const discardedId = yield* startEmptyWorkout(9);
+        yield* addExercisesToWorkout(discardedId, [squat]);
+        const discarded = (yield* log).exercises[0]!;
+        yield* activities.remove(discardedId);
+        return [
+          { activityId: finishedId, exerciseId: finished.exercise.id, setId: finished.sets[0]!.id },
+          { activityId: discardedId, exerciseId: discarded.row.id, setId: discarded.sets[0]!.id },
+        ];
+      }),
+    );
+    await database.runtime.runPromise(database.clock.advance(60_000));
+    const before = storedRows(database);
+    for (const target of targets) {
+      const results = await database.runtime.runPromise(refusals(target));
+      expect(results).toHaveLength(11);
+      for (const [name, exit] of results) {
+        expect({ name, exit }).toMatchObject({
+          name,
+          exit: { _tag: "Failure", cause: { reasons: [{ error: { _tag: "RowNotFoundError" } }] } },
+        });
+      }
+    }
+    expect(storedRows(database)).toEqual(before);
+  });
+
+  it("refuses an order that does not name each exercise exactly once, and changes nothing", async () => {
+    const database = openTestDatabase();
+    const { id, squatId, curlId } = await database.runtime.runPromise(
+      Effect.gen(function* () {
+        const id = yield* startEmptyWorkout(9);
+        const [squatId, curlId] = yield* addExercisesToWorkout(id, [squat, curl]);
+        return { id, squatId: squatId!, curlId: curlId! };
+      }),
+    );
+    const before = storedRows(database);
+    const orders = [
+      [squatId, squatId],
+      [curlId, curlId],
+      [squatId],
+      [curlId, squatId, squatId],
+      [],
+    ];
+    for (const order of orders) {
+      const exit = await database.runtime.runPromiseExit(
+        Effect.flatMap(Effect.service(ActivityRepository), (activities) =>
+          activities.orderExercises(id, order),
+        ),
+      );
+      expect(exit).toMatchObject({
+        _tag: "Failure",
+        cause: { reasons: [{ error: { _tag: "ExerciseOrderError" } }] },
+      });
+    }
+    expect(storedRows(database)).toEqual(before);
+    const order = await database.runtime.runPromise(
+      Effect.gen(function* () {
+        const activities = yield* ActivityRepository;
+        yield* activities.orderExercises(id, [curlId, squatId]);
+        return (yield* log).exercises.map((exercise) => exercise.row.id);
+      }),
+    );
+    expect(order).toEqual([curlId, squatId]);
+  });
+
+  it("changes an exercise's fields and clears its set values together, or not at all", async () => {
+    const { driver } = openNodeDatabase();
+    let failSetWrites = false;
+    const flaky: SqlDriver = {
+      ...driver,
+      run: (sql, params) =>
+        failSetWrites && sql.startsWith("UPDATE activity_set")
+          ? Promise.reject(new Error("disk full"))
+          : driver.run(sql, params),
+    };
+    const runtime = ManagedRuntime.make(
+      Layer.provideMerge(databaseLayer(flaky, Ids.layerSeeded(1)), manualClock(T0).layer),
+    );
+    const squatRow = await runtime.runPromise(
+      Effect.gen(function* () {
+        const activities = yield* ActivityRepository;
+        const id = yield* startEmptyWorkout(9);
+        const [squatId] = yield* addExercisesToWorkout(id, [squat]);
+        const [set] = (yield* log).exercises[0]!.sets;
+        yield* activities.updateWorkoutSet(set!.id, { weightKg: 60, reps: 8, done: true });
+        return squatId!;
+      }),
+    );
+    const changeToTime = Effect.flatMap(Effect.service(ActivityRepository), (activities) =>
+      activities.changeSetFields(squatRow, "time"),
+    );
+    const fieldsAndSets = Effect.map(log, ({ exercises: [exercise] }) => [
+      exercise!.row.setFields,
+      exercise!.sets.map((set) => [set.weightKg, set.reps, set.durationS, set.done]),
+    ]);
+
+    failSetWrites = true;
+    expect(Exit.isFailure(await runtime.runPromiseExit(changeToTime))).toBe(true);
+    failSetWrites = false;
+    expect(await runtime.runPromise(fieldsAndSets)).toEqual(["weight_reps", [[60, 8, null, true]]]);
+
+    await runtime.runPromise(changeToTime);
+    expect(await runtime.runPromise(fieldsAndSets)).toEqual(["time", [[null, null, null, false]]]);
+    await runtime.dispose();
   });
 
   it("empties a replaced exercise's sets but keeps their types", async () => {

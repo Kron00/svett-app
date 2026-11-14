@@ -1,17 +1,12 @@
 import {
   type ActivitySet,
   COLUMN_ENTRY,
-  columnValue,
-  entryText,
-  entryValue,
   type KeypadKey,
   type LoggedExercise,
-  SET_FIELD_COLUMNS,
   SET_FIELDS_OPTIONS,
   SET_TYPE_OPTIONS,
   type SetColumn,
   setBadges,
-  typeIntoField,
   unfinishedSets,
   type WorkoutLog,
 } from "@svett/core";
@@ -38,33 +33,10 @@ import {
   startEmpty,
   typeValue,
 } from "./actions";
-import { ExerciseCard, type Focus } from "./ExerciseCard";
+import { ExerciseCard } from "./ExerciseCard";
+import { type Focus, focusField, liveFocus, nextField, pressKey } from "./focus";
 import { reloadWorkout, useWorkout } from "./store";
 import { showTiming, useElapsed, useLastDoneTiming } from "./timing";
-
-/** The field after `focus`: the next column of the set, else the first of the next set. */
-const nextField = (log: WorkoutLog, focus: Focus): Focus | null => {
-  const sets = log.exercises.flatMap((exercise) =>
-    exercise.sets.map((set) => ({ set, columns: SET_FIELD_COLUMNS[exercise.row.setFields] })),
-  );
-  const at = sets.findIndex(({ set }) => set.id === focus.setId);
-  if (at === -1) return null;
-  const columns = sets[at]!.columns;
-  const column = columns[columns.indexOf(focus.column) + 1];
-  const target =
-    column === undefined
-      ? sets[at + 1] === undefined
-        ? null
-        : { set: sets[at + 1]!.set, column: sets[at + 1]!.columns[0]! }
-      : { set: sets[at]!.set, column };
-  if (target === null) return null;
-  return {
-    setId: target.set.id,
-    column: target.column,
-    text: entryText(target.column, columnValue(target.set, target.column)),
-    fresh: true,
-  };
-};
 
 const findSet = (log: WorkoutLog, id: ActivitySet["id"]) => {
   for (const exercise of log.exercises) {
@@ -134,7 +106,7 @@ function Header({ log }: { readonly log: WorkoutLog }) {
 
 function Logger({ log, problem }: { readonly log: WorkoutLog; readonly problem: string | null }) {
   const navigation = useNavigation<RootNavigation>();
-  const [focus, setFocus] = useState<Focus | null>(null);
+  const [focusState, setFocus] = useState<Focus | null>(null);
   const [typeSheet, setTypeSheet] = useState<ActivitySet | null>(null);
   const [fieldsSheet, setFieldsSheet] = useState<LoggedExercise | null>(null);
   const scroll = useRef<ScrollViewInstance>(null);
@@ -148,27 +120,27 @@ function Logger({ log, problem }: { readonly log: WorkoutLog; readonly problem: 
     );
   }, []);
 
-  const focused = focus === null ? null : findSet(log, focus.setId);
+  const focus = liveFocus(log, focusState)?.focus ?? null;
   const press = (key: KeypadKey) => {
-    if (focus === null || focused === null) return;
-    const text = typeIntoField(focus.column, focus.text, key, focus.fresh);
-    setFocus({ ...focus, text, fresh: false });
-    typeValue(focused.exercise, focused.set, focus.column, entryValue(focus.column, text));
+    const typed = pressKey(log, focus, key);
+    if (typed === null) return;
+    setFocus(typed.focus);
+    typeValue(typed.exercise, typed.set, typed.focus.column, typed.value);
   };
 
   const onFocus = useCallback(
-    (set: ActivitySet, column: SetColumn) =>
-      setFocus({
-        setId: set.id,
-        column,
-        text: entryText(column, columnValue(set, column)),
-        fresh: true,
-      }),
+    (exercise: LoggedExercise, set: ActivitySet, column: SetColumn) =>
+      setFocus(focusField(exercise, set, column)),
     [],
   );
+  // Another screen over the workout, such as the one replacing an exercise, closes the keypad
+  // and drops what it held, so no key lands on a set that changed meanwhile.
+  useFocusEffect(useCallback(() => () => setFocus(null), []));
   const replace = useCallback(
-    (exercise: LoggedExercise) =>
-      navigation.navigate("ReplaceWorkoutExercise", { exercise: exercise.row.id }),
+    (exercise: LoggedExercise) => {
+      setFocus(null);
+      navigation.navigate("ReplaceWorkoutExercise", { exercise: exercise.row.id });
+    },
     [navigation],
   );
 
@@ -247,7 +219,7 @@ function Logger({ log, problem }: { readonly log: WorkoutLog; readonly problem: 
           {showTiming() ? <Timing /> : null}
         </View>
       </ScrollView>
-      {focus !== null && focused !== null ? (
+      {focus !== null ? (
         <View
           className="gap-2 border-t border-separator bg-surface px-gutter pt-3 pb-8"
           testID="keypad"

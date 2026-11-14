@@ -163,9 +163,14 @@ export const defaultSetFields = (exercise: Pick<Exercise, "category" | "equipmen
   return exercise.equipment === "none" ? "reps" : "weight_reps";
 };
 
+const covers = (fields: SetFields, needed: SetFields) =>
+  SET_FIELD_COLUMNS[needed].every((column) => SET_FIELD_COLUMNS[fields].includes(column));
+
 /**
- * How an exercise is logged in a new workout: as its planned sets record, else as it was last
- * time, else by its kind. So a change of fields carries over to the next workout.
+ * How an exercise is logged in a new workout: as it was last time, else by its kind, so a
+ * change of fields carries over to the next workout. Either must show every value the
+ * planned sets hold, so a routine with only a reps target keeps the weight a barbell lift
+ * logs, while a routine timing a plank logs it by time.
  */
 export const chooseSetFields = ({
   planned,
@@ -175,10 +180,12 @@ export const chooseSetFields = ({
   readonly planned: ReadonlyArray<SetValues>;
   readonly previous: SetFields | null;
   readonly exercise: Pick<Exercise, "category" | "equipment"> | null;
-}): SetFields =>
-  setFieldsFromSets(planned) ??
-  previous ??
-  (exercise === null ? "weight_reps" : defaultSetFields(exercise));
+}): SetFields => {
+  const usual = exercise === null ? "weight_reps" : defaultSetFields(exercise);
+  const needed = setFieldsFromSets(planned);
+  if (needed === null) return previous ?? usual;
+  return [previous, usual].find((fields) => fields !== null && covers(fields, needed)) ?? needed;
+};
 
 /**
  * The set from last time that each set lines up with: the nth set of a type takes the nth set
