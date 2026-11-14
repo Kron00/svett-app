@@ -52,7 +52,7 @@ export const wholePercentages = (values: ReadonlyArray<number>): ReadonlyArray<n
   let left = 100 - floors.reduce((sum, value) => sum + value, 0);
   const byRemainder = exact
     .map((value, index) => ({ index, remainder: value - Math.floor(value) }))
-    .toSorted((a, b) => b.remainder - a.remainder || a.index - b.index);
+    .sort((a, b) => b.remainder - a.remainder || a.index - b.index);
   for (const { index } of byRemainder) {
     if (left <= 0) break;
     floors[index] = (floors[index] ?? 0) + 1;
@@ -76,7 +76,7 @@ export const muscleSplit = (
   }
   const rows = [...counted]
     .filter(([, sets]) => sets > 0)
-    .toSorted(([a, aSets], [b, bSets]) => bSets - aSets || a.localeCompare(b));
+    .sort(([a, aSets], [b, bSets]) => bSets - aSets || a.localeCompare(b));
   const percents = wholePercentages(rows.map(([, sets]) => sets));
   return rows.map(([muscle, sets], index) => ({ muscle, sets, percent: percents[index] ?? 0 }));
 };
