@@ -89,18 +89,18 @@ describe("change IDs", () => {
   });
 });
 
-describe("mergeChange", () => {
-  const live = (updatedAt: number, changeId: string): RowCopy => ({
-    updatedAt,
-    changeId,
-    deletedAt: null,
-  });
-  const deleted = (at: number, changeId: string): RowCopy => ({
-    updatedAt: at,
-    changeId,
-    deletedAt: at,
-  });
+const live = (updatedAt: number, changeId: string): RowCopy => ({
+  updatedAt,
+  changeId,
+  deletedAt: null,
+});
+const deleted = (at: number, changeId: string): RowCopy => ({
+  updatedAt: at,
+  changeId,
+  deletedAt: at,
+});
 
+describe("mergeChange", () => {
   it.each([
     {
       case: "an edit made after the workout was deleted",
@@ -157,13 +157,14 @@ describe("mergeChange", () => {
   });
 });
 
+const journal = (fields: object) => ({
+  itemTable: "activity",
+  rowIds: JSON.stringify({ activity: ["x"] }),
+  replaced: null,
+  ...fields,
+});
+
 describe("staysOnPhone", () => {
-  const journal = (fields: object) => ({
-    itemTable: "activity",
-    rowIds: JSON.stringify({ activity: ["x"] }),
-    replaced: null,
-    ...fields,
-  });
   const coachRow = { id: "m", content: "private" };
 
   it.each([

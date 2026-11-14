@@ -256,9 +256,7 @@ const makeSyncRepository = Effect.gen(function* () {
             change.id,
           ]);
         }
-        yield* sql.run("UPDATE sync_state SET clock = ? WHERE id = 1", [
-          floor + times.length - 1,
-        ]);
+        yield* sql.run("UPDATE sync_state SET clock = ? WHERE id = 1", [floor + times.length - 1]);
         return ahead.length;
       }),
     );

@@ -84,6 +84,14 @@ export const currentTime: Effect.Effect<Model.EpochMillis, SqlError, Sql> = Effe
   },
 );
 
+/** The time the next write would take, without taking it, as a preview of one needs. */
+export const nextTime: Effect.Effect<Model.EpochMillis, SqlError, Sql> = Effect.gen(function* () {
+  const millis = yield* Clock.currentTimeMillis;
+  const sql = yield* Sql;
+  const [row] = yield* sql.all("SELECT clock FROM sync_state WHERE id = 1");
+  return Model.EpochMillis.make(Math.max(millis, Number(row?.["clock"] ?? millis - 1) + 1));
+});
+
 const encode = <A extends RowBase>(target: Table<A>, row: A) =>
   Schema.encodeEffect(target.schema)(row).pipe(
     Effect.mapError((issue) => new InvalidRowError({ table: target.name, message: issue.message })),

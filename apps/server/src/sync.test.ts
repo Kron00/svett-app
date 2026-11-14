@@ -1,4 +1,7 @@
+import { mkdtempSync, readFileSync } from "node:fs";
 import { createServer } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import { NodeHttpServer } from "@effect/platform-node";
 import {
@@ -17,10 +20,24 @@ import {
   httpSyncApi,
   changeIdOf,
   contentFingerprint,
+  databaseLayer as phoneDatabaseLayer,
+  decodeHevyFile,
+  hevyImport,
+  TransferRepository,
+  wallTimeAsUtc,
+  Ids,
+  type SqlDriver,
   SyncFailed,
 } from "@svett/core";
-import { legDay, openTestDatabase, syncedRows, T0 } from "@svett/core/node";
-import { Effect, Exit, Layer, ManagedRuntime, Option } from "effect";
+import {
+  legDay,
+  manualClock,
+  openNodeDatabase,
+  openTestDatabase,
+  syncedRows,
+  T0,
+} from "@svett/core/node";
+import { Effect, Exit, Layer, ManagedRuntime, Option, Result } from "effect";
 import { HttpRouter, HttpServer } from "effect/http";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 
@@ -303,14 +320,67 @@ describe("sync", { timeout: 120_000 }, () => {
         expect(history).toEqual([]);
       });
 
-      // Undo brings the workout back on both phones.
+      // The edit is dropped everywhere, and nothing waits to upload.
+      const queued = await Promise.all(
+        phones.map((phone) =>
+          phone.run(Effect.flatMap(Effect.service(SyncRepository), (sync) => sync.queuedCount)),
+        ),
+      );
+      expect(queued).toEqual([0, 0]);
+
+      // Undo brings the workout back on both phones as it was when it was deleted.
       await deleter.at(T0 + 3 * MINUTE);
       await deleter.run(Effect.flatMap(activities, (repository) => repository.restore(id)));
       await syncAll(phones);
       expect(await deleter.rows()).toEqual(await editor.rows());
       expect(await counts(editor)).toEqual({ activities: 1, sets: 4 });
+      const restored = Option.getOrThrow(await detail(editor, id));
+      expect(
+        restored.exercises.map(({ sets }) => sets.map(({ weightKg, reps }) => [weightKg, reps])),
+      ).toEqual([
+        [
+          [100, 5],
+          [100, 5],
+          [105, 5],
+        ],
+        [[40, 12]],
+      ]);
     },
   );
+
+  it("keeps an edit made while its push was on the way, in the same millisecond", async () => {
+    const server = await startServer();
+    const a = openPhone(server, ALICE, 1);
+    const b = openPhone(server, ALICE, 2);
+    const id = await sharedLegDay(a, [b]);
+    await a.at(T0 + MINUTE);
+    await editFirstSet(a, id, 6);
+    const api = a.api();
+    let edited = false;
+    // The phone's clock has not moved when the edit to 12 lands, before the server answers.
+    await a.run(
+      syncOnce({
+        ...api,
+        push: (rows) =>
+          Effect.flatMap(
+            Effect.promise(async () => {
+              if (edited) return;
+              edited = true;
+              await editFirstSet(a, id, 12);
+            }),
+            () => api.push(rows),
+          ),
+      }),
+    );
+    expect((await firstSet(a, id)).reps).toBe(12);
+    await syncAll([a, b]);
+    expect((await firstSet(a, id)).reps).toBe(12);
+    expect((await firstSet(b, id)).reps).toBe(12);
+    expect(await a.rows()).toEqual(await b.rows());
+    expect(
+      await a.run(Effect.flatMap(Effect.service(SyncRepository), (sync) => sync.queuedCount)),
+    ).toBe(0);
+  });
 
   it("uploads nothing from the first account after signing in as a second", async () => {
     const server = await startServer();
@@ -338,7 +408,42 @@ describe("sync", { timeout: 120_000 }, () => {
     expect(await counts(alicesOtherPhone)).toEqual({ activities: 1, sets: 4 });
   });
 
-  it("syncs all of the same Hevy file into each of two accounts", async () => {
+  it("syncs all of the same Hevy file, through the Hevy import, into each of two accounts", async () => {
+    const server = await startServer();
+    const sample = Result.getOrThrow(
+      decodeHevyFile(
+        readFileSync(
+          new URL("../../../packages/core/test-data/hevy-sample.csv", import.meta.url),
+          "utf8",
+        ),
+        wallTimeAsUtc,
+      ),
+    );
+    const importSample = (phone: Phone) =>
+      phone.run(
+        Effect.flatMap(Effect.service(TransferRepository), (transfers) =>
+          transfers.applyImport(hevyImport(sample), []),
+        ),
+      );
+    const alice = openPhone(server, ALICE, 1);
+    const bob = openPhone(server, BOB, 2);
+    expect(Option.isSome(await importSample(alice))).toBe(true);
+    expect(Option.isSome(await importSample(bob))).toBe(true);
+    await alice.sync();
+    await bob.sync();
+
+    const alicesOther = openPhone(server, ALICE, 3);
+    const bobsOther = openPhone(server, BOB, 4);
+    await alicesOther.sync();
+    await bobsOther.sync();
+    expect((await counts(alicesOther)).activities).toBeGreaterThan(0);
+    expect(await counts(alicesOther)).toEqual(await counts(alice));
+    expect(await alicesOther.rows()).toEqual(await alice.rows());
+    expect(await bobsOther.rows()).toEqual(await bob.rows());
+    expect(await activityIds(alicesOther)).toEqual(await activityIds(bobsOther));
+  });
+
+  it("syncs more rows than one push or one pull carries into each of two accounts", async () => {
     const server = await startServer();
     const WORKOUTS = 80;
     const importHevy = async (phone: Phone) => {
@@ -387,13 +492,15 @@ describe("sync", { timeout: 120_000 }, () => {
     expect(await activityIds(alicesOther)).toEqual(await activityIds(bobsOther));
   });
 
-  it("holds a change timed too far ahead of the server and sends the rest", async () => {
+  it("holds a change timed too far ahead of the server, then sends it once the clock is right", async () => {
     const server = await startServer();
     const phone = openPhone(server, ALICE, 1);
+    await phone.at(Date.now());
     await logLegDay(phone);
     // The server keeps real time.
     await phone.at(Date.now() + 60 * MINUTE);
-    await logLegDay(phone);
+    const late = await logLegDay(phone);
+    await editFirstSet(phone, late, 8);
     expect(await phone.sync()).toEqual({ pushed: 7, held: 7, pulled: 0 });
     expect(
       await phone.run(Effect.flatMap(Effect.service(SyncRepository), (sync) => sync.queuedCount)),
@@ -401,5 +508,85 @@ describe("sync", { timeout: 120_000 }, () => {
     const other = openPhone(server, ALICE, 2);
     await other.sync();
     expect(await counts(other)).toEqual({ activities: 1, sets: 4 });
+
+    // Someone sets the phone's clock right, and the next sync sends what it held.
+    await phone.at(Date.now());
+    expect(await phone.sync()).toMatchObject({ pushed: 7, held: 0 });
+    expect(
+      await phone.run(Effect.flatMap(Effect.service(SyncRepository), (sync) => sync.queuedCount)),
+    ).toBe(0);
+    await other.sync();
+    expect(await counts(other)).toEqual({ activities: 2, sets: 8 });
+    expect((await firstSet(other, late)).reps).toBe(8);
+    expect(await other.rows()).toEqual(await phone.rows());
+  });
+
+  it("finishes a pull the app was closed in the middle of, after it opens again", async () => {
+    const server = await startServer();
+    const source = openPhone(server, ALICE, 1);
+    await source.run(
+      Effect.flatMap(activities, (repository) =>
+        Effect.forEach(
+          Array.from({ length: 80 }, (_, n) => n),
+          (n) => repository.create(legDay(MADE_HERE, `Legs ${n}`)),
+        ),
+      ),
+    );
+    await source.sync();
+
+    const path = join(mkdtempSync(join(tmpdir(), "svett-pull-")), "phone.db");
+    const open = (killAfterInserts?: number) => {
+      const { database, driver } = openNodeDatabase(path);
+      let inserts = 0;
+      let killed = false;
+      const kill = <A>(call: () => Promise<A>) => {
+        if (killed) return Promise.reject(new Error("The app is closed."));
+        return call();
+      };
+      const dying: SqlDriver = {
+        all: (sql, params) => kill(() => driver.all(sql, params)),
+        exec: (sql) => kill(() => driver.exec(sql)),
+        run: (sql, params) =>
+          kill(() => {
+            if (killAfterInserts !== undefined && /^\s*INSERT INTO activity/.test(sql)) {
+              if (++inserts > killAfterInserts) {
+                killed = true;
+                return Promise.reject(new Error("The app is closed."));
+              }
+            }
+            return driver.run(sql, params);
+          }),
+      };
+      const runtime = ManagedRuntime.make(
+        Layer.provideMerge(phoneDatabaseLayer(dying, Ids.layerSeeded(5)), manualClock(T0).layer),
+      );
+      const sync = () =>
+        runtime.runPromiseExit(
+          syncOnce(
+            httpSyncApi({
+              server,
+              accountId: ALICE,
+              token: () => issuer.sessionToken(ALICE),
+              fetch,
+            }),
+          ),
+        );
+      return { database, runtime, sync };
+    };
+
+    // The second page of the pull is part way through its transaction when the app closes.
+    const first = open(550);
+    expect(Exit.isFailure(await first.sync())).toBe(true);
+    first.database.close();
+
+    const again = open();
+    const state = await again.runtime.runPromise(
+      Effect.flatMap(Effect.service(SyncRepository), (sync) => sync.state),
+    );
+    expect(state.cursor).toBe(500);
+    expect(Exit.isSuccess(await again.sync())).toBe(true);
+    expect(await syncedRows(again.runtime)).toEqual(await source.rows());
+    await again.runtime.dispose();
+    again.database.close();
   });
 });
