@@ -8,8 +8,9 @@ import { DurationSeconds } from "../duration.ts";
 import { decodeHevyFile, type HevyFile, type ToInstant, wallTimeAsUtc } from "../hevy-file.ts";
 import { hevyExerciseId, hevyImport } from "../hevy-import.ts";
 import { importedId } from "../ids.ts";
-import { ActivityId, EpochMillis, type ImportBatchId } from "../schema.ts";
-import { openTestDatabase, pointersToDeleted } from "../test-database.ts";
+import { ActivityId, EpochMillis, ExerciseId, type ImportBatchId } from "../schema.ts";
+import { addExercisesToWorkout, loadWorkoutLog, startEmptyWorkout } from "../start-workout.ts";
+import { openTestDatabase, pointersToDeleted, T0 } from "../test-database.ts";
 import { decodeSvettFile } from "../svett-file.ts";
 import { isNothingToImport } from "../transfer.ts";
 import { ActivityRepository } from "./activities.ts";
@@ -53,6 +54,11 @@ const apply = async (
   Option.getOrUndefined(
     await transfers(database, (repository) => repository.applyImport(hevyImport(file, keep), take)),
   );
+
+const workoutsHere = <A, E>(
+  database: Database,
+  body: (repository: typeof ActivityRepository.Service) => Effect.Effect<A, E>,
+) => database.runtime.runPromise(Effect.flatMap(Effect.service(ActivityRepository), body));
 
 const undo = (database: Database, batch: ImportBatchId) =>
   transfers(database, (repository) => repository.undoImport(batch, []));
@@ -121,6 +127,56 @@ const importSample = async () => {
   if (result === undefined) throw new Error("The sample imported nothing");
   return { database, batch: result.importBatchId };
 };
+
+// A draft started at T0 with one set of 100 kg for 5. The file repeats its sets in a
+// workout on another day, and has a second workout whose time covers the draft's start.
+const DRAFT_SQUAT = '"Squat (Barbell)",,"",0,"normal",100,5,,,';
+const DRAFT_FILE = hevy(
+  [
+    HEADER,
+    `"Squat day","1 Feb 2025, 10:00","1 Feb 2025, 11:00","",${DRAFT_SQUAT}`,
+    `"New year","1 Jan 2026, 08:30","1 Jan 2026, 09:30","","Plank",,"",0,"normal",,,,60,`,
+  ].join("\n"),
+);
+const startDraft = (database: Database) =>
+  workoutsHere(database, (repository) =>
+    repository.startWorkout({
+      title: "Squats",
+      routineId: null,
+      exercises: [
+        {
+          exerciseId: libraryExerciseId("Barbell_Squat"),
+          supersetGroup: null,
+          notes: "",
+          sets: [
+            {
+              setType: "normal",
+              weightKg: 100,
+              reps: 5,
+              durationS: null,
+              distanceM: null,
+              targetRepsMin: null,
+              targetRepsMax: null,
+            },
+          ],
+        },
+      ],
+    }),
+  );
+
+/** Each live exercise's set fields, by its name. */
+const setFieldsByName = (database: Database) =>
+  Object.fromEntries(
+    query(
+      database,
+      "SELECT e.name, ae.set_fields FROM activity_exercise ae JOIN exercise e ON e.id = ae.exercise_id WHERE ae.deleted_at IS NULL",
+    ).map((row) => [row["name"], row["set_fields"]]),
+  );
+
+const exerciseIdOf = (database: Database, name: string) =>
+  ExerciseId.make(
+    String(query(database, "SELECT id FROM exercise WHERE name = ?", name)[0]?.["id"]),
+  );
 
 describe("Hevy import", () => {
   it("imports the sample with the right counts, under IDs from each workout's start", async () => {
@@ -263,6 +319,7 @@ describe("Hevy import", () => {
       restored: 2,
       left: 0,
       kept: 0,
+      discarded: 0,
     });
     expect(workouts(database)).toEqual(before);
     expect(count(database, "activity_set")).toBe(25);
@@ -343,6 +400,7 @@ describe("Hevy import", () => {
       restored: 2,
       left: 1,
       kept: 1,
+      discarded: 0,
     });
     expect(workouts(database).map(({ title, notes }) => ({ title, notes }))).toEqual([
       { title: "Push Day", notes: "Shoulder felt fine" },
@@ -595,5 +653,193 @@ describe("Hevy import", () => {
     expect(result?.added).toBe(300);
     expect(count(database, "activity_set")).toBe(6_000);
     expect(seconds).toBeLessThan(10);
+  });
+
+  describe("with a workout in progress", () => {
+    it("holds back both workouts once the same workout is finished", async () => {
+      const database = openTestDatabase();
+      const id = await startDraft(database);
+      await workoutsHere(database, (repository) => repository.update(id, { status: "finished" }));
+
+      const plan = await preview(database, DRAFT_FILE);
+      expect(plan.duplicates.map(({ reason, summary }) => [reason, summary.title])).toEqual([
+        ["same_sets", "Squat day"],
+        ["overlap", "New year"],
+      ]);
+    });
+
+    it("never holds a workout back for it, and leaves it untouched", async () => {
+      const database = openTestDatabase();
+      await startDraft(database);
+      const before = await workoutsHere(database, (repository) => repository.inProgress);
+
+      const plan = await preview(database, DRAFT_FILE);
+      expect(plan.duplicates).toEqual([]);
+      expect(plan.added).toEqual([{ table: "activity", count: 2 }]);
+      expect(plan.skipped).toBe(0);
+      expect((await apply(database, DRAFT_FILE))?.added).toBe(2);
+
+      const after = await workoutsHere(database, (repository) => repository.inProgress);
+      expect(Option.getOrThrow(after).activity.startedAt).toBe(T0);
+      expect(after).toEqual(before);
+      const exported = Result.getOrThrow(
+        decodeSvettFile((await transfers(database, (repository) => repository.exportFile)).text),
+      );
+      expect(exported.tables.activity?.map((row) => row["title"]).sort()).toEqual([
+        "New year",
+        "Squat day",
+      ]);
+    });
+
+    it("shows the imported workouts in history as finished, with every set done", async () => {
+      const database = openTestDatabase();
+      await startDraft(database);
+      await matchMachineRow(database);
+      await apply(database, SAMPLE);
+
+      const history = await workoutsHere(database, (repository) => repository.list());
+      expect(history.map(({ title, status, routineId }) => [title, status, routineId])).toEqual([
+        ["Legs", "finished", null],
+        ["Pull Day", "finished", null],
+        ["Push Day", "finished", null],
+      ]);
+      const sets = (
+        await workoutsHere(database, (repository) =>
+          Effect.forEach(history, ({ id }) => repository.get(id)),
+        )
+      ).flatMap((detail) =>
+        Option.getOrThrow(detail).exercises.flatMap((exercise) => exercise.sets),
+      );
+      expect(sets).toHaveLength(SAMPLE.sets);
+      expect(
+        new Set(
+          sets.map(({ done, targetRepsMin, targetRepsMax }) =>
+            [done, targetRepsMin, targetRepsMax].join(),
+          ),
+        ),
+      ).toEqual(new Set(["true,,"]));
+      expect(await workoutsHere(database, (repository) => repository.counts)).toEqual({
+        activities: 3,
+        sets: SAMPLE.sets,
+      });
+    });
+  });
+
+  describe("and the logger", () => {
+    const CORE = hevy(
+      [
+        HEADER,
+        `"Core","9 Nov 2026, 12:00","9 Nov 2026, 12:30","","Pull Up",,"",0,"normal",,8,,,`,
+        `"Core","9 Nov 2026, 12:00","9 Nov 2026, 12:30","","Plank",,"",0,"normal",,,,60,`,
+      ].join("\n"),
+    );
+
+    it("logs each imported exercise by what its sets record, and starts it that way next time", async () => {
+      const { database } = await importSample();
+      await apply(database, CORE);
+      expect(setFieldsByName(database)).toEqual({
+        "Barbell Bench Press - Medium Grip": "weight_reps",
+        "Triceps Pushdown - Rope Attachment": "weight_reps",
+        "Landmine Press": "weight_reps",
+        "Barbell Deadlift": "weight_reps",
+        "Wide-Grip Lat Pulldown": "weight_reps",
+        "Leverage Iso Row": "weight_reps",
+        "Barbell Squat": "weight_reps",
+        "Seated Leg Curl": "weight_reps",
+        "Running, Treadmill": "distance_time",
+        Pullups: "reps",
+        Plank: "time",
+      });
+
+      const names = ["Barbell Squat", "Pullups", "Plank", "Running, Treadmill"];
+      const workout = Option.getOrThrow(
+        await database.runtime.runPromise(
+          Effect.gen(function* () {
+            const id = yield* startEmptyWorkout(18);
+            yield* addExercisesToWorkout(
+              id,
+              names.map((name) => exerciseIdOf(database, name)),
+            );
+            return yield* loadWorkoutLog;
+          }),
+        ),
+      );
+      expect(
+        workout.exercises.map(({ exercise, row, previous }) => [
+          exercise?.name,
+          row.setFields,
+          previous.map((set) =>
+            set === null
+              ? null
+              : [set.setType, set.weightKg, set.reps, set.durationS, set.distanceM].join(" "),
+          ),
+        ]),
+      ).toEqual([
+        [
+          "Barbell Squat",
+          "weight_reps",
+          ["warm_up 60 8  ", "normal 120 5  ", "normal 120 5  ", "normal 120 5  ", "drop 90 8  "],
+        ],
+        ["Pullups", "reps", ["normal  8  "]],
+        ["Plank", "time", ["normal   60 "]],
+        ["Running, Treadmill", "distance_time", ["normal   900 2000"]],
+      ]);
+    });
+
+    it("undoes a Hevy import whose journal was written before exercises had set fields", async () => {
+      const { database, batch } = await importSample();
+      const sample = { workouts: workouts(database), setFields: setFieldsByName(database) };
+      // New notes on the treadmill replace its exercise row, so the journal keeps that row.
+      const easier = hevy(sampleText("hevy-sample.csv").replace('"Cool down"', '"Easy pace"'));
+      const plan = await preview(database, easier);
+      expect(plan.changed.map(({ title }) => title)).toEqual(["Legs"]);
+      const taken = await apply(
+        database,
+        easier,
+        plan.changed.map(({ key }) => key),
+      );
+      // Each journal as svett wrote it then, with no set fields on the exercises it kept.
+      const stripped: Array<unknown> = [];
+      for (const change of query(database, "SELECT id, replaced FROM import_change")) {
+        if (change["replaced"] === null) continue;
+        const replaced = JSON.parse(String(change["replaced"])) as Record<
+          string,
+          Array<Record<string, unknown>>
+        >;
+        for (const row of replaced["activity_exercise"] ?? []) {
+          stripped.push(row["setFields"]);
+          delete row["setFields"];
+        }
+        database.database
+          .prepare("UPDATE import_change SET replaced = ? WHERE id = ?")
+          .run(JSON.stringify(replaced), String(change["id"]));
+      }
+      expect(stripped).toEqual(["distance_time"]);
+      expect(
+        query(database, "SELECT replaced FROM import_change WHERE replaced IS NOT NULL").some(
+          ({ replaced }) => String(replaced).includes("setFields"),
+        ),
+      ).toBe(false);
+
+      const editedIn = async (importBatchId: ImportBatchId) =>
+        (
+          await transfers(database, (repository) => repository.previewUndo(importBatchId))
+        ).changes.map(({ edited }) => edited);
+      expect(await editedIn(taken!.importBatchId)).toEqual([false]);
+      expect(await undo(database, taken!.importBatchId)).toEqual({
+        removed: 0,
+        restored: 1,
+        left: 0,
+        kept: 0,
+        discarded: 0,
+      });
+      expect({ workouts: workouts(database), setFields: setFieldsByName(database) }).toEqual(
+        sample,
+      );
+      expect(await editedIn(batch)).not.toContain(true);
+      await undo(database, batch);
+      expect(count(database, "activity")).toBe(0);
+      expect(count(database, "activity_exercise")).toBe(0);
+    });
   });
 });

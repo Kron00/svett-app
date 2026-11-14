@@ -7,7 +7,13 @@ import { libraryExerciseId } from "../exercise-library.ts";
 import { EpochMillis, Fingerprint, type ImportBatchId, SourceIdentity } from "../schema.ts";
 import { openTestDatabase, T0 } from "../test-database.ts";
 import { ImportRepository } from "./records.ts";
-import { type ActivityDraft, ActivityRepository, type SetDraft } from "./activities.ts";
+import {
+  type ActivityDraft,
+  ActivityRepository,
+  type PlannedSet,
+  type SetDraft,
+  type NewWorkout,
+} from "./activities.ts";
 import { MADE_HERE, type Origin } from "./origin.ts";
 
 const set = (
@@ -21,6 +27,17 @@ const set = (
   durationS: null,
   distanceM: null,
   rpe: null,
+});
+
+const planned = (values: Partial<PlannedSet>): PlannedSet => ({
+  setType: "normal",
+  weightKg: null,
+  reps: null,
+  durationS: null,
+  distanceM: null,
+  targetRepsMin: null,
+  targetRepsMax: null,
+  ...values,
 });
 
 const workout = (origin: Origin = MADE_HERE): ActivityDraft => ({
@@ -153,6 +170,159 @@ describe("ActivityRepository", () => {
       }),
     );
     expect(await run(database, (activities) => activities.get(id))).toEqual(Option.none());
+  });
+
+  it("starts a workout in progress that history and counts leave out until it is finished", async () => {
+    const database = openTestDatabase();
+    await run(database, (activities) => activities.create(workout()));
+    const started: NewWorkout = {
+      title: "Push",
+      routineId: null,
+      exercises: [
+        {
+          exerciseId: libraryExerciseId("Barbell_Bench_Press_-_Medium_Grip"),
+          supersetGroup: null,
+          notes: "",
+          sets: [planned({ weightKg: 80, targetRepsMin: 5, targetRepsMax: 8 }), planned({})],
+        },
+      ],
+    };
+    const id = await run(database, (activities) => activities.startWorkout(started));
+
+    const current = Option.getOrThrow(await run(database, (activities) => activities.inProgress));
+    expect(current.activity).toMatchObject({
+      id,
+      kind: "strength",
+      status: "in_progress",
+      startedAt: T0,
+      title: "Push",
+    });
+    expect(current.exercises[0]?.sets.map((row) => [row.done, row.weightKg, row.reps])).toEqual([
+      [false, 80, null],
+      [false, null, null],
+    ]);
+    expect(
+      (await run(database, (activities) => activities.list())).map((row) => row.title),
+    ).toEqual(["Legs"]);
+    expect(await run(database, (activities) => activities.counts)).toEqual({
+      activities: 1,
+      sets: 4,
+    });
+
+    await run(database, (activities) => activities.update(id, { status: "finished" }));
+    expect(await run(database, (activities) => activities.inProgress)).toEqual(Option.none());
+    // Neither set was marked done, so only the workout counts.
+    expect(await run(database, (activities) => activities.counts)).toEqual({
+      activities: 2,
+      sets: 4,
+    });
+  });
+
+  it("refuses a second workout while one is in progress, and allows one after a discard", async () => {
+    const database = openTestDatabase();
+    const start: NewWorkout = { title: "Push", routineId: null, exercises: [] };
+    const first = await run(database, (activities) => activities.startWorkout(start));
+    const exit = await database.runtime.runPromiseExit(
+      Effect.flatMap(Effect.service(ActivityRepository), (activities) =>
+        activities.startWorkout({ ...start, title: "Pull" }),
+      ),
+    );
+    expect(exit).toMatchObject({
+      _tag: "Failure",
+      cause: { reasons: [{ error: { _tag: "WorkoutInProgressError", activityId: first } }] },
+    });
+    await run(database, (activities) => activities.remove(first));
+    expect(await run(database, (activities) => activities.inProgress)).toEqual(Option.none());
+    const second = await run(database, (activities) =>
+      activities.startWorkout({ ...start, title: "Pull" }),
+    );
+    expect(
+      Option.getOrThrow(await run(database, (activities) => activities.inProgress)).activity.id,
+    ).toBe(second);
+  });
+
+  it("refuses to restore a discarded workout in progress while another is in progress", async () => {
+    const database = openTestDatabase();
+    const start: NewWorkout = { title: "Push", routineId: null, exercises: [] };
+    const first = await run(database, (activities) => activities.startWorkout(start));
+    await run(database, (activities) => activities.remove(first));
+    await database.runtime.runPromise(database.clock.advance(1000));
+    const second = await run(database, (activities) =>
+      activities.startWorkout({ ...start, title: "Pull" }),
+    );
+
+    const exit = await database.runtime.runPromiseExit(
+      Effect.flatMap(Effect.service(ActivityRepository), (activities) => activities.restore(first)),
+    );
+    expect(exit).toMatchObject({
+      _tag: "Failure",
+      cause: { reasons: [{ error: { _tag: "WorkoutInProgressError", activityId: second } }] },
+    });
+    expect(await run(database, (activities) => activities.get(first))).toEqual(Option.none());
+    expect(
+      Option.getOrThrow(await run(database, (activities) => activities.inProgress)).activity.id,
+    ).toBe(second);
+
+    await run(database, (activities) => activities.remove(second));
+    await run(database, (activities) => activities.restore(first));
+    expect(
+      Option.getOrThrow(await run(database, (activities) => activities.inProgress)).activity.id,
+    ).toBe(first);
+  });
+
+  it("refuses to put a workout back in progress while another is in progress", async () => {
+    const database = openTestDatabase();
+    const finished = await run(database, (activities) => activities.create(workout()));
+    const running = await run(database, (activities) =>
+      activities.startWorkout({ title: "Push", routineId: null, exercises: [] }),
+    );
+
+    const exit = await database.runtime.runPromiseExit(
+      Effect.flatMap(Effect.service(ActivityRepository), (activities) =>
+        activities.update(finished, { status: "in_progress" }),
+      ),
+    );
+    expect(exit).toMatchObject({
+      _tag: "Failure",
+      cause: { reasons: [{ error: { _tag: "WorkoutInProgressError", activityId: running } }] },
+    });
+    const kept = Option.getOrThrow(await run(database, (activities) => activities.get(finished)));
+    expect(kept.activity.status).toBe("finished");
+
+    const renamed = await run(database, (activities) =>
+      activities.update(running, { title: "Push A" }),
+    );
+    expect(renamed).toMatchObject({ status: "in_progress", title: "Push A" });
+  });
+
+  it("refuses to mark an empty set done", async () => {
+    const database = openTestDatabase();
+    await run(database, (activities) =>
+      activities.startWorkout({
+        title: "Push",
+        routineId: null,
+        exercises: [
+          {
+            exerciseId: libraryExerciseId("Side_Lateral_Raise"),
+            supersetGroup: null,
+            notes: "",
+            sets: [planned({})],
+          },
+        ],
+      }),
+    );
+    const current = Option.getOrThrow(await run(database, (activities) => activities.inProgress));
+    const setId = current.exercises[0]!.sets[0]!.id;
+    const exit = await database.runtime.runPromiseExit(
+      Effect.flatMap(Effect.service(ActivityRepository), (activities) =>
+        activities.updateSet(setId, { done: true }),
+      ),
+    );
+    expect(Exit.isFailure(exit)).toBe(true);
+    const done = await run(database, (activities) =>
+      activities.updateSet(setId, { done: true, reps: 12 }),
+    );
+    expect(done).toMatchObject({ done: true, reps: 12 });
   });
 
   it("refuses a set that records nothing and writes none of the activity", async () => {

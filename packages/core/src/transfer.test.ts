@@ -9,11 +9,16 @@ import {
   isNothingToImport,
   planImport,
   type PlannedItem,
+  skippedLabel,
+  type Snapshot,
+  TABLE_KEYS,
   type UndoEntry,
   undoOutcome,
   undoPlanLabel,
   undoSelection,
+  withoutDrafts,
   withRequired,
+  writtenOf,
 } from "./transfer.ts";
 
 const row = (id: string, fields: Record<string, unknown> = {}, updatedAt = 1): AnyRow => ({
@@ -135,6 +140,127 @@ describe("planImport", () => {
   });
 });
 
+const withStatus = (rows: ReturnType<typeof workout>, status: string) => ({
+  ...rows,
+  activity: rows.activity.map((top) => ({ ...top, status })),
+});
+const inProgress = (rows: ReturnType<typeof workout>) => withStatus(rows, "in_progress");
+const finished = (rows: ReturnType<typeof workout>) => withStatus(rows, "finished");
+
+/** Every table, empty unless `rows` fills it. */
+const snapshot = (rows: Partial<Snapshot>) =>
+  ({ ...Object.fromEntries(TABLE_KEYS.map((key) => [key, []])), ...rows }) as Snapshot;
+
+describe("workouts in progress", () => {
+  it("skips a workout in progress in the file and counts it, without adding it", () => {
+    const plan = planImport({}, inProgress(workout("Legs")));
+    expect(plan).toMatchObject({ added: [], changed: [], deleted: 0, skipped: 1 });
+    expect(plan.items).toEqual([
+      { status: "skipped", summary: expect.objectContaining({ key: "activity/a" }) },
+    ]);
+    expect(isNothingToImport(plan)).toBe(true);
+  });
+
+  it("never puts a finished workout here in progress", () => {
+    const plan = planImport(finished(workout("Legs")), inProgress(workout("Legs")));
+    expect(plan).toMatchObject({ changed: [], skipped: 1 });
+    expect(plan.items.map((item) => item.status)).toEqual(["skipped"]);
+  });
+
+  it("leaves a workout in progress here as it is, even when the file holds only its set", () => {
+    const here = inProgress(workout("Legs"));
+    const plan = planImport(here, {
+      ...finished(workout("Legs")),
+      activitySet: [row("s", { activityExerciseId: "e", reps: 9 })],
+    });
+    expect(plan).toMatchObject({ changed: [], skipped: 1 });
+    expect(
+      planImport(here, { activitySet: [row("s", { activityExerciseId: "e", reps: 9 })] }),
+    ).toMatchObject({ changed: [], skipped: 1 });
+  });
+
+  it("exports nothing of a workout in progress, deleted or not", () => {
+    const draft = inProgress(workout("Legs"));
+    const discarded = {
+      activity: [row("b", { status: "in_progress", deletedAt: 5 })],
+      activityExercise: [row("f", { activityId: "b" })],
+      activityTrack: [row("t", { activityId: "b" })],
+      activitySample: [row("p", { activityTrackId: "t" })],
+    };
+    const done = {
+      activity: [row("c", { status: "finished" })],
+      activityExercise: [row("g", { activityId: "c" })],
+      activitySet: [row("u", { activityExerciseId: "g", reps: 5 })],
+    };
+    const kept = withoutDrafts(
+      snapshot({
+        activity: [...draft.activity, ...discarded.activity, ...done.activity],
+        activityExercise: [
+          ...draft.activityExercise,
+          ...discarded.activityExercise,
+          ...done.activityExercise,
+        ],
+        activitySet: [...draft.activitySet, ...done.activitySet],
+        activityTrack: discarded.activityTrack,
+        activitySample: discarded.activitySample,
+      }),
+    );
+    expect(kept).toEqual(snapshot(done));
+  });
+
+  it("fingerprints a row written before its added fields the same as one with their first values", () => {
+    const before = workout("Legs");
+    const after = {
+      activity: before.activity.map((top) => ({ ...top, status: "finished", routineId: null })),
+      activityExercise: before.activityExercise.map((exercise) => ({
+        ...exercise,
+        setFields: "reps",
+      })),
+      activitySet: before.activitySet.map((set) => ({
+        ...set,
+        done: true,
+        targetRepsMin: null,
+        targetRepsMax: null,
+      })),
+    };
+    expect(writtenOf(after)).toBe(writtenOf(before));
+    expect(writtenOf(inProgress(before))).not.toBe(writtenOf(before));
+    const timed = {
+      ...after,
+      activityExercise: [row("e", { activityId: "a", setFields: "time" })],
+    };
+    expect(writtenOf(timed)).not.toBe(writtenOf(before));
+  });
+
+  it("fingerprints an exercise written before set fields the same as one with the fields its sets give", () => {
+    const run = {
+      activity: [row("a", { title: "Run", kind: "strength", startedAt: 1_000 })],
+      activityExercise: [row("e", { activityId: "a" }), row("f", { activityId: "a" })],
+      activitySet: [
+        row("s", { activityExerciseId: "e", distanceM: 400, durationS: 90, deletedAt: 3 }),
+        row("t", { activityExerciseId: "e", durationS: 60 }),
+      ],
+    };
+    const fields = (e: string, f: string) => ({
+      ...run,
+      activityExercise: [
+        { ...run.activityExercise[0]!, setFields: e },
+        { ...run.activityExercise[1]!, setFields: f },
+      ],
+    });
+    expect(writtenOf(fields("distance_time", "weight_reps"))).toBe(writtenOf(run));
+    expect(writtenOf(fields("time", "weight_reps"))).not.toBe(writtenOf(run));
+    expect(writtenOf(fields("distance_time", "reps"))).not.toBe(writtenOf(run));
+  });
+
+  it("says why import skips a workout in progress", () => {
+    expect(skippedLabel(0)).toBeUndefined();
+    expect(skippedLabel(1)).toBe(
+      "Import skips 1 workout in progress. A workout in progress stays on the phone that started it until it is finished.",
+    );
+  });
+});
+
 describe("groupItems", () => {
   it("puts a set under the workout here when the file holds only the set", () => {
     const local = workout("Legs");
@@ -195,6 +321,9 @@ describe("outcome text", () => {
     );
     expect(undoOutcome({ removed: 0, restored: 0, left: 1, kept: 1 })).toBe(
       "Nothing was taken back. Kept 1 record that records you keep still use. Left 1 record you changed after the import.",
+    );
+    expect(undoOutcome({ removed: 0, restored: 1, left: 0, discarded: 1 })).toBe(
+      "Put back 1 record. Kept 1 workout in progress discarded, because another workout is in progress.",
     );
   });
 });

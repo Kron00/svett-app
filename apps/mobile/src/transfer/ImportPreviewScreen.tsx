@@ -13,6 +13,7 @@ import {
   isNothingToImport,
   type PossibleDuplicate,
   recordsLabel,
+  skippedLabel,
   suggestExercises,
   type SvettFile,
   type ToInstant,
@@ -226,6 +227,16 @@ function Plan({
   return (
     <>
       <FileSummary loaded={loaded} />
+      {current.skipped === 0 ? null : (
+        <AppText
+          variant="subheadline"
+          tone="secondary"
+          className="px-gutter"
+          testID="import-skipped"
+        >
+          {skippedLabel(current.skipped)}
+        </AppText>
+      )}
       {isNothingToImport(current) ? (
         <View testID="import-nothing-new">
           <EmptyState

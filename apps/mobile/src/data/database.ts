@@ -4,12 +4,15 @@ import {
   databaseLayer,
   type DatabaseOwner,
   Ids,
+  type OpenStep,
   type SqlDriver,
 } from "@svett/core";
 import { ManagedRuntime } from "effect";
 import { getRandomValues } from "expo-crypto";
 import { openDatabaseAsync, type SQLiteBindValue, type SQLiteDatabase } from "expo-sqlite";
 import { Settings } from "react-native";
+
+import { markLaunch } from "./launch-timing";
 
 const expoSqliteDriver = (database: Promise<SQLiteDatabase>): SqlDriver => ({
   all: async (sql, params) => (await database).getAllAsync(sql, params as Array<SQLiteBindValue>),
@@ -36,18 +39,30 @@ const open = (target: DatabaseTarget) => {
   );
 };
 
-const makeRuntime = (database: Promise<SQLiteDatabase>) =>
+/** Hears when the file is open and when each step of preparing it is done. */
+export type OnOpenStep = (step: "opened" | OpenStep) => void;
+
+const makeRuntime = (database: Promise<SQLiteDatabase>, onStep: OnOpenStep) =>
   ManagedRuntime.make(
     databaseLayer(
-      expoSqliteDriver(database),
+      expoSqliteDriver(
+        database.then((opened) => {
+          onStep("opened");
+          return opened;
+        }),
+      ),
       Ids.layer((bytes) => getRandomValues(bytes)),
+      onStep,
     ),
   );
 
 export type DatabaseRuntime = ReturnType<typeof makeRuntime>;
 
 /** The database for `target`, migrated and seeded, with every repository over it. */
-export const openDatabase = (target: DatabaseTarget): DatabaseRuntime => makeRuntime(open(target));
+export const openDatabase = (
+  target: DatabaseTarget,
+  onStep: OnOpenStep = () => {},
+): DatabaseRuntime => makeRuntime(open(target), onStep);
 
 export interface DatabaseHandle {
   readonly target: DatabaseTarget;
@@ -56,10 +71,16 @@ export interface DatabaseHandle {
   readonly close: () => Promise<void>;
 }
 
-/** Like openDatabase, with a way to close the file again, as switching accounts needs. */
-export const openDatabaseHandle = (target: DatabaseTarget): DatabaseHandle => {
+/**
+ * Like openDatabase, with a way to close the file again, as switching accounts needs. The
+ * first open in this process times the cold start, and later ones mark nothing.
+ */
+export const openDatabaseHandle = (
+  target: DatabaseTarget,
+  onStep: OnOpenStep = markLaunch,
+): DatabaseHandle => {
   const database = open(target);
-  const runtime = makeRuntime(database);
+  const runtime = makeRuntime(database, onStep);
   return {
     target,
     runtime,

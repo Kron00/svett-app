@@ -42,12 +42,23 @@ export const writeTo = async <A, E>(
   effect: Effect.Effect<A, E, AppServices>,
 ): Promise<A> => {
   try {
-    if (!stillOpen(database)) throw new Error(SWITCHED_BEFORE_WRITE);
-    if (movePending(database)) throw new Error(MOVE_UNFINISHED);
-    return await database.handle.runtime.runPromise(effect);
+    return await quietWriteTo(database, effect);
   } finally {
     changed();
   }
+};
+
+/**
+ * Like `writeTo`, without having every screen read again, for a change only the screen that
+ * made it shows, such as a set typed into the workout in progress.
+ */
+export const quietWriteTo = async <A, E>(
+  database: OpenDatabase,
+  effect: Effect.Effect<A, E, AppServices>,
+): Promise<A> => {
+  if (!stillOpen(database)) throw new Error(SWITCHED_BEFORE_WRITE);
+  if (movePending(database)) throw new Error(MOVE_UNFINISHED);
+  return database.handle.runtime.runPromise(effect);
 };
 
 /** Runs a write on the open database, then has every screen read again. */

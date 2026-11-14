@@ -15,17 +15,20 @@ function Key({
   onPress,
   symbol,
   children,
+  testID,
 }: {
   readonly label: string;
   readonly onPress: () => void;
   readonly symbol?: SymbolName;
   readonly children?: string;
+  readonly testID?: string;
 }) {
   return (
     <Pressable
       accessibilityRole="button"
       accessibilityLabel={label}
       onPress={onPress}
+      testID={testID}
       className="min-h-key flex-1 items-center justify-center rounded-key bg-control"
       style={({ pressed }) => ({ opacity: pressed ? 0.5 : 1 })}
     >
@@ -62,12 +65,23 @@ export function Keypad({
           {row.map((key) => {
             if (key === "delete") {
               return (
-                <Key key={key} label="Delete" symbol="delete.left" onPress={() => onKey(key)} />
+                <Key
+                  key={key}
+                  label="Delete"
+                  symbol="delete.left"
+                  onPress={() => onKey(key)}
+                  testID="key-delete"
+                />
               );
             }
             if (key === ".") {
               return decimal ? (
-                <Key key={key} label="Decimal point" onPress={() => onKey(key)}>
+                <Key
+                  key={key}
+                  label="Decimal point"
+                  onPress={() => onKey(key)}
+                  testID="key-decimal"
+                >
                   .
                 </Key>
               ) : (
@@ -75,7 +89,7 @@ export function Keypad({
               );
             }
             return (
-              <Key key={key} label={key} onPress={() => onKey(key)}>
+              <Key key={key} label={key} onPress={() => onKey(key)} testID={`key-${key}`}>
                 {key}
               </Key>
             );
@@ -94,6 +108,7 @@ export function EntryField({
   unit,
   focused = false,
   onPress,
+  testID,
 }: {
   readonly label: string;
   readonly value: string;
@@ -102,6 +117,7 @@ export function EntryField({
   readonly unit?: string;
   readonly focused?: boolean;
   readonly onPress: () => void;
+  readonly testID?: string;
 }) {
   const shown = value === "" ? (placeholder ?? "") : value;
   return (
@@ -111,6 +127,7 @@ export function EntryField({
       accessibilityValue={{ text: value === "" ? "Empty" : `${value}${unit ? ` ${unit}` : ""}` }}
       accessibilityState={{ selected: focused }}
       onPress={onPress}
+      testID={testID}
       className={`min-h-target flex-row flex-wrap items-baseline justify-center gap-x-1 rounded-field px-2 py-2 ${focused ? "bg-surface" : "bg-control"}`}
     >
       <FieldOutline focused={focused} />

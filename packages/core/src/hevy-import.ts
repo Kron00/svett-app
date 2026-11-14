@@ -2,6 +2,7 @@ import { libraryExerciseId } from "./exercise-library.ts";
 import { HEVY_LIBRARY, equipmentFromName } from "./hevy-exercises.ts";
 import type { HevyFile, HevyWorkout } from "./hevy-file.ts";
 import { canonicalJson, contentFingerprint, importedId } from "./ids.ts";
+import { setFieldsFromSets } from "./logger.ts";
 import { type EpochMillis, ExerciseId } from "./schema.ts";
 import { TABLES } from "./table.ts";
 import type {
@@ -161,7 +162,10 @@ export const hevyImport = (file: HevyFile, keep: ReadonlySet<string> = new Set()
       list.push(row);
       setsOf.set(String(row["activityExerciseId"]), list);
     }
-    const liveActivities = local.activity.filter((row) => row.deletedAt === null);
+    // A workout in progress is a draft on this phone, so a Hevy workout never repeats it.
+    const liveActivities = local.activity.filter(
+      (row) => row.deletedAt === null && row["status"] === "finished",
+    );
     const sameSets = new Map<string, AnyRow>();
     for (const row of liveActivities) {
       if (row["kind"] !== "strength") continue;
@@ -241,6 +245,7 @@ export const hevyImport = (file: HevyFile, keep: ReadonlySet<string> = new Set()
           position,
           supersetGroup: exercise.supersetGroup,
           notes: exercise.notes,
+          setFields: setFieldsFromSets(exercise.sets) ?? "weight_reps",
         });
         exercise.sets.forEach((set, setPosition) =>
           add(built, "activitySet", {
@@ -254,6 +259,9 @@ export const hevyImport = (file: HevyFile, keep: ReadonlySet<string> = new Set()
             activityExerciseId: exerciseRowId,
             position: setPosition,
             ...set,
+            done: true,
+            targetRepsMin: null,
+            targetRepsMax: null,
           }),
         );
       });
@@ -303,6 +311,8 @@ export const hevyImport = (file: HevyFile, keep: ReadonlySet<string> = new Set()
         sourceId: identity,
         fingerprint: workout.fingerprint,
         importBatchId: here?.["importBatchId"] ?? null,
+        status: "finished",
+        routineId: null,
       });
       const builtIds = new Set(
         [...(built.activityExercise ?? []), ...(built.activitySet ?? [])].map((row) => row.id),

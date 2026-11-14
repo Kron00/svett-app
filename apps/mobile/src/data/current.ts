@@ -1,5 +1,5 @@
 import { AccountId, ANONYMOUS, anonymousDataLocked, type DatabaseOwner } from "@svett/core";
-import { Option, Schema } from "effect";
+import { Effect, Option, Schema } from "effect";
 import Storage from "expo-sqlite/kv-store";
 import { useSyncExternalStore } from "react";
 
@@ -92,6 +92,16 @@ export const currentDatabase = (): CurrentDatabase => {
     current = { owner, handle: openDatabaseHandle(targetOf(owner)), version: 0 };
   }
   return current;
+};
+
+/**
+ * Opens, migrates and seeds the database now, so the Train tab finds it ready instead of
+ * waiting for it on its first read.
+ */
+export const prepareAppDatabase = () => {
+  currentDatabase()
+    .handle.runtime.runPromise(Effect.void)
+    .catch(() => undefined);
 };
 
 /**

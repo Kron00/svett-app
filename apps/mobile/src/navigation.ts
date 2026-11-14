@@ -34,6 +34,19 @@ export type RootStackParamList = {
    */
   ImportPreview: { uri?: string; file?: string; kind?: "svett" | "hevy" };
   UndoImport: { importBatchId: string };
+  Routine: { id: string };
+  NewRoutine: { title?: string; folder?: string } | undefined;
+  EditRoutine: { id: string };
+  /** The exercise library choosing exercises for the routine being edited. */
+  PickExercise: { q?: string; muscle?: string; equipment?: string } | undefined;
+  /** Exercise and set by their place in the routine being edited, from 0. */
+  SetTarget: { exercise: string; set: string };
+  /** The workout in progress. */
+  ActiveWorkout: undefined;
+  /** The exercise library choosing exercises to add to the workout in progress. */
+  AddWorkoutExercise: { q?: string; muscle?: string; equipment?: string } | undefined;
+  /** The exercise library choosing the exercise that takes the place of `exercise`, a workout exercise's ID. */
+  ReplaceWorkoutExercise: { exercise: string; q?: string; muscle?: string; equipment?: string };
   Account: undefined;
 };
 
