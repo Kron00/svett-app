@@ -63,7 +63,26 @@ vi.mock("expo-file-system", async () => {
     },
   };
 });
-vi.mock("../data/database", () => ({ appDatabase: () => app.runtime }));
+vi.mock("../data/current", () => {
+  const database = {
+    owner: { kind: "anonymous" },
+    handle: {
+      target: { kind: "owner", owner: { kind: "anonymous" } },
+      get runtime() {
+        return app.runtime;
+      },
+    },
+  };
+  return {
+    appDatabase: () => app.runtime,
+    currentDatabase: () => database,
+    movePending: () => false,
+    useCurrentDatabase: () => database,
+    sameDatabase: (a: unknown, b: unknown) => a === b || JSON.stringify(a) === JSON.stringify(b),
+    stillOpen: () => true,
+    subscribeDatabase: () => () => undefined,
+  };
+});
 
 beforeAll(() => {
   Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });

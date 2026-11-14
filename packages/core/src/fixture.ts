@@ -5,13 +5,19 @@ import { Effect, Layer, ManagedRuntime } from "effect";
 import { databaseLayer } from "./database.ts";
 import { DurationSeconds } from "./duration.ts";
 import { libraryExerciseId } from "./exercise-library.ts";
-import { Ids, seededRandom } from "./ids.ts";
+import { contentFingerprint, Ids, seededRandom } from "./ids.ts";
 import { manualClock } from "./manual-clock.ts";
 import { ActivityRepository, type SetDraft } from "./repositories/activities.ts";
-import { MADE_HERE } from "./repositories/origin.ts";
-import { MeasurementRepository } from "./repositories/records.ts";
+import { MADE_HERE, type Origin } from "./repositories/origin.ts";
+import { ImportRepository, MeasurementRepository } from "./repositories/records.ts";
 import { RoutineRepository } from "./repositories/routines.ts";
-import { EpochMillis, type MeasurementKind, type SetType } from "./schema.ts";
+import {
+  EpochMillis,
+  Fingerprint,
+  type MeasurementKind,
+  type SetType,
+  SourceIdentity,
+} from "./schema.ts";
 import { Sql, type SqlDriver } from "./sql.ts";
 
 export const FIXTURE_SEED = 20_261_113;
@@ -80,6 +86,7 @@ const generate = (
   seed: number,
   workouts: number,
   clock: { readonly set: (millis: number) => Effect.Effect<void> },
+  imported: boolean,
 ) =>
   Effect.gen(function* () {
     const random = seededRandom(seed);
@@ -89,6 +96,19 @@ const generate = (
     const routines = yield* RoutineRepository;
 
     yield* clock.set(START - DAY);
+    const batch = imported
+      ? yield* Effect.flatMap(Effect.service(ImportRepository), (imports) => imports.create("hevy"))
+      : null;
+    // A Hevy workout's identity is its start time, as D2 imports it.
+    const originOf = (startedAt: number, title: string): Origin =>
+      batch === null
+        ? MADE_HERE
+        : {
+            source: "hevy",
+            sourceId: SourceIdentity.make(new Date(startedAt).toISOString()),
+            fingerprint: Fingerprint.make(contentFingerprint({ startedAt, title })),
+            importBatchId: batch,
+          };
     const folderId = yield* routines.createFolder({ name: "Push pull legs", position: 0 });
     for (const [position, split] of SPLITS.entries()) {
       yield* routines.createRoutine({
@@ -130,7 +150,7 @@ const generate = (
         energyKcal: null,
         audience: "only_you",
         hiddenFields: [],
-        origin: MADE_HERE,
+        origin: originOf(startedAt, split.title),
         track: null,
         exercises: lifts.map((lift, position) => {
           const count = between(3, 5);
@@ -226,13 +246,19 @@ export const summarizeDatabase = Effect.gen(function* () {
 /**
  * Fills an empty database with two years of strength training: about 300 workouts and
  * 6,000 sets, a routine folder, and body measurements. The same seed gives the same rows.
+ * With `imported`, the workouts arrive as one Hevy import instead of being logged here.
  */
-export const buildFixture = (driver: SqlDriver, seed = FIXTURE_SEED, workouts = 300) => {
+export const buildFixture = (
+  driver: SqlDriver,
+  seed = FIXTURE_SEED,
+  workouts = 300,
+  { imported = false }: { readonly imported?: boolean } = {},
+) => {
   const clock = manualClock(START - DAY);
   const runtime = ManagedRuntime.make(
     Layer.provideMerge(databaseLayer(driver, Ids.layerSeeded(seed)), clock.layer),
   );
   return runtime
-    .runPromise(Effect.andThen(generate(seed, workouts, clock), summarizeDatabase))
+    .runPromise(Effect.andThen(generate(seed, workouts, clock, imported), summarizeDatabase))
     .finally(() => runtime.dispose());
 };

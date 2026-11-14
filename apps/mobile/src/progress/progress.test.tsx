@@ -14,7 +14,7 @@ import type { ReactElement, ReactNode } from "react";
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
-import { appDatabase } from "../data/database";
+import { appDatabase } from "../data/current";
 import type { RootStackParamList } from "../navigation";
 import { changeWorkoutSettings } from "../settings/store";
 import { CalendarScreen } from "./CalendarScreen";
@@ -81,7 +81,7 @@ vi.mock("@expo/ui/community/segmented-control", () => ({
 vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 vi.mock("uniwind", () => ({ useCSSVariable: () => "#000000" }));
 vi.mock("@react-navigation/native", () => ({ DarkTheme: {}, useNavigation: () => navigation }));
-vi.mock("../data/database", async () => {
+vi.mock("../data/current", async () => {
   const effect = await import("effect");
   const { databaseLayer, Ids } = await import("@svett/core");
   const { manualClock, openNodeDatabase } = await import("@svett/core/node");
@@ -93,7 +93,17 @@ vi.mock("../data/database", async () => {
       clock.layer,
     ),
   );
-  return { appDatabase: () => runtime };
+  const database = {
+    owner: { kind: "anonymous" },
+    handle: { target: { kind: "owner", owner: { kind: "anonymous" } }, runtime },
+  };
+  return {
+    appDatabase: () => runtime,
+    currentDatabase: () => database,
+    movePending: () => false,
+    stillOpen: (open: unknown) => open === database,
+    subscribeDatabase: () => () => undefined,
+  };
 });
 
 const DAY = 86_400_000;

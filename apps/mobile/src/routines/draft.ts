@@ -1,6 +1,8 @@
 import type { RoutineForm, RoutineId } from "@svett/core";
 import { useSyncExternalStore } from "react";
 
+import type { OpenDatabase } from "../data/current";
+
 /**
  * The routine being edited. It lives outside the editor screen so the exercise picker,
  * a screen of its own, can add to it, and so can a link that opens the picker.
@@ -10,6 +12,8 @@ export interface RoutineDraft {
   readonly owner: string;
   /** The routine being edited, or null for a new one. */
   readonly routineId: RoutineId | null;
+  /** The database the editor opened in. Saving after a sign-in or sign-out is refused. */
+  readonly database: OpenDatabase;
   readonly form: RoutineForm;
 }
 

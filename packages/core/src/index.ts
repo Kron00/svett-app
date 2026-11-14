@@ -57,3 +57,6 @@ export * from "./warm-up.ts";
 export * from "./superset.ts";
 export * from "./rest-timer.ts";
 export * from "./workout-settings.ts";
+export * from "./sign-in.ts";
+export { copyDatabase, ownRowCount } from "./database-move.ts";
+export * from "./move-journal.ts";

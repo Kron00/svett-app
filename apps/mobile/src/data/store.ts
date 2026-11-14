@@ -1,10 +1,24 @@
 import type { Effect } from "effect";
 import { useEffect, useEffectEvent, useState, useSyncExternalStore } from "react";
 
-import { type AppServices, appDatabase } from "./database";
+import {
+  appDatabase,
+  currentDatabase,
+  movePending,
+  type OpenDatabase,
+  stillOpen,
+  subscribeDatabase,
+} from "./current";
+import type { AppServices } from "./database";
 
 let version = 0;
 const listeners = new Set<() => void>();
+const changed = () => {
+  version++;
+  for (const listener of listeners) listener();
+};
+// Signing in or out, or moving data into an account, replaces the data as a whole.
+subscribeDatabase(changed);
 const subscribe = (listener: () => void) => {
   listeners.add(listener);
   return () => {
@@ -12,15 +26,44 @@ const subscribe = (listener: () => void) => {
   };
 };
 
-/** Runs a write, then has every screen that reads the database read it again. */
-export const write = async <A, E>(effect: Effect.Effect<A, E, AppServices>): Promise<A> => {
+export const SWITCHED_BEFORE_WRITE =
+  "Someone signed in or out before it was saved, so svett saved nothing to either account.";
+
+export const MOVE_UNFINISHED =
+  "This phone's data is still moving into an account, so svett cannot save anything until it finishes. Sign in to that account to go on.";
+
+/**
+ * Runs a write on `database`, the one the change was made for, then has every screen that
+ * reads the database read it again. It refuses once another database is open, and while a move
+ * leaves only an empty one in memory, which would lose the write when the app closes.
+ */
+export const writeTo = async <A, E>(
+  database: OpenDatabase,
+  effect: Effect.Effect<A, E, AppServices>,
+): Promise<A> => {
   try {
-    return await appDatabase().runPromise(effect);
+    return await quietWriteTo(database, effect);
   } finally {
-    version++;
-    for (const listener of listeners) listener();
+    changed();
   }
 };
+
+/**
+ * Like `writeTo`, without having every screen read again, for a change only the screen that
+ * made it shows, such as a set typed into the workout in progress.
+ */
+export const quietWriteTo = async <A, E>(
+  database: OpenDatabase,
+  effect: Effect.Effect<A, E, AppServices>,
+): Promise<A> => {
+  if (!stillOpen(database)) throw new Error(SWITCHED_BEFORE_WRITE);
+  if (movePending(database)) throw new Error(MOVE_UNFINISHED);
+  return database.handle.runtime.runPromise(effect);
+};
+
+/** Runs a write on the open database, then has every screen read again. */
+export const write = <A, E>(effect: Effect.Effect<A, E, AppServices>): Promise<A> =>
+  writeTo(currentDatabase(), effect);
 
 export type Query<A> =
   | { readonly status: "loading" }

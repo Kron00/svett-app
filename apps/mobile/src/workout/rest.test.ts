@@ -10,8 +10,16 @@ import { openNodeDatabase } from "@svett/core/node";
 import { Effect, ManagedRuntime } from "effect";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
-const app = vi.hoisted(() => ({ runtime: undefined as unknown }));
-vi.mock("../data/database", () => ({ appDatabase: () => app.runtime }));
+// One owner's database, open the whole time. owner-switch.test.ts covers the others.
+const app = vi.hoisted(() => ({ database: { handle: { runtime: undefined as unknown } } }));
+vi.mock("../data/current", () => ({
+  appDatabase: () => app.database.handle.runtime,
+  currentDatabase: () => app.database,
+  movePending: () => false,
+  sameDatabase: (a: unknown, b: unknown) => a === b,
+  stillOpen: (database: unknown) => database === app.database,
+  subscribeDatabase: () => () => {},
+}));
 
 // The phone's user defaults, which outlive a killed svett.
 const defaults = vi.hoisted(() => new Map<string, unknown>());
@@ -80,7 +88,7 @@ const openApp = () => {
 
 /** A fresh copy of the modules, as a launch of the app gets, with the workout read. */
 const launch = async (runtime: unknown) => {
-  app.runtime = runtime;
+  app.database = { handle: { runtime } };
   vi.resetModules();
   const store = await import("./store");
   const actions = await import("./actions");
@@ -127,7 +135,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  app.runtime = undefined;
+  app.database = { handle: { runtime: undefined } };
   vi.useRealTimers();
 });
 
