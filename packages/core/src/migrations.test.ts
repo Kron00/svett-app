@@ -108,4 +108,22 @@ describe("migrate", () => {
       },
     });
   });
+
+  it("keeps every activity saved before workouts could be in progress finished, with its sets done", async () => {
+    const { database, run } = open();
+    await run(migrate(MIGRATIONS.slice(0, 2)));
+    database.exec(
+      `INSERT INTO activity (id, updated_at, kind, started_at, duration_s, title, notes, source)
+       VALUES ('a', 1, 'strength', 1, 60, 'Push', '', 'svett');
+       INSERT INTO activity_set (id, updated_at, activity_exercise_id, position, set_type, reps)
+       VALUES ('s', 1, 'e', 0, 'normal', 5)`,
+    );
+    await run(migrate());
+    expect(database.prepare("SELECT status, routine_id FROM activity").all()).toEqual([
+      { status: "finished", routine_id: null },
+    ]);
+    expect(
+      database.prepare("SELECT done, target_reps_min, target_reps_max FROM activity_set").all(),
+    ).toEqual([{ done: 1, target_reps_min: null, target_reps_max: null }]);
+  });
 });

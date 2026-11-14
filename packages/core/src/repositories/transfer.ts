@@ -41,6 +41,8 @@ import {
   tableKeyOf,
   type UndoEntry,
   undoSelection,
+  withAddedFields,
+  withoutDrafts,
   withRequired,
   writtenOf,
 } from "../transfer.ts";
@@ -74,6 +76,11 @@ export interface UndoResult {
   readonly left: number;
   /** Records Undo kept because records it keeps still point at them. */
   readonly kept: number;
+  /**
+   * Workouts in progress Undo would have put back while another workout is in progress.
+   * Only one workout is in progress at a time, so these stay discarded.
+   */
+  readonly discarded: number;
 }
 
 const anyTable = (key: TableKey) => TABLES[key] as unknown as Table<AnyRow>;
@@ -95,7 +102,7 @@ const decodeRows = (rows: RowsByTable) =>
       if (key === undefined) return yield* Effect.die(new Error(`Unknown table ${name}`));
       const decode = Schema.decodeUnknownEffect(Schema.toType(TABLES[key].schema));
       decoded[key] = (yield* Effect.orDie(
-        Effect.forEach(list, (row) => decode(row)),
+        Effect.forEach(list, (row) => decode(withAddedFields(key, row))),
       )) as ReadonlyArray<AnyRow>;
     }
     return decoded as TableRows;
@@ -164,6 +171,10 @@ const journalRows = (
       TABLE_KEYS.flatMap((key) => (rows[key] ? [[key, [...rows[key].values()]]] : [])),
     ) as TableRows;
   });
+
+/** The live workouts in progress other than `id`. */
+const otherInProgress = (id: string) =>
+  selectRows(TABLES.activity, "status = 'in_progress' AND id <> ?", [id]);
 
 const putAll = (rows: TableRows) =>
   Effect.forEach(TABLE_KEYS, (key) => putRows(anyTable(key), rows[key] ?? []), {
@@ -461,9 +472,18 @@ const makeTransferRepository = Effect.gen(function* () {
             yield* undoSteps(importBatchId),
             alsoEdited,
           );
+          let discarded = 0;
           for (const step of undone) {
             yield* putAll(restamped(step.before, at));
             yield* deleteWithChildren(step.added, at);
+            // Only one workout is in progress at a time, so one this put back beside another
+            // goes again, with every row below it.
+            for (const row of step.before.activity ?? []) {
+              if (row["status"] !== "in_progress" || row.deletedAt !== null) continue;
+              if ((yield* otherInProgress(row.id)).length === 0) continue;
+              yield* deleteWithChildren({ activity: [row] }, at);
+              discarded++;
+            }
           }
           yield* imports.setStatus(importBatchId, "undone");
           return {
@@ -471,17 +491,18 @@ const makeTransferRepository = Effect.gen(function* () {
             restored: restoring,
             left: leaving,
             kept: keeping,
+            discarded,
           } satisfies UndoResult;
         }),
       ),
     );
 
   return {
-    /** The whole database as a svett file, with the name to give it. */
+    /** The whole database as a svett file, with the name to give it, without a workout in progress. */
     exportFile: run(
       Effect.gen(function* () {
         const at = yield* currentTime;
-        const rows = yield* sql.transaction(snapshot);
+        const rows = withoutDrafts(yield* sql.transaction(snapshot));
         return { name: exportFileName(at), text: encodeSvettFile(rows, at), rows: rowCount(rows) };
       }),
     ),

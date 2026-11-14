@@ -36,6 +36,15 @@ export type RootStackParamList = {
    */
   ImportPreview: { uri?: string; file?: string; kind?: "svett" | "hevy" };
   UndoImport: { importBatchId: string };
+  Routine: { id: string };
+  NewRoutine: { title?: string; folder?: string } | undefined;
+  EditRoutine: { id: string };
+  /** The exercise library choosing exercises for the routine being edited. */
+  PickExercise: { q?: string; muscle?: string; equipment?: string } | undefined;
+  /** Exercise and set by their place in the routine being edited, from 0. */
+  SetTarget: { exercise: string; set: string };
+  /** The workout in progress. */
+  ActiveWorkout: undefined;
 };
 
 export type RootNavigation = NativeStackNavigationProp<RootStackParamList>;

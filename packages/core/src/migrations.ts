@@ -81,11 +81,22 @@ CREATE TABLE exercise_alias (${row}, source TEXT NOT NULL, name TEXT NOT NULL, e
 CREATE INDEX exercise_alias_name ON exercise_alias (source, name);
 `;
 
+// Every activity before this one was finished, and every set in it done.
+const workoutInProgress = `
+ALTER TABLE activity ADD COLUMN status TEXT NOT NULL DEFAULT 'finished';
+ALTER TABLE activity ADD COLUMN routine_id TEXT;
+CREATE INDEX activity_status ON activity (status);
+ALTER TABLE activity_set ADD COLUMN done INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE activity_set ADD COLUMN target_reps_min INTEGER;
+ALTER TABLE activity_set ADD COLUMN target_reps_max INTEGER;
+`;
+
 /** Applied in order and never edited once released. A change to the schema is a new migration. */
 export const MIGRATIONS: ReadonlyArray<Migration> = [
   { version: 1, name: "initial", sql: initial },
   { version: 2, name: "import changes", sql: importChanges },
   { version: 3, name: "exercise aliases", sql: exerciseAliases },
+  { version: 4, name: "workout in progress", sql: workoutInProgress },
 ];
 
 export class DatabaseTooNewError extends Data.TaggedError("DatabaseTooNewError")<{

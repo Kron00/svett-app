@@ -9,7 +9,7 @@ type SvettNativeEvents = {
 };
 
 declare class SvettNative extends NativeModule<SvettNativeEvents> {
-  /** When this process started, in milliseconds since 1970. */
+  /** When the kernel started this process, in milliseconds since 1970. */
   readonly launchedAt: number;
   /** The entitlement keys the running app is signed with, or null when they cannot be read. */
   signedEntitlements(): string[] | null;

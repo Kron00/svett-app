@@ -1,8 +1,17 @@
+import Darwin
 import ExpoModulesCore
 
 /// Fixed for the life of the process, so a value saved by an earlier launch can be told apart from
-/// one saved by this launch, also across JavaScript reloads.
-private let processLaunch = Date()
+/// one saved by this launch, also across JavaScript reloads. The kernel's start time of the process
+/// counts the work before this module exists, which the cold start timing needs.
+private let processLaunch: Date = {
+    var info = kinfo_proc()
+    var size = MemoryLayout<kinfo_proc>.stride
+    var name: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_PID, getpid()]
+    guard sysctl(&name, u_int(name.count), &info, &size, nil, 0) == 0 else { return Date() }
+    let started = info.kp_proc.p_un.__p_starttime
+    return Date(timeIntervalSince1970: TimeInterval(started.tv_sec) + TimeInterval(started.tv_usec) / 1_000_000)
+}()
 
 /// The ChatGPT sign-in, or its stand-in when the app was launched with `-svettChatGPTStub`.
 private let chatGPT = ChatGPTStub.make() ?? (

@@ -4,7 +4,7 @@ import type { RootStackParamList } from "./navigation";
 
 // The scripts in scripts/sim/ open screens through these links, such as
 // svett://gallery?sheet=open, svett://exercises?q=bench, svett://progress/muscles and
-// svett://chatgpt and svett://coach?ask=...,
+// svett://chatgpt, svett://coach?ask=..., svett://train, svett://routine/<id> and svett://train/workout,
 // because agent-device refuses taps in screen content on iOS 27. It reads UIKit's
 // touch-transparent floating bar containers as toolbars that cover the whole screen.
 // scripts/sim/data.sh reaches export and import the same way, through svett://data,
@@ -19,6 +19,7 @@ export const linking: LinkingOptions<RootStackParamList> = {
       Tabs: {
         screens: {
           Progress: "progress",
+          Train: "train",
           Coach: { screens: { CoachRoot: "coach" } },
         },
       },
@@ -38,6 +39,11 @@ export const linking: LinkingOptions<RootStackParamList> = {
       Data: "data",
       ImportPreview: "import",
       UndoImport: "imports/:importBatchId/undo",
+      NewRoutine: "routines/new",
+      PickExercise: "routines/new/exercises",
+      EditRoutine: "routine/:id/edit",
+      Routine: "routine/:id",
+      ActiveWorkout: "train/workout",
     },
   },
 };
