@@ -8,6 +8,7 @@ import { HttpClient, HttpRouter } from "effect/http";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 
 import { Backups } from "./backups.ts";
+import { ClerkConfig, type ClerkConfigShape } from "./clerk-config.ts";
 import { ServerConfig } from "./config.ts";
 import { databaseLayer, migrate } from "./database.ts";
 import { Routes } from "./http.ts";
@@ -30,7 +31,15 @@ const getHealth = Effect.gen(function* () {
   return { status: response.status, body: yield* response.json };
 });
 
-const serve = (url: Redacted.Redacted, backupDir: string) => {
+const SIGN_IN_ON: ClerkConfigShape = {
+  signIn: "configured",
+  issuer: "https://clerk.svett.example",
+  jwksUrl: "https://clerk.svett.example/.well-known/jwks.json",
+  authorizedParties: [],
+  audience: undefined,
+};
+
+const serve = (url: Redacted.Redacted, backupDir: string, clerk: ClerkConfigShape = SIGN_IN_ON) => {
   const config = Layer.succeed(
     ServerConfig,
     ServerConfig.of({
@@ -44,6 +53,7 @@ const serve = (url: Redacted.Redacted, backupDir: string) => {
   const services = Layer.mergeAll(
     databaseLayer(url),
     Backups.layer.pipe(Layer.provide(PgTools.layer(postgres.tools))),
+    Layer.succeed(ClerkConfig, clerk),
   ).pipe(Layer.provide(config));
   return HttpRouter.serve(Routes, { disableLogger: true, disableListenLog: true }).pipe(
     Layer.provideMerge(NodeHttpServer.layerTest),
@@ -69,19 +79,26 @@ describe("GET /health", { timeout: 60_000 }, () => {
 
     expect(before).toEqual({
       status: 200,
-      body: { status: "ok", database: "ok", latestBackup: null, restoreCheck: null },
+      body: {
+        status: "ok",
+        database: "ok",
+        signIn: "configured",
+        latestBackup: null,
+        restoreCheck: null,
+      },
     });
     expect(after).toEqual({
       status: 200,
       body: {
         status: "ok",
         database: "ok",
+        signIn: "configured",
         latestBackup: new Date(backup.takenAt).toISOString(),
         restoreCheck: {
           backup: new Date(backup.takenAt).toISOString(),
           checkedAt: expect.any(String),
           restored: true,
-          tables: 1,
+          tables: 3,
         },
       },
     });
@@ -93,7 +110,29 @@ describe("GET /health", { timeout: 60_000 }, () => {
     const health = await Effect.runPromise(getHealth.pipe(Effect.provide(serve(unreachable, dir))));
     expect(health).toEqual({
       status: 503,
-      body: { status: "error", database: "unreachable", latestBackup: null, restoreCheck: null },
+      body: {
+        status: "error",
+        database: "unreachable",
+        signIn: "configured",
+        latestBackup: null,
+        restoreCheck: null,
+      },
+    });
+  });
+
+  it("says when sign-in is off, and stays healthy", async () => {
+    const url = await postgres.createDatabase("health_sign_in_off");
+    const dir = await mkdtemp(join(tmpdir(), "svett-health-"));
+    const health = await Effect.runPromise(
+      getHealth.pipe(
+        Effect.provide(
+          serve(url, dir, { signIn: "unconfigured", reason: "CLERK_PUBLISHABLE_KEY is not set." }),
+        ),
+      ),
+    );
+    expect(health).toEqual({
+      status: 200,
+      body: expect.objectContaining({ status: "ok", signIn: "unconfigured" }),
     });
   });
 });

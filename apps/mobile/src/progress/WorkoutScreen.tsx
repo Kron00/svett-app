@@ -21,7 +21,7 @@ import { Effect, Option, Schema } from "effect";
 import { useLayoutEffect, useRef, useState } from "react";
 import { Pressable, ScrollView, View } from "react-native";
 
-import { useQuery, write } from "../data/store";
+import { useQuery, writeTo } from "../data/store";
 import { useWorkoutSettings } from "../settings/store";
 import { useColor } from "../design/hooks";
 import { SET_TYPE_COLOR, SPORTS } from "../design/tokens";
@@ -205,6 +205,8 @@ export function WorkoutScreen({ route, navigation }: Props) {
   }
 
   const { activity } = view;
+  // Actions write into the database the workout was read from, and none while it reads again.
+  const readFrom = query.status === "ready" ? query.database : null;
   return (
     <ScrollView
       testID="workout-detail"
@@ -264,8 +266,9 @@ export function WorkoutScreen({ route, navigation }: Props) {
           testID="workout-save-routine"
           disabled={saving.status === "saving"}
           onPress={() => {
+            if (readFrom === null) return;
             setSaving({ status: "saving" });
-            write(saveWorkoutAsRoutine(id)).then(
+            writeTo(readFrom, saveWorkoutAsRoutine(id)).then(
               () => setSaving({ status: "saved", title }),
               (error: unknown) => setSaving({ status: "failed", message: String(error) }),
             );
@@ -287,11 +290,11 @@ export function WorkoutScreen({ route, navigation }: Props) {
           accessibilityHint="Deletes it. History offers Undo."
           disabled={leaving !== null}
           onPress={() => {
-            if (deletingNow.current) return;
+            if (readFrom === null || deletingNow.current) return;
             deletingNow.current = true;
             setLeaving(view);
             setDeleteError(null);
-            deleteWorkout({ id, title }).then(
+            deleteWorkout(readFrom, { id, title }).then(
               () => navigation.navigate("Tabs", { screen: "Progress" }),
               (error: unknown) => {
                 deletingNow.current = false;

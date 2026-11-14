@@ -3,8 +3,6 @@ import {
   type FolderId,
   moveItem,
   type RoutineId,
-  setBadges,
-  setTargetText,
   startWorkoutFromRoutine,
 } from "@svett/core";
 import { type RouteProp, useNavigation, useRoute } from "@react-navigation/native";
@@ -12,6 +10,8 @@ import { Effect, Option } from "effect";
 import { useState } from "react";
 import { Alert, ScrollView, View } from "react-native";
 
+import type { OpenDatabase } from "../data/current";
+import { writeTo } from "../data/store";
 import { useWorkoutSettings } from "../settings/store";
 import type { RootNavigation, RootStackParamList } from "../navigation";
 import { AppText } from "../ui/AppText";
@@ -19,13 +19,15 @@ import { Button } from "../ui/Button";
 import { EmptyState } from "../ui/EmptyState";
 import { ListRow, ListSection } from "../ui/List";
 import { OptionSheet } from "../ui/OptionSheet";
-import { exerciseName, runOnDatabase, type RoutineView, useRoutine, withRoutines } from "./data";
+import { changeRoutines, type RoutineView, useRoutine } from "./data";
+import { RoutineExercises } from "./RoutineExercises";
 
 type Started = { readonly started: true } | { readonly started: false; readonly title: string };
 
-/** Starts the routine, or names the workout already in progress. */
-const start = (id: RoutineId) =>
-  runOnDatabase(
+/** Starts the routine in `database`, or names the workout already in progress there. */
+const start = (database: OpenDatabase, id: RoutineId) =>
+  writeTo(
+    database,
     startWorkoutFromRoutine(id).pipe(
       Effect.as<Started>({ started: true }),
       Effect.catchTag("WorkoutInProgressError", ({ activityId }) =>
@@ -42,7 +44,17 @@ const start = (id: RoutineId) =>
     ),
   );
 
-function Details({ view, reload }: { readonly view: RoutineView; readonly reload: () => void }) {
+const notChanged = (error: unknown) => Alert.alert("The routine was not changed", String(error));
+
+function Details({
+  database,
+  view,
+  reload,
+}: {
+  readonly database: OpenDatabase;
+  readonly view: RoutineView;
+  readonly reload: () => void;
+}) {
   const navigation = useNavigation<RootNavigation>();
   const { routine, exercises } = view.detail;
   const [choosingFolder, setChoosingFolder] = useState(false);
@@ -53,7 +65,7 @@ function Details({ view, reload }: { readonly view: RoutineView; readonly reload
 
   const startWorkout = () => {
     setStarting(true);
-    start(routine.id)
+    start(database, routine.id)
       .then((result) => {
         if (result.started) {
           navigation.navigate("ActiveWorkout");
@@ -73,16 +85,20 @@ function Details({ view, reload }: { readonly view: RoutineView; readonly reload
   };
 
   const move = (to: number) =>
-    void withRoutines((routines) =>
+    void changeRoutines(database, (routines) =>
       routines.orderRoutines(moveItem(view.siblings, index, to).map((sibling) => sibling.id)),
-    ).then(reload);
+    ).then(reload, notChanged);
 
   const moveToFolder = (folderId: FolderId | null) =>
-    void withRoutines((routines) => routines.moveRoutine(routine.id, folderId)).then(reload);
+    void changeRoutines(database, (routines) => routines.moveRoutine(routine.id, folderId)).then(
+      reload,
+      notChanged,
+    );
 
   const duplicate = () =>
-    void withRoutines((routines) => routines.duplicateRoutine(routine.id)).then((copy) =>
-      navigation.push("Routine", { id: copy }),
+    void changeRoutines(database, (routines) => routines.duplicateRoutine(routine.id)).then(
+      (copy) => navigation.push("Routine", { id: copy }),
+      notChanged,
     );
 
   const remove = () =>
@@ -92,8 +108,9 @@ function Details({ view, reload }: { readonly view: RoutineView; readonly reload
         text: "Delete",
         style: "destructive",
         onPress: () =>
-          void withRoutines((routines) => routines.removeRoutine(routine.id)).then(() =>
-            navigation.goBack(),
+          void changeRoutines(database, (routines) => routines.removeRoutine(routine.id)).then(
+            () => navigation.goBack(),
+            notChanged,
           ),
       },
     ]);
@@ -115,34 +132,16 @@ function Details({ view, reload }: { readonly view: RoutineView; readonly reload
           testID="start-routine"
         />
       </View>
-      {exercises.map(({ exercise, sets }, exerciseIndex) => {
-        const badges = setBadges(sets.map((set) => set.setType));
-        return (
-          <ListSection
-            key={exercise.id}
-            header={exerciseName(view.names, exercise.exerciseId)}
-            footer={exercise.notes === "" ? undefined : exercise.notes}
-          >
-            {sets.length === 0 ? (
-              <ListRow key="none" title="No sets" />
-            ) : (
-              sets.map((set, setIndex) => {
-                const target = setTargetText(set, unit);
-                const badge = badges[setIndex]!;
-                return (
-                  <ListRow
-                    key={set.id}
-                    title={badge.label}
-                    value={target.text}
-                    accessibilityLabel={`${badge.label}, ${target.label}`}
-                    testID={`routine-set-${exerciseIndex}-${setIndex}`}
-                  />
-                );
-              })
-            )}
-          </ListSection>
-        );
-      })}
+      <RoutineExercises
+        names={view.names}
+        unit={unit}
+        exercises={exercises.map(({ exercise, sets }) => ({
+          key: exercise.id,
+          exerciseId: exercise.exerciseId,
+          notes: exercise.notes,
+          sets: sets.map((set) => ({ ...set, key: set.id })),
+        }))}
+      />
       <ListSection header="Routine">
         <ListRow
           key="edit"
@@ -219,7 +218,7 @@ export function RoutineDetailScreen() {
       contentContainerStyle={{ gap: 24, paddingVertical: 16 }}
     >
       {loaded.state === "ready" && loaded.value !== null ? (
-        <Details view={loaded.value} reload={loaded.reload} />
+        <Details database={loaded.database} view={loaded.value} reload={loaded.reload} />
       ) : null}
       {loaded.state === "ready" && loaded.value === null ? (
         <EmptyState

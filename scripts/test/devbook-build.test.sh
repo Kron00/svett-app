@@ -27,7 +27,7 @@ case "$1 $2" in
   "install --frozen-lockfile") ;;
   "exec fingerprint") printf '{"hash":"%s"}' "$(cat native-inputs)" ;;
   "fixture --out")
-    if [[ -n "${FAKE_FIXTURE_DB:-}" ]]; then cp "$FAKE_FIXTURE_DB" "$3"; else echo "fake fixture" >"$3"; fi ;;
+    if [[ -n "${FAKE_FIXTURE_DB:-}" ]]; then cp "$FAKE_FIXTURE_DB" "$3"; else printf '%s\n' "fake fixture" "${@:4}" >"$3"; fi ;;
   "exec expo")
     rm -rf ios
     mkdir -p ios
@@ -290,6 +290,16 @@ bound_got() {
 
 simctl_got() {
   grep -qxF -- "$1" "$root/simctl-calls" || fail "simctl did not receive \"$1\""
+}
+
+# only_simctl <call>... checks the simctl calls were exactly these, in order.
+only_simctl() {
+  local expected
+  expected=$(printf '%s\n' "$@")
+  [[ "$(cat "$root/simctl-calls" 2>/dev/null)" == "$expected" ]] || {
+    { echo "simctl calls:"; cat "$root/simctl-calls" 2>/dev/null; } >>"$output"
+    fail "simctl did not get exactly these calls: $expected"
+  }
 }
 
 release_app="$root/home/svett-app-build/Release/DerivedData/Build/Products/Release-iphonesimulator/svett.app"
@@ -2820,5 +2830,430 @@ check "tools.sh presses the field where it stopped, at the first try" \
   bash -c '! grep -qF "try 1 of 2" "$1"' _ "$output"
 check "tools.sh still types 225 lb into the field" \
   grep -qxF "Set 1.2: normal, $squat_kg kg, 5 reps, done" "$root/tools-glides/pounds.txt"
+
+# Stands in for the bound command on the account sign-in. It tracks the screen
+# (the tab root, Progress or Account), the sign-in step, who is signed in, and
+# where the imported history is. The second choice and each button under a card's
+# fields show only after a scroll since the screen last changed, so the test proves
+# the script scrolls to them. A press or fill lands on the element whose attrs
+# were read last. FAKE_NO_CLERK makes Account say the build has no Clerk key, and
+# FAKE_LEAK shows the second account the first one's history.
+first_email=svett-proof-a+clerk_test@example.com
+test_code=424242
+cat >"$fake/signin-device" <<EOF
+#!/usr/bin/env bash
+echo "\$*" >>"$root/bound-calls"
+state="$root/signin-state"
+get() { cat "\$state/\$1" 2>/dev/null || echo "\$2"; }
+put() { echo "\$2" >"\$state/\$1"; }
+mkdir -p "\$state"
+screen=\$(get screen tabs)
+step=\$(get step choose)
+who=\$(get who "")
+moved=\$(get moved no)
+scrolled=\$(get scrolled no)
+show() { put screen "\$1"; put scrolled no; }
+id_of() { sed -nE 's/.*id="([^"]+)".*/\1/p' <<<"\$1"; }
+# on_screen <id> is true when the element is on screen now.
+on_screen() {
+  case "\$screen:\$1" in
+    tabs:* | progress:*) [[ "\$1" == workout-counts && "\$screen" == progress ]] ;;
+    account:account) true ;;
+    account:accounts-off) [[ -n "\${FAKE_NO_CLERK:-}" ]] ;;
+    account:*) [[ -z "\${FAKE_NO_CLERK:-}" ]] || return 1
+      case "\$step:\$1" in
+        choose:sign-in-choose | choose:continue-with-chatgpt | email:sign-in-email | email:email-field | \
+          code:sign-in-code | code:code-field | offer:move-offer | signedin:signed-in) true ;;
+        choose:continue-with-email | email:send-code | code:check-code | offer:move-data | signedin:sign-out)
+          [[ "\$scrolled" == yes ]] ;;
+        *) false ;;
+      esac ;;
+    *) false ;;
+  esac
+}
+exists() { on_screen "\$1" || { scrolled=yes; on_screen "\$1"; }; }
+counts() {
+  case "\$who" in
+    "") [[ "\$moved" == yes ]] && echo "0 workouts, 0 sets" || echo "300 workouts, 6023 sets" ;;
+    $first_email) [[ "\$moved" == yes ]] && echo "300 workouts, 6023 sets" || echo "0 workouts, 0 sets" ;;
+    *) [[ -n "\${FAKE_LEAK:-}" ]] && echo "300 workouts, 6023 sets" || echo "0 workouts, 0 sets" ;;
+  esac
+}
+args=" \$* "
+target=\$(id_of "\$args")
+case "\$args" in
+  *" open com.kron00.svett svett://account "*) show account ;;
+  *" open com.kron00.svett --relaunch "*) show tabs ;;
+  *' press label="Progress, tab, 3 of 5" '*) show progress ;;
+  *" scroll "*" --until "*) exists "\$target" && put scrolled yes ;;
+  *" scroll "*) put scrolled yes ;;
+  *" get attrs "*)
+    on_screen "\$target" || exit 1
+    put last "\$target"
+    echo '{"label": "Field", "rect": {"x": 20, "y": 300, "width": 120, "height": 40}}' ;;
+  *" fill 80 320 "*)
+    [[ "\$(get last)" == email-field || "\$(get last)" == code-field ]] || exit 1
+    put "\$(get last)" "\${args#* fill 80 320 }" ;;
+  *" press 80 320 "*)
+    case "\$step:\$(get last)" in
+      choose:continue-with-email) put step email ;;
+      email:send-code) put step code ;;
+      code:check-code)
+        [[ "\$(get code-field)" == "$test_code " ]] || exit 1
+        put who "\$(get email-field | sed 's/ \$//')"
+        if [[ "\$(get answered no)" == no && "\$moved" == no ]]; then put step offer; else put step signedin; fi ;;
+      offer:move-data) put moved yes; put answered yes; put step signedin ;;
+      signedin:sign-out) put who ""; put step choose ;;
+      *) echo "fake device: press on \$(get last) at step \$step" >&2; exit 1 ;;
+    esac ;;
+  *" get text "*) counts ;;
+  *" wait absent "*) true ;;
+  *" is visible "* | *" wait "*) [[ -z "\$target" ]] || on_screen "\$target" ;;
+esac
+EOF
+chmod +x "$fake/signin-device"
+
+# run_signin [VAR=value...] [signin.sh args...] leaves the exit status in signin_status.
+run_signin() {
+  local -a vars=()
+  while [[ "${1:-}" == *=* ]]; do
+    vars+=("$1")
+    shift
+  done
+  rm -rf "$root/simctl-calls" "$root/bound-calls" "$root/signin-state"
+  signin_status=0
+  env PATH="$fake:$PATH" SVETT_DEVICE_CMD="signin-device --session 't3-test session' --device FAKE-UDID" \
+    "${vars[@]}" "$repo/scripts/sim/signin.sh" "$@" >"$output" 2>&1 || signin_status=$?
+}
+
+container_sqlite="$root/data container/Documents/SQLite"
+mkdir -p "$container_sqlite"
+for stale in svett-anonymous.db-wal svett-account-user_old.db ExpoSQLiteStorage; do
+  echo stale >"$container_sqlite/$stale"
+done
+
+case_name="signin.sh Debug with SVETT_DEVICE_CMD"
+run_signin "$root/signin"
+[[ "$signin_status" == 0 ]] || fail "signin.sh failed"
+check "signin.sh puts the fixture, imported from Hevy, in the database with no owner" \
+  diff -q <(printf '%s\n' "fake fixture" --imported) "$container_sqlite/svett-anonymous.db"
+check "signin.sh removes the earlier journal, account databases and move answer" \
+  test "$(ls "$container_sqlite")" == svett-anonymous.db
+check "signin.sh stops svett and drops every Clerk session before it changes the files" \
+  only_simctl "simctl list devices available" "simctl terminate FAKE-UDID com.kron00.svett" "simctl keychain FAKE-UDID reset" \
+  "simctl get_app_container FAKE-UDID com.kron00.svett data"
+check "signin.sh relaunches into the dev client and opens Account by its link" \
+  only_open "$debug_open" "com.kron00.svett svett://account" "$debug_open" "com.kron00.svett svett://account" \
+  "$debug_open" "com.kron00.svett svett://account" "$debug_open"
+check "signin.sh signs in two Clerk test accounts with the test code, at the field centres" \
+  only_calls "fill" \
+  "fill 80 320 $first_email" "fill 80 320 $test_code" \
+  "fill 80 320 svett-proof-b+clerk_test@example.com" "fill 80 320 $test_code"
+check "signin.sh scrolls to each button under the fold before it presses it" \
+  only_calls "get attrs" \
+  'get attrs id="continue-with-email"' 'get attrs id="email-field"' 'get attrs id="send-code"' \
+  'get attrs id="code-field"' 'get attrs id="check-code"' 'get attrs id="move-data"' \
+  'get attrs id="sign-out"' 'get attrs id="continue-with-email"' 'get attrs id="email-field"' \
+  'get attrs id="send-code"' 'get attrs id="code-field"' 'get attrs id="check-code"'
+check "signin.sh shoots each step at the largest text size, then restores the default" \
+  only_calls "settings text-size" \
+  "settings text-size accessibility-extra-extra-extra-large" "settings text-size large"
+check "signin.sh screenshots the data before, the choices, the offer, and each account's data" \
+  only_calls "screenshot" \
+  "screenshot $root/signin/01-phone-data.png" "screenshot $root/signin/02-choices.png" \
+  "screenshot $root/signin/03-move-offer.png" "screenshot $root/signin/04-first-account.png" \
+  "screenshot $root/signin/05-first-account-data.png" "screenshot $root/signin/06-signed-out-data.png" \
+  "screenshot $root/signin/07-second-account.png" "screenshot $root/signin/08-second-account-data.png"
+check "signin.sh says the second account sees none of the history" \
+  grep -qF "The Progress tab shows none of the first account's history in the second account: 0 workouts, 0 sets" "$output"
+check "signin.sh with SVETT_DEVICE_CMD calls neither simctl launch nor openurl" no_simctl_launch_or_openurl
+
+case_name="signin.sh Release with SVETT_DEVICE_CMD"
+run_signin --release "$root/signin-release"
+[[ "$signin_status" == 0 ]] || fail "signin.sh --release failed"
+check "signin.sh Release relaunches the installed app without Metro" \
+  only_open "com.kron00.svett --relaunch" "com.kron00.svett svett://account" "com.kron00.svett --relaunch" \
+  "com.kron00.svett svett://account" "com.kron00.svett --relaunch" "com.kron00.svett svett://account" \
+  "com.kron00.svett --relaunch"
+
+case_name="signin.sh when the second account sees the first one's history"
+run_signin FAKE_LEAK=1 "$root/signin-leak"
+check "signin.sh fails when the second account sees the history" test "$signin_status" -ne 0
+check "signin.sh says what the second account saw" \
+  grep -qF "The Progress tab should show none of the first account's history in the second account, but it reads: 300 workouts" "$output"
+check "signin.sh restores the default text size after a failure" \
+  only_calls "settings text-size" \
+  "settings text-size accessibility-extra-extra-extra-large" "settings text-size large"
+
+case_name="signin.sh on a build without a Clerk key"
+run_signin FAKE_NO_CLERK=1 "$root/signin-no-clerk"
+check "signin.sh fails on a build without a Clerk key" test "$signin_status" -ne 0
+check "signin.sh says to build with the publishable key" \
+  grep -qF "Build it with EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY set" "$output"
+
+# Stands in for the bound command while proposals.sh asks the coach for proposals. It
+# keeps the screen in front, the stand-in svett was launched with, the stand-ins asked
+# and each proposal's state as files under $FAKE_STATE. A card, the refusal, the end
+# of the preview and every Train row start below the fold, so only a scroll finds
+# them. A press acts on the element whose frame was read last, and a press below
+# y=840 lands on the home indicator and does nothing. FAKE_TRAIN_EARLY lists a
+# proposal on the Train tab before Apply, FAKE_UNDO_KEEPS after Undo, FAKE_NO_REFUSAL
+# shows no refusal for the malformed routine, and FAKE_LEG_CARD shows a card for it.
+# FAKE_CARD_LOW keeps the routine's card at the bottom edge until a drag, and
+# FAKE_GLIDE moves an element on the first read after a scroll. The chat ends on the
+# card or the refusal, so the answer's text sits above the screen, out of a wait's reach.
+cat >"$fake/proposals-device" <<'EOF'
+#!/usr/bin/env bash
+echo "$*" >>"$FAKE_ROOT/bound-calls"
+shift 4
+s=$FAKE_STATE
+mkdir -p "$s"
+get() { cat "$s/$1" 2>/dev/null || true; }
+put() { printf '%s\n' "$2" >"$s/$1"; }
+screen=$(get screen)
+screen=${screen:-home}
+routine_row='id="routine-row" label="Upper body strength, Barbell Bench Press - Medium Grip, Bent Over Barbell Row, Standing Military Press"'
+program_rows='id="routine-row" label="Day 1 Push, Barbell Bench Press - Medium Grip, Standing Military Press, Dips - Triceps Version"
+id="routine-row" label="Day 2 Pull, Barbell Deadlift, Pullups, Seated Cable Rows"
+id="routine-row" label="Day 3 Legs, Barbell Squat, Romanian Deadlift, Lying Leg Curls"
+id="folder-name" label="Coach 3-day split"'
+kind_of() {
+  case "$1" in
+    "Upper body strength") echo routine ;;
+    "Coach 3-day split") echo program ;;
+  esac
+}
+# on_train <kind>: the Train tab lists what the proposal created.
+on_train() {
+  local state
+  state=$(get "status-$1")
+  [[ "$state" == applied || ("$state" == pending && -n "${FAKE_TRAIN_EARLY:-}") ||
+    ("$state" == undone && -n "${FAKE_UNDO_KEEPS:-}") ]]
+}
+status_text() {
+  case "$(get "status-$(kind_of "$(get current)")")" in
+    pending) echo "Not applied. Nothing is saved until you tap Apply." ;;
+    applied) echo "Applied. It is on the Train tab." ;;
+    undone) echo "Undone. svett removed what Apply created." ;;
+  esac
+}
+# holds <selector>: the element is on the screen in front, maybe below the fold.
+holds() {
+  case "$1" in
+    'label="You, tab, 5 of 5"') [[ "$screen" != home ]] ;;
+    'id="coach"' | 'id="coach-answer"') [[ "$screen" == coach ]] ;;
+    'role="button" label="Preview Upper body strength"') [[ "$screen" == coach && -f "$s/asked-routine" ]] ;;
+    'role="button" label="Preview Coach 3-day split"') [[ "$screen" == coach && -f "$s/asked-program" ]] ;;
+    'role="button" label="Preview Leg day"') [[ "$screen" == coach && -f "$s/asked-malformed" && -n "${FAKE_LEG_CARD:-}" ]] ;;
+    'id="coach-proposal-error"') [[ "$screen" == coach && -f "$s/asked-malformed" && -z "${FAKE_NO_REFUSAL:-}" ]] ;;
+    'id="routine-list"') [[ "$screen" == train ]] ;;
+    "$routine_row") [[ "$screen" == train ]] && on_train routine ;;
+    'id="routine-row" label='* | 'id="folder-name" label='*)
+      [[ "$screen" == train ]] && grep -qxF -- "$1" <<<"$program_rows" && on_train program ;;
+    'id="proposal"' | 'id="proposal-'*) [[ "$screen" == proposal ]] ;;
+    'role="button" label="Apply"') [[ "$screen" == proposal && "$(get "status-$(kind_of "$(get current)")")" == pending ]] ;;
+    'role="button" label="Undo"') [[ "$screen" == proposal && "$(get "status-$(kind_of "$(get current)")")" == applied ]] ;;
+    *) return 1 ;;
+  esac
+}
+# below_fold <selector>: an element only a scroll brings on screen.
+below_fold() {
+  case "$1" in
+    'role="button" label="Preview '* | 'id="coach-proposal-error"' | 'id="routine-row"'* | 'id="folder-name"'* | \
+      'id="proposal-end"' | 'id="proposal-set-'* | 'id="proposal-routine-'*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+press() {
+  local target kind
+  (($2 <= 840)) || return 0
+  target=$(get target)
+  case "$target" in
+    'role="button" label="Preview '*)
+      kind=${target#role=\"button\" label=\"Preview }
+      put current "${kind%\"}"
+      put screen proposal ;;
+    'role="button" label="Apply"') put "status-$(kind_of "$(get current)")" applied ;;
+    'role="button" label="Undo"') put "status-$(kind_of "$(get current)")" undone ;;
+    *) exit 1 ;;
+  esac
+}
+case "$1" in
+  settings | screenshot) ;;
+  gesture) touch "$s/dragged" ;;
+  open)
+    case "$3" in
+      --relaunch)
+        put screen tabs
+        stub="$*"
+        stub=${stub##*coach-propose-}
+        put stub "${stub%.json}" ;;
+      svett://coach\?ask=*)
+        kind=$(get stub)
+        touch "$s/asked-$kind"
+        [[ -n "$(get "status-$kind")" ]] || put "status-$kind" pending
+        rm -f "$s/dragged"
+        put screen coach ;;
+      svett://coach) put screen coach ;;
+      svett://train) put screen train ;;
+      *) exit 1 ;;
+    esac ;;
+  wait) [[ "$2" =~ ^[0-9]+$ ]] || { holds "$2" && ! below_fold "$2" && [[ "$2" != 'id="coach-answer"' ]]; } ;;
+  is) holds "$3" && ! below_fold "$3" && [[ "$3" != 'id="coach-answer"' ]] ;;
+  scroll)
+    touch "$s/gliding"
+    holds "$4" ;;
+  get)
+    holds "$3" || exit 1
+    case "$2" in
+      text)
+        case "$3" in
+          'id="proposal-title"') get current ;;
+          'id="proposal-status"') status_text ;;
+          'id="coach-proposal-error"') echo "svett refused a proposal from the coach, so nothing was saved. Expected no excess property" ;;
+          *) echo "" ;;
+        esac ;;
+      attrs)
+        put target "$3"
+        y=600
+        if [[ -n "${FAKE_CARD_LOW:-}" && "$3" == 'role="button" label="Preview Upper body strength"' && ! -f "$s/dragged" ]]; then
+          y=900
+        elif [[ -n "${FAKE_GLIDE:-}" && -f "$s/gliding" ]]; then
+          rm -f "$s/gliding"
+          y=640
+        fi
+        echo "{\"rect\": {\"x\": 16, \"y\": $((y - 25)), \"width\": 408, \"height\": 50}}" ;;
+    esac ;;
+  press) press "$2" "$3" ;;
+  *) exit 1 ;;
+esac
+EOF
+chmod +x "$fake/proposals-device"
+
+# run_proposals [VAR=value...] [proposals.sh args...] leaves the exit status in proposals_status.
+run_proposals() {
+  local -a vars=()
+  while [[ "${1:-}" == *=* ]]; do
+    vars+=("$1")
+    shift
+  done
+  rm -rf "$root/simctl-calls" "$root/bound-calls" "$root/proposals-state"
+  proposals_status=0
+  env PATH="$fake:$PATH" HOME="$root/home" FAKE_ROOT="$root" FAKE_STATE="$root/proposals-state" \
+    SVETT_DEVICE_CMD="proposals-device --session 't3-test session' --device FAKE-UDID" \
+    "${vars[@]}" "$repo/scripts/sim/proposals.sh" "$@" >"$output" 2>&1 || proposals_status=$?
+}
+
+stub_args() {
+  echo "--launch-args=-svettFixture --launch-args=$documents/svett-fixture.db $coach_signed_in --launch-args=-svettCoachStub --launch-args=$documents/coach-propose-$1.json"
+}
+ask_of() {
+  echo "com.kron00.svett svett://coach?ask=$(node -e 'process.stdout.write(encodeURIComponent(process.argv[1]))' "$1")"
+}
+routine_ask=$(ask_of "Plan an upper body routine for me")
+program_ask=$(ask_of "Plan a three-day push, pull and legs program for me")
+malformed_ask=$(ask_of "Plan a leg day for me")
+to_coach="com.kron00.svett svett://coach"
+to_train="com.kron00.svett svett://train"
+upper_row='id="routine-row" label="Upper body strength, Barbell Bench Press - Medium Grip, Bent Over Barbell Row, Standing Military Press"'
+
+# presses_clear_of_the_edge checks every press is at a point above the home indicator.
+presses_clear_of_the_edge() {
+  local pressed
+  pressed=$(grep -E "^$bound_prefix press " "$root/bound-calls" | awk '{ print $NF }')
+  [[ -n "$pressed" ]] && ! awk '$1 > 840 { found = 1 } END { exit !found }' <<<"$pressed"
+}
+
+case_name="proposals.sh Debug with SVETT_DEVICE_CMD"
+run_proposals "$root/proposals"
+[[ "$proposals_status" == 0 ]] || fail "proposals.sh failed"
+check "proposals.sh copies the fixture and the three proposal stand-ins into the app's data container" \
+  test "$(cat "$documents/svett-fixture.db")" == "fake fixture" -a \
+  -s "$documents/coach-propose-routine.json" -a -s "$documents/coach-propose-program.json" -a \
+  -s "$documents/coach-propose-malformed.json"
+check "proposals.sh relaunches on each stand-in signed in, asks by link, and checks the Train tab around Apply and Undo" \
+  only_open \
+  "$debug_open $(stub_args routine)" "$routine_ask" "$to_train" "$to_coach" "$to_train" "$to_coach" "$to_train" \
+  "$debug_open $(stub_args program)" "$program_ask" "$to_train" "$to_coach" "$to_train" "$to_coach" "$to_train" \
+  "$debug_open $(stub_args malformed)" "$malformed_ask"
+check "proposals.sh presses Apply and Undo in the header, and the cards, at their centres" \
+  only_calls "get attrs role=\"button\" label=\"(Apply|Undo|Preview)" \
+  'get attrs role="button" label="Preview Upper body strength"' 'get attrs role="button" label="Preview Upper body strength"' \
+  'get attrs role="button" label="Apply"' 'get attrs role="button" label="Apply"' \
+  'get attrs role="button" label="Preview Upper body strength"' 'get attrs role="button" label="Preview Upper body strength"' \
+  'get attrs role="button" label="Undo"' 'get attrs role="button" label="Undo"' \
+  'get attrs role="button" label="Preview Coach 3-day split"' 'get attrs role="button" label="Preview Coach 3-day split"' \
+  'get attrs role="button" label="Apply"' 'get attrs role="button" label="Apply"' \
+  'get attrs role="button" label="Preview Coach 3-day split"' 'get attrs role="button" label="Preview Coach 3-day split"' \
+  'get attrs role="button" label="Undo"' 'get attrs role="button" label="Undo"'
+check "proposals.sh reaches the routine on the Train tab by scrolling" \
+  bound_got "$bound_prefix scroll down --until $upper_row"
+check "proposals.sh looks for the routine on the Train tab before Apply, after Apply and after Undo" \
+  only_calls "is visible id=\"routine-row\" label=\"Upper" \
+  "is visible $upper_row" "is visible $upper_row" "is visible $upper_row"
+check "proposals.sh checks the malformed routine's refusal and that no card shows for it" \
+  only_calls "get text id=\"coach-proposal-error\"|is visible role=\"button\" label=\"Preview Leg day\"" \
+  'get text id="coach-proposal-error"' 'is visible role="button" label="Preview Leg day"'
+check "proposals.sh presses only above the home indicator" presses_clear_of_the_edge
+check "proposals.sh shoots at the largest text size, then restores the default" \
+  only_calls "settings text-size" \
+  "settings text-size accessibility-extra-extra-extra-large" "settings text-size large"
+check "proposals.sh screenshots each step" \
+  only_calls "screenshot" \
+  "screenshot $root/proposals/01-routine-answer.png" "screenshot $root/proposals/02-routine-preview.png" \
+  "screenshot $root/proposals/03-routine-preview-end.png" "screenshot $root/proposals/04-routine-applied.png" \
+  "screenshot $root/proposals/05-routine-on-train.png" "screenshot $root/proposals/06-routine-undone.png" \
+  "screenshot $root/proposals/07-routine-gone.png" "screenshot $root/proposals/08-program-answer.png" \
+  "screenshot $root/proposals/09-program-preview.png" "screenshot $root/proposals/10-program-preview-end.png" \
+  "screenshot $root/proposals/11-program-on-train.png" "screenshot $root/proposals/12-program-gone.png" \
+  "screenshot $root/proposals/13-malformed.png"
+check "proposals.sh with SVETT_DEVICE_CMD calls neither simctl launch nor openurl" no_simctl_launch_or_openurl
+
+case_name="proposals.sh Release with SVETT_DEVICE_CMD"
+run_proposals --release "$root/proposals-release"
+[[ "$proposals_status" == 0 ]] || fail "proposals.sh --release failed"
+check "proposals.sh Release relaunches the installed app without Metro" \
+  bound_got "$bound_prefix open com.kron00.svett --relaunch $(stub_args routine)"
+
+case_name="proposals.sh when the routine is on the Train tab before Apply"
+run_proposals FAKE_TRAIN_EARLY=1 "$root/proposals-early"
+check "proposals.sh fails when a proposal shows on the Train tab before Apply" test "$proposals_status" -ne 0
+check "proposals.sh says the routine was listed before Apply" \
+  grep -qF 'The Train tab lists "Upper body strength" before Apply.' "$output"
+check "proposals.sh restores the default text size after a failure" \
+  only_calls "settings text-size" \
+  "settings text-size accessibility-extra-extra-extra-large" "settings text-size large"
+
+case_name="proposals.sh when Undo leaves the routine on the Train tab"
+run_proposals FAKE_UNDO_KEEPS=1 "$root/proposals-kept"
+check "proposals.sh fails when Undo leaves the routine" test "$proposals_status" -ne 0
+check "proposals.sh says the routine is still listed after Undo" \
+  grep -qF 'The Train tab still lists "Upper body strength" after Undo.' "$output"
+
+case_name="proposals.sh when the malformed routine shows no refusal"
+run_proposals FAKE_NO_REFUSAL=1 "$root/proposals-silent"
+check "proposals.sh fails without the refusal" test "$proposals_status" -ne 0
+check "proposals.sh says the answer to the malformed routine never ended in a refusal" \
+  grep -qF 'The coach'"'"'s answer to "Plan a leg day for me" did not show.' "$output"
+
+case_name="proposals.sh when the malformed routine shows a card"
+run_proposals FAKE_LEG_CARD=1 "$root/proposals-leg-card"
+check "proposals.sh fails when a card shows for the malformed routine" test "$proposals_status" -ne 0
+check "proposals.sh says the malformed routine got a card" \
+  grep -qF 'The chat shows a card for the malformed "Leg day".' "$output"
+
+case_name="proposals.sh when the card sits at the bottom edge"
+run_proposals FAKE_CARD_LOW=1 "$root/proposals-low"
+[[ "$proposals_status" == 0 ]] || fail "proposals.sh failed with the card at the bottom edge"
+check "proposals.sh drags the card up before it presses it" \
+  bound_got "$bound_prefix gesture pan 20 600 0 -300 400"
+check "proposals.sh presses the card only once it is clear of the bottom edge" presses_clear_of_the_edge
+
+case_name="proposals.sh when an element glides after a scroll"
+run_proposals FAKE_GLIDE=1 "$root/proposals-glide"
+[[ "$proposals_status" == 0 ]] || fail "proposals.sh failed while elements glide"
+check "proposals.sh waits until two reads of the frame agree, then presses where it settled" \
+  test "$(grep -cE "^$bound_prefix press 220 600$" "$root/bound-calls")" -eq 8 -a \
+  "$(grep -cE "^$bound_prefix press " "$root/bound-calls")" -eq 8
 
 echo "$passed passed"

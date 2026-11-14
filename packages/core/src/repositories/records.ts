@@ -137,6 +137,8 @@ const makeProposalRepository = Effect.gen(function* () {
     list: run(selectRows(TABLES.proposal, "1 = 1", [], "created_at DESC, id")),
     setStatus: (id: ProposalId, status: ProposalStatus) =>
       run(updateRow(TABLES.proposal, id, { status })),
+    update: (id: ProposalId, patch: Pick<Patch<Proposal>, "status" | "payload">) =>
+      run(updateRow(TABLES.proposal, id, patch)),
     remove: (id: ProposalId) => run(removeById(TABLES.proposal, id)),
   };
 });

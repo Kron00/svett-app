@@ -9,7 +9,7 @@ import { askCoach, type ChatEntry, chatEntries } from "@svett/tools";
 import { type RouteProp, useFocusEffect, useNavigation, useRoute } from "@react-navigation/native";
 import { Effect } from "effect";
 import { uuid } from "expo";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import {
   AppState,
   KeyboardAvoidingView,
@@ -20,13 +20,16 @@ import {
 } from "react-native";
 
 import { chatGPTStatus } from "../chatgpt/native";
-import { appDatabase } from "../data/database";
+import { currentDatabase, type OpenDatabase, useCurrentDatabase } from "../data/current";
+import { quietWriteTo } from "../data/store";
+import { transferInTurn } from "../data/turns";
 import type { CoachNavigation, CoachStackParamList } from "../navigation";
 import { AppText } from "../ui/AppText";
 import { Button } from "../ui/Button";
 import { EmptyState } from "../ui/EmptyState";
 import { Composer } from "./Composer";
 import { swiftTransport } from "./native";
+import { ProposalCard } from "./ProposalCard";
 
 type CoachRoute = RouteProp<CoachStackParamList, "CoachRoot">;
 
@@ -41,8 +44,8 @@ const NO_SOURCES: ReadonlyArray<string> = [];
 
 const newConversation = () => ConversationId.make(uuid.v4());
 
-const loadEntries = (conversationId: ConversationId) =>
-  appDatabase().runPromise(
+const loadEntries = (database: OpenDatabase, conversationId: ConversationId) =>
+  database.handle.runtime.runPromise(
     Effect.map(
       Effect.flatMap(Effect.service(CoachMessageRepository), (messages) =>
         messages.conversation(conversationId),
@@ -51,8 +54,8 @@ const loadEntries = (conversationId: ConversationId) =>
     ),
   );
 
-const latestConversation = () =>
-  appDatabase().runPromise(
+const latestConversation = (database: OpenDatabase) =>
+  database.handle.runtime.runPromise(
     Effect.flatMap(
       Effect.service(CoachMessageRepository),
       (messages) => messages.latestConversation,
@@ -61,6 +64,26 @@ const latestConversation = () =>
 
 function readLine(sources: ReadonlyArray<string>) {
   return sources.length === 0 ? "Read none of your data" : `Read: ${sources.join(" · ")}`;
+}
+
+/**
+ * What the coach proposed while answering, as cards with Preview, and why the app refused each
+ * proposal the model got wrong. A refused proposal stored nothing.
+ */
+function Proposals({ entry }: { readonly entry: ChatEntry }) {
+  if (entry.proposals.length === 0 && entry.problems.length === 0) return null;
+  return (
+    <View className="gap-3 self-stretch">
+      {entry.problems.map((problem) => (
+        <AppText key={problem} testID="coach-proposal-error" tone="warning" selectable>
+          {`svett refused a proposal from the coach, so nothing was saved. ${problem}`}
+        </AppText>
+      ))}
+      {entry.proposals.map((id) => (
+        <ProposalCard key={id} id={id} />
+      ))}
+    </View>
+  );
 }
 
 function Question({
@@ -134,8 +157,20 @@ function FailureNotice({
   );
 }
 
-/** The Coach tab: a chat with the user's ChatGPT plan that answers from their own data. */
+/**
+ * The Coach tab: a chat with the user's ChatGPT plan that answers from their own data. Each
+ * owner's chats are in their own database, so signing in or out starts the chat over on the
+ * new one. Nothing of the previous owner's shows, and an answer still arriving for them changes
+ * nothing here.
+ */
 export function CoachScreen() {
+  const { version } = useCurrentDatabase();
+  return <Coach key={version} />;
+}
+
+function Coach() {
+  // The database this chat was opened on. CoachScreen opens a new chat when it changes.
+  const [database] = useState(currentDatabase);
   const navigation = useNavigation<CoachNavigation>();
   const route = useRoute<CoachRoute>();
   const scroll = useRef<ScrollViewInstance>(null);
@@ -167,15 +202,15 @@ export function CoachScreen() {
   }, [checkStatus]);
 
   useEffect(() => {
-    latestConversation().then(
+    latestConversation(database).then(
       async (latest) => {
         const id = latest ?? newConversation();
-        setEntries(latest === null ? [] : await loadEntries(id));
+        setEntries(latest === null ? [] : await loadEntries(database, id));
         setConversationId(id);
       },
       () => setConversationId(newConversation()),
     );
-  }, []);
+  }, [database]);
 
   const ready = status?.state === "signedIn" && status.planUsage && conversationId !== undefined;
 
@@ -185,18 +220,23 @@ export function CoachScreen() {
       setFailure(undefined);
       setPending({ question, reads: [], draft: "" });
       try {
-        const outcome = await appDatabase().runPromise(
-          askCoach({
-            conversationId,
-            question,
-            transport: swiftTransport,
-            offsetMinutes: -new Date().getTimezoneOffset(),
-            hooks: {
-              onText: (delta) => setPending((now) => now && { ...now, draft: now.draft + delta }),
-              onRead: (source) =>
-                setPending((now) => now && { ...now, reads: [...now.reads, source], draft: "" }),
-            },
-          }),
+        // The question and its answer save to the database it was asked in. Signing in or out
+        // meanwhile waits to close that file until the answer is saved.
+        const outcome = await transferInTurn(() =>
+          quietWriteTo(
+            database,
+            askCoach({
+              conversationId,
+              question,
+              transport: swiftTransport,
+              offsetMinutes: -new Date().getTimezoneOffset(),
+              hooks: {
+                onText: (delta) => setPending((now) => now && { ...now, draft: now.draft + delta }),
+                onRead: (source) =>
+                  setPending((now) => now && { ...now, reads: [...now.reads, source], draft: "" }),
+              },
+            }),
+          ),
         );
         if (outcome.type === "failed") {
           setFailure(outcome.failure);
@@ -208,11 +248,11 @@ export function CoachScreen() {
           text: error instanceof Error ? error.message : String(error),
         });
       }
-      setEntries(await loadEntries(conversationId));
+      setEntries(await loadEntries(database, conversationId));
       setPending(undefined);
       chatGPTStatus().then(setStatus, () => undefined);
     },
-    [conversationId, pending],
+    [conversationId, database, pending],
   );
 
   // scripts/sim/coach.sh asks through svett://coach?ask=..., because agent-device cannot type
@@ -306,17 +346,16 @@ export function CoachScreen() {
             }}
           />
         )}
-        {entries.map((entry, index) =>
-          entry.role === "user" ? (
-            <Question key={entry.id} text={entry.text} sources={entry.sources} />
-          ) : (
-            <Answer
-              key={entry.id}
-              entry={entry}
-              last={index === lastAnswer && pending === undefined}
-            />
-          ),
-        )}
+        {entries.map((entry, index) => (
+          <Fragment key={entry.id}>
+            {entry.role === "user" ? (
+              <Question text={entry.text} sources={entry.sources} />
+            ) : (
+              <Answer entry={entry} last={index === lastAnswer && pending === undefined} />
+            )}
+            <Proposals entry={entry} />
+          </Fragment>
+        ))}
         {pending === undefined ? null : (
           <View testID="coach-pending" className="gap-3 self-stretch">
             <Question text={pending.question} sources={NO_SOURCES} />

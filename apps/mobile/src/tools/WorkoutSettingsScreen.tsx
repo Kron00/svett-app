@@ -8,6 +8,7 @@ import {
 } from "@svett/core";
 import { Alert, ScrollView, View } from "react-native";
 
+import type { OpenDatabase } from "../data/current";
 import { useIsAccessibilityTextSize } from "../design/hooks";
 import { changeBarsAndPlates, GearNotReady, useBarsAndPlates } from "../settings/gear";
 import { changeWorkoutSettings, useWorkoutSettings } from "../settings/store";
@@ -26,7 +27,7 @@ const typedWeight = (text: string | undefined): number | null => {
   return Number.isFinite(value) && value >= 0 ? value : null;
 };
 
-const addPlate = (unit: WeightUnit, gear: BarsAndPlates) =>
+const addPlate = (database: OpenDatabase, unit: WeightUnit, gear: BarsAndPlates) =>
   Alert.prompt(
     "Add a plate size",
     `Its weight in ${unit}.`,
@@ -42,7 +43,7 @@ const addPlate = (unit: WeightUnit, gear: BarsAndPlates) =>
             Alert.alert("That plate was not added", problem ?? "Enter the plate's weight.");
             return;
           }
-          changeBarsAndPlates(unit, (saved) =>
+          changeBarsAndPlates(database, unit, (saved) =>
             plateSizeProblem(weight, saved.plates) === undefined
               ? { ...saved, plates: sortPlates([...saved.plates, { weight, pairs: 1 }]) }
               : saved,
@@ -55,7 +56,7 @@ const addPlate = (unit: WeightUnit, gear: BarsAndPlates) =>
     "decimal-pad",
   );
 
-const addBar = (unit: WeightUnit) =>
+const addBar = (database: OpenDatabase, unit: WeightUnit) =>
   Alert.prompt("Add a bar", "What do you call it?", [
     { text: "Cancel", style: "cancel" },
     {
@@ -78,7 +79,7 @@ const addBar = (unit: WeightUnit) =>
                   Alert.alert("That bar was not added", "Enter its weight.");
                   return;
                 }
-                changeBarsAndPlates(unit, (gear) => ({
+                changeBarsAndPlates(database, unit, (gear) => ({
                   ...gear,
                   bars: [...gear.bars, { name: named, weight }],
                 }));
@@ -104,6 +105,7 @@ export function WorkoutSettingsScreen() {
   const saved = useBarsAndPlates();
   if (saved.status !== "ready") return <GearNotReady query={saved} />;
   const gear = saved.value[unit];
+  const { database } = saved;
 
   return (
     <ScrollView
@@ -144,7 +146,7 @@ export function WorkoutSettingsScreen() {
                 label={`Pairs of ${formatWeightNumber(plate.weight)} ${unit} plates`}
                 valueText={String(plate.pairs)}
                 onDecrement={() =>
-                  changeBarsAndPlates(unit, (current) => ({
+                  changeBarsAndPlates(database, unit, (current) => ({
                     ...current,
                     plates: current.plates.map((other, at) =>
                       at === index ? { ...other, pairs: Math.max(0, other.pairs - 1) } : other,
@@ -152,7 +154,7 @@ export function WorkoutSettingsScreen() {
                   }))
                 }
                 onIncrement={() =>
-                  changeBarsAndPlates(unit, (current) => ({
+                  changeBarsAndPlates(database, unit, (current) => ({
                     ...current,
                     plates: current.plates.map((other, at) =>
                       at === index
@@ -174,7 +176,7 @@ export function WorkoutSettingsScreen() {
             label="Add a plate size"
             symbol="plus"
             variant="secondary"
-            onPress={() => addPlate(unit, gear)}
+            onPress={() => addPlate(database, unit, gear)}
             testID="add-plate"
           />
         </View>
@@ -202,7 +204,7 @@ export function WorkoutSettingsScreen() {
                 label={`Remove ${bar.name}`}
                 disabled={gear.bars.length === 1}
                 onPress={() =>
-                  changeBarsAndPlates(unit, (current) => ({
+                  changeBarsAndPlates(database, unit, (current) => ({
                     ...current,
                     bars: current.bars.filter((_, at) => at !== index),
                   }))
@@ -216,7 +218,7 @@ export function WorkoutSettingsScreen() {
             label="Add a bar"
             symbol="plus"
             variant="secondary"
-            onPress={() => addBar(unit)}
+            onPress={() => addBar(database, unit)}
             testID="add-bar"
           />
         </View>

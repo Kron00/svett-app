@@ -25,7 +25,8 @@ import { type RouteProp, useNavigation, useRoute } from "@react-navigation/nativ
 import { useRef, useState } from "react";
 import { ScrollView, View } from "react-native";
 
-import { appDatabase } from "../data/database";
+import type { OpenDatabase } from "../data/current";
+import { writeTo } from "../data/store";
 import { useQuery } from "../data/useQuery";
 import type { RootNavigation, RootStackParamList } from "../navigation";
 import { useWorkoutSettings } from "../settings/store";
@@ -59,7 +60,7 @@ export function MeasurementsScreen() {
 
   return (
     <QueryView state={state}>
-      {({ rows, now }) => {
+      {({ rows, now }, database) => {
         const latest = new Map(latestMeasurements(rows).map((entry) => [entry.kind, entry]));
         const current = latest.get(kind);
         const shown = (value: number) => formatShownMeasurement(kind, value, unit);
@@ -139,6 +140,7 @@ export function MeasurementsScreen() {
               </AppText>
             </ScrollView>
             <AddMeasurementSheet
+              database={database}
               kind={kind}
               unit={unit}
               isPresented={sheetOpen}
@@ -156,12 +158,15 @@ export function MeasurementsScreen() {
 }
 
 function AddMeasurementSheet({
+  database,
   kind,
   unit,
   isPresented,
   onDismiss,
   onSaved,
 }: {
+  /** The database the measurements shown were read from, where the new one saves. */
+  readonly database: OpenDatabase;
   readonly kind: MeasurementKind;
   readonly unit: WeightUnit;
   readonly isPresented: boolean;
@@ -183,8 +188,7 @@ function AddMeasurementSheet({
     if (savingNow.current) return;
     savingNow.current = true;
     setSaving(true);
-    appDatabase()
-      .runPromise(addMeasurement(kind, measured))
+    writeTo(database, addMeasurement(kind, measured))
       .then(
         () => close(onSaved),
         (cause: unknown) => setError(`The measurement was not saved. ${String(cause)}`),
