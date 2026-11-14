@@ -20,6 +20,10 @@
 # includes the wait for the link, so the target does not judge it. A launch of
 # a newer build that did not open straight into the Train tab fails.
 #
+# At the largest text size the routine list starts below the screen. Each launch
+# waits for the Train tab to show it loaded the routines, without moving the
+# screen, then scrolls down to the list and to the time below it.
+#
 # It generates the fixture into out-dir with pnpm fixture and copies it into
 # the app's data container, as routines.sh does. SVETT_FIXTURE, the absolute
 # path of a fixture database already in the data container, skips that and
@@ -105,12 +109,10 @@ agent_device settings text-size accessibility-extra-extra-extra-large
 for ((n = 1; n <= launches; n++)); do
   agent_device open "$bundle_id" "${open_flags[@]}"
   agent_device wait "$train_tab" 120000 >/dev/null || fail "Launch $n: svett did not show its tabs"
-  if ! agent_device wait 'id="routine-list"' 30000 >/dev/null; then
-    # Only a build from before -svettLink opens on another tab.
-    agent_device open "$bundle_id" "svett://train"
-    agent_device wait 'id="routine-list"' 10000 >/dev/null || fail "Launch $n: the Train tab did not list the routines"
-  fi
-  # The time sits below the routines, off screen at the largest text size.
+  # Only a build from before -svettLink opens on another tab.
+  agent_device wait "$train_loaded" 30000 >/dev/null 2>&1 || agent_device open "$bundle_id" "svett://train"
+  train_routines 10000 || fail "Launch $n: the Train tab did not list the routines"
+  # The time sits below the routines.
   agent_device is visible 'id="cold-start-timing"' >/dev/null 2>&1 ||
     agent_device scroll down --until 'id="cold-start-timing"' >/dev/null 2>&1 ||
     fail "Launch $n: the Train tab did not show the cold start time"

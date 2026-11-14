@@ -143,17 +143,6 @@ expect() {
   agent_device wait "$1" 10000 >/dev/null || fail "$2"
 }
 
-# gone <selector> <what is still there, for the failure message>: waits up to
-# 5 seconds for the element to leave the screen.
-gone() {
-  local tries
-  for tries in 1 2 3 4 5 6 7 8 9 10; do
-    agent_device is visible "$1" >/dev/null 2>&1 || return 0
-    agent_device wait 500 >/dev/null
-  done
-  fail "$2"
-}
-
 # bring <selector> [what is missing]: scrolls until the element is on screen, up
 # or down, because at the largest text size a form is taller than the screen.
 bring() {
@@ -207,13 +196,13 @@ agent_device settings text-size accessibility-extra-extra-extra-large
 started=$(now_ms)
 relaunch
 link "svett://train"
-expect 'id="routine-list"' "The Train tab did not list the routines"
+train_routines 10000 || fail "The Train tab did not list the routines"
 cold_start=$(($(now_ms) - started))
 # The same calls once svett is running measure agent-device's share of the time.
 started=$(now_ms)
 agent_device wait "$train_tab" 120000 >/dev/null || fail "svett did not show its tabs"
 link "svett://train"
-expect 'id="routine-list"' "The Train tab did not list the routines"
+train_routines 10000 || fail "The Train tab did not list the routines"
 overhead=$(($(now_ms) - started))
 bring 'id="cold-start-timing"' "The Train tab did not show the cold start time"
 in_app=$(agent_device get attrs 'id="cold-start-timing"' |
@@ -236,15 +225,18 @@ if agent_device wait 'id="workout-title"' 3000 >/dev/null 2>&1; then
   # svett's own alert: agent-device's alert accept cannot answer it, so press its button.
   tap 'label="Discard"'
   # Discarding goes back to the Train tab, which reloads without the workout.
-  expect 'id="routine-list"' "Discarding the workout did not go back to the Train tab"
-  gone 'id="workout-in-progress-row"' "A workout from an earlier run is still in progress"
+  train_routines 10000 || fail "Discarding the workout did not go back to the Train tab"
+  # The Train tab keeps its scroll, and Start empty workout shows at its top once
+  # no workout is in progress.
+  agent_device scroll top >/dev/null 2>&1 || true
+  expect 'id="start-empty-workout"' "A workout from an earlier run is still in progress"
 else
   expect 'label="No workout in progress"' "A workout from an earlier run is still in progress"
 fi
 # The probe can leave the workout screen open, and the routine screens would then
 # open on top of it, under a "Workout" back button.
 link "svett://train"
-expect 'id="routine-list"' "The Train tab did not list the routines after the workout check"
+train_routines 10000 || fail "The Train tab did not list the routines after the workout check"
 
 link "svett://routines/new?title=$(encode "$routine_name")"
 expect 'id="routine-editor"' "The new routine editor did not open"
@@ -279,7 +271,7 @@ screenshot routine-detail
 
 relaunch
 link "svett://train"
-expect 'id="routine-list"' "The Train tab did not list the routines after the relaunch"
+train_routines 10000 || fail "The Train tab did not list the routines after the relaunch"
 tap "id=\"routine-row\" label=\"$routine_name, $exercise_name\"" \
   "\"$routine_name\" was not on the Train tab after the relaunch"
 expect "id=\"routine-title\" label=\"$routine_name\"" "\"$routine_name\" did not open from the Train tab after the relaunch"
@@ -293,6 +285,7 @@ done
 screenshot workout
 
 link "svett://train"
+agent_device scroll top >/dev/null 2>&1 || true
 expect 'id="workout-in-progress-row"' "The Train tab did not show the workout in progress"
 screenshot train-workout-in-progress
 
