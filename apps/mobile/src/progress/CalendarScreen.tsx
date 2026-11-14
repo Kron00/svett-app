@@ -111,9 +111,17 @@ function DayCell({
 }
 
 /** A month of workouts with the weekly streak. At accessibility text sizes the month is a list. */
-export function CalendarScreen({ route, navigation }: Props) {
-  const stacked = useIsAccessibilityTextSize();
+export function CalendarScreen(props: Props) {
   const now = useNow();
+  return now === null ? (
+    <View className="flex-1 bg-background" />
+  ) : (
+    <Calendar {...props} now={now} />
+  );
+}
+
+function Calendar({ route, navigation, now }: Props & { readonly now: number }) {
+  const stacked = useIsAccessibilityTextSize();
   const thisMonth = monthOf(now, PHONE_OFFSET);
   const month = parseMonthKey(route.params?.month ?? "") ?? thisMonth;
   const query = useQuery("starts", () =>
@@ -129,7 +137,7 @@ export function CalendarScreen({ route, navigation }: Props) {
   const inMonth = grid
     .flat()
     .flatMap((cell) => cell?.workouts ?? [])
-    .toSorted((a, b) => a.startedAt - b.startedAt);
+    .sort((a, b) => a.startedAt - b.startedAt);
   const atThisMonth = monthKey(month) >= monthKey(thisMonth);
   const open = (workout: WorkoutStart) => navigation.navigate("Workout", { id: workout.id });
   const go = (by: number) => navigation.setParams({ month: monthKey(shiftMonth(month, by)) });

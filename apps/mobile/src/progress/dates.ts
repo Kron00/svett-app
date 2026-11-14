@@ -1,5 +1,9 @@
-import type { CalendarMonth, UtcOffset } from "@svett/core";
-import { useState } from "react";
+import { type CalendarMonth, nextLocalMidnight, type UtcOffset } from "@svett/core";
+import { Clock } from "effect";
+import { useCallback, useEffect, useState } from "react";
+import { AppState } from "react-native";
+
+import { appDatabase } from "../data/database";
 
 /** The phone's own time zone, with daylight saving time. */
 export const PHONE_OFFSET: UtcOffset = (millis) => -new Date(millis).getTimezoneOffset();
@@ -37,5 +41,27 @@ export const formatDayNumber = (dayNumber: number): string =>
     timeZone: "UTC",
   });
 
-/** The time the screen opened, so a render never reads the clock. */
-export const useNow = (): number => useState(() => Date.now())[0];
+/**
+ * The time now from Effect's Clock, or null until it is read. It is read again
+ * when svett comes back to the foreground and at the next local midnight, so
+ * today, this week's streak and this month move on while a screen stays open.
+ */
+export function useNow(): number | null {
+  const [now, setNow] = useState<number | null>(null);
+  const read = useCallback(() => {
+    void appDatabase().runPromise(Clock.currentTimeMillis).then(setNow);
+  }, []);
+  useEffect(() => {
+    read();
+    const foreground = AppState.addEventListener("change", (state) => {
+      if (state === "active") read();
+    });
+    return () => foreground.remove();
+  }, [read]);
+  useEffect(() => {
+    if (now === null) return;
+    const midnight = setTimeout(read, nextLocalMidnight(now, PHONE_OFFSET) - now);
+    return () => clearTimeout(midnight);
+  }, [now, read]);
+  return now;
+}

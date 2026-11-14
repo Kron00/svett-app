@@ -159,7 +159,7 @@ function Summary() {
     }),
   );
   const streak =
-    query.status === "ready"
+    query.status === "ready" && now !== null
       ? weekStreak(
           query.value.starts.map((start) => start.startedAt),
           now,

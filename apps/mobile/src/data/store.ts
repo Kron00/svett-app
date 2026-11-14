@@ -1,15 +1,7 @@
-import type { Effect, ManagedRuntime } from "effect";
+import type { Effect } from "effect";
 import { useEffect, useEffectEvent, useState, useSyncExternalStore } from "react";
 
-import { launchTarget, openDatabase } from "./database";
-
-type Database = ReturnType<typeof openDatabase>;
-export type DatabaseServices = ManagedRuntime.ManagedRuntime.Services<Database>;
-
-let database: Database | undefined;
-
-/** The database this launch opened, the anonymous one or the -svettFixture file. */
-export const appDatabase = (): Database => (database ??= openDatabase(launchTarget()));
+import { type AppServices, appDatabase } from "./database";
 
 let version = 0;
 const listeners = new Set<() => void>();
@@ -21,7 +13,7 @@ const subscribe = (listener: () => void) => {
 };
 
 /** Runs a write, then has every screen that reads the database read it again. */
-export const write = async <A, E>(effect: Effect.Effect<A, E, DatabaseServices>): Promise<A> => {
+export const write = async <A, E>(effect: Effect.Effect<A, E, AppServices>): Promise<A> => {
   try {
     return await appDatabase().runPromise(effect);
   } finally {
@@ -42,7 +34,7 @@ export type Query<A> =
  */
 export function useQuery<A, E>(
   key: string,
-  read: () => Effect.Effect<A, E, DatabaseServices>,
+  read: () => Effect.Effect<A, E, AppServices>,
 ): Query<A> {
   const seen = useSyncExternalStore(subscribe, () => version);
   const [query, setQuery] = useState<Query<A>>({ status: "loading" });

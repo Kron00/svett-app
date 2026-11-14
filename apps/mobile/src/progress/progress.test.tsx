@@ -14,7 +14,7 @@ import type { ReactElement, ReactNode } from "react";
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
-import { appDatabase } from "../data/store";
+import { appDatabase } from "../data/database";
 import type { RootStackParamList } from "../navigation";
 import { CalendarScreen } from "./CalendarScreen";
 import { ProgressScreen } from "./ProgressScreen";
@@ -22,6 +22,8 @@ import { SetEditScreen } from "./SetEditScreen";
 import { WorkoutScreen } from "./WorkoutScreen";
 
 const screen = vi.hoisted(() => ({ fontScale: 1 }));
+const time = vi.hoisted(() => ({ set: (_millis: number): void => {} }));
+const appState = vi.hoisted(() => ({ listeners: new Set<(state: string) => void>() }));
 const navigation = vi.hoisted(() => ({
   navigate: vi.fn(),
   goBack: vi.fn(),
@@ -31,6 +33,12 @@ const navigation = vi.hoisted(() => ({
 
 vi.mock("react-native", () => ({
   AccessibilityInfo: { announceForAccessibility: () => {} },
+  AppState: {
+    addEventListener: (_event: string, listener: (state: string) => void) => {
+      appState.listeners.add(listener);
+      return { remove: () => appState.listeners.delete(listener) };
+    },
+  },
   Pressable: "Pressable",
   ScrollView: "ScrollView",
   StyleSheet: { hairlineWidth: 0.5 },
@@ -39,7 +47,7 @@ vi.mock("react-native", () => ({
   View: "View",
   useWindowDimensions: () => ({ width: 440, height: 956, scale: 3, fontScale: screen.fontScale }),
 }));
-// Renders every row, so the test sees the whole history the list would scroll through.
+// Renders the rows it is given. progress-screens.test.tsx loads more through onEndReached.
 vi.mock("@legendapp/list/react-native", async () => {
   const { createElement } = await import("react");
   type Props = {
@@ -72,14 +80,18 @@ vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 vi.mock("uniwind", () => ({ useCSSVariable: () => "#000000" }));
 vi.mock("@react-navigation/native", () => ({ DarkTheme: {}, useNavigation: () => navigation }));
 vi.mock("../data/database", async () => {
-  const { ManagedRuntime } = await import("effect");
+  const effect = await import("effect");
   const { databaseLayer, Ids } = await import("@svett/core");
-  const { openNodeDatabase } = await import("@svett/core/node");
-  return {
-    launchTarget: () => ({ kind: "file", path: ":memory:" }),
-    openDatabase: () =>
-      ManagedRuntime.make(databaseLayer(openNodeDatabase().driver, Ids.layerSeeded(7))),
-  };
+  const { manualClock, openNodeDatabase } = await import("@svett/core/node");
+  const clock = manualClock(Date.now());
+  time.set = (millis) => effect.Effect.runSync(clock.set(millis));
+  const runtime = effect.ManagedRuntime.make(
+    effect.Layer.provideMerge(
+      databaseLayer(openNodeDatabase().driver, Ids.layerSeeded(7)),
+      clock.layer,
+    ),
+  );
+  return { appDatabase: () => runtime };
 });
 
 const DAY = 86_400_000;
@@ -113,7 +125,8 @@ const log = (daysAgo: number, title: string, sets: ReadonlyArray<SetDraft>) =>
 /** Lets the database reads finish and React show their results. */
 const settle = () =>
   act(async () => {
-    await new Promise((resolve) => setTimeout(resolve, 30));
+    if (vi.isFakeTimers()) await vi.advanceTimersByTimeAsync(30);
+    else await new Promise((resolve) => setTimeout(resolve, 30));
   });
 
 /** The props React Navigation gives a stack screen, with the shared mock navigation. */
@@ -176,14 +189,17 @@ const calendar = () => render(<CalendarScreen {...screenProps("Calendar", undefi
 
 let older: ActivityId;
 let newest: ActivityId;
+let newestAt: number;
 
 beforeAll(async () => {
   Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
   older = await log(9, "Legs", [set(100, 5), set(100, 5)]);
+  newestAt = Date.now() - 2 * DAY;
   newest = await log(2, "Heavy legs", [set(60, 8, "warm_up"), set(105, 5), set(100, 5)]);
 });
 
 beforeEach(() => {
+  time.set(Date.now());
   screen.fontScale = 1;
   vi.clearAllMocks();
 });
@@ -280,5 +296,64 @@ describe("the calendar", () => {
         isHost(node, "Pressable") && String(node.props.accessibilityLabel).startsWith("Legs"),
     );
     expect(rows.length).toBeGreaterThan(0);
+  });
+});
+
+/** The last minute of the Sunday after the newest workout's week, which still counts that week. */
+const lastMinute = () => {
+  const day = new Date(newestAt);
+  const monday = day.getDate() - ((day.getDay() + 6) % 7);
+  return new Date(day.getFullYear(), day.getMonth(), monday + 14).getTime() - 30_000;
+};
+
+const streak = (tree: ReactTestRenderer) =>
+  String(byTestId(tree, "streak-current").props.accessibilityLabel);
+
+/** Lets reads finish until the streak reads `label`. */
+const streakReads = async (tree: ReactTestRenderer, label: RegExp, tries = 50): Promise<void> => {
+  if (tries === 0 || label.test(streak(tree))) {
+    expect(streak(tree)).toMatch(label);
+    return;
+  }
+  await settle();
+  return streakReads(tree, label, tries - 1);
+};
+
+describe("the streak across midnight", () => {
+  it("ends on the Monday the screen stays open into", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      time.set(lastMinute());
+      const history = await render(<ProgressScreen />);
+      await streakReads(history, /^Streak, [12] weeks?$/);
+
+      time.set(lastMinute() + 60_000);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(29_000);
+      });
+      expect(streak(history)).toMatch(/^Streak, [12] weeks?$/);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1_000);
+      });
+      await streakReads(history, /^Streak, 0 weeks$/);
+      await act(async () => history.unmount());
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("reads the clock again when svett comes back to the foreground", async () => {
+    time.set(lastMinute());
+    const history = await render(<ProgressScreen />);
+    expect(streak(history)).toMatch(/^Streak, [12] weeks?$/);
+
+    time.set(lastMinute() + 3 * DAY);
+    for (const listener of appState.listeners) listener("background");
+    await settle();
+    expect(streak(history)).toMatch(/^Streak, [12] weeks?$/);
+    for (const listener of appState.listeners) listener("active");
+    await settle();
+    expect(streak(history)).toBe("Streak, 0 weeks");
+    await act(async () => history.unmount());
   });
 });

@@ -12,6 +12,17 @@ export const UTC: UtcOffset = () => 0;
 export const localDayNumber = (millis: number, offset: UtcOffset): number =>
   Math.floor((millis + offset(millis) * 60_000) / DAY);
 
+/** The first instant of the next local day, when a screen showing today must move on. */
+export const nextLocalMidnight = (millis: number, offset: UtcOffset): number => {
+  const day = localDayNumber(millis, offset);
+  const midnight = (day + 1) * DAY;
+  const sameOffset = midnight - offset(millis) * 60_000;
+  // Where the clocks go back at midnight, that instant still falls on the same day.
+  return localDayNumber(sameOffset, offset) > day
+    ? sameOffset
+    : midnight - offset(sameOffset) * 60_000;
+};
+
 /** Weeks run Monday to Sunday. Day 0 was a Thursday, so week 0 starts on day -3. */
 const weekNumber = (dayNumber: number): number => Math.floor((dayNumber + 3) / 7);
 
@@ -32,7 +43,7 @@ export const weekStreak = (
   offset: UtcOffset,
 ): Streak => {
   const weeks = new Set(startedAt.map((millis) => weekNumber(localDayNumber(millis, offset))));
-  const sorted = [...weeks].toSorted((a, b) => a - b);
+  const sorted = [...weeks].sort((a, b) => a - b);
   let longest = 0;
   let run = 0;
   for (const [index, week] of sorted.entries()) {

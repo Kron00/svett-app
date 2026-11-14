@@ -4,6 +4,7 @@ import {
   calendarWeeks,
   monthKey,
   monthOf,
+  nextLocalMidnight,
   parseMonthKey,
   shiftMonth,
   UTC,
@@ -69,6 +70,24 @@ describe("weekStreak", () => {
 
 const days = (weeks: ReturnType<typeof calendarWeeks>) =>
   weeks.map((week) => week.map((cell) => cell?.day ?? null));
+
+describe("nextLocalMidnight", () => {
+  it("is the start of the next local day", () => {
+    expect(nextLocalMidnight(at("2026-11-15T23:59:30Z"), UTC)).toBe(at("2026-11-16T00:00:00Z"));
+    expect(nextLocalMidnight(at("2026-11-16T00:00:00Z"), UTC)).toBe(at("2026-11-17T00:00:00Z"));
+    // 22:59:30 UTC is 23:59:30 in CET.
+    expect(nextLocalMidnight(at("2026-11-15T22:59:30Z"), CET)).toBe(at("2026-11-15T23:00:00Z"));
+  });
+
+  it("follows clocks that change at midnight", () => {
+    // Clocks go forward from 00:00 to 01:00, so the new day starts at 23:00 UTC.
+    const forward: UtcOffset = (millis) => (millis < at("2026-03-28T23:00:00Z") ? 60 : 120);
+    expect(nextLocalMidnight(at("2026-03-28T22:30:00Z"), forward)).toBe(at("2026-03-28T23:00:00Z"));
+    // Clocks go back from 00:00 to 23:00, so the new day starts an hour later, at 23:00 UTC.
+    const back: UtcOffset = (millis) => (millis < at("2026-10-24T22:00:00Z") ? 120 : 60);
+    expect(nextLocalMidnight(at("2026-10-24T21:30:00Z"), back)).toBe(at("2026-10-24T23:00:00Z"));
+  });
+});
 
 describe("calendarWeeks", () => {
   it("lays November 2026 out from Monday, with Sunday the 1st at the end of the first week", () => {
