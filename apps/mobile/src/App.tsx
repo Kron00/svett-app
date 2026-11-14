@@ -36,7 +36,8 @@ const Stack = createNativeStackNavigator<RootStackParamList>();
 // because agent-device refuses taps in screen content on iOS 27. It reads UIKit's
 // touch-transparent floating bar containers as toolbars that cover the whole screen.
 // scripts/sim/data.sh reaches export and import the same way, through svett://data,
-// svett://import?file=<name> and svett://imports/<id>/undo.
+// svett://import?file=<name> and svett://imports/<id>/undo. scripts/sim/hevy.sh
+// adds &kind=hevy for a Hevy CSV.
 const linking: LinkingOptions<RootStackParamList> = {
   prefixes: ["svett://"],
   filter: (url) => !url.includes("expo-development-client"),

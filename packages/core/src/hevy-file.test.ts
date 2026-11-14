@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { Result } from "effect";
 import { describe, expect, it } from "vite-plus/test";
 
-import { decodeHevyFile, parseCsv, readTime, wallTimeAsUtc } from "./hevy-file.ts";
+import { decodeHevyFile, hevyFileLabel, parseCsv, readTime, wallTimeAsUtc } from "./hevy-file.ts";
 
 const sample = (name: string) =>
   readFileSync(new URL(`../test-data/${name}`, import.meta.url), "utf8");
@@ -222,5 +222,20 @@ describe("decodeHevyFile", () => {
       message: "Row 2 has no exercise.",
     });
     expect(failureOf(`${HEADER}\n"Legs,"1 Feb`)).toMatchObject({ reason: "invalid" });
+  });
+});
+
+describe("hevyFileLabel", () => {
+  it("says how many workouts and sets the file holds, and how many sets it leaves out", () => {
+    const file = Result.getOrThrow(decode(sample("hevy-sample.csv")));
+    expect(hevyFileLabel(file)).toBe("A Hevy export with 3 workouts and 25 sets.");
+    expect(
+      hevyFileLabel({ ...file, workouts: file.workouts.slice(0, 1), sets: 1, emptySets: 1 }),
+    ).toBe(
+      "A Hevy export with 1 workout and 1 set. One set records no reps, time or distance, so svett leaves it out.",
+    );
+    expect(hevyFileLabel({ ...file, emptySets: 1_200 })).toBe(
+      "A Hevy export with 3 workouts and 25 sets. 1,200 sets record no reps, time or distance, so svett leaves them out.",
+    );
   });
 });

@@ -385,3 +385,13 @@ export const decodeHevyFile = (
     localTimes,
   });
 };
+
+const counted = (count: number, one: string, other: string) =>
+  `${count.toLocaleString("en-US")} ${count === 1 ? one : other}`;
+
+/** What a Hevy file holds, in one sentence for the import preview. */
+export const hevyFileLabel = (file: HevyFile): string => {
+  const holds = `A Hevy export with ${counted(file.workouts.length, "workout", "workouts")} and ${counted(file.sets, "set", "sets")}.`;
+  if (file.emptySets === 0) return holds;
+  return `${holds} ${file.emptySets === 1 ? "One set records" : `${file.emptySets.toLocaleString("en-US")} sets record`} no reps, time or distance, so svett leaves ${file.emptySets === 1 ? "it" : "them"} out.`;
+};
