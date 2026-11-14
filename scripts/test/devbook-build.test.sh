@@ -567,6 +567,10 @@ check "checks.sh clears the simulated route when it ends" simctl_got "simctl loc
 check "checks.sh shows svett dark, its only appearance" bound_got "$bound_prefix settings appearance dark"
 check "checks.sh cancels the ChatGPT sign-in sheet" bound_got "$bound_prefix alert dismiss"
 check "checks.sh saves the copied report" grep -qxF "fake phone check report" "$root/checks/report.txt"
+check "checks.sh says in the report that GPS ran on the Home Screen, since the simulator cannot lock" \
+  grep -qF "Simulator: it cannot lock its screen, so GPS ran with svett on the Home Screen." "$root/checks/report.txt"
+check "checks.sh says in a Debug report that a development client reload forgets when svett was away" \
+  grep -qF "Debug: when svett comes back on its tab root" "$root/checks/report.txt"
 check "checks.sh screenshots each check, the banner and the sign-in sheet" \
   only_calls "screenshot" \
   "screenshot $root/checks/01-reset.png" "screenshot $root/checks/02-keychain.png" \
@@ -581,6 +585,10 @@ check "checks.sh Release relaunches the installed app without Metro and reopens 
   only_open "com.kron00.svett --relaunch" "com.kron00.svett --relaunch" com.apple.springboard \
   com.kron00.svett com.kron00.svett com.kron00.svett "com.kron00.svett --relaunch"
 check "checks.sh Release never scrolls or presses while the Home Screen is in front" never_acts_on_home_screen
+check "checks.sh Release notes the simulator in the report" \
+  grep -qF "Simulator: it cannot lock its screen" "$root/checks-release/report.txt"
+check "checks.sh Release leaves out the Debug reload note" \
+  test "$(grep -cF "Debug:" "$root/checks-release/report.txt")" -eq 0
 
 case_name="checks.sh when the dev client reloads on its way back"
 checks_sh FAKE_RELOAD=1 "$root/checks-reload"

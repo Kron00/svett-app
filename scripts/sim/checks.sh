@@ -10,7 +10,8 @@
 # with svett in the background for 70 seconds, and opens the ChatGPT sign-in sheet
 # and cancels it. After each step that leaves svett it brings svett back to Phone
 # checks, and it stops before a scroll or press when svett is not in front. Last
-# it relaunches, copies the report and saves the clipboard as report.txt.
+# it relaunches, copies the report and saves the clipboard as report.txt, with a
+# note on what the simulator cannot show.
 # Screenshots are numbered PNGs. Both go to out-dir, by default
 # ~/svett-proof/<branch>/checks/. Like tabs.sh, Debug opens the development client
 # on Metro at SVETT_METRO, --release opens the installed Release build, and every
@@ -222,7 +223,17 @@ agent_device alert dismiss || press_centre 'label="Cancel"' ||
 relaunch
 tap 'id="copy-report"'
 agent_device wait 1000
-agent_device clipboard read >"$out/report.txt"
+# The checks count any time svett is not in front as locked, so the simulator,
+# which cannot lock, stands in with the Home Screen.
+note="Simulator: it cannot lock its screen, so GPS ran with svett on the Home Screen. A pass shows recording in the background, not with the screen locked."
+[[ "$release" == true ]] ||
+  note+=" Debug: when svett comes back on its tab root, the development client reloaded and forgot when svett was away, so GPS and the notification can read WAITING. Run with --release to avoid the reload."
+{
+  agent_device clipboard read
+  echo
+  echo "$note"
+} >"$out/report.txt"
+echo "$note"
 echo "Saved $out/report.txt"
 screenshot report
 
