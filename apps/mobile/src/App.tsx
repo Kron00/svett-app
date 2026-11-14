@@ -5,6 +5,7 @@ import { type LinkingOptions, NavigationContainer } from "@react-navigation/nati
 import { createNativeStackNavigator } from "@react-navigation/native-stack";
 import { StatusBar } from "expo-status-bar";
 import { SymbolView } from "expo-symbols";
+import { View } from "react-native";
 
 import { WorkoutCounts } from "./data/WorkoutCounts";
 import { PhoneChecksScreen } from "./checks/PhoneChecksScreen";
@@ -15,6 +16,7 @@ import type { RootStackParamList } from "./navigation";
 import { PhoneChecksRow } from "./PhoneChecksRow";
 import { PlaceholderScreen } from "./PlaceholderScreen";
 import { TABS } from "./tabs";
+import { ListSection } from "./ui/List";
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
 const Tabs = createBottomTabNavigator();
@@ -46,10 +48,12 @@ function TabNavigator() {
             <PlaceholderScreen tab={tab}>
               {tab.name === "Progress" ? <WorkoutCounts /> : null}
               {tab.name === "You" ? (
-                <>
-                  <PhoneChecksRow />
-                  <DesignGalleryRow />
-                </>
+                <View className="mt-6 self-stretch">
+                  <ListSection>
+                    <PhoneChecksRow />
+                    <DesignGalleryRow />
+                  </ListSection>
+                </View>
               ) : null}
             </PlaceholderScreen>
           )}

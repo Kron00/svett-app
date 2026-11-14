@@ -21,6 +21,7 @@ export const COLOR_TOKENS = [
   "destructive-fill",
   "success",
   "success-fill",
+  "warning",
   "set-warm-up",
   "set-normal",
   "set-failure",

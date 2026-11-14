@@ -1,8 +1,8 @@
 import { ActivityRepository } from "@svett/core";
 import { Effect } from "effect";
 import { useEffect, useState } from "react";
-import { Text } from "react-native";
 
+import { AppText } from "../ui/AppText";
 import { launchTarget, openDatabase } from "./database";
 
 let database: ReturnType<typeof openDatabase> | undefined;
@@ -20,8 +20,8 @@ export function WorkoutCounts() {
       );
   }, []);
   return (
-    <Text testID="workout-counts" className="text-center text-base text-neutral-400">
+    <AppText testID="workout-counts" tone="secondary" className="text-center">
       {text}
-    </Text>
+    </AppText>
   );
 }

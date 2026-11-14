@@ -12,10 +12,14 @@ import {
 } from "@svett/core";
 import * as Application from "expo-application";
 import * as Clipboard from "expo-clipboard";
-import { type ReactNode, useEffect, useRef, useState } from "react";
-import { Platform, Pressable, ScrollView, Text, TextInput, View } from "react-native";
+import { type ComponentProps, type ReactNode, useEffect, useRef, useState } from "react";
+import { Platform, ScrollView, TextInput, View } from "react-native";
 
 import SvettNative from "../../modules/svett-native";
+import { useColor } from "../design/hooks";
+import { AppText, type TextTone } from "../ui/AppText";
+import { Button } from "../ui/Button";
+import { ListSection } from "../ui/List";
 import {
   useChatGPTCheck,
   useHealthCheck,
@@ -31,34 +35,13 @@ import {
   saveOutcome,
 } from "./saved";
 
-const STATUS_COLOR: Record<CheckOutcome["status"], string> = {
-  "not run": "text-neutral-500 dark:text-neutral-400",
-  waiting: "text-amber-600 dark:text-amber-400",
-  passed: "text-green-600 dark:text-green-400",
-  failed: "text-red-600 dark:text-red-400",
-  inconclusive: "text-orange-600 dark:text-orange-400",
+const STATUS_TONE: Record<CheckOutcome["status"], TextTone> = {
+  "not run": "secondary",
+  waiting: "warning",
+  passed: "success",
+  failed: "destructive",
+  inconclusive: "warning",
 };
-
-function Button({
-  label,
-  onPress,
-  testID,
-}: {
-  readonly label: string;
-  readonly onPress: () => unknown;
-  readonly testID?: string;
-}) {
-  return (
-    <Pressable
-      accessibilityRole="button"
-      testID={testID}
-      onPress={() => void onPress()}
-      className="rounded-lg bg-rose-600 px-4 py-2 active:opacity-70"
-    >
-      <Text className="text-base font-semibold text-white">{label}</Text>
-    </Pressable>
-  );
-}
 
 function CheckCard({
   info,
@@ -70,23 +53,37 @@ function CheckCard({
   readonly children?: ReactNode;
 }) {
   return (
-    <View className="gap-2 rounded-xl bg-neutral-100 p-4 dark:bg-neutral-900">
-      <View className="flex-row items-center justify-between gap-2">
-        <Text className="flex-1 text-lg font-semibold text-black dark:text-white">
+    <View className="mx-gutter gap-2 rounded-card bg-surface p-gutter">
+      <View className="flex-row flex-wrap items-center justify-between gap-x-3">
+        <AppText variant="headline" accessibilityRole="header" className="shrink">
           {info.title}
-        </Text>
-        <Text className={`text-sm font-bold ${STATUS_COLOR[outcome.status]}`}>
+        </AppText>
+        <AppText variant="subheadline" tone={STATUS_TONE[outcome.status]}>
           {statusLabel(outcome)}
-        </Text>
+        </AppText>
       </View>
-      <Text className="text-sm text-neutral-600 dark:text-neutral-400">{info.steps}</Text>
+      <AppText variant="subheadline" tone="secondary">
+        {info.steps}
+      </AppText>
       {isSeen(outcome) ? (
-        <Text selectable className="text-sm text-black dark:text-white">
+        <AppText variant="subheadline" selectable>
           {outcome.detail}
-        </Text>
+        </AppText>
       ) : null}
-      {children === undefined ? null : <View className="flex-row flex-wrap gap-2">{children}</View>}
+      {children === undefined ? null : (
+        <View className="flex-row flex-wrap gap-2 pt-1">{children}</View>
+      )}
     </View>
+  );
+}
+
+function Field({ className, ...props }: ComponentProps<typeof TextInput>) {
+  return (
+    <TextInput
+      placeholderTextColor={useColor("secondary-label")}
+      className={`min-h-target rounded-field bg-control px-3 py-2 text-body text-label ${className ?? ""}`}
+      {...props}
+    />
   );
 }
 
@@ -100,15 +97,15 @@ function CountField({
   readonly onChange: (text: string) => void;
 }) {
   return (
-    <View className="flex-row items-center justify-between gap-4">
-      <Text className="flex-1 text-base text-black dark:text-white">{label}</Text>
-      <TextInput
+    <View className="min-h-target flex-row flex-wrap items-center justify-between gap-x-4 gap-y-2 px-gutter py-3">
+      <AppText className="shrink">{label}</AppText>
+      <Field
         accessibilityLabel={label}
         value={value}
         onChangeText={onChange}
         keyboardType="number-pad"
         placeholder="0"
-        className="w-20 rounded-lg bg-white px-3 py-2 text-right text-base text-black dark:bg-black dark:text-white"
+        className="w-20 text-right"
       />
     </View>
   );
@@ -119,17 +116,20 @@ function SafariPaste({ paste }: { readonly paste: (address: string) => Promise<s
   const [problem, setProblem] = useState<string | null>(null);
   return (
     <View className="w-full gap-2">
-      <TextInput
+      <Field
         accessibilityLabel="Address Safari could not open"
         value={address}
         onChangeText={setAddress}
         autoCapitalize="none"
         autoCorrect={false}
         placeholder="http://127.0.0.1:…/auth/callback?…"
-        className="rounded-lg bg-white px-3 py-2 text-base text-black dark:bg-black dark:text-white"
       />
-      {problem === null ? null : <Text className="text-sm text-red-600">{problem}</Text>}
-      <Button label="Use address" onPress={async () => setProblem(await paste(address))} />
+      {problem === null ? null : (
+        <AppText variant="subheadline" tone="destructive">
+          {problem}
+        </AppText>
+      )}
+      <Button label="Use address" onPress={() => void paste(address).then(setProblem)} />
     </View>
   );
 }
@@ -205,19 +205,31 @@ function PhoneChecks({
   });
   const actions: Record<CheckName, ReactNode> = {
     keychain: undefined,
-    notification: <Button label="Run" testID="check-run-notification" onPress={notification.run} />,
-    location: <Button label="Run" testID="check-run-location" onPress={location.run} />,
-    health: <Button label="Run" testID="check-run-health" onPress={health.run} />,
+    notification: (
+      <Button label="Run" testID="check-run-notification" onPress={() => void notification.run()} />
+    ),
+    location: (
+      <Button label="Run" testID="check-run-location" onPress={() => void location.run()} />
+    ),
+    health: <Button label="Run" testID="check-run-health" onPress={() => void health.run()} />,
     chatgpt:
       chatgpt.route === undefined ? (
         <>
-          <Button label="Run" testID="check-run-chatgpt" onPress={() => chatgpt.run("sheet")} />
-          <Button label="Use Safari" onPress={() => chatgpt.run("safari")} />
+          <Button
+            label="Run"
+            testID="check-run-chatgpt"
+            onPress={() => void chatgpt.run("sheet")}
+          />
+          <Button
+            label="Use Safari"
+            variant="secondary"
+            onPress={() => void chatgpt.run("safari")}
+          />
         </>
       ) : (
         <>
           {chatgpt.route === "safari" ? <SafariPaste paste={chatgpt.paste} /> : null}
-          <Button label="Cancel" onPress={chatgpt.cancel} />
+          <Button label="Cancel" variant="secondary" onPress={() => void chatgpt.cancel()} />
         </>
       ),
   };
@@ -237,49 +249,55 @@ function PhoneChecks({
   return (
     <ScrollView
       testID="phone-checks"
-      className="flex-1 bg-white dark:bg-black"
-      contentContainerClassName="gap-4 p-4 pb-12"
+      className="flex-1 bg-background"
+      contentContainerClassName="gap-4 pt-4 pb-12"
       contentInsetAdjustmentBehavior="automatic"
       keyboardShouldPersistTaps="handled"
     >
-      <Text className="text-base text-neutral-600 dark:text-neutral-400">
+      <AppText tone="secondary" className="px-gutter">
         These checks prove what only a phone can. Run each one, fill in the two numbers from
         AltStore, then copy the report and send it.
-      </Text>
-      <View className="gap-3 rounded-xl bg-neutral-100 p-4 dark:bg-neutral-900">
+      </AppText>
+      <ListSection>
         <CountField label="App IDs in use in AltStore" value={appIds} onChange={setAppIds} />
         <CountField label="Active apps in AltStore" value={activeApps} onChange={setActiveApps} />
-      </View>
+      </ListSection>
       {PHONE_CHECKS.map((info) => (
         <CheckCard key={info.name} info={info} outcome={outcomes[info.name]}>
           {actions[info.name]}
         </CheckCard>
       ))}
-      <View className="flex-row items-center gap-3">
+      <View className="flex-row flex-wrap items-center gap-3 px-gutter">
         <Button
           label="Copy report"
           testID="copy-report"
-          onPress={async () => {
+          onPress={() => {
             const now = Date.now();
-            await Clipboard.setStringAsync(report(now));
-            setCopiedAt(now);
+            void Clipboard.setStringAsync(report(now)).then(() => setCopiedAt(now));
           }}
         />
         {copiedAt === undefined ? null : (
-          <Text className="text-sm text-neutral-600 dark:text-neutral-400">
+          <AppText variant="footnote" tone="secondary">
             Copied at {new Date(copiedAt).toLocaleTimeString()}
-          </Text>
+          </AppText>
         )}
       </View>
-      <View className="flex-row">
-        <Button label="Reset checks" testID="reset-checks" onPress={onReset} />
+      <View className="flex-row px-gutter">
+        <Button
+          label="Reset checks"
+          variant="destructive"
+          testID="reset-checks"
+          onPress={() => void onReset()}
+        />
       </View>
       {resetProblem === undefined ? null : (
-        <Text className="text-sm text-red-600">{resetProblem}</Text>
+        <AppText variant="subheadline" tone="destructive" className="px-gutter">
+          {resetProblem}
+        </AppText>
       )}
-      <Text selectable className="font-mono text-xs text-neutral-600 dark:text-neutral-400">
+      <AppText variant="caption1" tone="secondary" selectable className="px-gutter font-mono">
         {report(copiedAt ?? openedAt)}
-      </Text>
+      </AppText>
     </ScrollView>
   );
 }
