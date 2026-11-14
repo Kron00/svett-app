@@ -30,7 +30,11 @@ import { TabNavigator } from "./TabNavigator";
 import { DataScreen } from "./transfer/DataScreen";
 import { ImportPreviewScreen } from "./transfer/ImportPreviewScreen";
 import { UndoImportScreen } from "./transfer/UndoImportScreen";
-import { WorkoutScreen as ActiveWorkoutScreen } from "./workout/WorkoutScreen";
+import { reloadWorkout } from "./workout/store";
+import {
+  FinishWorkoutButton,
+  WorkoutScreen as ActiveWorkoutScreen,
+} from "./workout/WorkoutScreen";
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
 
@@ -69,9 +73,14 @@ const linking: LinkingOptions<RootStackParamList> = {
       EditRoutine: "routine/:id/edit",
       Routine: "routine/:id",
       ActiveWorkout: "train/workout",
+      AddWorkoutExercise: "train/workout/exercises",
+      ReplaceWorkoutExercise: "train/workout/exercise/:exercise/replace",
     },
   },
 };
+
+// A workout left in progress, even by an app that was killed, shows above the tabs at launch.
+void reloadWorkout();
 
 export default function App() {
   return (
@@ -153,7 +162,21 @@ export default function App() {
         <Stack.Screen
           name="ActiveWorkout"
           component={ActiveWorkoutScreen}
-          options={{ headerShown: true, title: "Workout" }}
+          options={{
+            headerShown: true,
+            title: "Workout",
+            headerRight: () => <FinishWorkoutButton />,
+          }}
+        />
+        <Stack.Screen
+          name="AddWorkoutExercise"
+          component={ExerciseLibraryScreen}
+          options={{ headerShown: true, title: "Add exercise", headerLargeTitle: true }}
+        />
+        <Stack.Screen
+          name="ReplaceWorkoutExercise"
+          component={ExerciseLibraryScreen}
+          options={{ headerShown: true, title: "Replace exercise", headerLargeTitle: true }}
         />
         <Stack.Screen
           name="PhoneChecks"

@@ -32,11 +32,13 @@ import { EntryField, Keypad, Stepper } from "../ui/NumberEntry";
 import { OptionSheet } from "../ui/OptionSheet";
 import { SearchField } from "../ui/SearchField";
 import { SegmentedControl } from "../ui/SegmentedControl";
-import { type SetField, SetRow, SetRowHeader } from "../ui/SetRow";
+import { SetRow, SetRowHeader } from "../ui/SetRow";
 import { Sheet } from "../ui/Sheet";
 import { StatTile } from "../ui/StatTile";
 import { TextField } from "../ui/TextField";
 import { WorkoutBar } from "../ui/WorkoutBar";
+
+type SetField = "weight" | "reps";
 
 const LIMITS: Readonly<Record<SetField, NumberEntryLimits>> = {
   weight: WEIGHT_KG_ENTRY,
@@ -157,11 +159,25 @@ function SetRowsDemo() {
       {SETS.map((set, index) => (
         <SetRow
           key={set.id}
-          {...set}
-          weightPlaceholder={set.previous === null ? undefined : "80"}
-          repsPlaceholder={set.previous === null ? undefined : "8"}
+          setType={set.setType}
+          normalSetNumber={set.normalSetNumber}
+          previous={set.previous}
+          fields={[
+            {
+              name: "weight",
+              value: set.weight,
+              placeholder: set.previous === null ? undefined : "80",
+              unit: "kg",
+            },
+            {
+              name: "reps",
+              value: set.reps,
+              placeholder: set.previous === null ? undefined : "8",
+              unit: "reps",
+            },
+          ]}
           done={done[index] ?? false}
-          focusedField={index === 2 ? "reps" : undefined}
+          focusedField={index === 2 ? 1 : undefined}
           onPressSetType={noop}
           onPressField={noop}
           onToggleDone={() =>

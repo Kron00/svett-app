@@ -6,6 +6,7 @@ import {
   columnText,
   defaultSetFields,
   emptyWorkoutTitle,
+  fieldPatch,
   entryText,
   entryValue,
   finishPlan,
@@ -220,6 +221,34 @@ describe("changing set fields", () => {
     expect(setsForFields([withId("a", true, { weightKg: 60, reps: 10 })], "reps")).toEqual([
       { id: "a", patch: { weightKg: null } },
     ]);
+  });
+});
+
+describe("typing a value", () => {
+  it("stores the value in its column", () => {
+    expect(fieldPatch(withId("a", false, {}), "weight_reps", "weight", 80)).toEqual({
+      weightKg: 80,
+    });
+    expect(fieldPatch(withId("a", true, { reps: 5 }), "weight_time", "time", 30)).toEqual({
+      durationS: 30,
+    });
+  });
+
+  it("puts a done set back to do when its last recorded value is cleared", () => {
+    expect(
+      fieldPatch(withId("a", true, { weightKg: 80, reps: 5 }), "weight_reps", "reps", null),
+    ).toEqual({ reps: null, done: false });
+    expect(
+      fieldPatch(withId("a", true, { weightKg: 80, reps: 5 }), "weight_reps", "weight", null),
+    ).toEqual({ weightKg: null });
+    expect(
+      fieldPatch(
+        withId("a", true, { distanceM: 400, durationS: seconds(90) }),
+        "distance_time",
+        "time",
+        null,
+      ),
+    ).toEqual({ durationS: null });
   });
 });
 

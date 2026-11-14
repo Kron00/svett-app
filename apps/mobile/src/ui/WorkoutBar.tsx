@@ -18,11 +18,13 @@ export function WorkoutBar({
   title,
   elapsed,
   onPress,
+  testID,
 }: {
   readonly title: string;
   /** The running time, already formatted, such as "42:07". */
   readonly elapsed: string;
   readonly onPress: () => void;
+  readonly testID?: string;
 }) {
   const stacked = useIsAccessibilityTextSize();
   return (
@@ -31,6 +33,7 @@ export function WorkoutBar({
       accessibilityLabel={`Workout in progress, ${title}, ${elapsed}`}
       accessibilityHint="Opens the workout"
       onPress={onPress}
+      testID={testID}
     >
       <Glass isInteractive glassEffectStyle="regular" className="rounded-card">
         <View className="min-h-target flex-row items-center gap-3 px-4 py-3">

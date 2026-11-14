@@ -296,6 +296,25 @@ export const markDone = (
   return { ok: false, problem: `Enter the ${missing} first.` };
 };
 
+/**
+ * The change one typed value makes to a set. A done set whose last recorded value is cleared
+ * goes back to to do, since a done set must record something.
+ */
+export const fieldPatch = (
+  set: SetValues & Pick<ActivitySet, "done">,
+  fields: SetFields,
+  column: SetColumn,
+  value: number | null,
+): SetPatch => {
+  const patch: SetPatch = columnPatch(column, value);
+  const after = { ...set, ...patch };
+  const records = SET_FIELD_COLUMNS[fields].some(
+    (kept) => kept !== "weight" && columnValue(after, kept) !== null,
+  );
+  if (set.done && !records) patch.done = false;
+  return patch;
+};
+
 /** The changes that keep only the values the new fields show. A set left recording nothing is no longer done. */
 export const setsForFields = <
   S extends SetValues & { readonly id: unknown; readonly done: boolean },
