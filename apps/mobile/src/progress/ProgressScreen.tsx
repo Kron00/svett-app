@@ -267,9 +267,9 @@ export function ProgressScreen() {
   const more = rows.length === limit;
 
   return (
-    <View testID="progress" className="flex-1 bg-background">
+    <>
       <LegendList
-        testID="history-list"
+        testID="progress"
         data={rows}
         keyExtractor={(row) => row.activity.id}
         renderItem={({ item }) => (
@@ -300,6 +300,6 @@ export function ProgressScreen() {
         ListFooterComponent={<View style={{ height: deleted ? 160 : 24 }} />}
       />
       {deleted ? <UndoDeleteBar workout={deleted} /> : null}
-    </View>
+    </>
   );
 }

@@ -22,7 +22,7 @@ vi.mock("@react-navigation/bottom-tabs", () => ({
 vi.mock("@react-navigation/native-stack", () => ({
   createNativeStackNavigator: () => navigator("Stack"),
 }));
-vi.mock("react-native", () => ({ Text: "Text", View: "View" }));
+vi.mock("react-native", () => ({ ScrollView: "ScrollView", Text: "Text", View: "View" }));
 vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 vi.mock("./progress/ProgressScreen", () => ({ ProgressScreen: () => "progress screen" }));
 vi.mock("./chatgpt/ChatGPTRow", () => ({ ChatGPTRow: () => "chatgpt row" }));
