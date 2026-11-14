@@ -211,7 +211,7 @@ choose_first_result() {
 }
 
 add_exercise() {
-  link "svett://workout/exercises?q=$(encode "$1")"
+  link "svett://train/workout/exercises?q=$(encode "$1")"
   expect 'id="exercise-library"' "The exercise picker did not open"
   agent_device wait 1000
   choose_first_result "$2"

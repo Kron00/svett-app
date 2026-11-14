@@ -343,7 +343,7 @@ const makeActivityRepository = Effect.gen(function* () {
     );
 
   /** Adds exercises at the end of the workout in progress. Returns their IDs. */
-  const addExercises = (activityId: ActivityId, exercises: WorkoutStart["exercises"]) =>
+  const addExercises = (activityId: ActivityId, exercises: NewWorkout["exercises"]) =>
     run(
       sql.transaction(
         Effect.gen(function* () {

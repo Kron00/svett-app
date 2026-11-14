@@ -154,6 +154,7 @@ export const finish = async (): Promise<FinishResult> => {
         Effect.succeed<FinishResult>({ finished: false, problem }),
       ),
     ),
+    true,
   );
   return result ?? { finished: false, problem: "The workout was not saved." };
 };

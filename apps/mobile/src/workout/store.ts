@@ -12,6 +12,7 @@ import { type Effect, Option } from "effect";
 import { useSyncExternalStore } from "react";
 
 import { appDatabase } from "../data/database";
+import { write } from "../data/store";
 
 export type WorkoutState =
   | { readonly status: "loading" }
@@ -86,11 +87,15 @@ const failed = (error: unknown) =>
 
 /**
  * Saves a change through the repositories, then shows what the database holds. Every change
- * to the workout goes through here, so a workout cut off mid-set reopens as it was.
+ * to the workout goes through here, so a workout cut off mid-set reopens as it was. A change
+ * that reaches history, such as a finish, passes `everywhere` so every other screen reads again.
  */
-export const saveWorkout = <A>(effect: Effect.Effect<A, unknown, Services>): Promise<A | null> =>
+export const saveWorkout = <A>(
+  effect: Effect.Effect<A, unknown, Services>,
+  everywhere = false,
+): Promise<A | null> =>
   enqueue(async () => {
-    const result = await run(effect);
+    const result = await (everywhere ? write(effect) : run(effect));
     await read();
     return result;
   }).catch(async (error: unknown) => {
