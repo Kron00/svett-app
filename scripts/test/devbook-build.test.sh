@@ -2865,24 +2865,24 @@ holds() {
   case "$1" in
     'label="You, tab, 5 of 5"') [[ "$screen" != home ]] ;;
     'id="coach"' | 'id="coach-answer"') [[ "$screen" == coach ]] ;;
-    'label="Preview Upper body strength"') [[ "$screen" == coach && -f "$s/asked-routine" ]] ;;
-    'label="Preview Coach 3-day split"') [[ "$screen" == coach && -f "$s/asked-program" ]] ;;
-    'label="Preview Leg day"') [[ "$screen" == coach && -f "$s/asked-malformed" && -n "${FAKE_LEG_CARD:-}" ]] ;;
+    'role="button" label="Preview Upper body strength"') [[ "$screen" == coach && -f "$s/asked-routine" ]] ;;
+    'role="button" label="Preview Coach 3-day split"') [[ "$screen" == coach && -f "$s/asked-program" ]] ;;
+    'role="button" label="Preview Leg day"') [[ "$screen" == coach && -f "$s/asked-malformed" && -n "${FAKE_LEG_CARD:-}" ]] ;;
     'id="coach-proposal-error"') [[ "$screen" == coach && -f "$s/asked-malformed" && -z "${FAKE_NO_REFUSAL:-}" ]] ;;
     'id="routine-list"') [[ "$screen" == train ]] ;;
     "$routine_row") [[ "$screen" == train ]] && on_train routine ;;
     'id="routine-row" label='* | 'id="folder-name" label='*)
       [[ "$screen" == train ]] && grep -qxF -- "$1" <<<"$program_rows" && on_train program ;;
     'id="proposal"' | 'id="proposal-'*) [[ "$screen" == proposal ]] ;;
-    'label="Apply"') [[ "$screen" == proposal && "$(get "status-$(kind_of "$(get current)")")" == pending ]] ;;
-    'label="Undo"') [[ "$screen" == proposal && "$(get "status-$(kind_of "$(get current)")")" == applied ]] ;;
+    'role="button" label="Apply"') [[ "$screen" == proposal && "$(get "status-$(kind_of "$(get current)")")" == pending ]] ;;
+    'role="button" label="Undo"') [[ "$screen" == proposal && "$(get "status-$(kind_of "$(get current)")")" == applied ]] ;;
     *) return 1 ;;
   esac
 }
 # below_fold <selector>: an element only a scroll brings on screen.
 below_fold() {
   case "$1" in
-    'label="Preview '* | 'id="coach-proposal-error"' | 'id="routine-row"'* | 'id="folder-name"'* | \
+    'role="button" label="Preview '* | 'id="coach-proposal-error"' | 'id="routine-row"'* | 'id="folder-name"'* | \
       'id="proposal-end"' | 'id="proposal-set-'* | 'id="proposal-routine-'*) return 0 ;;
     *) return 1 ;;
   esac
@@ -2892,12 +2892,12 @@ press() {
   (($2 <= 840)) || return 0
   target=$(get target)
   case "$target" in
-    'label="Preview '*)
-      kind=${target#label=\"Preview }
+    'role="button" label="Preview '*)
+      kind=${target#role=\"button\" label=\"Preview }
       put current "${kind%\"}"
       put screen proposal ;;
-    'label="Apply"') put "status-$(kind_of "$(get current)")" applied ;;
-    'label="Undo"') put "status-$(kind_of "$(get current)")" undone ;;
+    'role="button" label="Apply"') put "status-$(kind_of "$(get current)")" applied ;;
+    'role="button" label="Undo"') put "status-$(kind_of "$(get current)")" undone ;;
     *) exit 1 ;;
   esac
 }
@@ -2939,7 +2939,7 @@ case "$1" in
       attrs)
         put target "$3"
         y=600
-        if [[ -n "${FAKE_CARD_LOW:-}" && "$3" == 'label="Preview Upper body strength"' && ! -f "$s/dragged" ]]; then
+        if [[ -n "${FAKE_CARD_LOW:-}" && "$3" == 'role="button" label="Preview Upper body strength"' && ! -f "$s/dragged" ]]; then
           y=900
         elif [[ -n "${FAKE_GLIDE:-}" && -f "$s/gliding" ]]; then
           rm -f "$s/gliding"
@@ -3000,23 +3000,23 @@ check "proposals.sh relaunches on each stand-in signed in, asks by link, and che
   "$debug_open $(stub_args program)" "$program_ask" "$to_train" "$to_coach" "$to_train" "$to_coach" "$to_train" \
   "$debug_open $(stub_args malformed)" "$malformed_ask"
 check "proposals.sh presses Apply and Undo in the header, and the cards, at their centres" \
-  only_calls "get attrs label=\"(Apply|Undo|Preview)" \
-  'get attrs label="Preview Upper body strength"' 'get attrs label="Preview Upper body strength"' \
-  'get attrs label="Apply"' 'get attrs label="Apply"' \
-  'get attrs label="Preview Upper body strength"' 'get attrs label="Preview Upper body strength"' \
-  'get attrs label="Undo"' 'get attrs label="Undo"' \
-  'get attrs label="Preview Coach 3-day split"' 'get attrs label="Preview Coach 3-day split"' \
-  'get attrs label="Apply"' 'get attrs label="Apply"' \
-  'get attrs label="Preview Coach 3-day split"' 'get attrs label="Preview Coach 3-day split"' \
-  'get attrs label="Undo"' 'get attrs label="Undo"'
+  only_calls "get attrs role=\"button\" label=\"(Apply|Undo|Preview)" \
+  'get attrs role="button" label="Preview Upper body strength"' 'get attrs role="button" label="Preview Upper body strength"' \
+  'get attrs role="button" label="Apply"' 'get attrs role="button" label="Apply"' \
+  'get attrs role="button" label="Preview Upper body strength"' 'get attrs role="button" label="Preview Upper body strength"' \
+  'get attrs role="button" label="Undo"' 'get attrs role="button" label="Undo"' \
+  'get attrs role="button" label="Preview Coach 3-day split"' 'get attrs role="button" label="Preview Coach 3-day split"' \
+  'get attrs role="button" label="Apply"' 'get attrs role="button" label="Apply"' \
+  'get attrs role="button" label="Preview Coach 3-day split"' 'get attrs role="button" label="Preview Coach 3-day split"' \
+  'get attrs role="button" label="Undo"' 'get attrs role="button" label="Undo"'
 check "proposals.sh reaches the routine on the Train tab by scrolling" \
   bound_got "$bound_prefix scroll down --until $upper_row"
 check "proposals.sh looks for the routine on the Train tab before Apply, after Apply and after Undo" \
   only_calls "is visible id=\"routine-row\" label=\"Upper" \
   "is visible $upper_row" "is visible $upper_row" "is visible $upper_row"
 check "proposals.sh checks the malformed routine's refusal and that no card shows for it" \
-  only_calls "get text id=\"coach-proposal-error\"|is visible label=\"Preview Leg day\"" \
-  'get text id="coach-proposal-error"' 'is visible label="Preview Leg day"'
+  only_calls "get text id=\"coach-proposal-error\"|is visible role=\"button\" label=\"Preview Leg day\"" \
+  'get text id="coach-proposal-error"' 'is visible role="button" label="Preview Leg day"'
 check "proposals.sh presses only above the home indicator" presses_clear_of_the_edge
 check "proposals.sh shoots at the largest text size, then restores the default" \
   only_calls "settings text-size" \

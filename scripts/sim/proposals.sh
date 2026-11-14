@@ -21,7 +21,8 @@
 # are taller than the phone. It presses an element at the centre of its frame, as
 # checks.sh does, only once two reads of the frame agree, so a scroll has settled, and
 # drags the screen up first when the centre is at the bottom edge. Apply and Undo are
-# native bar items, pressed by label. Nothing here opens an alert or a sheet.
+# native bar items. Buttons are pressed by their role and label. Nothing here opens an
+# alert or a sheet.
 #
 # Screenshots are numbered PNGs in out-dir, by default ~/svett-proof/<branch>/proposals/.
 # Like tabs.sh, Debug opens the development client on Metro at SVETT_METRO, --release
@@ -227,14 +228,14 @@ open_train() {
 preview() {
   open_link "svett://coach"
   expect 'id="coach"' "The coach"
-  tap "label=\"Preview $1\"" "The card for the proposal \"$1\""
+  tap "role=\"button\" label=\"Preview $1\"" "The card for the proposal \"$1\""
   expect 'id="proposal"' "The preview of \"$1\""
   expect_text 'id="proposal-title"' "$1"
 }
 
 # press_bar <label>: presses Apply or Undo in the preview's header and waits for its result.
 press_bar() {
-  local item="label=\"$1\""
+  local item="role=\"button\" label=\"$1\""
   expect "$item" "$1 in the preview's header"
   tap "$item" "$1 in the preview's header"
 }
@@ -252,7 +253,7 @@ agent_device settings text-size accessibility-extra-extra-extra-large
 
 # A routine.
 ask routine "$routine_question"
-bring "label=\"Preview $routine_title\"" "The card for \"$routine_title\" under the answer"
+bring "role=\"button\" label=\"Preview $routine_title\"" "The card for \"$routine_title\" under the answer"
 screenshot routine-answer
 open_train
 nowhere "$(row "$routine_row")" "The Train tab lists \"$routine_title\" before Apply."
@@ -278,7 +279,7 @@ screenshot routine-gone
 
 # A program of three routines in a new folder.
 ask program "$program_question"
-bring "label=\"Preview $program_folder\"" "The card for \"$program_folder\" under the answer"
+bring "role=\"button\" label=\"Preview $program_folder\"" "The card for \"$program_folder\" under the answer"
 screenshot program-answer
 open_train
 nowhere "$(folder "$program_folder")" "The Train tab shows the folder \"$program_folder\" before Apply."
@@ -313,6 +314,6 @@ ask malformed "$malformed_question"
 bring 'id="coach-proposal-error"' "Why svett refused the malformed routine"
 expect_text 'id="coach-proposal-error"' "svett refused a proposal from the coach, so nothing was saved."
 screenshot malformed
-nowhere "label=\"Preview $malformed_title\"" "The chat shows a card for the malformed \"$malformed_title\"."
+nowhere "role=\"button\" label=\"Preview $malformed_title\"" "The chat shows a card for the malformed \"$malformed_title\"."
 
 echo "The routine and the program each showed on the Train tab only after Apply and left it after Undo, and svett refused the malformed routine. Screenshots are in $out"
