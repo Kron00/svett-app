@@ -27,7 +27,7 @@ case "$1 $2" in
   "install --frozen-lockfile") ;;
   "exec fingerprint") printf '{"hash":"%s"}' "$(cat native-inputs)" ;;
   "fixture --out")
-    if [[ -n "${FAKE_FIXTURE_DB:-}" ]]; then cp "$FAKE_FIXTURE_DB" "$3"; else echo "fake fixture" >"$3"; fi ;;
+    if [[ -n "${FAKE_FIXTURE_DB:-}" ]]; then cp "$FAKE_FIXTURE_DB" "$3"; else printf '%s\n' "fake fixture" "${@:4}" >"$3"; fi ;;
   "exec expo")
     rm -rf ios
     mkdir -p ios
@@ -290,6 +290,16 @@ bound_got() {
 
 simctl_got() {
   grep -qxF -- "$1" "$root/simctl-calls" || fail "simctl did not receive \"$1\""
+}
+
+# only_simctl <call>... checks the simctl calls were exactly these, in order.
+only_simctl() {
+  local expected
+  expected=$(printf '%s\n' "$@")
+  [[ "$(cat "$root/simctl-calls" 2>/dev/null)" == "$expected" ]] || {
+    { echo "simctl calls:"; cat "$root/simctl-calls" 2>/dev/null; } >>"$output"
+    fail "simctl did not get exactly these calls: $expected"
+  }
 }
 
 release_app="$root/home/svett-app-build/Release/DerivedData/Build/Products/Release-iphonesimulator/svett.app"
@@ -1384,5 +1394,165 @@ check "chatgpt.sh --live signs out an earlier sign-in, then waits 10 minutes for
   'get attrs id="chatgpt-sign-out"' 'get attrs id="chatgpt-continue"' \
   'wait id="chatgpt-state-signedIn" 600000' 'get attrs id="chatgpt-sign-out"'
 
+
+# Stands in for the bound command on the account sign-in. It tracks the screen
+# (the tab root, Progress or Account), the sign-in step, who is signed in, and
+# where the imported history is. The second choice and each button under a card's
+# fields show only after a scroll since the screen last changed, so the test proves
+# the script scrolls to them. A press or fill lands on the element whose attrs
+# were read last. FAKE_NO_CLERK makes Account say the build has no Clerk key, and
+# FAKE_LEAK shows the second account the first one's history.
+first_email=svett-proof-a+clerk_test@example.com
+test_code=424242
+cat >"$fake/signin-device" <<EOF
+#!/usr/bin/env bash
+echo "\$*" >>"$root/bound-calls"
+state="$root/signin-state"
+get() { cat "\$state/\$1" 2>/dev/null || echo "\$2"; }
+put() { echo "\$2" >"\$state/\$1"; }
+mkdir -p "\$state"
+screen=\$(get screen tabs)
+step=\$(get step choose)
+who=\$(get who "")
+moved=\$(get moved no)
+scrolled=\$(get scrolled no)
+show() { put screen "\$1"; put scrolled no; }
+id_of() { sed -nE 's/.*id="([^"]+)".*/\1/p' <<<"\$1"; }
+# on_screen <id> is true when the element is on screen now.
+on_screen() {
+  case "\$screen:\$1" in
+    tabs:* | progress:*) [[ "\$1" == workout-counts && "\$screen" == progress ]] ;;
+    account:account) true ;;
+    account:accounts-off) [[ -n "\${FAKE_NO_CLERK:-}" ]] ;;
+    account:*) [[ -z "\${FAKE_NO_CLERK:-}" ]] || return 1
+      case "\$step:\$1" in
+        choose:sign-in-choose | choose:continue-with-chatgpt | email:sign-in-email | email:email-field | \
+          code:sign-in-code | code:code-field | offer:move-offer | signedin:signed-in) true ;;
+        choose:continue-with-email | email:send-code | code:check-code | offer:move-data | signedin:sign-out)
+          [[ "\$scrolled" == yes ]] ;;
+        *) false ;;
+      esac ;;
+    *) false ;;
+  esac
+}
+exists() { on_screen "\$1" || { scrolled=yes; on_screen "\$1"; }; }
+counts() {
+  case "\$who" in
+    "") [[ "\$moved" == yes ]] && echo "0 workouts, 0 sets" || echo "300 workouts, 6023 sets" ;;
+    $first_email) [[ "\$moved" == yes ]] && echo "300 workouts, 6023 sets" || echo "0 workouts, 0 sets" ;;
+    *) [[ -n "\${FAKE_LEAK:-}" ]] && echo "300 workouts, 6023 sets" || echo "0 workouts, 0 sets" ;;
+  esac
+}
+args=" \$* "
+target=\$(id_of "\$args")
+case "\$args" in
+  *" open com.kron00.svett svett://account "*) show account ;;
+  *" open com.kron00.svett --relaunch "*) show tabs ;;
+  *' press label="Progress, tab, 3 of 5" '*) show progress ;;
+  *" scroll "*" --until "*) exists "\$target" && put scrolled yes ;;
+  *" scroll "*) put scrolled yes ;;
+  *" get attrs "*)
+    on_screen "\$target" || exit 1
+    put last "\$target"
+    echo '{"label": "Field", "rect": {"x": 20, "y": 300, "width": 120, "height": 40}}' ;;
+  *" fill 80 320 "*)
+    [[ "\$(get last)" == email-field || "\$(get last)" == code-field ]] || exit 1
+    put "\$(get last)" "\${args#* fill 80 320 }" ;;
+  *" press 80 320 "*)
+    case "\$step:\$(get last)" in
+      choose:continue-with-email) put step email ;;
+      email:send-code) put step code ;;
+      code:check-code)
+        [[ "\$(get code-field)" == "$test_code " ]] || exit 1
+        put who "\$(get email-field | sed 's/ \$//')"
+        if [[ "\$(get answered no)" == no && "\$moved" == no ]]; then put step offer; else put step signedin; fi ;;
+      offer:move-data) put moved yes; put answered yes; put step signedin ;;
+      signedin:sign-out) put who ""; put step choose ;;
+      *) echo "fake device: press on \$(get last) at step \$step" >&2; exit 1 ;;
+    esac ;;
+  *" get text "*) counts ;;
+  *" wait absent "*) true ;;
+  *" is visible "* | *" wait "*) [[ -z "\$target" ]] || on_screen "\$target" ;;
+esac
+EOF
+chmod +x "$fake/signin-device"
+
+# run_signin [VAR=value...] [signin.sh args...] leaves the exit status in signin_status.
+run_signin() {
+  local -a vars=()
+  while [[ "${1:-}" == *=* ]]; do
+    vars+=("$1")
+    shift
+  done
+  rm -rf "$root/simctl-calls" "$root/bound-calls" "$root/signin-state"
+  signin_status=0
+  env PATH="$fake:$PATH" SVETT_DEVICE_CMD="signin-device --session 't3-test session' --device FAKE-UDID" \
+    "${vars[@]}" "$repo/scripts/sim/signin.sh" "$@" >"$output" 2>&1 || signin_status=$?
+}
+
+container_sqlite="$root/data container/Documents/SQLite"
+mkdir -p "$container_sqlite"
+for stale in svett-anonymous.db-wal svett-account-user_old.db ExpoSQLiteStorage; do
+  echo stale >"$container_sqlite/$stale"
+done
+
+case_name="signin.sh Debug with SVETT_DEVICE_CMD"
+run_signin "$root/signin"
+[[ "$signin_status" == 0 ]] || fail "signin.sh failed"
+check "signin.sh puts the fixture, imported from Hevy, in the database with no owner" \
+  diff -q <(printf '%s\n' "fake fixture" --imported) "$container_sqlite/svett-anonymous.db"
+check "signin.sh removes the earlier journal, account databases and move answer" \
+  test "$(ls "$container_sqlite")" == svett-anonymous.db
+check "signin.sh stops svett and drops every Clerk session before it changes the files" \
+  only_simctl "simctl list devices available" "simctl terminate FAKE-UDID com.kron00.svett" "simctl keychain FAKE-UDID reset" \
+  "simctl get_app_container FAKE-UDID com.kron00.svett data"
+check "signin.sh relaunches into the dev client and opens Account by its link" \
+  only_open "$debug_open" "com.kron00.svett svett://account" "$debug_open" "com.kron00.svett svett://account" \
+  "$debug_open" "com.kron00.svett svett://account" "$debug_open"
+check "signin.sh signs in two Clerk test accounts with the test code, at the field centres" \
+  only_calls "fill" \
+  "fill 80 320 $first_email" "fill 80 320 $test_code" \
+  "fill 80 320 svett-proof-b+clerk_test@example.com" "fill 80 320 $test_code"
+check "signin.sh scrolls to each button under the fold before it presses it" \
+  only_calls "get attrs" \
+  'get attrs id="continue-with-email"' 'get attrs id="email-field"' 'get attrs id="send-code"' \
+  'get attrs id="code-field"' 'get attrs id="check-code"' 'get attrs id="move-data"' \
+  'get attrs id="sign-out"' 'get attrs id="continue-with-email"' 'get attrs id="email-field"' \
+  'get attrs id="send-code"' 'get attrs id="code-field"' 'get attrs id="check-code"'
+check "signin.sh shoots each step at the largest text size, then restores the default" \
+  only_calls "settings text-size" \
+  "settings text-size accessibility-extra-extra-extra-large" "settings text-size large"
+check "signin.sh screenshots the data before, the choices, the offer, and each account's data" \
+  only_calls "screenshot" \
+  "screenshot $root/signin/01-phone-data.png" "screenshot $root/signin/02-choices.png" \
+  "screenshot $root/signin/03-move-offer.png" "screenshot $root/signin/04-first-account.png" \
+  "screenshot $root/signin/05-first-account-data.png" "screenshot $root/signin/06-signed-out-data.png" \
+  "screenshot $root/signin/07-second-account.png" "screenshot $root/signin/08-second-account-data.png"
+check "signin.sh says the second account sees none of the history" \
+  grep -qF "The Progress tab shows none of the first account's history in the second account: 0 workouts, 0 sets" "$output"
+check "signin.sh with SVETT_DEVICE_CMD calls neither simctl launch nor openurl" no_simctl_launch_or_openurl
+
+case_name="signin.sh Release with SVETT_DEVICE_CMD"
+run_signin --release "$root/signin-release"
+[[ "$signin_status" == 0 ]] || fail "signin.sh --release failed"
+check "signin.sh Release relaunches the installed app without Metro" \
+  only_open "com.kron00.svett --relaunch" "com.kron00.svett svett://account" "com.kron00.svett --relaunch" \
+  "com.kron00.svett svett://account" "com.kron00.svett --relaunch" "com.kron00.svett svett://account" \
+  "com.kron00.svett --relaunch"
+
+case_name="signin.sh when the second account sees the first one's history"
+run_signin FAKE_LEAK=1 "$root/signin-leak"
+check "signin.sh fails when the second account sees the history" test "$signin_status" -ne 0
+check "signin.sh says what the second account saw" \
+  grep -qF "The Progress tab should show none of the first account's history in the second account, but it reads: 300 workouts" "$output"
+check "signin.sh restores the default text size after a failure" \
+  only_calls "settings text-size" \
+  "settings text-size accessibility-extra-extra-extra-large" "settings text-size large"
+
+case_name="signin.sh on a build without a Clerk key"
+run_signin FAKE_NO_CLERK=1 "$root/signin-no-clerk"
+check "signin.sh fails on a build without a Clerk key" test "$signin_status" -ne 0
+check "signin.sh says to build with the publishable key" \
+  grep -qF "Build it with EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY set" "$output"
 
 echo "$passed passed"

@@ -327,6 +327,7 @@ export function AccountScreen() {
       contentContainerClassName="gap-4 pt-4 pb-12"
       contentInsetAdjustmentBehavior="automatic"
       keyboardShouldPersistTaps="handled"
+      keyboardDismissMode="on-drag"
     >
       {CLERK_PUBLISHABLE_KEY === undefined ? (
         <View testID="accounts-off">
