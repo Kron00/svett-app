@@ -86,7 +86,7 @@ const SIGN_IN_PROBLEMS: Readonly<Record<string, string>> = {
   otherAccount:
     "That is not the ChatGPT account this iPhone signed in with before. To use it, choose Use another ChatGPT account.",
   nothingPasted:
-    "There is no address to paste. In Safari, copy the whole address that starts with http://127.0.0.1, then come back and paste it.",
+    "svett found no address to paste. If iOS asked about pasting, choose Allow Paste. Otherwise, in Safari, copy the whole address that starts with http://127.0.0.1, then come back and paste it.",
   unknownAccount: "That ChatGPT account is no longer saved on this iPhone. Choose another one.",
   storage:
     "svett could not read its saved ChatGPT sign-in from this iPhone's Keychain. Close and reopen svett, then try again.",
