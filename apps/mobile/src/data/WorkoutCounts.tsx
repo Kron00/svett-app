@@ -20,10 +20,7 @@ export function WorkoutCounts() {
       );
   }, []);
   return (
-    <Text
-      testID="workout-counts"
-      className="text-center text-base text-neutral-500 dark:text-neutral-400"
-    >
+    <Text testID="workout-counts" className="text-center text-base text-neutral-400">
       {text}
     </Text>
   );

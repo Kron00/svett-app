@@ -4,15 +4,17 @@
 #
 # Usage: scripts/sim/gallery.sh [--release] [out-dir]
 #
-# Opens the gallery three times: in light, in dark, and in light at the largest
-# accessibility text size. Each time it saves a screenshot per page, scrolling
-# until the gallery's end marker is on screen, then opens the sheet and saves
-# that too. It reaches the gallery and the sheet through the svett://gallery
-# link, not taps, because agent-device refuses taps in screen content on iOS 27
-# as covered by UIKit's touch-transparent floating bar containers. Files are <pass>-NN.png and <pass>-sheet.png in
-# out-dir, by default ~/svett-proof/<branch>/gallery/. Like tabs.sh, Debug opens
-# the development client on Metro at SVETT_METRO, --release opens the installed
-# Release build, and every step runs through SVETT_DEVICE_CMD when it is set.
+# Opens the gallery twice, at the default and at the largest accessibility text
+# size. The app is dark only, so it ignores the simulator's appearance. Each
+# time it saves a screenshot per page, scrolling until the gallery's end marker
+# is on screen, then opens the sheet and saves that too. It reaches the gallery
+# and the sheet through the svett://gallery link, not taps, because agent-device
+# refuses taps in screen content on iOS 27 as covered by UIKit's
+# touch-transparent floating bar containers. Files are <pass>-NN.png and
+# <pass>-sheet.png in out-dir, by default ~/svett-proof/<branch>/gallery/. Like
+# tabs.sh, Debug opens the development client on Metro at SVETT_METRO,
+# --release opens the installed Release build, and every step runs through
+# SVETT_DEVICE_CMD when it is set.
 set -euo pipefail
 
 usage() {
@@ -58,10 +60,9 @@ open_flags=(--relaunch)
 # agent-device's own Expo detection falls back to that when it is inconclusive.
 [[ "$release" == true ]] || open_flags+=(--launch-url "$(dev_client_url "http://$metro")")
 
-# Leaves the simulator light at the default text size, also when a step fails,
-# and frees its own session.
+# Leaves the simulator at the default text size, also when a step fails, and
+# frees its own session.
 restore() {
-  agent_device settings appearance light || true
   agent_device settings text-size large || true
   [[ -n "${SVETT_DEVICE_CMD:-}" ]] || agent_device close || true
 }
@@ -72,11 +73,10 @@ screenshot() {
   echo "Saved $out/$1.png"
 }
 
-# shoot <pass name> <appearance> <text size>
+# shoot <pass name> <text size>
 shoot() {
   local pass=$1 page=1
-  agent_device settings appearance "$2"
-  agent_device settings text-size "$3"
+  agent_device settings text-size "$2"
   # A running app adopts a new text size only when it relaunches.
   agent_device open "$bundle_id" "${open_flags[@]}"
   agent_device wait "$you_tab" 120000
@@ -104,8 +104,7 @@ shoot() {
   screenshot "$pass-sheet"
 }
 
-shoot light light large
-shoot dark dark large
-shoot largest-text light accessibility-extra-extra-extra-large
+shoot dark large
+shoot largest-text accessibility-extra-extra-extra-large
 
 echo "Screenshots are in $out"

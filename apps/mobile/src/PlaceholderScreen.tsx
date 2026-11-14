@@ -11,11 +11,9 @@ export function PlaceholderScreen({
   readonly children?: ReactNode;
 }) {
   return (
-    <View className="flex-1 items-center justify-center gap-2 bg-white px-8 dark:bg-black">
-      <Text className="text-2xl font-semibold text-black dark:text-white">{tab.name}</Text>
-      <Text className="text-center text-base text-neutral-500 dark:text-neutral-400">
-        {tab.summary}
-      </Text>
+    <View className="flex-1 items-center justify-center gap-2 bg-black px-8">
+      <Text className="text-2xl font-semibold text-white">{tab.name}</Text>
+      <Text className="text-center text-base text-neutral-400">{tab.summary}</Text>
       {children}
     </View>
   );

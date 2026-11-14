@@ -189,7 +189,7 @@ type GalleryParams = { Gallery: { sheet?: "open" } | undefined };
 
 /**
  * Every design system component in its states. It is reachable from the You
- * tab, and scripts/sim/gallery.sh screenshots it in light, dark and the
+ * tab, and scripts/sim/gallery.sh screenshots it at the default and the
  * largest text size.
  */
 export function GalleryScreen() {

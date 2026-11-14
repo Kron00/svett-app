@@ -2,69 +2,38 @@
 @import "uniwind";
 
 /*
- * Colour tokens. Each one is defined here once per appearance, and
+ * Colour tokens. svett is dark only, so each one is defined once, and
  * src/design/tokens.ts names them for code that needs a raw value.
  * src/design/tokens.test.ts checks both lists match and checks contrast.
  * Values follow Apple's accessible system colours, so text passes WCAG AA.
+ * Static keeps tokens that only useColor reads, which no class uses.
  */
-@layer theme {
-  :root {
-    @variant light {
-      --color-background: #f2f2f7;
-      --color-surface: #ffffff;
-      --color-control: #eeeef3;
-      --color-label: #000000;
-      --color-secondary-label: #6c6c70;
-      --color-tertiary-label: #8e8e93;
-      --color-separator: #c6c6c8;
-      --color-accent: #c8103f;
-      --color-accent-fill: #c8103f;
-      --color-on-accent: #ffffff;
-      --color-on-tint: #ffffff;
-      --color-destructive: #d70015;
-      --color-destructive-fill: #fde7e9;
-      --color-success: #1e7a35;
-      --color-success-fill: #e3f4e7;
-      --color-set-warm-up: #a05a00;
-      --color-set-normal: #000000;
-      --color-set-failure: #d70015;
-      --color-set-drop: #0040dd;
-      --color-sport-strength: #c8103f;
-      --color-sport-run: #c93400;
-      --color-sport-ride: #0040dd;
-      --color-sport-walk: #1e7a35;
-      --color-sport-hike: #7f6545;
-      --color-sport-other: #6c6c70;
-    }
-
-    @variant dark {
-      --color-background: #000000;
-      --color-surface: #1c1c1e;
-      --color-control: #2c2c2e;
-      --color-label: #ffffff;
-      --color-secondary-label: #aeaeb2;
-      --color-tertiary-label: #6c6c70;
-      --color-separator: #38383a;
-      --color-accent: #ff6b86;
-      --color-accent-fill: #d4143f;
-      --color-on-accent: #ffffff;
-      --color-on-tint: #000000;
-      --color-destructive: #ff6961;
-      --color-destructive-fill: #3b1517;
-      --color-success: #30d158;
-      --color-success-fill: #0f2a17;
-      --color-set-warm-up: #ffd426;
-      --color-set-normal: #ffffff;
-      --color-set-failure: #ff6961;
-      --color-set-drop: #409cff;
-      --color-sport-strength: #ff6b86;
-      --color-sport-run: #ff9f0a;
-      --color-sport-ride: #409cff;
-      --color-sport-walk: #30d158;
-      --color-sport-hike: #b59469;
-      --color-sport-other: #aeaeb2;
-    }
-  }
+@theme static {
+  --color-background: #000000;
+  --color-surface: #1c1c1e;
+  --color-control: #2c2c2e;
+  --color-label: #ffffff;
+  --color-secondary-label: #aeaeb2;
+  --color-tertiary-label: #6c6c70;
+  --color-separator: #38383a;
+  --color-accent: #ff6b86;
+  --color-accent-fill: #d4143f;
+  --color-on-accent: #ffffff;
+  --color-on-tint: #000000;
+  --color-destructive: #ff6961;
+  --color-destructive-fill: #3b1517;
+  --color-success: #30d158;
+  --color-success-fill: #0f2a17;
+  --color-set-warm-up: #ffd426;
+  --color-set-normal: #ffffff;
+  --color-set-failure: #ff6961;
+  --color-set-drop: #409cff;
+  --color-sport-strength: #ff6b86;
+  --color-sport-run: #ff9f0a;
+  --color-sport-ride: #409cff;
+  --color-sport-walk: #30d158;
+  --color-sport-hike: #b59469;
+  --color-sport-other: #aeaeb2;
 }
 
 /*

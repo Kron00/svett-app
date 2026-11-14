@@ -7,15 +7,12 @@ import { COLOR_TOKENS, type ColorToken, TEXT_STYLES, TINT_COLORS } from "./token
 
 const css = readFileSync(new URL("../../global.css", import.meta.url), "utf8");
 
-const appearanceColors = (appearance: "light" | "dark"): Record<string, string> => {
-  const block = css.match(new RegExp(`@variant ${appearance} \\{([^}]*)\\}`))?.[1] ?? "";
-  return Object.fromEntries(
-    [...block.matchAll(/--color-([\w-]+):\s*(#[0-9a-f]{6});/g)].map(([, name = "", value = ""]) => [
-      name,
-      value,
-    ]),
-  );
-};
+const colors: Record<string, string> = Object.fromEntries(
+  [...css.matchAll(/--color-([\w-]+):\s*(#[0-9a-f]{6});/g)].map(([, name = "", value = ""]) => [
+    name,
+    value,
+  ]),
+);
 
 const luminance = (hex: string): number => {
   const [r = 0, g = 0, b = 0] = [1, 3, 5].map((start) => {
@@ -26,8 +23,8 @@ const luminance = (hex: string): number => {
 };
 
 const contrast = (a: string, b: string): number => {
-  const [light, dark] = [luminance(a), luminance(b)].toSorted((x, y) => y - x);
-  return ((light ?? 0) + 0.05) / ((dark ?? 0) + 0.05);
+  const [brighter, dimmer] = [luminance(a), luminance(b)].toSorted((x, y) => y - x);
+  return ((brighter ?? 0) + 0.05) / ((dimmer ?? 0) + 0.05);
 };
 
 // WCAG AA asks 4.5:1 for text and 3:1 for icons and other graphics.
@@ -73,9 +70,7 @@ const pairs: ReadonlyArray<readonly [ColorToken, ColorToken, number]> = [
   ["set-drop", "success-fill", TEXT],
 ];
 
-describe.each(["light", "dark"] as const)("%s colours", (appearance) => {
-  const colors = appearanceColors(appearance);
-
+describe("colours", () => {
   it("defines exactly the tokens the code names", () => {
     expect(Object.keys(colors).toSorted()).toEqual(COLOR_TOKENS.toSorted());
   });
