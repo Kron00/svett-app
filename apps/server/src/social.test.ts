@@ -128,6 +128,12 @@ const titles = (viewer: string, username: string) =>
     profile.activities.map(({ title }) => title),
   );
 
+/** An account's own profile, as a newly named account reads it. */
+const own = (username: string | null, isPrivate: boolean) => ({
+  status: 200,
+  body: { username, private: isPrivate, followers: 0, following: 0, requests: 0 },
+});
+
 describe("usernames", { timeout: 60_000 }, () => {
   it("gives each account one username, unique whatever its case", async () => {
     const answers = await withServer(
@@ -143,10 +149,6 @@ describe("usernames", { timeout: 60_000 }, () => {
         return { before, named, taken, renamed, freed };
       }),
     );
-    const own = (username: string | null, isPrivate: boolean) => ({
-      status: 200,
-      body: { username, private: isPrivate, followers: 0, following: 0, requests: 0 },
-    });
     expect(answers).toEqual({
       before: own(null, true),
       named: own("Anna.K", true),
@@ -216,7 +218,7 @@ describe("follows", { timeout: 60_000 }, () => {
         const benAfter = yield* body(as(CARA, "GET", "/v1/profiles/ben"));
         const followers = yield* body(as(ANNA, "GET", "/v1/profiles/ben/followers"));
         const following = yield* body(as(ANNA, "GET", "/v1/profiles/cara/following"));
-        const own = yield* body(as(BEN, "GET", "/v1/profile"));
+        const benOwn = yield* body(as(BEN, "GET", "/v1/profile"));
         return {
           publicFollow,
           privateFollow,
@@ -226,7 +228,7 @@ describe("follows", { timeout: 60_000 }, () => {
           benAfter,
           followers,
           following,
-          own,
+          benOwn,
         };
       }),
     );
@@ -244,7 +246,7 @@ describe("follows", { timeout: 60_000 }, () => {
           { username: "ben", private: true, follow: "none" },
         ],
       },
-      own: { username: "ben", followers: 1, following: 0, requests: 0 },
+      benOwn: { username: "ben", followers: 1, following: 0, requests: 0 },
     });
   });
 

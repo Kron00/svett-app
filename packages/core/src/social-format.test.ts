@@ -12,10 +12,15 @@ describe("followButton", () => {
     ["requested", true, "Requested", "unfollow"],
     ["following", true, "Following", "unfollow"],
     ["following", false, "Following", "unfollow"],
-  ] as const)("says what a %s follow of a private:%s profile does", (follow, isPrivate, label, action) => {
-    expect(followButton(follow, isPrivate)).toMatchObject({ label, action });
-  });
+  ] as const)(
+    "says what a %s follow of a private:%s profile does",
+    (follow, isPrivate, label, action) => {
+      expect(followButton(follow, isPrivate)).toMatchObject({ label, action });
+    },
+  );
 });
+
+const day = (millis: number) => `day ${millis}`;
 
 describe("activityLine", () => {
   const view: ActivityView = {
@@ -28,7 +33,6 @@ describe("activityLine", () => {
     energyKcal: null,
     hiddenFields: [],
   };
-  const day = (millis: number) => `day ${millis}`;
 
   it("names the kind, the length and the day", () => {
     expect(activityLine(view, day)).toBe("Run · 31 min · day 1790000000000");

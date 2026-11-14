@@ -12,6 +12,7 @@ const app = vi.hoisted(() => ({
   sent: [] as Array<string>,
   answers: new Map<string, Array<Answer>>(),
   navigated: [] as Array<string>,
+  getToken: async () => "session-token",
 }));
 
 vi.mock("react-native", () => ({
@@ -29,16 +30,13 @@ vi.mock("uniwind", () => ({ useCSSVariable: () => "#000000" }));
 vi.mock("../account/config", () => ({ CLERK_PUBLISHABLE_KEY: "pk_test_svett" }));
 vi.mock("../account/sync", () => ({ svettServer: () => "https://svett.test" }));
 vi.mock("../progress/dates", () => ({ formatDay: (millis: number) => `day ${millis}` }));
-vi.mock("@clerk/expo", () => {
-  const getToken = async () => "session-token";
-  return {
-    useAuth: () => ({
-      isLoaded: true,
-      userId: app.signedIn ? "user_me" : null,
-      getToken,
-    }),
-  };
-});
+vi.mock("@clerk/expo", () => ({
+  useAuth: () => ({
+    isLoaded: true,
+    userId: app.signedIn ? "user_me" : null,
+    getToken: app.getToken,
+  }),
+}));
 vi.mock("@react-navigation/native", async () => {
   const { useEffect } = await import("react");
   const navigation = {
@@ -139,11 +137,7 @@ describe("someone's profile", () => {
   });
 
   it("asks a private profile for approval, then shows the request", async () => {
-    answer(
-      "GET /v1/profiles/Anna.K",
-      ok(profile({})),
-      ok(profile({ follow: "requested" })),
-    );
+    answer("GET /v1/profiles/Anna.K", ok(profile({})), ok(profile({ follow: "requested" })));
     answer("PUT /v1/profiles/Anna.K/follow", ok({ follow: "requested" }));
     const root = await render(<ProfileScreen />, "follow-button");
     expect(find(root, "follow-button").props.accessibilityLabel).toBe("Ask to follow");
@@ -183,10 +177,7 @@ describe("someone's profile", () => {
         }),
       ),
     );
-    const root = await render(
-      <ProfileScreen />,
-      "activity-0190a0b2-0000-7000-8000-000000000001",
-    );
+    const root = await render(<ProfileScreen />, "activity-0190a0b2-0000-7000-8000-000000000001");
     const row = find(root, "activity-0190a0b2-0000-7000-8000-000000000001");
     expect(row.props.accessibilityLabel).toBe("Easy run, Run · 30 min · Start time hidden");
     expect(texts(root)).toContain("Private profile · Follows you");

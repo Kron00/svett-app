@@ -2,13 +2,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import { DurationSeconds } from "./duration.ts";
 import { type FollowState, privacy, viewActivity, visibleAudiences } from "./privacy.ts";
-import {
-  type Activity,
-  ActivityId,
-  type Audience,
-  EpochMillis,
-  HiddenField,
-} from "./schema.ts";
+import { type Activity, ActivityId, type Audience, EpochMillis, HiddenField } from "./schema.ts";
 
 const OWNER = "user_owner";
 const OTHER = "user_other";
@@ -66,7 +60,7 @@ const FIELDS = HiddenField.literals;
 /** Every set of hidden fields, from none to all five. */
 const FIELD_SETS: ReadonlyArray<ReadonlyArray<HiddenField>> = Array.from(
   { length: 2 ** FIELDS.length },
-  (_, bits) => FIELDS.filter((_, index) => (bits & (2 ** index)) !== 0),
+  (_, bits) => FIELDS.filter((__, index) => (bits & (2 ** index)) !== 0),
 );
 
 const activity = (hiddenFields: ReadonlyArray<HiddenField>, audience: Audience): Activity => ({

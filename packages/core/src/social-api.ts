@@ -1,4 +1,4 @@
-import { Data, Effect, Schema } from "effect";
+import { Data, Effect, Option, Schema } from "effect";
 
 import { ActivityView, FollowState } from "./privacy.ts";
 import { usernamePrefix } from "./username.ts";
@@ -150,7 +150,7 @@ export const httpSocialApi = (options: HttpSocialOptions) => {
       }
       if (!response.ok) {
         const error = Schema.decodeUnknownOption(ErrorBody)(answer);
-        if (error._tag === "Some" && isServerProblem(error.value.error)) {
+        if (Option.isSome(error) && isServerProblem(error.value.error)) {
           return yield* failed(error.value.error, error.value.message ?? error.value.error);
         }
         return yield* failed("server", `The server answered ${response.status}.`);

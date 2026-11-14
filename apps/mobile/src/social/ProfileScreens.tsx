@@ -17,7 +17,13 @@ import { Button } from "../ui/Button";
 import { ListRow, ListSection } from "../ui/List";
 import { runSocial, SignedInOnly, SocialView, useSocialRead } from "./api";
 
-export function Screen({ testID, children }: { readonly testID: string; readonly children: ReactNode }) {
+export function Screen({
+  testID,
+  children,
+}: {
+  readonly testID: string;
+  readonly children: ReactNode;
+}) {
   return (
     <ScrollView
       testID={testID}

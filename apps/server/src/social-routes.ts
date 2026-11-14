@@ -3,13 +3,13 @@ import { Data, Effect, Layer, Schema } from "effect";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 
 import { AccountRows } from "./account-rows.ts";
-import { signedInAccount, type SignInUnavailable, type Unauthorized } from "./auth.ts";
+import { SignInUnavailable, signedInAccount, Unauthorized } from "./auth.ts";
 import {
-  type CannotFollowSelf,
-  type NotFound,
+  CannotFollowSelf,
+  NotFound,
   SocialRows,
-  type UsernameRequired,
-  type UsernameTaken,
+  UsernameRequired,
+  UsernameTaken,
 } from "./social-rows.ts";
 
 const SaveProfile = Schema.Struct({ username: Schema.String, private: Schema.Boolean });
@@ -20,64 +20,30 @@ class InvalidUsername extends Data.TaggedError("InvalidUsername")<{
 const SearchQuery = Schema.Struct({ prefix: Schema.String });
 const UsernamePath = Schema.Struct({ username: Schema.String });
 
-type Refusal =
-  | Unauthorized
-  | SignInUnavailable
-  | Schema.SchemaError
-  | InvalidUsername
-  | NotFound
-  | UsernameTaken
-  | UsernameRequired
-  | CannotFollowSelf;
-
 const refuse = (error: string, status: number, message?: string) =>
   HttpServerResponse.jsonUnsafe(message === undefined ? { error } : { error, message }, {
     status,
   });
 
-const refusal = (error: Refusal) => {
-  switch (error._tag) {
-    case "Unauthorized":
-      return refuse("unauthorized", 401);
-    case "SignInUnavailable":
-      // Clients tell this apart from a refused session, which signing in again would fix.
-      return refuse(
-        "sign_in_unavailable",
-        503,
-        "Sign-in is not set up on this server yet, so accounts and their data are unavailable.",
-      );
-    case "SchemaError":
-      return refuse("invalid_request", 400, error.message);
-    case "InvalidUsername":
-      return refuse("invalid_username", 400, error.message);
-    case "NotFound":
-      return refuse("not_found", 404);
-    case "UsernameTaken":
-      return refuse("username_taken", 409);
-    case "UsernameRequired":
-      return refuse("username_required", 403);
-    case "CannotFollowSelf":
-      return refuse("cannot_follow_self", 400);
+/** The answer for a failure the client caused or can act on, or undefined for any other. */
+const refusal = (error: unknown) => {
+  if (error instanceof Unauthorized) return refuse("unauthorized", 401);
+  if (error instanceof SignInUnavailable) {
+    // Clients tell this apart from a refused session, which signing in again would fix.
+    return refuse(
+      "sign_in_unavailable",
+      503,
+      "Sign-in is not set up on this server yet, so accounts and their data are unavailable.",
+    );
   }
+  if (Schema.isSchemaError(error)) return refuse("invalid_request", 400, error.message);
+  if (error instanceof InvalidUsername) return refuse("invalid_username", 400, error.message);
+  if (error instanceof NotFound) return refuse("not_found", 404);
+  if (error instanceof UsernameTaken) return refuse("username_taken", 409);
+  if (error instanceof UsernameRequired) return refuse("username_required", 403);
+  if (error instanceof CannotFollowSelf) return refuse("cannot_follow_self", 400);
+  return undefined;
 };
-
-const REFUSALS: ReadonlySet<string> = new Set<Refusal["_tag"]>([
-  "Unauthorized",
-  "SignInUnavailable",
-  "SchemaError",
-  "InvalidUsername",
-  "NotFound",
-  "UsernameTaken",
-  "UsernameRequired",
-  "CannotFollowSelf",
-]);
-
-const isRefusal = <E>(error: E): error is Extract<E, Refusal> =>
-  typeof error === "object" &&
-  error !== null &&
-  "_tag" in error &&
-  typeof error._tag === "string" &&
-  REFUSALS.has(error._tag);
 
 /**
  * Runs `handle` for the signed-in account and answers its result as JSON. The account comes
@@ -88,7 +54,10 @@ const route = <A, E, R>(handle: (account: AccountId) => Effect.Effect<A, E, R>) 
   signedInAccount.pipe(
     Effect.flatMap(handle),
     Effect.map((body) => HttpServerResponse.jsonUnsafe(body)),
-    Effect.catchIf(isRefusal, (error) => Effect.succeed(refusal(error))),
+    Effect.catch((error) => {
+      const answer = refusal(error);
+      return answer === undefined ? Effect.fail(error) : Effect.succeed(answer);
+    }),
   );
 
 const username = Effect.map(HttpRouter.schemaPathParams(UsernamePath), (path) => path.username);

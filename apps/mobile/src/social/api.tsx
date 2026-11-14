@@ -1,11 +1,6 @@
 import { useAuth } from "@clerk/expo";
 import { useFocusEffect, useNavigation } from "@react-navigation/native";
-import {
-  httpSocialApi,
-  type SocialApi,
-  SocialFailed,
-  socialProblemMessage,
-} from "@svett/core";
+import { httpSocialApi, type SocialApi, SocialFailed, socialProblemMessage } from "@svett/core";
 import { Cause, Effect, Exit, Option } from "effect";
 import { type ReactNode, useCallback, useMemo, useState } from "react";
 import { ScrollView, View } from "react-native";
@@ -29,8 +24,7 @@ export const runSocial = async <A,>(
   const error = Option.getOrUndefined(Cause.findErrorOption(exit.cause));
   return {
     ok: false,
-    message:
-      error instanceof SocialFailed ? socialProblemMessage(error) : "Something went wrong.",
+    message: error instanceof SocialFailed ? socialProblemMessage(error) : "Something went wrong.",
   };
 };
 

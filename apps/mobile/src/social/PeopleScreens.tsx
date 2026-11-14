@@ -136,7 +136,13 @@ function EditProfileForm({
   );
 }
 
-function EditProfileRead({ api, username }: { readonly api: SocialApi; readonly username?: string }) {
+function EditProfileRead({
+  api,
+  username,
+}: {
+  readonly api: SocialApi;
+  readonly username?: string;
+}) {
   const read = useCallback(() => api.ownProfile(), [api]);
   const { state } = useSocialRead(read);
   return (
@@ -328,8 +334,7 @@ function RequestsRead({ api }: { readonly api: SocialApi }) {
       {({ profiles }) =>
         profiles.length === 0 ? (
           <AppText tone="secondary" className="mx-gutter" testID="requests-empty">
-            Nobody is waiting. When your profile is private, people who ask to follow you show
-            here.
+            Nobody is waiting. When your profile is private, people who ask to follow you show here.
           </AppText>
         ) : (
           <View className="gap-3">

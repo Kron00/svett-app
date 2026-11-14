@@ -1,4 +1,4 @@
-import { Effect, Exit } from "effect";
+import { Cause, Effect, Exit, Option } from "effect";
 import { describe, expect, it } from "vite-plus/test";
 
 import { httpSocialApi, SocialFailed, socialProblemMessage } from "./social-api.ts";
@@ -33,7 +33,7 @@ const server = (status: number, body: unknown, token: string | null = "token-1")
 const failure = async <A>(effect: Effect.Effect<A, SocialFailed>) => {
   const exit = await Effect.runPromiseExit(effect);
   if (Exit.isSuccess(exit)) throw new Error("expected a failure");
-  const error = exit.cause.reasons.find((reason) => reason._tag === "Fail")?.error;
+  const error = Option.getOrUndefined(Cause.findErrorOption(exit.cause));
   if (!(error instanceof SocialFailed)) throw new Error("expected SocialFailed");
   return error;
 };

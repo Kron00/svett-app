@@ -1,4 +1,4 @@
-import { Schema } from "effect";
+import { Option, Schema } from "effect";
 import { describe, expect, it } from "vite-plus/test";
 
 import { Username, usernameKey, usernamePrefix, usernameProblem } from "./username.ts";
@@ -27,8 +27,8 @@ describe("usernameProblem", () => {
   });
 
   it("is the rule the Username schema checks", () => {
-    expect(Schema.decodeUnknownOption(Username)("Lifter_99")._tag).toBe("Some");
-    expect(Schema.decodeUnknownOption(Username)("svett")._tag).toBe("None");
+    expect(Option.isSome(Schema.decodeUnknownOption(Username)("Lifter_99"))).toBe(true);
+    expect(Option.isSome(Schema.decodeUnknownOption(Username)("svett"))).toBe(false);
   });
 });
 

@@ -15,7 +15,7 @@ import {
   visibleAudiences,
 } from "@svett/core";
 import { Context, Data, Effect, Layer, Option, Schema } from "effect";
-import type { SqlError } from "effect/sql/SqlError";
+import { type SqlError, UniqueViolation } from "effect/sql/SqlError";
 
 export class NotFound extends Data.TaggedError("NotFound")<{}> {}
 export class UsernameTaken extends Data.TaggedError("UsernameTaken")<{}> {}
@@ -71,8 +71,14 @@ export interface SocialRowsShape {
   ) => Effect.Effect<ReadonlyArray<ProfileSummary>, SqlError | NotFound>;
   /** The accounts waiting for `owner` to approve their follow, oldest first. */
   readonly requests: (owner: AccountId) => Effect.Effect<ReadonlyArray<ProfileSummary>, SqlError>;
-  readonly approve: (owner: AccountId, username: string) => Effect.Effect<void, SqlError | NotFound>;
-  readonly decline: (owner: AccountId, username: string) => Effect.Effect<void, SqlError | NotFound>;
+  readonly approve: (
+    owner: AccountId,
+    username: string,
+  ) => Effect.Effect<void, SqlError | NotFound>;
+  readonly decline: (
+    owner: AccountId,
+    username: string,
+  ) => Effect.Effect<void, SqlError | NotFound>;
 }
 
 const decodeActivity = Schema.decodeUnknownOption(Activity);
@@ -111,11 +117,13 @@ export class SocialRows extends Context.Service<SocialRows, SocialRowsShape>()(
           select state from follow where follower_id = ${follower} and followee_id = ${followee}
         `.pipe(Effect.map(([row]) => row?.state ?? "none"));
 
-      const relation = (viewer: AccountId, owner: AccountId) =>
-        Effect.map(
-          followState(viewer, owner),
-          (follow): Relation => ({ viewer, owner, follow, blocked: false }),
-        );
+      const relationTo = (viewer: AccountId, owner: AccountId) =>
+        Effect.map(followState(viewer, owner), (follow): Relation => ({
+          viewer,
+          owner,
+          follow,
+          blocked: false,
+        }));
 
       const counts = (account: AccountId) =>
         sql<{ readonly followers: number; readonly following: number; readonly requests: number }>`
@@ -210,7 +218,7 @@ export class SocialRows extends Context.Service<SocialRows, SocialRowsShape>()(
             )
             .pipe(
               Effect.catchIf(
-                (error) => error.reason._tag === "UniqueViolation",
+                (error) => error.reason instanceof UniqueViolation,
                 () => Effect.fail(new UsernameTaken()),
               ),
             ),
@@ -226,7 +234,7 @@ export class SocialRows extends Context.Service<SocialRows, SocialRowsShape>()(
         profile: (viewer, username) =>
           Effect.gen(function* () {
             const owner = yield* findAccount(username);
-            const seen = yield* relation(viewer, owner.id);
+            const seen = yield* relationTo(viewer, owner.id);
             return {
               username: owner.username,
               private: owner.private,
