@@ -16,7 +16,10 @@
 # It also times a cold start to the Train tab's routine list, from the relaunch
 # until the list shows, and saves it as cold-start.txt. The time includes
 # agent-device's own calls, so it is an upper bound. Only a Release build's time
-# counts against the plan's 2 second target.
+# counts against the plan's 2 second target, which the plan measures with the
+# 300-workout database. SVETT_FIXTURE, the absolute path of a fixture database
+# in the app's data container such as fixture.sh copies there, relaunches svett
+# on that database every time.
 #
 # It opens screens through svett:// links and presses an element at the centre
 # of its frame, because agent-device 0.21.37 refuses a selector press inside
@@ -72,6 +75,7 @@ open_flags=(--relaunch)
 # Opening by bundle id alone shows the development client's launcher, and
 # agent-device's own Expo detection falls back to that when it is inconclusive.
 [[ "$release" == true ]] || open_flags+=(--launch-url "$(dev_client_url "http://$metro")")
+[[ -z "${SVETT_FIXTURE:-}" ]] || open_flags+=(--launch-args=-svettFixture "--launch-args=$SVETT_FIXTURE")
 
 # Leaves the simulator at the default text size, also when a step fails, and
 # frees its own session.
@@ -173,6 +177,7 @@ link "svett://train"
 expect 'id="routine-list"' "The Train tab did not list the routines"
 cold_start=$(($(now_ms) - started))
 build=$([[ "$release" == true ]] && echo Release || echo "Debug, loaded from Metro")
+[[ -z "${SVETT_FIXTURE:-}" ]] || build="$build, on the fixture database"
 echo "Cold start to the Train tab's routine list: $cold_start ms ($build, including agent-device's calls)" |
   tee "$out/cold-start.txt"
 screenshot train

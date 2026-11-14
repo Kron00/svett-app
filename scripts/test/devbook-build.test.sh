@@ -1589,6 +1589,19 @@ check "routines.sh discards the earlier workout before it builds the routine" \
 check "routines.sh saves the cold start time of a Release build" \
   grep -qF "(Release, including agent-device's calls)" "$root/routines-release/cold-start.txt"
 
+case_name="routines.sh Release on the fixture database"
+rm -rf "$root/routines-state"
+fixture_args="--launch-args=-svettFixture --launch-args=/data/Documents/svett-fixture.db"
+run_routines SVETT_FIXTURE=/data/Documents/svett-fixture.db --release "$root/routines-fixture"
+[[ "$routines_status" == 0 ]] || fail "routines.sh on the fixture failed"
+check "routines.sh relaunches on the fixture database every time" \
+  only_open "com.kron00.svett --relaunch $fixture_args" "${routine_links[@]}" \
+  "com.kron00.svett --relaunch $fixture_args" "com.kron00.svett svett://train" \
+  "com.kron00.svett svett://train"
+check "routines.sh says the cold start ran on the fixture database" \
+  grep -qF "(Release, on the fixture database, including agent-device's calls)" \
+  "$root/routines-fixture/cold-start.txt"
+
 case_name="routines.sh when the routine does not survive the relaunch"
 rm -rf "$root/routines-state"
 run_routines FAKE_FORGETS=1 "$root/routines-forgets"
