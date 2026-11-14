@@ -38,10 +38,19 @@ const STATUS_COLOR: Record<CheckOutcome["status"], string> = {
   inconclusive: "text-orange-600 dark:text-orange-400",
 };
 
-function Button({ label, onPress }: { readonly label: string; readonly onPress: () => unknown }) {
+function Button({
+  label,
+  onPress,
+  testID,
+}: {
+  readonly label: string;
+  readonly onPress: () => unknown;
+  readonly testID?: string;
+}) {
   return (
     <Pressable
       accessibilityRole="button"
+      testID={testID}
       onPress={() => void onPress()}
       className="rounded-lg bg-rose-600 px-4 py-2 active:opacity-70"
     >
@@ -195,13 +204,13 @@ function PhoneChecks({
   });
   const actions: Record<CheckName, ReactNode> = {
     keychain: undefined,
-    notification: <Button label="Run" onPress={notification.run} />,
-    location: <Button label="Run" onPress={location.run} />,
-    health: <Button label="Run" onPress={health.run} />,
+    notification: <Button label="Run" testID="check-run-notification" onPress={notification.run} />,
+    location: <Button label="Run" testID="check-run-location" onPress={location.run} />,
+    health: <Button label="Run" testID="check-run-health" onPress={health.run} />,
     chatgpt:
       chatgpt.route === undefined ? (
         <>
-          <Button label="Run" onPress={() => chatgpt.run("sheet")} />
+          <Button label="Run" testID="check-run-chatgpt" onPress={() => chatgpt.run("sheet")} />
           <Button label="Use Safari" onPress={() => chatgpt.run("safari")} />
         </>
       ) : (
@@ -226,6 +235,7 @@ function PhoneChecks({
 
   return (
     <ScrollView
+      testID="phone-checks"
       className="flex-1 bg-white dark:bg-black"
       contentContainerClassName="gap-4 p-4 pb-12"
       contentInsetAdjustmentBehavior="automatic"
@@ -247,6 +257,7 @@ function PhoneChecks({
       <View className="flex-row items-center gap-3">
         <Button
           label="Copy report"
+          testID="copy-report"
           onPress={async () => {
             const now = Date.now();
             await Clipboard.setStringAsync(report(now));
@@ -260,7 +271,7 @@ function PhoneChecks({
         )}
       </View>
       <View className="flex-row">
-        <Button label="Reset checks" onPress={onReset} />
+        <Button label="Reset checks" testID="reset-checks" onPress={onReset} />
       </View>
       {resetProblem === undefined ? null : (
         <Text className="text-sm text-red-600">{resetProblem}</Text>

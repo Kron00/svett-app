@@ -439,4 +439,78 @@ check "gallery.sh stops after 40 pages when the end marker never shows" \
 check "gallery.sh restores the default text size after a failure" \
   only_calls "settings" "settings text-size large" "settings text-size large"
 
+# Stands in for the bound command on Phone checks. Every element has the same
+# frame, the clipboard holds a report, no permission prompt shows, and the Apple
+# Health sheet shows only with FAKE_HEALTH_SHEET.
+cat >"$fake/checks-device" <<EOF
+#!/usr/bin/env bash
+echo "\$*" >>"$root/bound-calls"
+case "\$*" in
+  *" get attrs "*) echo '{"label": "Run", "rect": {"x": 20, "y": 300, "width": 120, "height": 40}}' ;;
+  *" clipboard read") echo "fake phone check report" ;;
+  *" alert wait "*) exit 1 ;;
+  *' wait label="Turn On All" '*) [[ -n "\${FAKE_HEALTH_SHEET:-}" ]] ;;
+esac
+EOF
+chmod +x "$fake/checks-device"
+
+# checks_sh [VAR=value...] [checks.sh args...]
+checks_sh() {
+  local -a vars=()
+  while [[ "${1:-}" == *=* ]]; do
+    vars+=("$1")
+    shift
+  done
+  rm -f "$root/simctl-calls" "$root/bound-calls"
+  env PATH="$fake:$PATH" SVETT_DEVICE_CMD="checks-device --session 't3-test session' --device FAKE-UDID" \
+    "${vars[@]}" "$repo/scripts/sim/checks.sh" "$@" >"$output" 2>&1 || fail "checks.sh $* failed"
+}
+
+you_tab_press='press label="You, tab, 5 of 5"'
+centre_press="press 80 320"
+
+case_name="checks.sh Debug with SVETT_DEVICE_CMD"
+checks_sh "$root/checks"
+check "checks.sh relaunches into the dev client, visits the Home Screen and comes back, and relaunches for the report" \
+  only_open "$debug_open" "$debug_open" com.apple.springboard com.kron00.svett com.kron00.svett "$debug_open"
+check "checks.sh presses tabs by selector and screen content only at an element's centre, which agent-device does not refuse on iOS 27" \
+  only_calls "press" \
+  "$you_tab_press" "$centre_press" "$centre_press" "$you_tab_press" "$centre_press" "$centre_press" \
+  "$centre_press" "$centre_press" "$centre_press" "$you_tab_press" "$centre_press" "$centre_press"
+check "checks.sh opens Phone checks, resets, runs each check and copies the report, in that order" \
+  only_calls "get attrs" \
+  'get attrs id="phone-checks-row"' 'get attrs id="reset-checks"' 'get attrs id="phone-checks-row"' \
+  'get attrs id="check-run-notification"' 'get attrs id="check-run-health"' \
+  'get attrs id="check-run-location"' 'get attrs id="check-run-chatgpt"' \
+  'get attrs id="phone-checks-row"' 'get attrs id="copy-report"'
+check "checks.sh waits for the banner on the Home Screen, then keeps svett away for over a minute for GPS" \
+  only_calls "home|wait text|wait [0-9]{5,}" \
+  "home" "wait text The background notification check worked. 20000" "home" "wait 70000"
+check "checks.sh moves the simulator along a route for the GPS check" grep -qE \
+  '^simctl location FAKE-UDID start --speed=3 --interval=1( -?[0-9.]+,-?[0-9.]+){2,}$' "$root/simctl-calls"
+check "checks.sh clears the simulated route when it ends" simctl_got "simctl location FAKE-UDID clear"
+check "checks.sh shows svett dark, its only appearance" bound_got "$bound_prefix settings appearance dark"
+check "checks.sh cancels the ChatGPT sign-in sheet" bound_got "$bound_prefix alert dismiss"
+check "checks.sh saves the copied report" grep -qxF "fake phone check report" "$root/checks/report.txt"
+check "checks.sh screenshots each check, the banner and the sign-in sheet" \
+  only_calls "screenshot" \
+  "screenshot $root/checks/01-reset.png" "screenshot $root/checks/02-keychain.png" \
+  "screenshot $root/checks/03-notification-banner.png" "screenshot $root/checks/04-notification.png" \
+  "screenshot $root/checks/05-health.png" "screenshot $root/checks/06-location.png" \
+  "screenshot $root/checks/07-chatgpt-sheet.png" "screenshot $root/checks/08-report.png"
+check "checks.sh with SVETT_DEVICE_CMD calls neither simctl launch nor openurl" no_simctl_launch_or_openurl
+
+case_name="checks.sh Release with SVETT_DEVICE_CMD"
+checks_sh --release "$root/checks-release"
+check "checks.sh Release relaunches the installed app without Metro" \
+  only_open "com.kron00.svett --relaunch" "com.kron00.svett --relaunch" com.apple.springboard \
+  com.kron00.svett com.kron00.svett "com.kron00.svett --relaunch"
+
+case_name="checks.sh with the Apple Health sheet"
+checks_sh FAKE_HEALTH_SHEET=1 "$root/checks-health"
+check "checks.sh screenshots the Apple Health sheet and allows every type" \
+  only_calls "screenshot $root/checks-health/0[56]|get attrs label" \
+  "screenshot $root/checks-health/05-health-sheet.png" 'get attrs label="Turn On All"' \
+  'get attrs label="Allow"' "screenshot $root/checks-health/06-health.png"
+
 echo "$passed passed"

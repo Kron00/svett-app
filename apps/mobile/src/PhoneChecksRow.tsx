@@ -9,6 +9,7 @@ export function PhoneChecksRow() {
   return (
     <Pressable
       accessibilityRole="button"
+      testID="phone-checks-row"
       onPress={() => navigation.navigate("PhoneChecks")}
       className="mt-6 flex-row items-center gap-3 rounded-xl bg-neutral-100 px-4 py-3 active:opacity-70 dark:bg-neutral-900"
     >
