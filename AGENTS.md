@@ -50,6 +50,8 @@ SVETT_METRO=host:port ~/svett-app/scripts/devbook-build.sh <branch> # Debug buil
 ~/svett-app/scripts/sim/checks.sh [--release] [out-dir]           # Run every phone check and save the report
 ~/svett-app/scripts/sim/chatgpt.sh [--release] [out-dir]          # Swift tests, then every ChatGPT sign-in state on the stand-in
 ~/svett-app/scripts/sim/chatgpt.sh --live [--release] [out-dir]   # Sign in with a real ChatGPT account, on request only
+~/svett-app/scripts/sim/coach.sh [--release] [out-dir]            # Swift tests, then the coach's states and answer on the stand-in
+~/svett-app/scripts/sim/coach.sh --live [--release] [out-dir]     # Ask OpenAI with a real account and record the exchange
 ```
 
 `devbook-build.sh` syncs `~/svett-app` to the branch, installs packages, builds the app for the simulator, installs it and opens it. It signs the simulator app to run locally, with no team, so the app carries its entitlements. The Keychain and Apple Health refuse an app without them. Metro's log is `~/svett-app/metro.log`. The first run needs the clone, so run it from a copy of the script or clone the repo to `~/svett-app` first.
@@ -71,6 +73,8 @@ The scripts use the simulator named by `SVETT_SIMULATOR`, by default a dedicated
 `sim/checks.sh` runs every phone check on the simulator. It opens Phone checks from the You tab and resets the checks. It relaunches and reopens Phone checks for the Keychain check. It grants notifications ahead, presses Run on the notification check and goes to the Home Screen in the next call, because the notification is due 10 seconds later. It waits there for the banner and comes back. It runs Apple Health and allows the sheet when it shows. It moves the simulator along a route with `simctl location` and keeps svett in the background for 70 seconds for GPS. It opens the ChatGPT sign-in sheet and cancels it. After each step that leaves svett it opens svett again without a relaunch, reopens Phone checks from the You tab when svett comes back elsewhere, and stops with an error before any scroll or press while svett is not in front. Last it relaunches, copies the report and saves the clipboard as `report.txt`, with a note that GPS ran on the Home Screen because the simulator cannot lock. A Debug report also notes that a development client reload forgets when svett was away. Numbered screenshots and the report go to `out-dir`, by default `~/svett-proof/<branch>/checks/`. It takes `SVETT_DEVICE_CMD`, `SVETT_METRO` and `--release` like `sim/tabs.sh`. agent-device 0.21.37 refuses a selector press inside screen content on iOS 27 as covered, because it reads UIKit's touch-transparent floating bar containers as toolbars over the screen. A press at coordinates skips that check, so the script reads an element's frame with `agent-device get attrs` and presses its centre.
 
 `sim/chatgpt.sh` first runs `scripts/chatgpt-tests.sh`, which runs `swift test` on the ChatGPT sign-in's Swift package and saves the output as `swift-test.txt`. Then, at the largest text size, it relaunches svett with each `-svettChatGPTStub` scenario, opens the ChatGPT settings through `svett://chatgpt` and walks every state against the stand-in for OpenAI. It fails when a state or message it expects does not show. `--live` instead waits up to 10 minutes for a person to sign in with a real account, then signs out. Screenshots go to `out-dir`, by default `~/svett-proof/<branch>/chatgpt/`. It takes `SVETT_DEVICE_CMD`, `SVETT_METRO` and `--release` like `sim/tabs.sh`.
+
+`sim/coach.sh` runs the Swift tests too, then copies the 300-workout fixture and the coach's stand-in fixtures into the app's data container. At the largest text size it relaunches svett once per state and asks through `svett://coach?ask=...`: signed out, no plan usage, "What was my best squat set last month?" answered by `-svettCoachStub` from `packages/tools/fixtures/coach-best-squat.json` while the read tools run on the fixture, and the plan's limit from `coach-plan-limit.json`. It fails when the answer, the data it read or the plan's wording does not show. `--live` asks OpenAI with a real account and `-svettCoachRecord`, signing in first when needed, and saves the exchange as `coach-live.json` in `out-dir`, by default `~/svett-proof/<branch>/coach/`. Copied over `coach-best-squat.json`, it becomes the stand-in that `pnpm test` replays. `pnpm coach-stand-in` rebuilds both stand-ins from OpenAI's documented stream events.
 
 Agents must use these scripts for simulator proof, so anyone can rerun it.
 
@@ -124,6 +128,14 @@ The data layer lives in `packages/core`. Follow these patterns so every table st
 It generates the fixture into `<out-dir>`, copies it into the app's data container, and screenshots the Progress tab's counts twice. `01-anonymous.png` is a plain launch. `02-fixture.png` is a relaunch through `launch.sh` with `-svettFixture <absolute path>`.
 
 iOS turns `-key value` launch arguments into user defaults, which React Native's `Settings` module reads, so the switch needs no native code. Without it the app opens the anonymous database. The Progress tab shows the counts it read.
+
+## Coach
+
+The coach sends `POST https://api.openai.com/v1/responses` from Swift, in `CoachClient` in `ChatGPTCore`, with the ChatGPT sign-in's token. JavaScript builds each request body and gets back only `CoachEvent`s: text deltas, tool calls, and `done` or `failed`. No token reaches JavaScript.
+
+`askCoach` in `packages/tools` runs one question: it builds the request, checks it with `checkResponsesRequest` against OpenAI's plan usage rules, runs the tool calls and keeps every turn in `coach_message`. It never resends a failed request. Read tools are in `packages/tools/src/tools.ts`, each with an Effect Schema input and output, a bounded answer and a `source` that the answer shows under "Read:". Add a tool there, and it goes to the model in the `svett` namespace. `COACH_METHOD` switches between tool calls, which ship, and the plan's summary fallback.
+
+The tests replay `packages/tools/fixtures/*.json` on the generated database and check every request against the recording. A live run with `scripts/sim/coach.sh --live` records a new one.
 
 ## Design system
 
