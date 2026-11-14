@@ -1,0 +1,354 @@
+import Foundation
+import Testing
+@testable import ChatGPTCore
+
+struct SignInTests {
+    @Test func aFirstSignInKeepsTheTokensWithTheVerifiedAccount() async throws {
+        let harness = Harness()
+        #expect(await harness.signIn() == nil)
+        let vault = try #require(harness.store.load())
+        let registration = try #require(vault.registrations.first)
+        #expect(vault.registrations.count == 1)
+        #expect(registration.clientID == StubOpenAI.issuedClientID)
+        #expect(registration.subject == "user-stub")
+        #expect(registration.email == "you@example.com")
+        #expect(registration.idToken?.split(separator: ".").count == 3)
+        #expect(vault.session?.accessToken == "stub-access-1")
+        #expect(vault.session?.refreshToken == "stub-refresh-1")
+        #expect(await harness.account.status == .signedIn(
+            email: "you@example.com", scope: OpenAI.scope, expiresAt: harness.clock.now + 3600, renewedAt: nil))
+        #expect(harness.requests(to: .keys).count == 1)
+    }
+
+    @Test func whatJavaScriptReadsCarriesNoToken() async throws {
+        let harness = Harness()
+        _ = await harness.signIn()
+        let vault = try #require(harness.store.load())
+        let secrets = [vault.session?.accessToken, vault.session?.refreshToken, vault.registrations.first?.idToken]
+        let record = try JSONSerialization.data(withJSONObject: await harness.account.status.record)
+        let text = String(decoding: record, as: UTF8.self)
+        for secret in secrets {
+            let secret = try #require(secret)
+            #expect(!text.contains(secret))
+        }
+        #expect(text.contains(#""planUsage":true"#))
+    }
+
+    @Test(arguments: [IDTokenProblem.badSignature, .wrongAudience, .expired, .wrongIssuer])
+    func anIDTokenThatFailsACheckSavesNothing(problem: IDTokenProblem) async {
+        let harness = Harness()
+        switch problem {
+        case .badSignature: harness.stub.identity.signedByStranger = true
+        case .wrongAudience: harness.stub.identity.audience = "oaiapp_another_app"
+        case .expired: harness.stub.identity.lifetime = -60
+        case .wrongIssuer: harness.stub.identity.issuer = "https://auth.example.com"
+        default: Issue.record("No way to spoil \(problem)")
+        }
+        #expect(await harness.signIn() == .identity(problem))
+        #expect(harness.store.load()?.session == nil)
+        #expect(harness.store.load()?.registrations == [])
+        #expect(await harness.account.status == .signedOut(returning: nil, ended: nil))
+    }
+
+    @Test func anAnswerWithoutAnIDTokenSavesNothing() async {
+        let harness = Harness()
+        harness.stub.script(.exchange, .reply(200, #"{"access_token": "a", "refresh_token": "r", "expires_in": 3600}"#))
+        #expect(await harness.signIn() == .identity(.malformed))
+        #expect(harness.store.load()?.session == nil)
+    }
+
+    @Test func keysThatCannotBeFetchedSaveNothing() async {
+        let harness = Harness()
+        harness.stub.script(.keys, .offline)
+        #expect(await harness.signIn() == .unreachable)
+        #expect(harness.store.load()?.session == nil)
+    }
+
+    @Test func aRefusedCodeKeepsTheIssuedClientIDForTheNextTry() async throws {
+        let harness = Harness()
+        harness.stub.script(.exchange, .reply(400, #"{"error": "invalid_grant"}"#))
+        #expect(await harness.signIn() == .codeExpired)
+        #expect(harness.store.load()?.registrations == [Vault.Registration(clientID: StubOpenAI.issuedClientID)])
+        #expect(harness.store.load()?.session == nil)
+        let next = await harness.signInPage(.returning)
+        #expect(next["client_id"] == StubOpenAI.issuedClientID)
+        #expect(next["agent_name_hint"] == nil)
+        #expect(await harness.signIn() == nil)
+        #expect(harness.store.load()?.registrations.map(\.subject) == ["user-stub"])
+    }
+
+    @Test func aRefusedClientForgetsTheRegistration() async {
+        let harness = Harness()
+        _ = await harness.signIn()
+        _ = await harness.account.signOut()
+        harness.stub.script(.exchange, .reply(401, #"{"error": "invalid_client"}"#))
+        #expect(await harness.signIn() == .clientRefused)
+        #expect(harness.store.load()?.registrations == [])
+        #expect(await harness.signInPage(.returning)["client_id"] == OpenAI.unregisteredClient)
+    }
+
+    @Test(arguments: [StubOpenAI.Answer.reply(500, ""), .reply(503, "{}"), .reply(429, ""), .offline])
+    func noAnswerFromTheTokenEndpointSavesNothing(answer: StubOpenAI.Answer) async {
+        let harness = Harness()
+        harness.stub.script(.exchange, answer)
+        #expect(await harness.signIn() == .unreachable)
+        #expect(harness.store.load()?.session == nil)
+    }
+
+    @Test func anUndocumentedRefusalOfTheCodeSavesNothing() async {
+        let harness = Harness()
+        harness.stub.script(.exchange, .reply(400, #"{"error": "invalid_request"}"#))
+        #expect(await harness.signIn() == .refused)
+        #expect(harness.store.load()?.session == nil)
+    }
+
+    @Test func aReturningSignInAsSomeoneElseIsRefused() async {
+        let harness = Harness()
+        _ = await harness.signIn()
+        _ = await harness.account.signOut()
+        harness.stub.identity.subject = "someone-else"
+        #expect(await harness.signIn() == .otherAccount)
+        #expect(harness.store.load()?.registrations.map(\.subject) == ["user-stub"])
+        #expect(harness.store.load()?.session == nil)
+    }
+
+    @Test func allowingPlanUsageAsksAgainAsTheSignedInAccount() async throws {
+        let harness = Harness(grantedScope: "openid profile email offline_access")
+        _ = await harness.signIn()
+        #expect(await harness.account.bearer() == .failure(.planUsageOff))
+        let idToken = try #require(harness.store.load()?.registrations.first?.idToken)
+        let page = await harness.signInPage(.allowPlanUsage)
+        #expect(page["client_id"] == StubOpenAI.issuedClientID)
+        #expect(page["prompt"] == "consent")
+        #expect(page["id_token_hint"] == idToken)
+        #expect(page["login_hint"] == "you@example.com")
+        #expect(page["scope"] == OpenAI.scope)
+    }
+
+    @Test func anotherAccountRegistersAgain() async {
+        let harness = Harness()
+        _ = await harness.signIn()
+        _ = await harness.account.signOut()
+        let page = await harness.signInPage(.anotherAccount)
+        #expect(page["client_id"] == OpenAI.unregisteredClient)
+        #expect(page["agent_name_hint"] == "svett")
+        #expect(page["id_token_hint"] == nil)
+        #expect(page["login_hint"] == nil)
+    }
+
+    @Test func theHostIDOutlivesEverySignOut() async {
+        let harness = Harness()
+        let first = await harness.signInPage(.returning)["ext_agent_host_id"]
+        _ = await harness.signIn()
+        _ = await harness.account.signOut()
+        #expect(await harness.signInPage(.anotherAccount)["ext_agent_host_id"] == first)
+        #expect(first?.hasPrefix("urn:uuid:") == true)
+    }
+}
+
+struct RefreshTests {
+    func signedIn(gate: Gate? = nil) async -> Harness {
+        let harness = Harness(gate: gate)
+        _ = await harness.signIn()
+        return harness
+    }
+
+    @Test func aFreshTokenIsUsedAsItIs() async {
+        let harness = await signedIn()
+        harness.clock.advance(3600 - ChatGPTAccount.refreshMargin - 1)
+        #expect(await harness.account.bearer() == .success("stub-access-1"))
+        #expect(harness.requests(to: .refresh).isEmpty)
+    }
+
+    @Test func aTokenAboutToExpireIsRefreshedWithTheDocumentedFields() async throws {
+        let harness = await signedIn()
+        harness.clock.advance(3600 - 60)
+        #expect(await harness.account.bearer() == .success("stub-access-2"))
+        let request = try #require(harness.requests(to: .refresh).first)
+        #expect(fields(request) == [
+            "grant_type": "refresh_token",
+            "client_id": StubOpenAI.issuedClientID,
+            "refresh_token": "stub-refresh-1",
+            "resource": "https://api.openai.com/v1",
+        ])
+        #expect(harness.store.load()?.session?.refreshToken == "stub-refresh-2")
+        #expect(await harness.account.status == .signedIn(
+            email: "you@example.com", scope: OpenAI.scope, expiresAt: harness.clock.now + 3600,
+            renewedAt: harness.clock.now))
+    }
+
+    @Test func theNextRefreshSendsTheReplacementToken() async {
+        let harness = await signedIn()
+        harness.clock.advance(3600)
+        _ = await harness.account.bearer()
+        harness.clock.advance(3600)
+        #expect(await harness.account.bearer() == .success("stub-access-3"))
+        #expect(harness.requests(to: .refresh).map { fields($0)["refresh_token"] } == ["stub-refresh-1", "stub-refresh-2"])
+    }
+
+    @Test func callersAtTheSameTimeShareOneRefresh() async {
+        let gate = Gate()
+        let harness = await signedIn(gate: gate)
+        harness.clock.advance(3600)
+        let first = Task { await harness.account.bearer() }
+        await eventually { gate.waiters == 1 }
+        let second = Task { await harness.account.bearer() }
+        let third = Task { await harness.account.renewIfDue() }
+        for _ in 0..<100 { await Task.yield() }
+        gate.release()
+        #expect(await first.value == .success("stub-access-2"))
+        #expect(await second.value == .success("stub-access-2"))
+        #expect(await third.value == nil)
+        #expect(harness.requests(to: .refresh).count == 1)
+    }
+
+    @Test(arguments: TokenAnswer.unusableGrantCodes.sorted())
+    func eachUnusableRefreshTokenEndsTheSessionAndKeepsTheClientID(code: String) async {
+        let harness = await signedIn()
+        harness.stub.script(.refresh, .reply(400, #"{"error": "\#(code)"}"#))
+        harness.clock.advance(3600)
+        #expect(await harness.account.bearer() == .failure(.signInAgain(.lapsed)))
+        #expect(await harness.account.status == .signedOut(returning: returningYou, ended: .lapsed))
+        #expect(harness.store.load()?.session == nil)
+        #expect(await harness.signInPage(.returning)["client_id"] == StubOpenAI.issuedClientID)
+    }
+
+    @Test func aRefusedClientEndsTheSessionAndTheRegistration() async {
+        let harness = await signedIn()
+        harness.stub.script(.refresh, .reply(401, #"{"error": "invalid_client"}"#))
+        harness.clock.advance(3600)
+        #expect(await harness.account.renewIfDue() == .signInAgain(.clientRefused))
+        #expect(await harness.account.status == .signedOut(returning: nil, ended: .clientRefused))
+        #expect(await harness.signInPage(.returning)["client_id"] == OpenAI.unregisteredClient)
+    }
+
+    @Test(arguments: [StubOpenAI.Answer.reply(500, ""), .reply(503, ""), .reply(429, ""), .reply(200, "{}"), .offline])
+    func noUsableAnswerKeepsTheSessionForTheNextTry(answer: StubOpenAI.Answer) async {
+        let harness = await signedIn()
+        harness.stub.script(.refresh, answer)
+        harness.clock.advance(3600)
+        #expect(await harness.account.bearer() == .failure(.unreachable))
+        #expect(harness.store.load()?.session?.refreshToken == "stub-refresh-1")
+        #expect(await harness.account.bearer() == .success("stub-access-2"))
+    }
+
+    @Test func anUndocumentedRefusalKeepsTheSession() async {
+        let harness = await signedIn()
+        harness.stub.script(.refresh, .reply(400, #"{"error": "invalid_request"}"#))
+        harness.clock.advance(3600)
+        #expect(await harness.account.renewIfDue() == .refused("invalid_request"))
+        #expect(harness.store.load()?.session?.refreshToken == "stub-refresh-1")
+    }
+
+    @Test func aRefreshThatTakesAwayPlanUsageTurnsItOff() async {
+        let harness = await signedIn()
+        harness.stub.script(.refresh, .reply(200, #"{"access_token": "a2", "refresh_token": "r2", "expires_in": 3600, "scope": "openid email"}"#))
+        harness.clock.advance(3600)
+        #expect(await harness.account.renewIfDue() == nil)
+        #expect(await harness.account.bearer() == .failure(.planUsageOff))
+    }
+
+    @Test func aRefreshAnswerWithoutARefreshTokenKeepsTheOldOne() async {
+        let harness = await signedIn()
+        harness.stub.script(.refresh, .reply(200, #"{"access_token": "a2", "expires_in": 3600}"#))
+        harness.clock.advance(3600)
+        #expect(await harness.account.bearer() == .success("a2"))
+        #expect(harness.store.load()?.session?.refreshToken == "stub-refresh-1")
+        #expect(harness.store.load()?.session?.scope == OpenAI.scope)
+    }
+
+    @Test func aSignOutWhileARefreshIsOutIsNotUndone() async {
+        let gate = Gate()
+        let harness = await signedIn(gate: gate)
+        harness.clock.advance(3600)
+        let pending = Task { await harness.account.bearer() }
+        await eventually { gate.waiters == 1 }
+        #expect(await harness.account.signOut())
+        gate.release()
+        #expect(await pending.value == .failure(.signedOut))
+        #expect(harness.store.load()?.session == nil)
+        #expect(await harness.account.status == .signedOut(returning: returningYou, ended: nil))
+    }
+
+    @Test func aSessionWithoutARefreshTokenLapsesAtItsEnd() async {
+        let vault = Vault(
+            registrations: [Vault.Registration(clientID: "oaiapp_stub", subject: "user-stub")],
+            session: Vault.Session(clientID: "oaiapp_stub", accessToken: "a", refreshToken: nil, scope: OpenAI.scope,
+                                   expiresAt: Date(timeIntervalSince1970: 1_800_000_000)))
+        let lapsing = Harness(vault: vault)
+        #expect(await lapsing.account.bearer() == .failure(.signInAgain(.lapsed)))
+        #expect(lapsing.requests(to: .refresh).isEmpty)
+    }
+}
+
+struct SignOutTests {
+    @Test func signingOutRevokesTheRefreshTokenAndKeepsTheClientID() async throws {
+        let harness = Harness()
+        _ = await harness.signIn()
+        #expect(await harness.account.signOut())
+        let request = try #require(harness.requests(to: .revoke).first)
+        #expect(request.httpMethod == "POST")
+        #expect(fields(request) == [
+            "token": "stub-refresh-1", "token_type_hint": "refresh_token", "client_id": StubOpenAI.issuedClientID,
+        ])
+        let vault = try #require(harness.store.load())
+        #expect(vault.session == nil)
+        #expect(vault.registrations.map(\.clientID) == [StubOpenAI.issuedClientID])
+        #expect(vault.registrations.first?.idToken == nil)
+        #expect(await harness.account.status == .signedOut(returning: returningYou, ended: nil))
+        #expect(await harness.account.bearer() == .failure(.signedOut))
+    }
+
+    @Test func aRevocationThatMeetsServerErrorsIsRetried() async {
+        let harness = Harness()
+        _ = await harness.signIn()
+        harness.stub.script(.revoke, .reply(503, ""), .offline)
+        #expect(await harness.account.signOut())
+        #expect(harness.requests(to: .revoke).count == 3)
+    }
+
+    @Test func anUnconfirmedRevocationStillSignsOutOnThePhone() async {
+        let harness = Harness()
+        _ = await harness.signIn()
+        harness.stub.script(.revoke, .offline, .reply(502, ""), .offline, .reply(200, ""))
+        #expect(await harness.account.signOut() == false)
+        #expect(harness.requests(to: .revoke).count == 3)
+        #expect(harness.store.load()?.session == nil)
+    }
+
+    @Test func aRefusedRevocationIsNotRetried() async {
+        let harness = Harness()
+        _ = await harness.signIn()
+        harness.stub.script(.revoke, .reply(400, #"{"error": "invalid_request"}"#))
+        #expect(await harness.account.signOut() == false)
+        #expect(harness.requests(to: .revoke).count == 1)
+    }
+
+    @Test func signingOutWhenSignedOutDoesNothing() async {
+        let harness = Harness()
+        #expect(await harness.account.signOut())
+        #expect(harness.stub.requests.isEmpty)
+    }
+}
+
+struct VaultTests {
+    @Test func keepsTheHostAndClientIDFromF3ButNotItsUncheckedSession() throws {
+        let f3 = #"""
+            {"hostID": "6A2F41A3-C54C-4C3B-9E1A-1F4D2B3C4D5E", "clientID": "oaiapp_f3",
+             "session": {"accessToken": "a", "refreshToken": "r", "scope": "openid", "expiresAt": 0, "email": "x@example.com"}}
+            """#
+        let vault = try JSONDecoder().decode(Vault.self, from: Data(f3.utf8))
+        #expect(vault.hostID == UUID(uuidString: "6A2F41A3-C54C-4C3B-9E1A-1F4D2B3C4D5E"))
+        #expect(vault.registrations == [Vault.Registration(clientID: "oaiapp_f3")])
+        #expect(vault.session == nil)
+    }
+
+    @Test func readsBackWhatItSaves() throws {
+        let vault = Vault(
+            registrations: [Vault.Registration(clientID: "oaiapp_1", subject: "s", email: "e", idToken: "i")],
+            session: Vault.Session(clientID: "oaiapp_1", accessToken: "a", refreshToken: "r", scope: "openid",
+                                   expiresAt: Date(timeIntervalSince1970: 1_800_000_000), renewedAt: nil),
+            ended: .lapsed)
+        #expect(try JSONDecoder().decode(Vault.self, from: JSONEncoder().encode(vault)) == vault)
+    }
+}

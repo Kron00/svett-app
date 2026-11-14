@@ -18,3 +18,4 @@ export * from "./number-entry.ts";
 export * from "./chart-scale.ts";
 export * from "./axis-labels.ts";
 export * from "./phone-checks.ts";
+export * from "./chatgpt.ts";

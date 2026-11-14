@@ -10,14 +10,14 @@ enum SignInRoute: String, Sendable {
 }
 
 enum SignInOutcome: Sendable {
-    case signedIn(SessionSummary)
-    case failed(String)
+    case signedIn(AccountStatus)
+    case failed(SignInProblem)
     case cancelled
 
     var record: [String: Any] {
         switch self {
-        case .signedIn(let session): ["status": "signedIn", "session": session.record]
-        case .failed(let problem): ["status": "failed", "problem": problem]
+        case .signedIn(let status): ["status": "signedIn", "account": status.record]
+        case .failed(let problem): ["status": "failed", "problem": problem.code]
         case .cancelled: ["status": "cancelled"]
         }
     }
@@ -28,6 +28,8 @@ enum SignInOutcome: Sendable {
 @MainActor
 final class SignInFlow {
     private let account: ChatGPTAccount
+    /// The page the browser opens for an authorize address. The stand-in mode swaps in its own.
+    private let signInPage: (URL) -> URL
     private let web = WebSignIn()
     private var attempt: Attempt?
 
@@ -38,7 +40,7 @@ final class SignInFlow {
     }
 
     private enum SignInEvent {
-        case callback(String, pasted: Bool)
+        case callback(String)
         /// The code was exchanged for tokens, or the exchange failed with this problem.
         case exchanged(SignInProblem?)
         case sheetClosed
@@ -52,22 +54,24 @@ final class SignInFlow {
     /// sign-in is finished by pasting the address.
     private static let portWithoutListener: UInt16 = 1455
 
-    init(account: ChatGPTAccount) {
+    init(account: ChatGPTAccount, signInPage: @escaping (URL) -> URL = { $0 }) {
         self.account = account
+        self.signInPage = signInPage
     }
 
-    func signIn(by route: SignInRoute) async -> SignInOutcome {
-        guard attempt == nil else { return .failed("A sign-in is already running.") }
+    func signIn(by route: SignInRoute, choice: SignInChoice) async -> SignInOutcome {
+        guard attempt == nil else { return .failed(.busy) }
         let (events, feed) = AsyncStream.makeStream(of: SignInEvent.self)
         attempt = Attempt(route: route, events: feed)
         let reply: LoopbackCallback.Reply = route == .sheet
             ? .redirect(WebSignIn.done) : .page("Signed in. Go back to svett.")
-        let listener = try? await LoopbackCallback.start(reply: reply) { feed.yield(.callback($0, pasted: false)) }
-        let begun = await account.beginSignIn(port: listener?.port ?? Self.portWithoutListener)
+        let listener = try? await LoopbackCallback.start(reply: reply) { feed.yield(.callback($0)) }
+        let begun = await account.beginSignIn(port: listener?.port ?? Self.portWithoutListener, choice: choice)
         attempt?.signIn = begun.attempt
+        let page = signInPage(begun.page)
         switch route {
-        case .sheet: web.open(begun.page) { feed.yield(.sheetClosed) }
-        case .safari: UIApplication.shared.open(begun.page, options: [:], completionHandler: nil)
+        case .sheet: web.open(page) { feed.yield(.sheetClosed) }
+        case .safari: UIApplication.shared.open(page, options: [:], completionHandler: nil)
         }
         let timeLimit = Task {
             guard (try? await Task.sleep(for: Self.signInTimeLimit)) != nil else { return }
@@ -80,35 +84,30 @@ final class SignInFlow {
         var exchange: Task<Void, Never>?
         waiting: for await event in events {
             switch event {
-            case .callback(let address, _):
+            case .callback(let address):
                 guard exchange == nil else { continue }
-                do {
-                    let grant = try begun.attempt.grant(from: address)
+                switch begun.attempt.grant(from: address) {
+                case .success(let grant):
                     listener?.stop()
                     web.close()
                     exchange = Task { [account] in
-                        do throws(SignInProblem) {
-                            try await account.finishSignIn(begun.attempt, grant)
-                            feed.yield(.exchanged(nil))
-                        } catch {
-                            feed.yield(.exchanged(error))
-                        }
+                        feed.yield(.exchanged(await account.finishSignIn(begun.attempt, grant)))
                     }
-                } catch {
-                    if error == .denied || error == .refused {
-                        outcome = .failed(error.message)
-                        break waiting
-                    }
+                case .failure(.notTheAddress), .failure(.otherAttempt):
                     // Not an answer to this attempt. A stray request to the listener is ignored, and
                     // a wrong paste is reported by `paste`.
+                    continue
+                case .failure(let problem):
+                    outcome = .failed(problem)
+                    break waiting
                 }
             case .exchanged(let problem):
                 if let problem {
-                    outcome = .failed(problem.message)
-                } else if let session = await account.session {
-                    outcome = .signedIn(session)
+                    outcome = .failed(problem)
+                } else if case .signedIn = await account.status {
+                    outcome = .signedIn(await account.status)
                 } else {
-                    outcome = .failed(SignInProblem.refused.message)
+                    outcome = .failed(.refused)
                 }
                 break waiting
             case .sheetClosed:
@@ -117,7 +116,7 @@ final class SignInFlow {
             case .cancelled:
                 break waiting
             case .timedOut:
-                outcome = .failed(SignInProblem.timedOut.message)
+                outcome = .failed(.timedOut)
                 break waiting
             }
         }
@@ -131,14 +130,13 @@ final class SignInFlow {
 
     /// Finishes a Safari sign-in with the address that Safari was sent to and could not open. Returns
     /// why the address cannot finish this sign-in, or nil when it was taken.
-    func paste(_ address: String) -> String? {
-        guard let attempt, let signIn = attempt.signIn else { return "No sign-in is running." }
-        do {
-            _ = try signIn.grant(from: address)
-        } catch {
-            if error == .notTheAddress || error == .otherAttempt { return error.message }
+    func paste(_ address: String) -> SignInProblem? {
+        guard let attempt, let signIn = attempt.signIn else { return .notRunning }
+        if case .failure(let problem) = signIn.grant(from: address),
+           problem == .notTheAddress || problem == .otherAttempt {
+            return problem
         }
-        attempt.events.yield(.callback(address, pasted: true))
+        attempt.events.yield(.callback(address))
         return nil
     }
 

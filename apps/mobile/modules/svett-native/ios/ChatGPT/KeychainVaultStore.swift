@@ -3,7 +3,7 @@ import Security
 
 /// The vault as one generic-password item. It is readable after the first unlock, so a token can be
 /// refreshed while the phone is locked, and it never leaves this device in a backup.
-struct KeychainVaultStore: Sendable {
+struct KeychainVaultStore: VaultStore {
     var account = "vault"
 
     private var item: [CFString: Any] {

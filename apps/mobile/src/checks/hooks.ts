@@ -16,6 +16,7 @@ import {
   locationOutcome,
   notificationDateMs,
   notificationOutcome,
+  signInProblemMessage,
 } from "@svett/core";
 import * as Location from "expo-location";
 import * as Notifications from "expo-notifications";
@@ -23,6 +24,13 @@ import * as SecureStore from "expo-secure-store";
 import { useEffect, useRef, useState } from "react";
 
 import SvettNative from "../../modules/svett-native";
+import {
+  type SignInRoute,
+  cancelSignIn as cancelNativeSignIn,
+  chatGPTStatus,
+  pasteSignInAddress,
+  signInWithChatGPT,
+} from "../chatgpt/native";
 import { LOCATION_TASK, awayWindows, locationPoints, notificationsInSvett } from "./background";
 import {
   KEYCHAIN_KEY,
@@ -210,17 +218,15 @@ export function useHealthCheck() {
   return { outcome: health === undefined ? NOT_RUN : healthOutcome(health), run };
 }
 
-export type SignInRoute = "sheet" | "safari";
-
 export function useChatGPTCheck() {
   const [observation, setObservation] = useState<ChatGPTObservation>();
   const [route, setRoute] = useState<SignInRoute>();
 
   useEffect(() => {
-    void SvettNative.chatGPTSession().then((session) => {
-      if (session === null) return;
+    void chatGPTStatus().then((status) => {
+      if (status.state !== "signedIn") return;
       setObservation(
-        (current) => current ?? { kind: "signed in", scope: session.scope, earlier: true },
+        (current) => current ?? { kind: "signed in", scope: status.scope, earlier: true },
       );
     });
   }, []);
@@ -229,13 +235,17 @@ export function useChatGPTCheck() {
     const before = observation;
     setRoute(by);
     setObservation({ kind: "signing in" });
-    const result = await SvettNative.signInWithChatGPT(by);
+    const result = await signInWithChatGPT(by, "returning");
     setRoute(undefined);
     switch (result.status) {
       case "signedIn":
-        return setObservation({ kind: "signed in", scope: result.session.scope, earlier: false });
+        return setObservation(
+          result.account.state === "signedIn"
+            ? { kind: "signed in", scope: result.account.scope, earlier: false }
+            : { kind: "failed", problem: signInProblemMessage("refused") },
+        );
       case "failed":
-        return setObservation({ kind: "failed", problem: result.problem });
+        return setObservation({ kind: "failed", problem: signInProblemMessage(result.problem) });
       case "cancelled":
         return setObservation(cancelSignIn(before));
     }
@@ -245,7 +255,7 @@ export function useChatGPTCheck() {
     outcome: observation === undefined ? NOT_RUN : chatGPTOutcome(observation),
     route,
     run,
-    paste: SvettNative.pasteSignInAddress,
-    cancel: SvettNative.cancelSignIn,
+    paste: pasteSignInAddress,
+    cancel: cancelNativeSignIn,
   };
 }
