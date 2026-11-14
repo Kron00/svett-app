@@ -17,10 +17,11 @@ export const nextLocalMidnight = (millis: number, offset: UtcOffset): number => 
   const day = localDayNumber(millis, offset);
   const midnight = (day + 1) * DAY;
   const sameOffset = midnight - offset(millis) * 60_000;
-  // Where the clocks go back at midnight, that instant still falls on the same day.
-  return localDayNumber(sameOffset, offset) > day
-    ? sameOffset
-    : midnight - offset(sameOffset) * 60_000;
+  // Most days the offset at midnight is the one to use, including after clocks change
+  // during the day. Where they go forward at midnight itself, that instant lands before
+  // the change, so the day starts at the first instant after it.
+  const atMidnight = midnight - offset(sameOffset) * 60_000;
+  return atMidnight > millis && localDayNumber(atMidnight, offset) > day ? atMidnight : sameOffset;
 };
 
 /** Weeks run Monday to Sunday. Day 0 was a Thursday, so week 0 starts on day -3. */

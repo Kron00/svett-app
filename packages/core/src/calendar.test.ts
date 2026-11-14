@@ -89,6 +89,22 @@ describe("nextLocalMidnight", () => {
   });
 });
 
+// Clocks go forward at 02:00 on 8 March 2026 and back at 02:00 on 1 November 2026.
+const newYork: UtcOffset = (millis) =>
+  millis < at("2026-03-08T07:00:00Z") ? -300 : millis < at("2026-11-01T06:00:00Z") ? -240 : -300;
+
+describe("nextLocalMidnight in New York", () => {
+  it("starts the day after clocks go forward at the new offset", () => {
+    // 00:01 EST on 8 March. The next midnight is 00:00 EDT on 9 March.
+    expect(nextLocalMidnight(at("2026-03-08T05:01:00Z"), newYork)).toBe(at("2026-03-09T04:00:00Z"));
+  });
+
+  it("starts the day after clocks go back at the new offset", () => {
+    // 00:01 EDT on 1 November. The next midnight is 00:00 EST on 2 November.
+    expect(nextLocalMidnight(at("2026-11-01T04:01:00Z"), newYork)).toBe(at("2026-11-02T05:00:00Z"));
+  });
+});
+
 describe("calendarWeeks", () => {
   it("lays November 2026 out from Monday, with Sunday the 1st at the end of the first week", () => {
     const weeks = calendarWeeks({ year: 2026, month: 11 }, [], UTC);
