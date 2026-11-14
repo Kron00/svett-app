@@ -112,6 +112,7 @@ afterEach(async () => {
   vi.unstubAllGlobals();
 });
 
+const commentPages = () => app.sent.filter((sent) => sent.includes("/comments?"));
 const settle = () => act(() => new Promise<void>((resolve) => setTimeout(resolve, 5)));
 async function until(done: () => boolean, what: string, tries = 0): Promise<void> {
   if (done()) return;
@@ -426,6 +427,36 @@ describe("a post", () => {
     expect(app.sent.filter((sent) => sent.includes("/comments?"))).toEqual([
       `GET /v1/posts/${LIFT_ID}/comments?after=page-2`,
     ]);
+  });
+
+  it("stops after one failed automatic page of comments and loads it again on request", async () => {
+    const post = { ...liftingPost, comments: 2 };
+    answer(
+      `GET /v1/posts/${LIFT_ID}`,
+      ok({ post, comments: [comment("c1", 1)], earlier: null, later: "page-2" }),
+    );
+    answer(
+      `GET /v1/posts/${LIFT_ID}/comments?after=page-2`,
+      { status: 503, body: { error: "unavailable" } },
+      ok({ comments: [comment("c2", 2)], earlier: null, later: null }),
+    );
+    const root = await render(<PostScreen {...props(LIFT_ID)} />, "comment-c1");
+    await act(async () =>
+      find(root, "post").props.onScroll({
+        nativeEvent: {
+          contentOffset: { y: 1400 },
+          layoutMeasurement: { height: 900 },
+          contentSize: { height: 2400 },
+        },
+      }),
+    );
+    await until(() => commentPages().length > 0, "the automatic page");
+    await act(() => new Promise<void>((resolve) => setTimeout(resolve, 50)));
+    expect(commentPages()).toHaveLength(1);
+    expect(has(root, "comment-c2")).toBe(false);
+    await press(root, "comments-later");
+    await until(() => has(root, "comment-c2"), "the page loaded on request");
+    expect(commentPages()).toHaveLength(2);
   });
 
   it("opens on an inbox item's comment and shows earlier ones on request", async () => {

@@ -311,9 +311,11 @@ function Comments({
     [api, postId, page, paging, onCount],
   );
 
+  // Only an idle list loads by itself. After a failure the button asks again, so a page
+  // that keeps failing is not requested over and over.
   useEffect(() => {
-    if (atEnd) load("later");
-  }, [atEnd, load]);
+    if (atEnd && paging.later === "idle") load("later");
+  }, [atEnd, load, paging.later]);
 
   const send = () => {
     const invalid = commentProblem(cleanComment(draft));
