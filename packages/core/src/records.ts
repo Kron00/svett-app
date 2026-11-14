@@ -184,3 +184,23 @@ export const personalRecords = (sets: ReadonlyArray<PerformedSet>): RecordHistor
     records,
   };
 };
+
+/**
+ * The records one workout set, keyed by set ID, as personalRecords finds them,
+ * so a workout's badges match its exercises' charts. `sets` holds the workout's
+ * sets and the sets of every earlier workout with its exercises.
+ */
+export const workoutRecords = (
+  sets: ReadonlyArray<PerformedSet>,
+  activityId: ActivityId,
+): ReadonlyMap<ActivitySetId, ReadonlyArray<RecordKind>> => {
+  const kinds = new Map<ActivitySetId, Array<RecordKind>>();
+  for (const record of personalRecords(sets).records) {
+    if (record.activityId !== activityId) continue;
+    kinds.set(record.setId, [...(kinds.get(record.setId) ?? []), record.kind]);
+  }
+  for (const each of kinds.values()) {
+    each.sort((a, b) => RECORD_KINDS.indexOf(a) - RECORD_KINDS.indexOf(b));
+  }
+  return kinds;
+};

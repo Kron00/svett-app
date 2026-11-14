@@ -3,6 +3,7 @@ import { Schema } from "effect";
 import { importedId } from "./ids.ts";
 import entries from "./exercise-library.json" with { type: "json" };
 import {
+  EpochMillis,
   type Equipment,
   type ExerciseCategory,
   ExerciseId,
@@ -143,6 +144,9 @@ export const fromLibraryEntry = (entry: LibraryEntry): LibraryExercise => ({
   primaryMuscles: unique(entry.primaryMuscles.map((muscle) => MUSCLE_FROM_LIBRARY[muscle])),
   secondaryMuscles: unique(entry.secondaryMuscles.map((muscle) => MUSCLE_FROM_LIBRARY[muscle])),
 });
+
+/** Every install stores the same library rows, so an export or sync never sees them as changed. */
+export const LIBRARY_UPDATED_AT = EpochMillis.make(0);
 
 /** The bundled library's IDs, read without decoding the library. */
 export const libraryIds = (): ReadonlyArray<string> => entries.map((entry) => entry.id);

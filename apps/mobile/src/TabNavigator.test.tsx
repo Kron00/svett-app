@@ -28,6 +28,7 @@ vi.mock("./progress/ProgressScreen", () => ({ ProgressScreen: () => "progress sc
 vi.mock("./coach/CoachScreen", () => ({ CoachScreen: () => "coach screen" }));
 vi.mock("./chatgpt/ChatGPTRow", () => ({ ChatGPTRow: () => "chatgpt row" }));
 vi.mock("./PhoneChecksRow", () => ({ PhoneChecksRow: () => "phone checks row" }));
+vi.mock("./transfer/DataRow", () => ({ DataRow: () => "data row" }));
 vi.mock("./gallery/DesignGalleryRow", () => ({ DesignGalleryRow: () => "design gallery row" }));
 vi.mock("./exercises/ExerciseLibraryRow", () => ({
   ExerciseLibraryRow: () => "exercise library row",

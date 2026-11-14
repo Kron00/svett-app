@@ -10,7 +10,7 @@ import {
 import { Sql, type SqlRow } from "../sql.ts";
 
 /** A workout as a list shows it, with how much it held. */
-export interface WorkoutSummary {
+export interface WorkoutTally {
   readonly id: ActivityId;
   readonly kind: ActivityKind;
   readonly title: string;
@@ -56,7 +56,7 @@ const makeTrainingReads = Effect.gen(function* () {
         [from, to, limit],
       ),
       (rows) =>
-        rows.map((row): WorkoutSummary => ({
+        rows.map((row): WorkoutTally => ({
           id: String(row["id"]) as ActivityId,
           kind: String(row["kind"]) as ActivityKind,
           title: String(row["title"]),

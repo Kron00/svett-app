@@ -5,8 +5,10 @@ import {
   formatRecordValue,
   type PersonalRecord,
   personalRecords,
+  workoutRecords,
 } from "./records.ts";
-import { BENCH, PLANK, PULLUPS, workoutSets } from "./test-sets.ts";
+import type { PerformedSet } from "./performed-set.ts";
+import { BENCH, DIPS, PLANK, PULLUPS, workoutSets } from "./test-sets.ts";
 
 const first = workoutSets(1, new Date(2026, 0, 5, 18), [
   { exercise: BENCH, type: "warm_up", kg: 50, reps: 10 },
@@ -120,11 +122,61 @@ describe("personalRecords", () => {
     ]);
   });
 
+  it("gives a set with no reps no weight or 1RM record", () => {
+    const five = workoutSets(51, new Date(2026, 2, 2, 18), [{ exercise: BENCH, kg: 100, reps: 5 }]);
+    const none = workoutSets(52, new Date(2026, 2, 5, 18), [{ exercise: BENCH, kg: 200, reps: 0 }]);
+    expect(personalRecords([...five, ...none]).records).toEqual([]);
+  });
+
   it("gives warm-ups no record or best", () => {
     const warmUps = workoutSets(9, new Date(2026, 0, 1), [
       { exercise: BENCH, type: "warm_up", kg: 200, reps: 5 },
     ]);
     expect(personalRecords(warmUps)).toEqual({ bests: [], records: [] });
+  });
+});
+
+const badges = (sets: ReadonlyArray<PerformedSet>, workout: ReadonlyArray<PerformedSet>) =>
+  Object.fromEntries(workoutRecords(sets, workout[0]!.activityId));
+
+describe("workoutRecords", () => {
+  it("badges each set with the records personalRecords finds for its workout", () => {
+    expect(badges(history, third)).toEqual({
+      [third[0]!.setId]: ["heaviest_weight"],
+      [third[1]!.setId]: ["best_set_volume"],
+      [third[2]!.setId]: ["best_one_rep_max"],
+      [third[5]!.setId]: ["longest_duration"],
+    });
+    expect(badges(history, second)).toEqual({
+      [second[1]!.setId]: ["best_one_rep_max", "best_set_volume"],
+    });
+    expect(badges(history, first)).toEqual({});
+  });
+
+  it("gives a weighted bodyweight set no estimated 1RM badge", () => {
+    const plus10 = workoutSets(61, new Date(2026, 3, 2, 18), [
+      { exercise: DIPS, kg: 10, reps: 12 },
+    ]);
+    const plus12 = workoutSets(62, new Date(2026, 3, 5, 18), [{ exercise: DIPS, kg: 12, reps: 6 }]);
+    expect(badges([...plus10, ...plus12], plus12)).toEqual({
+      [plus12[0]!.setId]: ["heaviest_weight"],
+    });
+  });
+
+  it("gives no 1RM badge to a set past 12 reps", () => {
+    const five = workoutSets(71, new Date(2026, 4, 2, 18), [{ exercise: BENCH, kg: 100, reps: 5 }]);
+    const fifteen = workoutSets(72, new Date(2026, 4, 5, 18), [
+      { exercise: BENCH, kg: 100, reps: 15 },
+    ]);
+    expect(badges([...five, ...fifteen], fifteen)).toEqual({
+      [fifteen[0]!.setId]: ["best_set_volume"],
+    });
+  });
+
+  it("gives a set with no reps no badge", () => {
+    const five = workoutSets(81, new Date(2026, 5, 2, 18), [{ exercise: BENCH, kg: 100, reps: 5 }]);
+    const none = workoutSets(82, new Date(2026, 5, 5, 18), [{ exercise: BENCH, kg: 200, reps: 0 }]);
+    expect(badges([...five, ...none], none)).toEqual({});
   });
 });
 
