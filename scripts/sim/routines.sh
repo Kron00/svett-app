@@ -10,16 +10,22 @@
 # two more sets that copy it, and saves. Then it relaunches svett, opens the
 # routine from the Train tab and starts it, and checks the workout in progress
 # holds the exercise with all three sets filled in. A workout left in progress
-# by an earlier run is discarded first, which takes svett back to the Train tab.
+# by an earlier run is discarded first. It goes back to the Train tab before it
+# opens the routine screens, as a person would open them.
 # It fails when a screen, the exercise, a target or a set is missing.
 #
-# It also times a cold start to the Train tab's routine list, from the relaunch
-# until the list shows, and saves it as cold-start.txt. The time includes
-# agent-device's own calls, so it is an upper bound. Only a Release build's time
-# counts against the plan's 2 second target, which the plan measures with the
-# 300-workout database. SVETT_FIXTURE, the absolute path of a fixture database
-# in the app's data container such as fixture.sh copies there, relaunches svett
-# on that database every time.
+# It runs on the 300-workout fixture, which the plan's 2 second cold start target
+# names. It generates the fixture into out-dir with pnpm fixture and copies it
+# into the app's data container, as progress.sh does, and relaunches svett on it
+# every time. SVETT_FIXTURE, the absolute path of a fixture database already in
+# the data container, skips that and uses it instead.
+#
+# It times a cold start from the relaunch until the Train tab lists the
+# routines, which it renders once they have loaded. That time includes
+# agent-device's calls, so it is an upper bound. Then it times the same calls
+# against the running app, which shows the automation's own share, and saves
+# both and their difference, svett's own start-up, to cold-start.txt. Only a
+# Release build's time counts against the plan's target.
 #
 # It opens screens through svett:// links and presses an element at the centre
 # of its frame, because agent-device 0.21.37 refuses a selector press inside
@@ -62,20 +68,30 @@ fi
 
 # shellcheck source=scripts/sim/simulator.sh
 source scripts/sim/simulator.sh
-if [[ -z "${SVETT_DEVICE_CMD:-}" ]]; then
-  udid=$(simulator_udid "$simulator_name")
-  [[ -n "$udid" ]] || {
-    echo "No available iOS 27 simulator named \"$simulator_name\". Run scripts/devbook-build.sh first." >&2
-    exit 1
-  }
-fi
+udid=$(simulator_udid "$simulator_name")
+[[ -n "$udid" ]] || {
+  echo "No available iOS 27 simulator named \"$simulator_name\". Run scripts/devbook-build.sh first." >&2
+  exit 1
+}
 
 mkdir -p "$out"
+out=$(cd "$out" && pwd)
+fixture=${SVETT_FIXTURE:-}
+if [[ -z "$fixture" ]]; then
+  pnpm fixture --out "$out/svett-fixture.db"
+  data=$(xcrun simctl get_app_container "$udid" "$bundle_id" data)
+  fixture="$data/Documents/svett-fixture.db"
+  mkdir -p "$data/Documents"
+  # A journal left by an earlier run would be replayed onto the fresh copy.
+  rm -f "$fixture-wal" "$fixture-shm"
+  cp "$out/svett-fixture.db" "$fixture"
+  echo "Copied the fixture to $fixture"
+fi
 open_flags=(--relaunch)
 # Opening by bundle id alone shows the development client's launcher, and
 # agent-device's own Expo detection falls back to that when it is inconclusive.
 [[ "$release" == true ]] || open_flags+=(--launch-url "$(dev_client_url "http://$metro")")
-[[ -z "${SVETT_FIXTURE:-}" ]] || open_flags+=(--launch-args=-svettFixture "--launch-args=$SVETT_FIXTURE")
+open_flags+=(--launch-args=-svettFixture "--launch-args=$fixture")
 
 # Leaves the simulator at the default text size, also when a step fails, and
 # frees its own session.
@@ -187,10 +203,18 @@ relaunch
 link "svett://train"
 expect 'id="routine-list"' "The Train tab did not list the routines"
 cold_start=$(($(now_ms) - started))
+# The same calls once svett is running measure agent-device's share of the time.
+started=$(now_ms)
+agent_device wait "$train_tab" 120000 >/dev/null || fail "svett did not show its tabs"
+link "svett://train"
+expect 'id="routine-list"' "The Train tab did not list the routines"
+overhead=$(($(now_ms) - started))
 build=$([[ "$release" == true ]] && echo Release || echo "Debug, loaded from Metro")
-[[ -z "${SVETT_FIXTURE:-}" ]] || build="$build, on the fixture database"
-echo "Cold start to the Train tab's routine list: $cold_start ms ($build, including agent-device's calls)" |
-  tee "$out/cold-start.txt"
+{
+  echo "Cold start to the Train tab's routine list: $cold_start ms ($build, on the 300-workout fixture, an upper bound that includes agent-device's calls)"
+  echo "agent-device's calls alone, against the running app: $overhead ms"
+  echo "svett's own start-up, the difference: about $((cold_start - overhead)) ms"
+} | tee "$out/cold-start.txt"
 screenshot train
 
 link "svett://train/workout"
@@ -206,6 +230,10 @@ if agent_device wait 'id="workout-title"' 3000 >/dev/null 2>&1; then
 else
   expect 'label="No workout in progress"' "A workout from an earlier run is still in progress"
 fi
+# The probe can leave the workout screen open, and the routine screens would then
+# open on top of it, under a "Workout" back button.
+link "svett://train"
+expect 'id="routine-list"' "The Train tab did not list the routines after the workout check"
 
 link "svett://routines/new?title=$(encode "$routine_name")"
 expect 'id="routine-editor"' "The new routine editor did not open"

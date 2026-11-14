@@ -1390,7 +1390,9 @@ check "chatgpt.sh --live signs out an earlier sign-in, then waits 10 minutes for
 # only where the app would show it, and a set row's label is its target. A press
 # acts on the element whose frame was read last. A relaunch keeps the saved
 # routine unless FAKE_FORGETS is set. FAKE_NO_TARGETS starts a workout whose sets
-# are empty, and FAKE_LIBRARY names the picker's first result.
+# are empty, and FAKE_LIBRARY names the picker's first result. It keeps the
+# screens a link opened in front of each other in stack, and writes the screen
+# under each new routine editor to editor-over.
 cat >"$fake/routines-device" <<'EOF'
 #!/usr/bin/env bash
 echo "$*" >>"$FAKE_ROOT/bound-calls"
@@ -1487,6 +1489,8 @@ press() {
     'label="Discard"')
       rm -f "$s/alert"
       [[ -n "${FAKE_KEEPS_WORKOUT:-}" ]] || rm -f "$s/workout" "$s/workout_sets"
+      sed '$d' "$s/stack" >"$s/stack.new"
+      mv "$s/stack.new" "$s/stack"
       put screen train ;;
     *) exit 1 ;;
   esac
@@ -1497,10 +1501,17 @@ case "$1" in
     case "$3" in
       --relaunch)
         put screen tabs
+        put stack tabs
         [[ -z "${FAKE_FORGETS:-}" ]] || rm -f "$s/saved_name" "$s/saved_exercise" "$s/saved_sets" ;;
-      svett://train) put screen train ;;
-      svett://train/workout) put screen workout ;;
+      # A link to a tab pops every screen above the tabs.
+      svett://train)
+        put screen train
+        put stack train ;;
+      svett://train/workout)
+        put screen workout
+        echo workout >>"$s/stack" ;;
       svett://routines/new\?title=*)
+        tail -1 "$s/stack" >>"$s/editor-over"
         put draft_name "$(decode "${3#*title=}")"
         rm -f "$s/draft_exercise" "$s/draft_sets"
         put screen editor ;;
@@ -1548,17 +1559,38 @@ run_routines() {
 }
 
 routine_links=("com.kron00.svett svett://train" "com.kron00.svett svett://train/workout"
+  "com.kron00.svett svett://train"
   "com.kron00.svett svett://routines/new?title=Proof%20routine%201"
   "com.kron00.svett svett://routines/new/exercises?q=barbell%20squat")
 routine_target="60 kg, 8 to 12 reps"
+fixture_args="--launch-args=-svettFixture --launch-args=$container_fixture"
+debug_fixture_open="$debug_open $fixture_args"
+cold_start_lines=(
+  "^agent-device's calls alone, against the running app: [0-9]+ ms$"
+  "^svett's own start-up, the difference: about -?[0-9]+ ms$"
+)
+
+# cold_start_says <file> <build>: the cold start's upper bound, the automation's
+# share and the difference, in that order.
+cold_start_says() {
+  [[ "$(wc -l <"$1")" -eq 3 ]] &&
+    sed -n 1p "$1" | grep -qE "^Cold start to the Train tab's routine list: [0-9]+ ms \($2, on the 300-workout fixture, an upper bound that includes agent-device's calls\)$" &&
+    sed -n 2p "$1" | grep -qE "${cold_start_lines[0]}" &&
+    sed -n 3p "$1" | grep -qE "${cold_start_lines[1]}"
+}
 
 case_name="routines.sh Debug with SVETT_DEVICE_CMD"
 rm -rf "$root/routines-state"
+rm -f "$container_fixture"
 run_routines "$root/routines"
 [[ "$routines_status" == 0 ]] || fail "routines.sh failed"
-check "routines.sh builds a routine, relaunches into the dev client and starts it from the Train tab" \
-  only_open "$debug_open" "${routine_links[@]}" "$debug_open" "com.kron00.svett svett://train" \
-  "com.kron00.svett svett://train"
+check "routines.sh opens the new routine from the Train tab, not over the workout screen" \
+  grep -qx train "$root/routines-state/editor-over"
+check "routines.sh copies the generated fixture into the app's data container" \
+  grep -qxF "fake fixture" "$container_fixture"
+check "routines.sh builds a routine on the fixture, relaunches into the dev client and starts it from the Train tab" \
+  only_open "$debug_fixture_open" "com.kron00.svett svett://train" "${routine_links[@]}" \
+  "$debug_fixture_open" "com.kron00.svett svett://train" "com.kron00.svett svett://train"
 check "routines.sh shoots at the largest text size, then restores the default" \
   only_calls "settings text-size|settings appearance" \
   "settings text-size accessibility-extra-extra-extra-large" "settings text-size large"
@@ -1579,16 +1611,17 @@ check "routines.sh screenshots each step" \
   "screenshot $root/routines/05-routine-editor.png" "screenshot $root/routines/06-routine-detail.png" \
   "screenshot $root/routines/07-workout.png" \
   "screenshot $root/routines/08-train-workout-in-progress.png"
-check "routines.sh saves the cold start time of a Debug build" \
-  grep -qE "^Cold start to the Train tab's routine list: [0-9]+ ms \(Debug, loaded from Metro, including agent-device's calls\)$" \
-  "$root/routines/cold-start.txt"
-check "routines.sh with SVETT_DEVICE_CMD never calls simctl" test ! -e "$root/simctl-calls"
+check "routines.sh saves a Debug build's cold start, agent-device's share of it and the difference" \
+  cold_start_says "$root/routines/cold-start.txt" "Debug, loaded from Metro"
+check "routines.sh with SVETT_DEVICE_CMD calls neither simctl launch nor openurl" no_simctl_launch_or_openurl
 
 case_name="routines.sh Release when an earlier run left its workout in progress"
+rm -f "$root/routines-state/editor-over"
 run_routines --release "$root/routines-release"
 [[ "$routines_status" == 0 ]] || fail "routines.sh --release failed"
-check "routines.sh Release relaunches the installed app without Metro" \
-  only_open "com.kron00.svett --relaunch" "${routine_links[@]}" "com.kron00.svett --relaunch" \
+check "routines.sh Release relaunches the installed app on the fixture without Metro" \
+  only_open "com.kron00.svett --relaunch $fixture_args" "com.kron00.svett svett://train" \
+  "${routine_links[@]}" "com.kron00.svett --relaunch $fixture_args" \
   "com.kron00.svett svett://train" "com.kron00.svett svett://train"
 check "routines.sh discards the earlier workout by pressing svett's own Discard button" \
   only_calls 'alert|get attrs (id="discard|label="Discard")' \
@@ -1596,21 +1629,23 @@ check "routines.sh discards the earlier workout by pressing svett's own Discard 
 check "routines.sh checks the Train tab no longer shows the discarded workout" \
   only_calls 'is visible id="workout-in-progress-row"|wait label="No workout' \
   'is visible id="workout-in-progress-row"'
-check "routines.sh saves the cold start time of a Release build" \
-  grep -qF "(Release, including agent-device's calls)" "$root/routines-release/cold-start.txt"
+check "routines.sh opens the new routine from the Train tab after discarding the workout" \
+  grep -qx train "$root/routines-state/editor-over"
+check "routines.sh saves a Release build's cold start" \
+  cold_start_says "$root/routines-release/cold-start.txt" Release
 
-case_name="routines.sh Release on the fixture database"
+case_name="routines.sh Release on a fixture already in the data container"
 rm -rf "$root/routines-state"
-fixture_args="--launch-args=-svettFixture --launch-args=/data/Documents/svett-fixture.db"
+rm -f "$container_fixture"
 run_routines SVETT_FIXTURE=/data/Documents/svett-fixture.db --release "$root/routines-fixture"
-[[ "$routines_status" == 0 ]] || fail "routines.sh on the fixture failed"
-check "routines.sh relaunches on the fixture database every time" \
-  only_open "com.kron00.svett --relaunch $fixture_args" "${routine_links[@]}" \
-  "com.kron00.svett --relaunch $fixture_args" "com.kron00.svett svett://train" \
-  "com.kron00.svett svett://train"
-check "routines.sh says the cold start ran on the fixture database" \
-  grep -qF "(Release, on the fixture database, including agent-device's calls)" \
-  "$root/routines-fixture/cold-start.txt"
+[[ "$routines_status" == 0 ]] || fail "routines.sh on SVETT_FIXTURE failed"
+given_fixture_args="--launch-args=-svettFixture --launch-args=/data/Documents/svett-fixture.db"
+check "routines.sh relaunches on SVETT_FIXTURE every time" \
+  only_open "com.kron00.svett --relaunch $given_fixture_args" "com.kron00.svett svett://train" \
+  "${routine_links[@]}" "com.kron00.svett --relaunch $given_fixture_args" \
+  "com.kron00.svett svett://train" "com.kron00.svett svett://train"
+check "routines.sh with SVETT_FIXTURE neither generates nor copies a fixture" \
+  test ! -e "$container_fixture" -a ! -e "$root/routines-fixture/svett-fixture.db"
 
 case_name="routines.sh when Discard leaves the earlier workout in progress"
 run_routines FAKE_KEEPS_WORKOUT=1 "$root/routines-keeps"
