@@ -124,6 +124,15 @@ export const dataChanged = () => {
   notify();
 };
 
+/** An owner and the file open for them, as an import or undo remembers it from its preview. */
+export type OpenDatabase = Pick<CurrentDatabase, "owner" | "handle">;
+
+export const sameDatabase = (a: OpenDatabase, b: OpenDatabase) =>
+  a.handle === b.handle && sameOwner(a.owner, b.owner);
+
+/** True while `database` is still the one every screen reads, with nobody signed in or out since. */
+export const stillOpen = (database: OpenDatabase) => sameDatabase(database, currentDatabase());
+
 /** The database runtime every screen reads and writes through, the current owner's. */
 export const appDatabase = () => currentDatabase().handle.runtime;
 

@@ -13,6 +13,12 @@ import { Option, Result } from "effect";
 import { useEffect, useState } from "react";
 import { ScrollView, View } from "react-native";
 
+import {
+  currentDatabase,
+  type OpenDatabase,
+  sameDatabase,
+  useCurrentDatabase,
+} from "../data/current";
 import type { RootNavigation, RootStackParamList } from "../navigation";
 import { AppText } from "../ui/AppText";
 import { Button } from "../ui/Button";
@@ -24,10 +30,20 @@ import { formatDay } from "./format";
 type State =
   | { readonly kind: "reading" }
   | { readonly kind: "refused"; readonly message: string }
-  | { readonly kind: "ready"; readonly file: SvettFile; readonly plan: ImportPlan }
+  | {
+      readonly kind: "ready";
+      readonly file: SvettFile;
+      readonly plan: ImportPlan;
+      /** The data the plan compares the file with, the only data Import may change. */
+      readonly database: OpenDatabase;
+    }
   | { readonly kind: "importing" }
   | { readonly kind: "imported"; readonly result: Option.Option<ImportResult> }
   | { readonly kind: "failed"; readonly message: string };
+
+/** Before Import, a new preview replaces the old one when someone signs in or out. */
+const previewing = (state: State) =>
+  state.kind === "reading" || state.kind === "refused" || state.kind === "ready";
 
 const sourceOf = (params: RootStackParamList["ImportPreview"]): ImportFileSource | null =>
   params.uri === undefined
@@ -43,8 +59,9 @@ async function preview(source: ImportFileSource | null): Promise<State> {
   const decoded = decodeSvettFile(text);
   if (Result.isFailure(decoded)) return { kind: "refused", message: decoded.failure.message };
   const file = decoded.success;
-  const plan = await withTransfers((transfers) => transfers.previewImport(file));
-  return { kind: "ready", file, plan };
+  const database = currentDatabase();
+  const plan = await withTransfers((transfers) => transfers.previewImport(file), database);
+  return { kind: "ready", file, plan, database };
 }
 
 function Plan({
@@ -140,29 +157,31 @@ export function ImportPreviewScreen() {
   const { params } = useRoute<RouteProp<RootStackParamList, "ImportPreview">>();
   const [state, setState] = useState<State>({ kind: "reading" });
   const { uri, file: fileName } = params;
+  const { owner, handle } = useCurrentDatabase();
 
+  // Reads the file again for whoever is signed in. A preview made for someone else never shows.
   useEffect(() => {
     let current = true;
-    preview(sourceOf({ uri, file: fileName })).then(
-      (next) => current && setState(next),
-      (error: unknown) =>
-        current &&
-        setState({ kind: "refused", message: `The file did not open. ${String(error)}` }),
+    const show = (next: State) =>
+      current && setState((shown) => (previewing(shown) ? next : shown));
+    preview(sourceOf({ uri, file: fileName })).then(show, (error: unknown) =>
+      show({ kind: "refused", message: `The file did not open. ${String(error)}` }),
     );
     return () => {
       current = false;
     };
-  }, [uri, fileName]);
+  }, [uri, fileName, owner, handle]);
 
-  const runImport = (file: SvettFile, take: ReadonlyArray<string>) => {
+  const runImport = (database: OpenDatabase, file: SvettFile, take: ReadonlyArray<string>) => {
     setState({ kind: "importing" });
-    changeTransfers((transfers) => transfers.applyImport(file, take)).then(
+    changeTransfers(database, (transfers) => transfers.applyImport(file, take)).then(
       (result) => setState({ kind: "imported", result }),
       (error: unknown) => setState({ kind: "failed", message: String(error) }),
     );
   };
 
   const done = () => (navigation.canGoBack() ? navigation.goBack() : navigation.navigate("Tabs"));
+  const stale = state.kind === "ready" && !sameDatabase(state.database, { owner, handle });
 
   return (
     <ScrollView
@@ -171,9 +190,9 @@ export function ImportPreviewScreen() {
       contentContainerClassName="gap-6 pt-4 pb-12"
       contentInsetAdjustmentBehavior="automatic"
     >
-      {state.kind === "reading" || state.kind === "importing" ? (
+      {state.kind === "reading" || state.kind === "importing" || stale ? (
         <AppText tone="secondary" className="px-gutter">
-          {state.kind === "reading" ? "Reading the file" : "Importing"}
+          {state.kind === "importing" ? "Importing" : "Reading the file"}
         </AppText>
       ) : null}
       {state.kind === "refused" || state.kind === "failed" ? (
@@ -188,11 +207,11 @@ export function ImportPreviewScreen() {
           />
         </View>
       ) : null}
-      {state.kind === "ready" ? (
+      {state.kind === "ready" && !stale ? (
         <Plan
           file={state.file}
           plan={state.plan}
-          onImport={(take) => runImport(state.file, take)}
+          onImport={(take) => runImport(state.database, state.file, take)}
         />
       ) : null}
       {state.kind === "imported" ? (
