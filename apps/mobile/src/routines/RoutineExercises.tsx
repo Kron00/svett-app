@@ -1,5 +1,6 @@
 import {
   type ExerciseId,
+  exerciseName,
   type SetType,
   setBadges,
   setTargetText,
@@ -8,7 +9,6 @@ import {
 } from "@svett/core";
 
 import { ListRow, ListSection } from "../ui/List";
-import { exerciseName } from "./data";
 
 export interface ShownExercise {
   readonly key: string;
