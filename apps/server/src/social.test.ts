@@ -1,7 +1,9 @@
 import { createServer } from "node:http";
 
 import { NodeHttpServer } from "@effect/platform-node";
-import { Effect, Layer } from "effect";
+import { PgClient } from "@effect/sql-pg";
+import { type AccountId, Username } from "@svett/core";
+import { Data, Deferred, Effect, Fiber, Layer } from "effect";
 import { HttpClient, HttpClientRequest, HttpRouter, HttpServer } from "effect/http";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 
@@ -12,7 +14,7 @@ import { ClerkConfig } from "./clerk-config.ts";
 import { databaseLayer, migrate } from "./database.ts";
 import { socialProof } from "./social-proof.ts";
 import { SocialRoutes } from "./social-routes.ts";
-import { SocialRows } from "./social-rows.ts";
+import { SocialRows, type SocialRowsShape } from "./social-rows.ts";
 import { type StandInIssuer, startStandInIssuer } from "./test-issuer.ts";
 import { startTestPostgres, type TestPostgres } from "./test-postgres.ts";
 
@@ -94,6 +96,18 @@ const body = <A = unknown>(
 
 const name = (account: string, username: string, isPrivate = true) =>
   body(as(account, "PUT", "/v1/profile", { username, private: isPrivate }));
+
+type Requests = {
+  readonly requests: ReadonlyArray<{ readonly id: string; readonly username: string }>;
+};
+
+/** The ID of the request `owner` sees from `username`, as the requests screen holds it. */
+const requestFrom = (owner: string, username: string) =>
+  Effect.map(body<Requests>(as(owner, "GET", "/v1/follow-requests")), ({ requests }) => {
+    const request = requests.find((each) => each.username === username);
+    if (request === undefined) throw new Error(`No request from ${username}`);
+    return request.id;
+  });
 
 let ids = 0;
 const activity = (
@@ -214,7 +228,7 @@ describe("follows", { timeout: 60_000 }, () => {
         const again = yield* body(as(CARA, "PUT", "/v1/profiles/ben/follow"));
         const requests = yield* body(as(BEN, "GET", "/v1/follow-requests"));
         const benBefore = yield* body(as(CARA, "GET", "/v1/profiles/ben"));
-        yield* body(as(BEN, "PUT", "/v1/follow-requests/cara"));
+        yield* body(as(BEN, "PUT", `/v1/follow-requests/${yield* requestFrom(BEN, "cara")}`));
         const benAfter = yield* body(as(CARA, "GET", "/v1/profiles/ben"));
         const followers = yield* body(as(ANNA, "GET", "/v1/profiles/ben/followers"));
         const following = yield* body(as(ANNA, "GET", "/v1/profiles/cara/following"));
@@ -236,7 +250,9 @@ describe("follows", { timeout: 60_000 }, () => {
       publicFollow: { follow: "following" },
       privateFollow: { follow: "requested" },
       again: { follow: "requested" },
-      requests: { profiles: [{ username: "cara", private: true, follow: "none" }] },
+      requests: {
+        requests: [{ id: expect.any(String), username: "cara", private: true, follow: "none" }],
+      },
       benBefore: { followers: 0, follow: "requested" },
       benAfter: { followers: 1, follow: "following", self: false, followsYou: false },
       followers: { profiles: [{ username: "cara", private: true, follow: "none" }] },
@@ -258,9 +274,10 @@ describe("follows", { timeout: 60_000 }, () => {
         yield* name(CARA, "cara");
         yield* body(as(BEN, "PUT", "/v1/profiles/anna/follow"));
         yield* body(as(CARA, "PUT", "/v1/profiles/anna/follow"));
-        yield* body(as(ANNA, "DELETE", "/v1/follow-requests/ben"));
-        const declinedAgain = yield* as(ANNA, "DELETE", "/v1/follow-requests/ben");
-        const approveDeclined = yield* as(ANNA, "PUT", "/v1/follow-requests/ben");
+        const ben = `/v1/follow-requests/${yield* requestFrom(ANNA, "ben")}`;
+        yield* body(as(ANNA, "DELETE", ben));
+        const declinedAgain = yield* as(ANNA, "DELETE", ben);
+        const approveDeclined = yield* as(ANNA, "PUT", ben);
         const withdrawn = yield* body(as(CARA, "DELETE", "/v1/profiles/anna/follow"));
         const left = yield* body(as(ANNA, "GET", "/v1/follow-requests"));
         yield* name(ANNA, "anna", false);
@@ -271,10 +288,10 @@ describe("follows", { timeout: 60_000 }, () => {
       }),
     );
     expect(result).toMatchObject({
-      declinedAgain: { status: 404, body: { error: "not_found" } },
-      approveDeclined: { status: 404, body: { error: "not_found" } },
+      declinedAgain: { status: 404, body: { error: "request_not_found" } },
+      approveDeclined: { status: 404, body: { error: "request_not_found" } },
       withdrawn: { follow: "none" },
-      left: { profiles: [] },
+      left: { requests: [] },
       unfollowed: { follow: "none" },
       anna: { followers: 0, follow: "none" },
     });
@@ -292,6 +309,77 @@ describe("follows", { timeout: 60_000 }, () => {
       }),
     );
     expect(result).toMatchObject({ followers: 2, requests: 0 });
+  });
+
+  it("approves the request it was shown after its username passes to another account", async () => {
+    const result = await withServer(
+      Effect.gen(function* () {
+        yield* name(ANNA, "anna");
+        yield* name(BEN, "ben");
+        yield* body(as(BEN, "PUT", "/v1/profiles/anna/follow"));
+        // Anna's requests screen loads Ben's request, then Ben renames and Cara takes "ben".
+        const shown = yield* requestFrom(ANNA, "ben");
+        yield* name(BEN, "ben_two");
+        yield* name(CARA, "ben");
+        yield* body(as(CARA, "PUT", "/v1/profiles/anna/follow"));
+        const caras = yield* requestFrom(ANNA, "ben");
+        const approved = yield* as(ANNA, "PUT", `/v1/follow-requests/${shown}`);
+        const again = yield* as(ANNA, "PUT", `/v1/follow-requests/${shown}`);
+        const byUsername = yield* as(ANNA, "PUT", "/v1/follow-requests/ben");
+        return {
+          fresh: caras !== shown,
+          approved,
+          again,
+          byUsername,
+          followers: yield* body(as(ANNA, "GET", "/v1/profiles/anna/followers")),
+          requests: yield* body(as(ANNA, "GET", "/v1/follow-requests")),
+          cara: yield* body(as(CARA, "GET", "/v1/profiles/anna")),
+          caraSees: yield* titles(CARA, "anna"),
+        };
+      }),
+    );
+    expect(result).toMatchObject({
+      fresh: true,
+      approved: { status: 200, body: {} },
+      again: { status: 404, body: { error: "request_not_found" } },
+      byUsername: { status: 404, body: { error: "request_not_found" } },
+      followers: { profiles: [{ username: "ben_two" }] },
+      requests: { requests: [{ username: "ben" }] },
+      cara: { follow: "requested", followers: 1 },
+      caraSees: [],
+    });
+  });
+
+  it("declines only the request it was shown, never a newer one from the same account", async () => {
+    const result = await withServer(
+      Effect.gen(function* () {
+        yield* name(ANNA, "anna");
+        yield* name(BEN, "ben");
+        yield* name(CARA, "cara");
+        yield* body(as(BEN, "PUT", "/v1/profiles/anna/follow"));
+        const shown = yield* requestFrom(ANNA, "ben");
+        // Ben takes the request back and asks again, so the one Anna was shown is gone.
+        yield* body(as(BEN, "DELETE", "/v1/profiles/anna/follow"));
+        yield* body(as(BEN, "PUT", "/v1/profiles/anna/follow"));
+        const stale = yield* as(ANNA, "DELETE", `/v1/follow-requests/${shown}`);
+        // A request to someone else is not Anna's to answer.
+        yield* body(as(BEN, "PUT", "/v1/profiles/cara/follow"));
+        const toCara = yield* requestFrom(CARA, "ben");
+        const notHers = yield* as(ANNA, "PUT", `/v1/follow-requests/${toCara}`);
+        return {
+          stale,
+          notHers,
+          anna: yield* body(as(ANNA, "GET", "/v1/follow-requests")),
+          cara: yield* body(as(CARA, "GET", "/v1/follow-requests")),
+        };
+      }),
+    );
+    expect(result).toMatchObject({
+      stale: { status: 404, body: { error: "request_not_found" } },
+      notHers: { status: 404, body: { error: "request_not_found" } },
+      anna: { requests: [{ username: "ben" }] },
+      cara: { requests: [{ username: "ben" }] },
+    });
   });
 
   it("refuses to follow yourself, before you have a username, or nobody", async () => {
@@ -327,6 +415,150 @@ describe("follows", { timeout: 60_000 }, () => {
   });
 });
 
+/** SocialRows on a fresh, migrated database, beside its PostgreSQL client. */
+const socialRows = async () => {
+  const url = await postgres.createDatabase(`social_${++databases}`);
+  await Effect.runPromise(migrate.pipe(Effect.provide(databaseLayer(url))));
+  return SocialRows.layer.pipe(Layer.provideMerge(databaseLayer(url)));
+};
+
+class Rollback extends Data.TaggedError("Rollback")<{}> {}
+
+/**
+ * Runs `hold` in a transaction of its own, and keeps that transaction open until `release`
+ * completes, then rolls it back. The effect returned completes once `hold` has run.
+ */
+const holdOpen = (hold: Effect.Effect<unknown, unknown, PgClient.PgClient>) =>
+  Effect.gen(function* () {
+    const sql = yield* PgClient.PgClient;
+    const held = yield* Deferred.make<void>();
+    const release = yield* Deferred.make<void>();
+    const fiber = yield* Effect.forkChild(
+      sql
+        .withTransaction(
+          Effect.gen(function* () {
+            yield* hold;
+            yield* Deferred.succeed(held, undefined);
+            yield* Deferred.await(release);
+            return yield* new Rollback();
+          }),
+        )
+        .pipe(Effect.ignore),
+    );
+    yield* Deferred.await(held);
+    return Effect.andThen(Deferred.succeed(release, undefined), Fiber.join(fiber));
+  });
+
+/** Waits until `count` sessions on this database wait for a lock. */
+const lockWaits = (count: number) =>
+  Effect.gen(function* () {
+    const sql = yield* PgClient.PgClient;
+    for (let tries = 0; tries < 500; tries++) {
+      const [row] = yield* sql<{ readonly waiting: number }>`
+        select count(*)::int as waiting from pg_stat_activity
+        where datname = current_database() and wait_event_type = 'Lock'
+      `;
+      if ((row?.waiting ?? 0) >= count) return;
+      yield* Effect.sleep("20 millis");
+    }
+    return yield* Effect.die(new Error(`${count} sessions never waited for a lock`));
+  });
+
+/** Runs `effect` in the background, and waits until it ends or `waits` sessions wait. */
+const startWaiting = <A, E, R>(effect: Effect.Effect<A, E, R>, waits: number) =>
+  Effect.gen(function* () {
+    const fiber = yield* Effect.forkChild(effect);
+    yield* Effect.race(Effect.asVoid(Fiber.await(fiber)), lockWaits(waits));
+    return fiber;
+  });
+
+describe("a follow racing a privacy change", { timeout: 60_000 }, () => {
+  const anna = Username.make("anna");
+  const annaId = ANNA as AccountId;
+  const caraId = CARA as AccountId;
+
+  /** Names Anna private and Ben and Cara, then runs `race` and reads how Cara's follow ended. */
+  const racing = async <A, E>(
+    race: (rows: SocialRowsShape) => Effect.Effect<A, E, PgClient.PgClient>,
+  ) => {
+    const layer = await socialRows();
+    return Effect.runPromise(
+      Effect.gen(function* () {
+        const rows = yield* SocialRows;
+        yield* rows.saveProfile(annaId, { username: anna, private: true });
+        yield* rows.saveProfile(BEN as AccountId, {
+          username: Username.make("ben"),
+          private: true,
+        });
+        yield* rows.saveProfile(caraId, { username: Username.make("cara"), private: true });
+        const raced = yield* race(rows);
+        return {
+          raced,
+          cara: (yield* rows.profile(caraId, "anna")).follow,
+          anna: yield* rows.ownProfile(annaId),
+        };
+      }).pipe(Effect.provide(layer)),
+    );
+  };
+
+  it("approves a follow that read the profile as private just before it went public", async () => {
+    const result = await racing((rows) =>
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        // An open transaction holds the row Cara's follow inserts, so the follow stops after
+        // reading Anna's profile and before its request is written.
+        const release = yield* holdOpen(
+          sql`insert into follow (follower_id, followee_id, state) values (${CARA}, ${ANNA}, 'held')`,
+        );
+        const follow = yield* startWaiting(rows.follow(caraId, "anna"), 1);
+        const madePublic = yield* startWaiting(
+          rows.saveProfile(annaId, { username: anna, private: false }),
+          2,
+        );
+        yield* release;
+        return { follow: yield* Fiber.join(follow), madePublic: yield* Fiber.join(madePublic) };
+      }),
+    );
+    expect(result).toEqual({
+      raced: {
+        follow: "requested",
+        madePublic: { username: "anna", private: false, followers: 1, following: 0, requests: 0 },
+      },
+      cara: "following",
+      anna: { username: "anna", private: false, followers: 1, following: 0, requests: 0 },
+    });
+  });
+
+  it("follows at once when the profile goes public while the follow waits", async () => {
+    const result = await racing((rows) =>
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        yield* rows.follow(BEN as AccountId, "anna");
+        // An open transaction locks Ben's request, so making Anna public stops while it
+        // approves the requests, before it commits.
+        const release = yield* holdOpen(
+          sql`select 1 from follow where follower_id = ${BEN} and followee_id = ${ANNA} for update`,
+        );
+        const madePublic = yield* startWaiting(
+          rows.saveProfile(annaId, { username: anna, private: false }),
+          1,
+        );
+        const follow = yield* startWaiting(rows.follow(caraId, "anna"), 2);
+        yield* release;
+        return { madePublic: yield* Fiber.join(madePublic), follow: yield* Fiber.join(follow) };
+      }),
+    );
+    expect(result).toEqual({
+      raced: {
+        madePublic: { username: "anna", private: false, followers: 1, following: 0, requests: 0 },
+        follow: "following",
+      },
+      cara: "following",
+      anna: { username: "anna", private: false, followers: 2, following: 0, requests: 0 },
+    });
+  });
+});
+
 describe("a profile's activities", { timeout: 60_000 }, () => {
   it("shows each viewer what the privacy rule allows, newest first", async () => {
     const seen = await withServer(
@@ -343,7 +575,7 @@ describe("a profile's activities", { timeout: 60_000 }, () => {
         yield* body(as(BEN, "PUT", "/v1/profiles/anna/follow"));
         yield* body(as(CARA, "PUT", "/v1/profiles/anna/follow"));
         const requested = yield* titles(BEN, "anna");
-        yield* body(as(ANNA, "PUT", "/v1/follow-requests/ben"));
+        yield* body(as(ANNA, "PUT", `/v1/follow-requests/${yield* requestFrom(ANNA, "ben")}`));
         return {
           owner: yield* titles(ANNA, "anna"),
           follower: yield* titles(BEN, "anna"),

@@ -7,6 +7,7 @@ import { SignInUnavailable, signedInAccount, Unauthorized } from "./auth.ts";
 import {
   CannotFollowSelf,
   NotFound,
+  RequestNotFound,
   SocialRows,
   UsernameRequired,
   UsernameTaken,
@@ -19,6 +20,7 @@ class InvalidUsername extends Data.TaggedError("InvalidUsername")<{
 }> {}
 const SearchQuery = Schema.Struct({ prefix: Schema.String });
 const UsernamePath = Schema.Struct({ username: Schema.String });
+const RequestPath = Schema.Struct({ request: Schema.String });
 
 const refuse = (error: string, status: number, message?: string) =>
   HttpServerResponse.jsonUnsafe(message === undefined ? { error } : { error, message }, {
@@ -39,6 +41,7 @@ const refusal = (error: unknown) => {
   if (Schema.isSchemaError(error)) return refuse("invalid_request", 400, error.message);
   if (error instanceof InvalidUsername) return refuse("invalid_username", 400, error.message);
   if (error instanceof NotFound) return refuse("not_found", 404);
+  if (error instanceof RequestNotFound) return refuse("request_not_found", 404);
   if (error instanceof UsernameTaken) return refuse("username_taken", 409);
   if (error instanceof UsernameRequired) return refuse("username_required", 403);
   if (error instanceof CannotFollowSelf) return refuse("cannot_follow_self", 400);
@@ -61,6 +64,7 @@ const route = <A, E, R>(handle: (account: AccountId) => Effect.Effect<A, E, R>) 
   );
 
 const username = Effect.map(HttpRouter.schemaPathParams(UsernamePath), (path) => path.username);
+const requestId = Effect.map(HttpRouter.schemaPathParams(RequestPath), (path) => path.request);
 
 const ownProfile = route((account) =>
   Effect.gen(function* () {
@@ -123,20 +127,20 @@ const following = route((account) =>
 
 const requests = route((account) =>
   Effect.gen(function* () {
-    return { profiles: yield* (yield* SocialRows).requests(account) };
+    return { requests: yield* (yield* SocialRows).requests(account) };
   }),
 );
 
 const approve = route((account) =>
   Effect.gen(function* () {
-    yield* (yield* SocialRows).approve(account, yield* username);
+    yield* (yield* SocialRows).approve(account, yield* requestId);
     return {};
   }),
 );
 
 const decline = route((account) =>
   Effect.gen(function* () {
-    yield* (yield* SocialRows).decline(account, yield* username);
+    yield* (yield* SocialRows).decline(account, yield* requestId);
     return {};
   }),
 );
@@ -152,6 +156,6 @@ export const SocialRoutes = Layer.mergeAll(
   HttpRouter.add("GET", "/v1/profiles/:username/followers", followers),
   HttpRouter.add("GET", "/v1/profiles/:username/following", following),
   HttpRouter.add("GET", "/v1/follow-requests", requests),
-  HttpRouter.add("PUT", "/v1/follow-requests/:username", approve),
-  HttpRouter.add("DELETE", "/v1/follow-requests/:username", decline),
+  HttpRouter.add("PUT", "/v1/follow-requests/:request", approve),
+  HttpRouter.add("DELETE", "/v1/follow-requests/:request", decline),
 );

@@ -83,6 +83,39 @@ describe("httpSocialApi", () => {
     expect(sent.map(({ url }) => url)).toEqual(["https://svett.test/v1/profiles?prefix=ann"]);
   });
 
+  it("answers a follow request by its ID, never by the username", async () => {
+    const requests = {
+      requests: [
+        {
+          id: "0190a0b2-0000-4000-8000-000000000001",
+          username: "ben",
+          private: true,
+          follow: "none",
+        },
+      ],
+    };
+    const { api, sent } = server(200, requests);
+    expect(await Effect.runPromise(api.requests())).toEqual(requests);
+    const { api: answering, sent: answers } = server(200, {});
+    await Effect.runPromise(answering.approve("0190a0b2-0000-4000-8000-000000000001"));
+    await Effect.runPromise(answering.decline("a/b"));
+    expect([...sent, ...answers].map(({ method, url }) => `${method} ${url}`)).toEqual([
+      "GET https://svett.test/v1/follow-requests",
+      "PUT https://svett.test/v1/follow-requests/0190a0b2-0000-4000-8000-000000000001",
+      "DELETE https://svett.test/v1/follow-requests/a%2Fb",
+    ]);
+  });
+
+  it("says a request is gone when it was answered or taken back", async () => {
+    const error = await failure(
+      server(404, { error: "request_not_found" }).api.approve(
+        "0190a0b2-0000-4000-8000-000000000001",
+      ),
+    );
+    expect(error.problem).toBe("request_not_found");
+    expect(socialProblemMessage(error)).toBe("That request was already answered or taken back.");
+  });
+
   it.each([
     [409, { error: "username_taken" }, "username_taken", "Someone already has that username."],
     [

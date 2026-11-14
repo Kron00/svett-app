@@ -1,5 +1,6 @@
 import { type RouteProp, useNavigation, useRoute } from "@react-navigation/native";
 import {
+  type FollowRequest,
   type OwnProfile,
   type ProfileSummary,
   profileLine,
@@ -275,11 +276,11 @@ export function ConnectionsScreen() {
 
 function Request({
   api,
-  profile,
+  request,
   onAnswered,
 }: {
   readonly api: SocialApi;
-  readonly profile: ProfileSummary;
+  readonly request: FollowRequest;
   readonly onAnswered: () => void;
 }) {
   const stacked = useIsAccessibilityTextSize();
@@ -288,8 +289,10 @@ function Request({
   const answer = (approve: boolean) => {
     setBusy(true);
     setProblem(undefined);
-    const request = approve ? api.approve(profile.username) : api.decline(profile.username);
-    void runSocial(request).then((result) => {
+    // The request's own ID, so the answer reaches this request even if its username has
+    // since passed to someone else.
+    const answering = approve ? api.approve(request.id) : api.decline(request.id);
+    void runSocial(answering).then((result) => {
       setBusy(false);
       if (result.ok) onAnswered();
       else setProblem(result.message);
@@ -298,23 +301,23 @@ function Request({
   return (
     <View
       className="mx-gutter gap-3 rounded-card bg-surface p-gutter"
-      testID={rowId("request", profile.username)}
+      testID={rowId("request", request.username)}
     >
-      <AppText variant="headline">{profile.username}</AppText>
+      <AppText variant="headline">{request.username}</AppText>
       <View className={stacked ? "gap-2" : "flex-row gap-2"}>
         <Button
           label="Approve"
           disabled={busy}
           onPress={() => answer(true)}
-          accessibilityHint={`Lets ${profile.username} follow you`}
-          testID={rowId("approve", profile.username)}
+          accessibilityHint={`Lets ${request.username} follow you`}
+          testID={rowId("approve", request.username)}
         />
         <Button
           label="Decline"
           variant="secondary"
           disabled={busy}
           onPress={() => answer(false)}
-          testID={rowId("decline", profile.username)}
+          testID={rowId("decline", request.username)}
         />
       </View>
       {problem === undefined ? null : (
@@ -331,15 +334,15 @@ function RequestsRead({ api }: { readonly api: SocialApi }) {
   const { state, reload } = useSocialRead(read);
   return (
     <SocialView state={state} testID="requests">
-      {({ profiles }) =>
-        profiles.length === 0 ? (
+      {({ requests }) =>
+        requests.length === 0 ? (
           <AppText tone="secondary" className="mx-gutter" testID="requests-empty">
             Nobody is waiting. When your profile is private, people who ask to follow you show here.
           </AppText>
         ) : (
           <View className="gap-3">
-            {profiles.map((profile) => (
-              <Request key={profile.username} api={api} profile={profile} onAnswered={reload} />
+            {requests.map((request) => (
+              <Request key={request.id} api={api} request={request} onAnswered={reload} />
             ))}
           </View>
         )

@@ -262,21 +262,45 @@ describe("finding people", () => {
 });
 
 describe("follow requests", () => {
-  it("approves a request and reads the list again", async () => {
+  const BEN_REQUEST = "0190a0b2-0000-4000-8000-0000000000be";
+
+  it("approves a request by its ID and reads the list again", async () => {
     app.route.params = {};
     answer(
       "GET /v1/follow-requests",
-      ok({ profiles: [{ username: "ben", private: true, follow: "none" }] }),
-      ok({ profiles: [] }),
+      ok({ requests: [{ id: BEN_REQUEST, username: "ben", private: true, follow: "none" }] }),
+      ok({ requests: [] }),
     );
-    answer("PUT /v1/follow-requests/ben", ok({}));
+    answer(`PUT /v1/follow-requests/${BEN_REQUEST}`, ok({}));
     const root = await render(<FollowRequestsScreen />, "approve-ben");
     await press(root, "approve-ben");
     await until(() => has(root, "requests-empty"), "the empty list");
     expect(app.sent).toEqual([
       "GET /v1/follow-requests",
-      "PUT /v1/follow-requests/ben",
+      `PUT /v1/follow-requests/${BEN_REQUEST}`,
       "GET /v1/follow-requests",
+    ]);
+  });
+
+  it("declines a request by its ID and says when it is already gone", async () => {
+    app.route.params = {};
+    answer(
+      "GET /v1/follow-requests",
+      ok({ requests: [{ id: BEN_REQUEST, username: "ben", private: true, follow: "none" }] }),
+    );
+    answer(`DELETE /v1/follow-requests/${BEN_REQUEST}`, {
+      status: 404,
+      body: { error: "request_not_found" },
+    });
+    const root = await render(<FollowRequestsScreen />, "decline-ben");
+    await press(root, "decline-ben");
+    await until(
+      () => texts(root).includes("That request was already answered or taken back."),
+      "the message",
+    );
+    expect(app.sent).toEqual([
+      "GET /v1/follow-requests",
+      `DELETE /v1/follow-requests/${BEN_REQUEST}`,
     ]);
   });
 });

@@ -55,7 +55,9 @@ export const MIGRATIONS: Record<string, Effect.Effect<void, unknown, SqlClient>>
   }),
   // Usernames are unique whatever their case, so the lower-case form carries the index that
   // keeps them apart and serves searches by prefix. A follow is requested until the account
-  // followed approves it, or following at once when that profile is public.
+  // followed approves it, or following at once when that profile is public. Each follow has
+  // its own ID, so an answer to a request reaches that request alone, even after its
+  // username passes to another account.
   "3_social": Effect.gen(function* () {
     const sql = yield* SqlClient;
     yield* sql`
@@ -70,6 +72,7 @@ export const MIGRATIONS: Record<string, Effect.Effect<void, unknown, SqlClient>>
     yield* sql`create unique index profile_username_key on profile (username_key text_pattern_ops)`;
     yield* sql`
       create table follow (
+        id text not null default gen_random_uuid()::text,
         follower_id text not null,
         followee_id text not null,
         state text not null,
@@ -77,6 +80,7 @@ export const MIGRATIONS: Record<string, Effect.Effect<void, unknown, SqlClient>>
         primary key (follower_id, followee_id)
       )
     `;
+    yield* sql`create unique index follow_id on follow (id)`;
     yield* sql`create index follow_followee on follow (followee_id, state)`;
   }),
 };

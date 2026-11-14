@@ -123,13 +123,11 @@ export const socialProof = async (options: SocialProofOptions) => {
     options.log(`Requested: the followers-only activity stays absent until ${owner} approves`);
 
     const waiting = (await ok("owner", "GET", "/v1/follow-requests")) as {
-      readonly profiles: ReadonlyArray<{ readonly username: string }>;
+      readonly requests: ReadonlyArray<{ readonly id: string; readonly username: string }>;
     };
-    expect(
-      waiting.profiles.some(({ username }) => username === follower),
-      `${owner}'s requests do not list ${follower}`,
-    );
-    await ok("owner", "PUT", `/v1/follow-requests/${follower}`);
+    const request = waiting.requests.find(({ username }) => username === follower);
+    if (request === undefined) throw new ProofFailed(`${owner}'s requests do not list ${follower}`);
+    await ok("owner", "PUT", `/v1/follow-requests/${encodeURIComponent(request.id)}`);
 
     const following = await seen();
     expect(following.has(forFollowers), "A follower should see the followers-only activity");

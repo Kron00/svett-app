@@ -25,6 +25,22 @@ export type ProfileSummary = typeof ProfileSummary.Type;
 export const ProfileList = Schema.Struct({ profiles: Schema.Array(ProfileSummary) });
 export type ProfileList = typeof ProfileList.Type;
 
+/**
+ * Someone waiting for the signed-in account to approve their follow. Approve and Decline
+ * name the request by `id`, never by username, so a stale answer never reaches whoever
+ * holds the username now.
+ */
+export const FollowRequest = Schema.Struct({
+  id: Schema.String,
+  username: Schema.String,
+  private: Schema.Boolean,
+  follow: FollowState,
+});
+export type FollowRequest = typeof FollowRequest.Type;
+
+export const FollowRequestList = Schema.Struct({ requests: Schema.Array(FollowRequest) });
+export type FollowRequestList = typeof FollowRequestList.Type;
+
 /** A profile and the activities the privacy rule lets the signed-in account see, newest first. */
 export const ProfileView = Schema.Struct({
   username: Schema.String,
@@ -51,6 +67,7 @@ const SERVER_PROBLEMS = [
   "invalid_username",
   "username_required",
   "cannot_follow_self",
+  "request_not_found",
 ] as const;
 
 export type SocialProblem =
@@ -83,6 +100,8 @@ export const socialProblemMessage = (failed: SocialFailed): string => {
       return "Choose a username before you follow anyone.";
     case "cannot_follow_self":
       return "You cannot follow yourself.";
+    case "request_not_found":
+      return "That request was already answered or taken back.";
     case "server":
       return "The svett server had a problem. Try again soon.";
   }
@@ -176,11 +195,13 @@ export const httpSocialApi = (options: HttpSocialOptions) => {
     unfollow: (username: string) => call(FollowResult, "DELETE", `${at(username)}/follow`),
     followers: (username: string) => call(ProfileList, "GET", `${at(username)}/followers`),
     following: (username: string) => call(ProfileList, "GET", `${at(username)}/following`),
-    requests: () => call(ProfileList, "GET", "/v1/follow-requests"),
-    approve: (username: string) =>
-      call(Done, "PUT", `/v1/follow-requests/${encodeURIComponent(username)}`),
-    decline: (username: string) =>
-      call(Done, "DELETE", `/v1/follow-requests/${encodeURIComponent(username)}`),
+    requests: () => call(FollowRequestList, "GET", "/v1/follow-requests"),
+    /** Approves the request with this `FollowRequest.id`. */
+    approve: (request: string) =>
+      call(Done, "PUT", `/v1/follow-requests/${encodeURIComponent(request)}`),
+    /** Declines the request with this `FollowRequest.id`. */
+    decline: (request: string) =>
+      call(Done, "DELETE", `/v1/follow-requests/${encodeURIComponent(request)}`),
   };
 };
 

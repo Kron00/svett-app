@@ -3,6 +3,7 @@ import {
   Activity,
   type AccountId,
   type ActivityView,
+  type FollowRequest,
   type FollowState,
   type OwnProfile,
   type ProfileSummary,
@@ -21,6 +22,7 @@ export class NotFound extends Data.TaggedError("NotFound")<{}> {}
 export class UsernameTaken extends Data.TaggedError("UsernameTaken")<{}> {}
 export class UsernameRequired extends Data.TaggedError("UsernameRequired")<{}> {}
 export class CannotFollowSelf extends Data.TaggedError("CannotFollowSelf")<{}> {}
+export class RequestNotFound extends Data.TaggedError("RequestNotFound")<{}> {}
 
 /** The most profiles a search or a list returns, and the most activities a profile shows. */
 export const PAGE = 50;
@@ -35,7 +37,8 @@ export interface SocialRowsShape {
   readonly ownProfile: (account: AccountId) => Effect.Effect<OwnProfile, SqlError>;
   /**
    * Gives `account` the username and the private choice. Making a private profile public
-   * approves every request waiting for it, as nobody needs approval any more.
+   * approves every request waiting for it, as nobody needs approval any more. It holds the
+   * profile's row lock, as `follow` does, so no request made meanwhile is left waiting.
    */
   readonly saveProfile: (
     account: AccountId,
@@ -69,16 +72,20 @@ export interface SocialRowsShape {
     viewer: AccountId,
     username: string,
   ) => Effect.Effect<ReadonlyArray<ProfileSummary>, SqlError | NotFound>;
-  /** The accounts waiting for `owner` to approve their follow, oldest first. */
-  readonly requests: (owner: AccountId) => Effect.Effect<ReadonlyArray<ProfileSummary>, SqlError>;
+  /** The requests waiting for `owner` to approve them, oldest first. */
+  readonly requests: (owner: AccountId) => Effect.Effect<ReadonlyArray<FollowRequest>, SqlError>;
+  /**
+   * Approves the request with this ID when it is still waiting for `owner`. A username is
+   * never looked up here, so a stale answer cannot reach whoever holds that username now.
+   */
   readonly approve: (
     owner: AccountId,
-    username: string,
-  ) => Effect.Effect<void, SqlError | NotFound>;
+    request: string,
+  ) => Effect.Effect<void, SqlError | RequestNotFound>;
   readonly decline: (
     owner: AccountId,
-    username: string,
-  ) => Effect.Effect<void, SqlError | NotFound>;
+    request: string,
+  ) => Effect.Effect<void, SqlError | RequestNotFound>;
 }
 
 const decodeActivity = Schema.decodeUnknownOption(Activity);
@@ -102,10 +109,13 @@ export class SocialRows extends Context.Service<SocialRows, SocialRowsShape>()(
     Effect.gen(function* () {
       const sql = yield* PgClient.PgClient;
 
-      const findAccount = (username: string) =>
+      // `lock` holds the profile's row until the transaction ends, so its private choice
+      // cannot change between reading it and acting on it.
+      const findAccount = (username: string, lock = false) =>
         sql<Account>`
           select account_id as id, username, private from profile
           where username_key = ${usernameKey(username)}
+          ${lock ? sql`for update` : sql``}
         `.pipe(
           Effect.flatMap(([account]) =>
             account === undefined ? Effect.fail(new NotFound()) : Effect.succeed(account),
@@ -197,6 +207,8 @@ export class SocialRows extends Context.Service<SocialRows, SocialRowsShape>()(
             .withTransaction(
               Effect.gen(function* () {
                 yield* sql`insert into account (id) values (${account}) on conflict do nothing`;
+                // The upsert takes the profile's row lock before the requests are approved,
+                // so a `follow` that read the old choice has committed its request by then.
                 yield* sql`
                   insert into profile (account_id, username, username_key, private)
                   values (${account}, ${profile.username}, ${usernameKey(profile.username)},
@@ -249,19 +261,21 @@ export class SocialRows extends Context.Service<SocialRows, SocialRowsShape>()(
             };
           }),
         follow: (viewer, username) =>
-          Effect.gen(function* () {
-            const owner = yield* findAccount(username);
-            if (owner.id === viewer) return yield* new CannotFollowSelf();
-            const [own] = yield* sql`select 1 from profile where account_id = ${viewer}`;
-            if (own === undefined) return yield* new UsernameRequired();
-            const state: FollowState = owner.private ? "requested" : "following";
-            yield* sql`
-              insert into follow (follower_id, followee_id, state)
-              values (${viewer}, ${owner.id}, ${state})
-              on conflict do nothing
-            `;
-            return yield* followState(viewer, owner.id);
-          }),
+          sql.withTransaction(
+            Effect.gen(function* () {
+              const owner = yield* findAccount(username, true);
+              if (owner.id === viewer) return yield* new CannotFollowSelf();
+              const [own] = yield* sql`select 1 from profile where account_id = ${viewer}`;
+              if (own === undefined) return yield* new UsernameRequired();
+              const state: FollowState = owner.private ? "requested" : "following";
+              yield* sql`
+                insert into follow (follower_id, followee_id, state)
+                values (${viewer}, ${owner.id}, ${state})
+                on conflict do nothing
+              `;
+              return yield* followState(viewer, owner.id);
+            }),
+          ),
         unfollow: (viewer, username) =>
           Effect.gen(function* () {
             const owner = yield* findAccount(username);
@@ -273,34 +287,32 @@ export class SocialRows extends Context.Service<SocialRows, SocialRowsShape>()(
         following: (viewer, username) =>
           Effect.flatMap(findAccount(username), (owner) => listOf(viewer, "following", owner.id)),
         requests: (owner) =>
-          sql<SummaryRow>`
-            select p.username, p.private, coalesce(mine.state, 'none') as follow
+          sql<SummaryRow & { readonly id: string }>`
+            select f.id, p.username, p.private, coalesce(mine.state, 'none') as follow
             from follow f
             join profile p on p.account_id = f.follower_id
             left join follow mine on mine.follower_id = ${owner} and mine.followee_id = p.account_id
             where f.followee_id = ${owner} and f.state = 'requested'
-            order by f.created_at, p.username_key collate "C"
+            order by f.created_at, f.id
             limit ${PAGE}
-          `.pipe(Effect.map((rows) => rows.map(summary))),
-        approve: (owner, username) =>
+          `.pipe(Effect.map((rows) => rows.map((row) => ({ id: row.id, ...summary(row) })))),
+        approve: (owner, request) =>
           Effect.gen(function* () {
-            const follower = yield* findAccount(username);
             const approved = yield* sql`
               update follow set state = 'following'
-              where follower_id = ${follower.id} and followee_id = ${owner} and state = 'requested'
+              where id = ${request} and followee_id = ${owner} and state = 'requested'
               returning 1
             `;
-            if (approved.length === 0) return yield* new NotFound();
+            if (approved.length === 0) return yield* new RequestNotFound();
           }),
-        decline: (owner, username) =>
+        decline: (owner, request) =>
           Effect.gen(function* () {
-            const follower = yield* findAccount(username);
             const declined = yield* sql`
               delete from follow
-              where follower_id = ${follower.id} and followee_id = ${owner} and state = 'requested'
+              where id = ${request} and followee_id = ${owner} and state = 'requested'
               returning 1
             `;
-            if (declined.length === 0) return yield* new NotFound();
+            if (declined.length === 0) return yield* new RequestNotFound();
           }),
       });
     }),
