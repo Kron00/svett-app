@@ -30,12 +30,15 @@ const app = vi.hoisted(() => ({
     isLoaded: true,
     userId: null as string | null,
     signOut: async () => {},
+    // Sync finds no token, so it stops before any request.
+    getToken: async () => null,
   },
 }));
 
 vi.mock("react-native", () => ({
   AccessibilityInfo: { announceForAccessibility: () => {} },
   AppState: { addEventListener: () => ({ remove: () => {} }) },
+  Settings: { get: () => undefined },
   Pressable: "Pressable",
   ScrollView: "ScrollView",
   Switch: "Switch",
