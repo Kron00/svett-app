@@ -1,0 +1,166 @@
+import { formatDuration } from "./duration.ts";
+import { type MuscleShare, muscleSplit } from "./muscle-split.ts";
+import { type RecordKind, type ScoredSet, workoutRecords } from "./records.ts";
+import type { ActivityDetail } from "./repositories/activities.ts";
+import type { RoutineDraft } from "./repositories/routines.ts";
+import type {
+  Activity,
+  ActivityExercise,
+  ActivitySet,
+  Exercise,
+  ExerciseId,
+  Muscle,
+} from "./schema.ts";
+import { formatSetLoad, formatWeightKg, setBadge, type SetBadge } from "./set-format.ts";
+
+type VolumeSet = Pick<ActivitySet, "setType" | "weightKg" | "reps">;
+
+/** Weight times reps over every set except warm-ups. */
+export const workingVolumeKg = (sets: ReadonlyArray<VolumeSet>): number =>
+  sets.reduce(
+    (total, set) =>
+      set.setType === "warm_up" ? total : total + (set.weightKg ?? 0) * (set.reps ?? 0),
+    0,
+  );
+
+/** "12,450 kg", the way a workout's volume reads in history. */
+export const formatVolumeKg = (kg: number): string =>
+  `${String(Math.round(kg)).replaceAll(/\B(?=(\d{3})+$)/g, ",")} kg`;
+
+const formatDistance = (metres: number): string =>
+  metres >= 1000 ? `${formatWeightKg(metres / 1000)} km` : `${formatWeightKg(metres)} m`;
+
+/** Everything a set recorded, such as "80 kg × 8", "1:05" or "20 kg · 1:05". */
+export const describeSet = (
+  set: Pick<ActivitySet, "weightKg" | "reps" | "durationS" | "distanceM">,
+): string =>
+  [
+    formatSetLoad(set.weightKg, set.reps),
+    set.durationS === null ? null : formatDuration(set.durationS),
+    set.distanceM === null ? null : formatDistance(set.distanceM),
+  ]
+    .filter((part) => part !== null)
+    .join(" · ");
+
+const DELETED_EXERCISE = "Deleted exercise";
+
+export type WorkoutSummary = {
+  readonly activity: Activity;
+  readonly exerciseNames: ReadonlyArray<string>;
+  readonly setCount: number;
+  readonly volumeKg: number;
+};
+
+export const summarizeWorkout = (
+  detail: ActivityDetail,
+  names: ReadonlyMap<ExerciseId, string>,
+): WorkoutSummary => {
+  const sets = detail.exercises.flatMap((entry) => entry.sets);
+  return {
+    activity: detail.activity,
+    exerciseNames: detail.exercises.map(
+      (entry) => names.get(entry.exercise.exerciseId) ?? DELETED_EXERCISE,
+    ),
+    setCount: sets.length,
+    volumeKg: workingVolumeKg(sets),
+  };
+};
+
+export type WorkoutSet = ActivitySet & {
+  readonly badge: SetBadge;
+  readonly text: string;
+  readonly records: ReadonlyArray<RecordKind>;
+};
+
+export type WorkoutExercise = {
+  readonly exercise: ActivityExercise;
+  readonly name: string;
+  readonly primaryMuscles: ReadonlyArray<Muscle>;
+  readonly sets: ReadonlyArray<WorkoutSet>;
+};
+
+/** One past workout as its detail screen shows it. */
+export type WorkoutView = {
+  readonly activity: Activity;
+  readonly exercises: ReadonlyArray<WorkoutExercise>;
+  readonly split: ReadonlyArray<MuscleShare>;
+  readonly setCount: number;
+  readonly volumeKg: number;
+  readonly recordCount: number;
+};
+
+/**
+ * Puts a workout together for its detail screen. `earlier` holds each
+ * exercise's sets from workouts that started before this one, which its
+ * record badges are measured against. An exercise done twice in one workout
+ * competes for records as one.
+ */
+export const describeWorkout = (
+  detail: ActivityDetail,
+  library: ReadonlyMap<ExerciseId, Exercise>,
+  earlier: ReadonlyMap<ExerciseId, ReadonlyArray<ScoredSet>>,
+): WorkoutView => {
+  const records = new Map<string, ReadonlyArray<RecordKind>>();
+  for (const exerciseId of new Set(detail.exercises.map((entry) => entry.exercise.exerciseId))) {
+    const sets = detail.exercises
+      .filter((entry) => entry.exercise.exerciseId === exerciseId)
+      .flatMap((entry) => entry.sets);
+    for (const [id, kinds] of workoutRecords(earlier.get(exerciseId) ?? [], sets)) {
+      records.set(id, kinds);
+    }
+  }
+
+  const exercises = detail.exercises.map(({ exercise, sets }): WorkoutExercise => {
+    const info = library.get(exercise.exerciseId);
+    let normal = 0;
+    return {
+      exercise,
+      name: info?.name ?? DELETED_EXERCISE,
+      primaryMuscles: info?.primaryMuscles ?? [],
+      sets: sets.map((set) => {
+        if (set.setType === "normal") normal++;
+        return {
+          ...set,
+          badge: setBadge(set.setType, normal),
+          text: describeSet(set),
+          records: records.get(set.id) ?? [],
+        };
+      }),
+    };
+  });
+
+  const sets = detail.exercises.flatMap((entry) => entry.sets);
+  return {
+    activity: detail.activity,
+    exercises,
+    split: muscleSplit(exercises),
+    setCount: sets.length,
+    volumeKg: workingVolumeKg(sets),
+    recordCount: [...records.values()].reduce((count, kinds) => count + kinds.length, 0),
+  };
+};
+
+/**
+ * A routine with the workout's exercises, in order, and each set as its target:
+ * the same type, weight, time and distance, with the reps done as the rep target.
+ */
+export const routineFromWorkout = (detail: ActivityDetail, position: number): RoutineDraft => ({
+  folderId: null,
+  title: detail.activity.title.trim() === "" ? "Workout" : detail.activity.title.trim(),
+  notes: "",
+  position,
+  exercises: detail.exercises.map(({ exercise, sets }) => ({
+    exerciseId: exercise.exerciseId,
+    supersetGroup: exercise.supersetGroup,
+    restS: null,
+    notes: exercise.notes,
+    sets: sets.map((set) => ({
+      setType: set.setType,
+      weightKg: set.weightKg,
+      repsMin: set.reps,
+      repsMax: set.reps,
+      durationS: set.durationS,
+      distanceM: set.distanceM,
+    })),
+  })),
+});
