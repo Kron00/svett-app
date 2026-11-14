@@ -289,9 +289,11 @@ export const sourceActivityId = (workout: Pick<SourceWorkout, "source" | "identi
   ActivityId.make(importedId(TABLES.activity.name, workout.source, workout.identity));
 
 /** An identity already saved here, as an activity of its own or as a link. */
-export type SavedIdentity = Pick<LocalLink, "source" | "fingerprint"> & {
+export interface SavedIdentity {
+  readonly source: Source;
   readonly sourceId: SourceIdentity | null;
-};
+  readonly fingerprint: Fingerprint | null;
+}
 
 /** " #2", " #3" and so on, as `distinctIdentities` adds them. */
 const SUFFIX = / #([2-9]|[1-9]\d+)$/;

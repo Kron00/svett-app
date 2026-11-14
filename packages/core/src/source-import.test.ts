@@ -59,6 +59,24 @@ const identities = (items: SourcePlan["items"]) =>
 
 const UUID = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
 
+const sameStart = (minutes: number, digit: string) => ({
+  ...workout("same", T, minutes),
+  fingerprint: Fingerprint.make(digit.repeat(64)),
+});
+
+/** The activities an import of every new workout in the plan leaves here. */
+const savedFrom = (plan: SourcePlan): Array<LocalActivity> =>
+  plan.items.map((item) =>
+    local(sourceActivityId(item.workout), item.workout.startedAt, "apple_health", {
+      sourceId: item.workout.identity,
+      fingerprint: item.workout.fingerprint,
+      durationS: item.workout.durationS,
+    }),
+  );
+
+const imported = (workouts: ReadonlyArray<SourceWorkout>) =>
+  savedFrom(planSourceImport({ activities: [], links: [] }, workouts));
+
 describe("planSourceImport", () => {
   it("matches a workout to the activity from another source it overlaps most", () => {
     const plan = planSourceImport(
@@ -143,24 +161,8 @@ describe("planSourceImport", () => {
   });
 
   describe("workouts that share an identity, against the ones saved before", () => {
-    const shared = (minutes: number, digit: string) => ({
-      ...workout("same", T, minutes),
-      fingerprint: Fingerprint.make(digit.repeat(64)),
-    });
     // Fingerprint order is a, b, c, so b lands between the other two.
-    const [a, b, c] = [shared(20, "1"), shared(25, "2"), shared(30, "3")] as const;
-    /** The activities an import of every new workout in the plan leaves here. */
-    const savedFrom = (plan: SourcePlan): Array<LocalActivity> =>
-      plan.items.map((item) =>
-        local(sourceActivityId(item.workout), item.workout.startedAt, "apple_health", {
-          sourceId: item.workout.identity,
-          fingerprint: item.workout.fingerprint,
-          durationS: item.workout.durationS,
-        }),
-      );
-    const imported = (workouts: ReadonlyArray<SourceWorkout>) =>
-      savedFrom(planSourceImport({ activities: [], links: [] }, workouts));
-
+    const [a, b, c] = [sameStart(20, "1"), sameStart(25, "2"), sameStart(30, "3")] as const;
     it("keeps each saved workout's identity when another with the same start joins the file", () => {
       const plan = planSourceImport({ activities: imported([a, c]), links: [] }, [a, b, c]);
       expect(plan.unchanged).toBe(2);
@@ -183,7 +185,7 @@ describe("planSourceImport", () => {
 
     it("lists a changed workout among ones with the same start as changed, not new", () => {
       const here = imported([a, b, c]);
-      const changedB = shared(26, "4");
+      const changedB = sameStart(26, "4");
       const plan = planSourceImport({ activities: here, links: [] }, [a, changedB, c]);
       expect(plan.added).toBe(0);
       expect(plan.unchanged).toBe(2);
