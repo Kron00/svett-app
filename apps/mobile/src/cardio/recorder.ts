@@ -13,6 +13,7 @@ import * as TaskManager from "expo-task-manager";
 
 import { createStore } from "../checks/store";
 import { appDatabase } from "../data/database";
+import { write } from "../data/store";
 
 // Imported from index.ts, because iOS starts svett in the background to hand it
 // readings while the screen is locked, and the task must be defined before then.
@@ -129,9 +130,8 @@ export const pauseRecording = () =>
 export const resumeRecording = () =>
   tracked(Effect.runPromise(recorder.resume)).catch(() => undefined);
 
-/** Saves the recording as an activity and returns its ID. */
-export const finishRecording = (): Promise<ActivityId> =>
-  tracked(appDatabase().runPromise(recorder.finish));
+/** Saves the recording as an activity and returns its ID. History and every other screen read again. */
+export const finishRecording = (): Promise<ActivityId> => tracked(write(recorder.finish));
 
 export const discardRecording = () =>
   tracked(Effect.runPromise(recorder.discard)).catch(() => undefined);

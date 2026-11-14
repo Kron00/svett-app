@@ -15,6 +15,7 @@ import { act, create, type ReactTestInstance, type ReactTestRenderer } from "rea
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 import { appDatabase } from "../data/database";
+import { write } from "../data/store";
 import type { RootStackParamList } from "../navigation";
 import { CalendarScreen } from "./CalendarScreen";
 import { ProgressScreen } from "./ProgressScreen";
@@ -381,6 +382,36 @@ describe("the streak across midnight", () => {
     for (const listener of appState.listeners) listener("active");
     await settle();
     expect(streak(history)).toBe("Streak, 0 weeks");
+    await act(async () => history.unmount());
+  });
+});
+
+describe("a recorded run in history", () => {
+  it("opens on its route screen, and a workout opens on its sets", async () => {
+    const history = await render(<ProgressScreen />);
+    const run = await write(
+      Effect.flatMap(Effect.service(ActivityRepository), (activities) =>
+        activities.create({
+          kind: "run",
+          startedAt: EpochMillis.make(Date.now() - DAY),
+          durationS: DurationSeconds.make(1_800),
+          title: "Morning run",
+          notes: "",
+          energyKcal: null,
+          audience: "only_you",
+          hiddenFields: [],
+          origin: MADE_HERE,
+          track: null,
+          exercises: [],
+        }),
+      ),
+    );
+    await settle();
+
+    await press(byTestId(history, `workout-${run}`));
+    expect(navigation.navigate).toHaveBeenCalledWith("Activity", { id: run });
+    await press(byTestId(history, `workout-${newest}`));
+    expect(navigation.navigate).toHaveBeenLastCalledWith("Workout", { id: newest });
     await act(async () => history.unmount());
   });
 });
