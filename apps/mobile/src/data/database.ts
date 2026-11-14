@@ -54,7 +54,9 @@ export const launchTarget = (): DatabaseTarget => {
     : { kind: "owner", owner: ANONYMOUS };
 };
 
-let launched: ReturnType<typeof openDatabase> | undefined;
+let shared: ReturnType<typeof openDatabase> | undefined;
 
-/** The database this launch opened. Every screen shares it. */
-export const appDatabase = () => (launched ??= openDatabase(launchTarget()));
+/** The one database every screen reads and writes, opened on first use for this launch's target. */
+export const appDatabase = () => (shared ??= openDatabase(launchTarget()));
+
+export type AppServices = ManagedRuntime.ManagedRuntime.Services<ReturnType<typeof openDatabase>>;

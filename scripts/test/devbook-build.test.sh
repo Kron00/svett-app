@@ -97,14 +97,25 @@ exit 1
 EOF
 
 # Stands in for the command that T3 Code's device_open returns. The gallery's end
-# marker counts as on screen after FAKE_GALLERY_SCROLLS scrolls since the last open.
+# marker counts as on screen after FAKE_GALLERY_SCROLLS drags since the last open.
+# Each element fills a 440 by 956 point screen. A drag moves the gallery only when
+# it starts in the left gutter, and with FAKE_GALLERY_STALL only that many times,
+# and a screenshot shows how far it moved.
 cat >"$fake/bound-device" <<EOF
 #!/usr/bin/env bash
 echo "\$*" >>"$root/bound-calls"
-if [[ "\$*" == *" is visible "* ]]; then
-  scrolls=\$(awk '/ open / { n = 0 } / scroll down 0[.]6$/ { n++ } END { print n + 0 }' "$root/bound-calls")
-  ((scrolls >= \${FAKE_GALLERY_SCROLLS:-0}))
-fi
+moved() {
+  awk -v stall="\${FAKE_GALLERY_STALL:-1000}" '
+    / open / { n = 0 }
+    / gesture pan 8 765 0 -574 400$/ && n < stall { n++ }
+    END { print n + 0 }' "$root/bound-calls"
+}
+args=" \$* "
+case "\$args" in
+  *" is visible "*) (("\$(moved)" >= \${FAKE_GALLERY_SCROLLS:-0})) ;;
+  *" get attrs "*) echo '{"rect": {"x": 0, "y": 0, "width": 440, "height": 956}}' ;;
+  *" screenshot "*) echo "gallery moved \$(moved) times" >"\${@: -1}" ;;
+esac
 EOF
 
 printf '#!/usr/bin/env bash\n' >"$fake/fnm"
@@ -440,6 +451,17 @@ check "gallery.sh stops after 40 pages when the end marker never shows" \
 check "gallery.sh restores the default text size after a failure" \
   only_calls "settings" "settings text-size large" "settings text-size large"
 
+case_name="gallery.sh when the gallery stops moving"
+rm -f "$root/bound-calls"
+! env PATH="$fake:$PATH" SVETT_DEVICE_CMD="$bound_cmd" FAKE_GALLERY_SCROLLS=1000 FAKE_GALLERY_STALL=4 \
+  "$repo/scripts/sim/gallery.sh" "$root/gallery-stalled" >"$output" 2>&1 || fail "gallery.sh succeeded"
+check "gallery.sh stops at the first page that matches the one before it" \
+  grep -qxF "dark-06.png matches dark-05.png, so the drag at 8,765 did not move the gallery" "$output"
+check "gallery.sh shoots no page after the stalled one" \
+  only_calls "screenshot" "$(printf "screenshot $root/gallery-stalled/dark-%02d.png\n" 1 2 3 4 5 6)"
+check "gallery.sh drags in the gallery's left gutter, not down the middle where a control can keep the touch" \
+  only_calls "scroll|gesture" "$(printf 'gesture pan 8 765 0 -574 400\n%.0s' 1 2 3 4 5)"
+
 # Stands in for the bound command on Phone checks. It tracks what is in front:
 # the Home Screen, or svett on its tab root, the You tab or Phone checks. Like the
 # iOS 27 simulator, a Debug open by bundle id alone leaves the Home Screen in
@@ -642,6 +664,101 @@ check "checks.sh still saves the report when a check did not pass" \
   grep -qF "Notification in the background: WAITING." "$root/checks-unpassed/report.txt"
 check "checks.sh still screenshots the report when a check did not pass" \
   bound_got "$bound_prefix screenshot $root/checks-unpassed/08-report.png"
+
+# Stands in for the bound command on the Progress screens. A screen's closing
+# element, whose id ends in -end, is on screen after FAKE_PROGRESS_SCROLLS scrolls
+# since the last open, by default 1. Every other element is on screen, except the
+# one FAKE_HIDDEN names. The workout counts read FAKE_COUNTS.
+cat >"$fake/progress-device" <<EOF
+#!/usr/bin/env bash
+echo "\$*" >>"$root/bound-calls"
+case "\$*" in
+  *' is visible id="'*'-end"')
+    scrolls=\$(awk '/ open / { n = 0 } / scroll down 0[.]6$/ { n++ } END { print n + 0 }' "$root/bound-calls")
+    ((scrolls >= \${FAKE_PROGRESS_SCROLLS:-1})) ;;
+  *" is visible "*) [[ -z "\${FAKE_HIDDEN:-}" || "\$*" != *"id=\"\$FAKE_HIDDEN\""* ]] ;;
+  *" get text "*) echo "\${FAKE_COUNTS:-300 workouts, 6012 sets}" ;;
+esac
+EOF
+chmod +x "$fake/progress-device"
+
+# run_progress [VAR=value...] [progress.sh args...] leaves the exit status in progress_status.
+run_progress() {
+  local -a vars=()
+  while [[ "${1:-}" == *=* ]]; do
+    vars+=("$1")
+    shift
+  done
+  rm -f "$root/simctl-calls" "$root/bound-calls" "$container_fixture"
+  progress_status=0
+  env PATH="$fake:$PATH" SVETT_DEVICE_CMD="progress-device --session 't3-test session' --device FAKE-UDID" \
+    "${vars[@]}" "$repo/scripts/sim/progress.sh" "$@" >"$output" 2>&1 || progress_status=$?
+}
+
+progress_fails() {
+  [[ "$progress_status" != 0 ]] || fail "progress.sh succeeded"
+  grep -qF -- "$1" "$output" || fail "progress.sh did not print \"$1\""
+}
+
+bench_id=76d53b4c-195c-578c-8797-16475c947397
+progress_links=(
+  "com.kron00.svett svett://progress/exercise/$bench_id?range=all"
+  "com.kron00.svett svett://progress/muscles?week=2026-10-26"
+  "com.kron00.svett svett://progress/measurements?kind=body_weight&range=all"
+  "com.kron00.svett svett://progress/measurements?kind=body_weight&range=all&sheet=open"
+)
+largest_text="settings text-size accessibility-extra-extra-extra-large"
+
+case_name="progress.sh Debug with SVETT_DEVICE_CMD"
+proof="$root/proof progress"
+run_progress "$proof"
+[[ "$progress_status" == 0 ]] || fail "progress.sh failed"
+check "progress.sh copies the generated fixture into the app's data container" \
+  grep -qxF "fake fixture" "$container_fixture"
+check "progress.sh relaunches into the dev client on the fixture, then opens each chart's link" only_open \
+  "com.kron00.svett --relaunch --launch-url $local_dev_client_url --launch-args=-svettFixture --launch-args=$container_fixture" \
+  "${progress_links[@]}"
+check "progress.sh shoots at the largest text size and restores the default" \
+  only_calls "settings" "$largest_text" "settings text-size large"
+check "progress.sh pages each screen down to its closing rule, then shoots the add sheet" \
+  only_calls "screenshot" \
+  "screenshot $proof/01-progress-01.png" "screenshot $proof/01-progress-02.png" \
+  "screenshot $proof/02-bench-01.png" "screenshot $proof/02-bench-02.png" \
+  "screenshot $proof/03-muscles-01.png" "screenshot $proof/03-muscles-02.png" \
+  "screenshot $proof/04-body-weight-01.png" "screenshot $proof/04-body-weight-02.png" \
+  "screenshot $proof/05-add-measurement.png"
+check "progress.sh looks for each chart on the first page it shoots of the screen" \
+  only_calls 'is visible id="chart' \
+  'is visible id="chart-best_one_rep_max"' 'is visible id="chart-heaviest_weight"' \
+  'is visible id="chart-session_volume"' 'is visible id="chart-muscle-weeks"' \
+  'is visible id="chart-measurement"'
+check "progress.sh presses only the Progress tab, since agent-device refuses presses in screen content" \
+  only_calls "press" 'press label="Progress, tab, 3 of 5"'
+check "progress.sh with SVETT_DEVICE_CMD calls neither simctl launch nor openurl" no_simctl_launch_or_openurl
+
+case_name="progress.sh Release with SVETT_DEVICE_CMD"
+run_progress --release "$root/proof-progress-release"
+[[ "$progress_status" == 0 ]] || fail "progress.sh --release failed"
+check "progress.sh Release relaunches the installed app on the fixture without Metro" only_open \
+  "com.kron00.svett --relaunch --launch-args=-svettFixture --launch-args=$container_fixture" \
+  "${progress_links[@]}"
+
+case_name="progress.sh when the fixture does not open"
+run_progress FAKE_COUNTS="0 workouts, 0 sets" "$root/proof-progress-empty"
+check "progress.sh fails when the Progress tab does not show the fixture's 300 workouts" \
+  progress_fails "The Progress tab did not show the fixture's 300 workouts: 0 workouts, 0 sets"
+check "progress.sh restores the default text size after a failure" \
+  only_calls "settings" "$largest_text" "settings text-size large"
+
+case_name="progress.sh when a chart does not draw"
+run_progress FAKE_HIDDEN=chart-heaviest_weight "$root/proof-progress-hidden"
+check "progress.sh fails naming a chart that was on none of the pages" \
+  progress_fails "02-bench: never on screen: chart-heaviest_weight"
+
+case_name="progress.sh without a closing rule"
+run_progress FAKE_PROGRESS_SCROLLS=1000 "$root/proof-progress-endless"
+check "progress.sh stops after 40 pages when a screen's closing rule never shows" \
+  progress_fails "01-progress: progress-end was not on screen after 40 pages"
 
 # Stands in for the bound command on the exercise library. It tracks the screen in
 # front and the saved custom exercises, which a relaunch keeps unless FAKE_FORGETS

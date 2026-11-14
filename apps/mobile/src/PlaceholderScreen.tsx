@@ -13,9 +13,6 @@ export function PlaceholderScreen({
 }) {
   return (
     <View className="flex-1 items-center justify-center gap-2 bg-background px-8">
-      <AppText variant="title2" accessibilityRole="header">
-        {tab.name}
-      </AppText>
       <AppText tone="secondary" className="text-center">
         {tab.summary}
       </AppText>
