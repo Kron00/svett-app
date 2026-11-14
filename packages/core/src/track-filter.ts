@@ -482,9 +482,7 @@ const turnBetween = (
   }
   const seconds = (fixes[to]!.at - fixes[from]!.at) / 1000;
   const spread =
-    SPEED_ERROR_MPS ** 2 * seconds +
-    estimates[from]!.positionVar +
-    estimates[to]!.positionVar;
+    SPEED_ERROR_MPS ** 2 * seconds + estimates[from]!.positionVar + estimates[to]!.positionVar;
   const ends = distanceM(estimates[from]!, estimates[to]!);
   return speedM > ends && (speedM - ends) ** 2 > SIGMAS ** 2 * spread ? furthest : null;
 };
@@ -527,8 +525,7 @@ const filterPathM = (estimates: ReadonlyArray<Estimate>, from: number, to: numbe
 const hides = (pathM: number | null, reachM: number, anchor: Estimate, estimate: Estimate) => {
   if (pathM === null) return false;
   const seconds = (estimate.at - anchor.at) / 1000;
-  const spread =
-    SPEED_ERROR_MPS ** 2 * seconds + anchor.positionVar + estimate.positionVar;
+  const spread = SPEED_ERROR_MPS ** 2 * seconds + anchor.positionVar + estimate.positionVar;
   return pathM > reachM && (pathM - reachM) ** 2 > SIGMAS ** 2 * spread;
 };
 
@@ -826,7 +823,11 @@ export const smoothTrack = <R extends Reading>(
     if (!settledStill) {
       reachM = Math.max(
         reachM,
-        Math.min(readM, distanceM(origin, positions[index]!), pathCap(pathM, anchor.at, estimates[index]!.at)),
+        Math.min(
+          readM,
+          distanceM(origin, positions[index]!),
+          pathCap(pathM, anchor.at, estimates[index]!.at),
+        ),
       );
     }
     alongM[index] = alongM[track.anchor]! + reachM;

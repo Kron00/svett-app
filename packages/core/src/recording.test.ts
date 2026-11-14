@@ -311,7 +311,6 @@ const circling = (radius: number, speed: number, seconds: number, speedMps: Repo
 const TRACK_RADIUS_M = 36.5;
 const TRACK_SECONDS = Math.round((4 * 2 * Math.PI * TRACK_RADIUS_M) / 3);
 
-
 const tunnelRun = along([point(0, 0), point(0, 900)], 3).filter((event) => {
   const second = secondsOf(event);
   return second <= 150 || second >= 180;
@@ -545,8 +544,8 @@ const twoHours = (() => {
   const radius = 1000 / (2 * Math.PI);
   let travelled = 0;
   const events = Array.from({ length: 7200 }, (_, second) => {
-    const moving = second < 3000 || second >= 3600;
-    if (moving) travelled += 3;
+    const onTheMove = second < 3000 || second >= 3600;
+    if (onTheMove) travelled += 3;
     const angle = travelled / radius;
     return fixAt(
       second,
@@ -555,7 +554,7 @@ const twoHours = (() => {
         radius * Math.sin(angle) + (next() * 2 - 1) * 5,
       ),
       5,
-      speedMps(moving ? 3 : 0),
+      speedMps(onTheMove ? 3 : 0),
     );
   });
   return { events, travelled };

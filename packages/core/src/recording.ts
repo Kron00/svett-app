@@ -26,7 +26,9 @@ export const Fix = Schema.Struct({
   /** The radius in metres the phone is confident of. Null when it did not say. */
   accuracyM: Schema.NullOr(Schema.Finite),
   /** The speed the phone measured, in metres a second. Null or missing when it did not say. */
-  speedMps: Schema.optionalKey(Schema.NullOr(Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0)))),
+  speedMps: Schema.optionalKey(
+    Schema.NullOr(Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0))),
+  ),
 });
 export type Fix = typeof Fix.Type;
 
@@ -61,7 +63,8 @@ export const fixOf = ({ timestamp, coords }: LocationReading): Fix => {
     altitudeM: measured ? coords.altitude : null,
     altitudeAccuracyM: measured ? coords.altitudeAccuracy : null,
     accuracyM: coords.accuracy,
-    speedMps: coords.speed === undefined || coords.speed === null || coords.speed < 0 ? null : coords.speed,
+    speedMps:
+      coords.speed === undefined || coords.speed === null || coords.speed < 0 ? null : coords.speed,
   };
 };
 
