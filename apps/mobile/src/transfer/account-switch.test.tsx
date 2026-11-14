@@ -4,9 +4,12 @@ import {
   ANONYMOUS,
   type ActivityDraft,
   databaseLayer,
+  decodeHevyFile,
   decodeSvettFile,
   DurationSeconds,
   EpochMillis,
+  ExerciseAliasRepository,
+  exerciseNames,
   Ids,
   libraryExerciseId,
   MADE_HERE,
@@ -14,6 +17,7 @@ import {
 } from "@svett/core";
 import { manualClock, openNodeDatabase } from "@svett/core/node";
 import { Effect, Layer, ManagedRuntime, Result } from "effect";
+import { readFile } from "node:fs/promises";
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
@@ -23,7 +27,10 @@ import { DATABASE_SWITCHED } from "./files";
 import { ImportPreviewScreen } from "./ImportPreviewScreen";
 import { UndoImportScreen } from "./UndoImportScreen";
 
-type Runtime = ManagedRuntime.ManagedRuntime<ActivityRepository | TransferRepository, unknown>;
+type Runtime = ManagedRuntime.ManagedRuntime<
+  ActivityRepository | ExerciseAliasRepository | TransferRepository,
+  unknown
+>;
 
 const app = vi.hoisted(() => ({
   databases: new Map<string, unknown>(),
@@ -33,15 +40,21 @@ const app = vi.hoisted(() => ({
 }));
 
 vi.mock("react-native", () => ({
+  AppState: { addEventListener: () => ({ remove: () => {} }) },
   Pressable: "Pressable",
   ScrollView: "ScrollView",
   Switch: "Switch",
   Text: "Text",
+  TextInput: "TextInput",
   View: "View",
   StyleSheet: { hairlineWidth: 0.5 },
   useWindowDimensions: () => ({ width: 440, height: 956, scale: 3, fontScale: 1 }),
 }));
 vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
+vi.mock("expo-glass-effect", () => ({
+  GlassView: "GlassView",
+  isLiquidGlassAvailable: () => false,
+}));
 vi.mock("uniwind", () => ({ useCSSVariable: () => "#000000" }));
 vi.mock("expo-document-picker", () => ({}));
 vi.mock("expo-sharing", () => ({}));
@@ -130,9 +143,14 @@ let account: Runtime;
 // The workout as the phone has it, and the file to import with a newer title for it.
 let older = "";
 let newer = "";
+let hevy = "";
 
 beforeAll(async () => {
   Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
+  hevy = await readFile(
+    new URL("../../../../packages/core/test-data/hevy-sample.csv", import.meta.url),
+    "utf8",
+  );
   const source = openDatabase(3);
   const id = await source.runPromise(
     Effect.flatMap(Effect.service(ActivityRepository), (activities) =>
@@ -211,6 +229,46 @@ const press = (root: ReactTestInstance, id: string) => {
 
 const signIn = () => act(() => switchOwner({ kind: "account", accountId: ACCOUNT }));
 
+/** Holds the turn the way a move into an account does, until `finish` runs. */
+const holdTurn = () => {
+  const moving: { finish?: () => void } = {};
+  const done = inTurn(
+    () =>
+      new Promise<void>((resolve) => {
+        moving.finish = resolve;
+      }),
+  );
+  return async () => {
+    moving.finish?.();
+    await done;
+  };
+};
+
+const openHevy = () => {
+  app.fileText = hevy;
+  app.route.params = { file: "hevy-sample.csv", kind: "hevy" };
+};
+
+/** The sample's exercise names that `runtime` has no match for. */
+const unmatched = async (runtime: Runtime) => {
+  const file = Result.getOrThrow(decodeHevyFile(hevy, (time) => Date.UTC(time.year, 0)));
+  const matches = await runtime.runPromise(
+    Effect.flatMap(Effect.service(ExerciseAliasRepository), (aliases) =>
+      aliases.matchHevyNames(exerciseNames(file)),
+    ),
+  );
+  return matches.filter((match) => match.exerciseId === null).map((match) => match.name);
+};
+
+/** Matches the first unknown name to its first suggestion instead of a new exercise. */
+const matchFirstName = (root: ReactTestInstance) =>
+  act(async () =>
+    (
+      root.find((node) => String(node.type) === "Pressable" && node.props.testID === "match-0-0")
+        .props.onPress as () => void
+    )(),
+  );
+
 describe("an import or undo across signing in", () => {
   it("writes nothing to either account when the account switches while the import waits for a move", async () => {
     const root = await render(<ImportPreviewScreen />, "import-apply");
@@ -284,5 +342,101 @@ describe("an import or undo across signing in", () => {
     expect(await titles(account)).toEqual(["Leg day"]);
     expect(await titles(phone)).toEqual(["Legs"]);
     expect(currentDatabase().owner).toEqual({ kind: "account", accountId: ACCOUNT });
+  });
+});
+
+describe("a Hevy import across signing in", () => {
+  beforeEach(openHevy);
+
+  it("writes nothing to either account when the account switches while a Hevy import waits for a move", async () => {
+    const root = await render(<ImportPreviewScreen />, "hevy-match");
+    await act(async () => press(root, "match-continue")());
+    await until(() => has(root, "hevy-summary"), "previewing the Hevy file");
+    const finishMove = holdTurn();
+    await act(async () => press(root, "import-apply")());
+    await signIn();
+    await finishMove();
+    await until(() => has(root, "import-refused"), "refusing the import");
+    expect(texts(root)).toContain("Import failed");
+    expect(texts(root)).toContain(DATABASE_SWITCHED);
+    expect(await titles(phone)).toEqual(["Legs"]);
+    expect(await appliedImports(phone)).toEqual(["applied"]);
+    expect(await titles(account)).toEqual([]);
+    expect(await appliedImports(account)).toEqual([]);
+  });
+
+  it("replaces a Hevy preview made before signing in, and its Import writes nothing", async () => {
+    const root = await render(<ImportPreviewScreen />, "hevy-match");
+    await act(async () => press(root, "match-continue")());
+    await until(() => has(root, "hevy-summary"), "previewing the Hevy file");
+    const staleImport = press(root, "import-apply");
+
+    await signIn();
+    expect(has(root, "hevy-summary")).toBe(false);
+    // The account has not matched the names yet, so its preview asks for them again.
+    await until(() => has(root, "hevy-match"), "asking the account for the names");
+    expect(has(root, "import-apply")).toBe(false);
+
+    await act(async () => staleImport());
+    await until(() => has(root, "import-refused"), "refusing the old preview");
+    expect(texts(root)).toContain(DATABASE_SWITCHED);
+    expect(await titles(phone)).toEqual(["Legs"]);
+    expect(await appliedImports(phone)).toEqual(["applied"]);
+    expect(await titles(account)).toEqual([]);
+    expect(await appliedImports(account)).toEqual([]);
+  });
+
+  it("replaces a Hevy match screen made before signing in, and its Continue remembers nothing", async () => {
+    const unknown = await unmatched(phone);
+    expect(unknown.length).toBeGreaterThan(0);
+    const root = await render(<ImportPreviewScreen />, "hevy-match");
+    await matchFirstName(root);
+    const staleContinue = press(root, "match-continue");
+
+    await signIn();
+    await until(() => has(root, "hevy-match"), "asking the account for the names");
+    // The account's match screen starts over instead of keeping the phone's choice.
+    expect(
+      root.find((node) => String(node.type) === "Pressable" && node.props.testID === "match-0-new")
+        .props.accessibilityState,
+    ).toEqual({ checked: true });
+
+    await act(async () => staleContinue());
+    await until(() => has(root, "import-refused"), "refusing the old choices");
+    expect(texts(root)).toContain(DATABASE_SWITCHED);
+    expect(await unmatched(phone)).toEqual(unknown);
+    expect(await unmatched(account)).toEqual(unknown);
+    expect(await titles(account)).toEqual([]);
+  });
+
+  it("drops a Hevy match that waited for a move when the account switches, and shows the account's", async () => {
+    const unknown = await unmatched(phone);
+    const root = await render(<ImportPreviewScreen />, "hevy-match");
+    await matchFirstName(root);
+    const finishMove = holdTurn();
+    await act(async () => press(root, "match-continue")());
+    await signIn();
+    await finishMove();
+    await until(() => has(root, "hevy-match"), "asking the account for the names");
+    await settle();
+    expect(has(root, "import-refused")).toBe(false);
+    expect(has(root, "hevy-summary")).toBe(false);
+    expect(await unmatched(phone)).toEqual(unknown);
+    expect(await unmatched(account)).toEqual(unknown);
+  });
+
+  it("still imports a Hevy file into the account when it was signed in before the preview", async () => {
+    const unknown = await unmatched(phone);
+    await signIn();
+    const root = await render(<ImportPreviewScreen />, "hevy-match");
+    await matchFirstName(root);
+    await act(async () => press(root, "match-continue")());
+    await until(() => has(root, "hevy-summary"), "previewing the Hevy file");
+    await act(async () => press(root, "import-apply")());
+    await until(() => has(root, "import-done"), "importing");
+    expect((await titles(account)).length).toBeGreaterThan(0);
+    expect(await unmatched(account)).toEqual([]);
+    expect(await unmatched(phone)).toEqual(unknown);
+    expect(await titles(phone)).toEqual(["Legs"]);
   });
 });
