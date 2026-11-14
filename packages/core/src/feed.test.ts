@@ -6,7 +6,10 @@ import {
   COMMENT_MAX_LENGTH,
   commentProblem,
   isPublished,
+  type LiftingDetail,
   type PostRows,
+  type PostRowsExercise,
+  type RouteDetail,
   thinRoute,
   viewPostDetail,
   visibleRoute,
@@ -23,7 +26,7 @@ import {
   splitLines,
   routeLine,
 } from "./feed-format.ts";
-import { privacy, SocialActivityId, type Visibility } from "./privacy.ts";
+import { privacy, SocialActivityId, viewActivity, type Visibility, WITHHELD } from "./privacy.ts";
 import {
   type Activity,
   type ActivityExercise,
@@ -268,7 +271,7 @@ describe("viewPostDetail", () => {
     expect(JSON.stringify(detail)).not.toContain("1790000000");
   });
 
-  it("leaves out pace, split times and heart rate when the owner hides them", () => {
+  it("leaves out pace, every time and heart rate when the owner hides them", () => {
     const detail = viewPostDetail(
       activity("run", 1500),
       { exercises: [], track: { track, samples: samples() } },
@@ -281,6 +284,68 @@ describe("viewPostDetail", () => {
     });
     expect(JSON.stringify(detail)).not.toContain("318");
     expect(JSON.stringify(detail)).not.toContain("156");
+  });
+
+  it("withholds each hidden field with every value that would give it back", () => {
+    const rowing: PostRowsExercise = {
+      exercise: exercise(3, 2),
+      name: "Rowing",
+      primaryMuscles: ["upper_back"],
+      sets: [{ ...set(5, 0, null, 1), durationS: DurationSeconds.make(120), distanceM: 500 }],
+    };
+    // Each value as a list, so a value inside every set or split is withheld only when all are.
+    const shown = (hidden: ReadonlyArray<HiddenField>) => {
+      const visibility = seen(hidden);
+      const view = viewActivity(activity("run", 1500), SocialActivityId.make(uuid(9)), visibility);
+      const lift = viewPostDetail(
+        activity("strength"),
+        { ...lifting, exercises: [...lifting.exercises, rowing] },
+        visibility,
+      ) as LiftingDetail;
+      const route = viewPostDetail(
+        activity("run", 1500),
+        { exercises: [], track: { track, samples: samples() } },
+        visibility,
+      ) as RouteDetail;
+      const sets = lift.exercises.flatMap((entry) => entry.sets);
+      return {
+        "activity.startedAt": [view?.startedAt],
+        "activity.durationS": [view?.durationS],
+        "activity.energyKcal": [view?.energyKcal],
+        "lifting.sets.weightKg": sets.map((one) => one.weightKg),
+        "lifting.sets.reps": sets.map((one) => one.reps),
+        "lifting.sets.durationS": sets.map((one) => one.durationS),
+        "lifting.sets.distanceM": sets.map((one) => one.distanceM),
+        "lifting.volumeKg": [lift.volumeKg],
+        "route.distanceM": [route.distanceM],
+        "route.paceSPerKm": [route.paceSPerKm],
+        "route.splits.distanceM": route.splits.map((split) => split.distanceM),
+        "route.splits.durationS": route.splits.map((split) => split.durationS),
+        "route.averageHeartRateBpm": [route.averageHeartRateBpm],
+      };
+    };
+    const withheld = (hidden: ReadonlyArray<HiddenField>) =>
+      Object.entries(shown(hidden))
+        .filter(([, values]) => values.every((value) => value === null))
+        .map(([path]) => path);
+    expect(withheld([])).toEqual([]);
+    const expected: Record<HiddenField, ReadonlyArray<string>> = {
+      weight: ["lifting.sets.weightKg", "lifting.volumeKg"],
+      heart_rate: ["route.averageHeartRateBpm"],
+      start_time: ["activity.startedAt"],
+      calories: ["activity.energyKcal"],
+      // A duration over a distance is a pace, so every duration goes with it.
+      pace: [
+        "activity.durationS",
+        "lifting.sets.durationS",
+        "route.paceSPerKm",
+        "route.splits.durationS",
+      ],
+    };
+    for (const field of HiddenField.literals) {
+      expect(withheld([field]), field).toEqual(expected[field]);
+    }
+    expect(Object.keys(WITHHELD).sort()).toEqual([...HiddenField.literals].sort());
   });
 
   it("gives nothing to a viewer the privacy rule shuts out", () => {

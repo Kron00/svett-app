@@ -6,7 +6,7 @@ import {
   formatPostDistance,
   formatPostPace,
   formatVolumeKg,
-  formatWorkoutDuration,
+  formatPostDuration,
   hiddenNote,
   likeButton,
   type LiftingDetail,
@@ -94,7 +94,7 @@ function LiftingSection({ post, detail }: { readonly post: Post; readonly detail
       <View className="flex-row flex-wrap gap-3 px-gutter">
         <StatTile
           label="Duration"
-          value={formatWorkoutDuration(post.activity.durationS)}
+          value={formatPostDuration(post.activity.durationS)}
           symbol="clock"
         />
         <StatTile
@@ -135,11 +135,7 @@ function RouteSection({ post, detail }: { readonly post: Post; readonly detail: 
           symbol="point.topleft.down.to.point.bottomright.curvepath"
           testID="post-distance"
         />
-        <StatTile
-          label="Time"
-          value={formatWorkoutDuration(post.activity.durationS)}
-          symbol="clock"
-        />
+        <StatTile label="Time" value={formatPostDuration(post.activity.durationS)} symbol="clock" />
         <StatTile
           label="Pace"
           value={detail.paceSPerKm === null ? "Hidden" : formatPostPace(detail.paceSPerKm)}

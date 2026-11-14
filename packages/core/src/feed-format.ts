@@ -8,7 +8,7 @@ import type {
   RouteDetail,
   RoutePoint,
 } from "./feed.ts";
-import { describeSet, formatVolumeKg } from "./history.ts";
+import { describeSet, formatVolumeKg, formatWorkoutDuration } from "./history.ts";
 import type { ActivityKind, Audience, HiddenField } from "./schema.ts";
 import { setBadge, type SetBadge } from "./set-format.ts";
 import { countOf } from "./social-format.ts";
@@ -20,6 +20,10 @@ export const formatPostDistance = (metres: number): string =>
 /** Minutes and seconds per kilometre, such as "5:12 /km". */
 export const formatPostPace = (secondsPerKm: number): string =>
   `${formatDuration(DurationSeconds.make(Math.round(secondsPerKm)))} /km`;
+
+/** A post's duration, or "Hidden" when the owner hides pace. */
+export const formatPostDuration = (seconds: number | null): string =>
+  seconds === null ? "Hidden" : formatWorkoutDuration(seconds);
 
 /** The numbers under a lifting post, such as "4 exercises · 16 sets · 12,450 kg". */
 export const liftingLine = (detail: LiftingDetail): string =>

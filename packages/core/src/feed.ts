@@ -3,7 +3,13 @@ import { Schema } from "effect";
 import { DurationSeconds } from "./duration.ts";
 import { workingVolumeKg } from "./history.ts";
 import { muscleSplit } from "./muscle-split.ts";
-import { ActivityView, SocialActivityId, type Visibility } from "./privacy.ts";
+import {
+  ActivityView,
+  SocialActivityId,
+  type Visibility,
+  type Withheld,
+  withheldBy,
+} from "./privacy.ts";
 import {
   type Activity,
   type ActivityExercise,
@@ -36,6 +42,7 @@ export const PostSet = Schema.Struct({
   /** Null when the set has none, and when the owner hides weight. */
   weightKg: Schema.NullOr(Schema.Finite),
   reps: Schema.NullOr(Schema.Int),
+  /** Null when the set has none, and when the owner hides pace. */
   durationS: Schema.NullOr(DurationSeconds),
   distanceM: Schema.NullOr(Schema.Finite),
   rpe: Schema.NullOr(Schema.Finite),
@@ -266,7 +273,7 @@ export const thinRoute = (
   return Array.from({ length: max }, (_, index) => points[Math.round(index * step)]!);
 };
 
-const liftingDetail = (rows: PostRows, hidden: ReadonlySet<string>): LiftingDetail => {
+const liftingDetail = (rows: PostRows, withheld: ReadonlySet<Withheld>): LiftingDetail => {
   const ordered = [...rows.exercises].sort((a, b) => a.exercise.position - b.exercise.position);
   const exercises = ordered.map((entry, position) => ({
     position,
@@ -276,9 +283,9 @@ const liftingDetail = (rows: PostRows, hidden: ReadonlySet<string>): LiftingDeta
       .map((set, setPosition) => ({
         position: setPosition,
         setType: set.setType,
-        weightKg: hidden.has("weight") ? null : set.weightKg,
+        weightKg: withheld.has("weight") ? null : set.weightKg,
         reps: set.reps,
-        durationS: set.durationS,
+        durationS: withheld.has("duration") ? null : set.durationS,
         distanceM: set.distanceM,
         rpe: set.rpe,
       })),
@@ -287,16 +294,20 @@ const liftingDetail = (rows: PostRows, hidden: ReadonlySet<string>): LiftingDeta
     type: "lifting",
     exercises,
     split: muscleSplit(ordered).map(({ muscle, sets, percent }) => ({ muscle, sets, percent })),
-    volumeKg: hidden.has("weight") ? null : workingVolumeKg(ordered.flatMap((entry) => entry.sets)),
+    volumeKg: withheld.has("volume")
+      ? null
+      : workingVolumeKg(ordered.flatMap((entry) => entry.sets)),
   };
 };
 
-const splitsOf = (samples: ReadonlyArray<ActivitySample>, hidePace: boolean) => {
+const splitsOf = (samples: ReadonlyArray<ActivitySample>, hideDuration: boolean) => {
   let endM = 0;
   return samples.flatMap((sample) => {
     if (sample.kind !== "split") return [];
     endM += sample.distanceM;
-    return [{ distanceM: sample.distanceM, endM, durationS: hidePace ? null : sample.durationS }];
+    return [
+      { distanceM: sample.distanceM, endM, durationS: hideDuration ? null : sample.durationS },
+    ];
   });
 };
 
@@ -304,7 +315,7 @@ const routeDetail = (
   activity: Activity,
   track: ActivityTrack,
   samples: ReadonlyArray<ActivitySample>,
-  hidden: ReadonlySet<string>,
+  withheld: ReadonlySet<Withheld>,
 ): RouteDetail => {
   const byTime = [...samples].sort((a, b) => a.recordedAt - b.recordedAt);
   const positions = byTime.flatMap((sample) =>
@@ -320,11 +331,11 @@ const routeDetail = (
     type: "route",
     distanceM: track.distanceM,
     elevationGainM: track.elevationGainM,
-    paceSPerKm: hidden.has("pace") ? null : pace,
-    splits: splitsOf(byTime, hidden.has("pace")),
+    paceSPerKm: withheld.has("pace") ? null : pace,
+    splits: splitsOf(byTime, withheld.has("duration")),
     route: visible.length === 0 ? [] : [visible],
     averageHeartRateBpm:
-      hidden.has("heart_rate") || beats.length === 0
+      withheld.has("heart_rate") || beats.length === 0
         ? null
         : Math.round(beats.reduce((total, bpm) => total + bpm, 0) / beats.length),
   };
@@ -342,10 +353,10 @@ export const viewPostDetail = (
   visibility: Visibility,
 ): PostDetail | null | undefined => {
   if (!visibility.visible) return undefined;
-  const hidden = new Set<string>(visibility.hidden);
+  const withheld = withheldBy(visibility.hidden);
   if (rows.track !== undefined) {
-    return routeDetail(activity, rows.track.track, rows.track.samples, hidden);
+    return routeDetail(activity, rows.track.track, rows.track.samples, withheld);
   }
-  if (rows.exercises.length > 0) return liftingDetail(rows, hidden);
+  if (rows.exercises.length > 0) return liftingDetail(rows, withheld);
   return null;
 };
