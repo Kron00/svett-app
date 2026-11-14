@@ -142,8 +142,8 @@ describe("svett file", () => {
     );
     expect(tables.activity).toEqual([{ ...activity, status: "finished", routineId: null }]);
     expect(tables.activityExercise).toEqual([
-      { ...exercise(1), setFields: "weight_reps" },
-      { ...exercise(2), setFields: "time" },
+      { ...exercise(1), setFields: "weight_reps", restS: null },
+      { ...exercise(2), setFields: "time", restS: null },
     ]);
     expect(tables.activitySet).toEqual([
       { ...squat, done: true, targetRepsMin: null, targetRepsMax: null },
@@ -196,7 +196,7 @@ describe("svett file", () => {
 
   it("reads a version 3 file's exercises with no rest time, as svett had no rest timer then", () => {
     const row = { ...exercise(1), setFields: "weight_reps", supersetGroup: 1 };
-    const tables = decoded(file({ activity_exercise: [row] }, 3));
+    const tables = tablesOf(file({ activity_exercise: [row] }, 3));
     expect(tables.activityExercise).toEqual([{ ...row, restS: null }]);
   });
 
