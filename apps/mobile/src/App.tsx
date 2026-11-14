@@ -11,7 +11,6 @@ import { StatusBar } from "expo-status-bar";
 import { SymbolView } from "expo-symbols";
 import { View } from "react-native";
 
-import { WorkoutCounts } from "./data/WorkoutCounts";
 import { PhoneChecksScreen } from "./checks/PhoneChecksScreen";
 import { useNavigationTheme } from "./design/hooks";
 import { ExerciseDetailScreen } from "./exercises/ExerciseDetailScreen";
@@ -23,6 +22,11 @@ import { GalleryScreen } from "./gallery/GalleryScreen";
 import type { RootStackParamList } from "./navigation";
 import { PhoneChecksRow } from "./PhoneChecksRow";
 import { PlaceholderScreen } from "./PlaceholderScreen";
+import { ExerciseProgressScreen } from "./progress/ExerciseProgressScreen";
+import { ExercisesScreen } from "./progress/ExercisesScreen";
+import { MeasurementsScreen } from "./progress/MeasurementsScreen";
+import { MuscleSetsScreen } from "./progress/MuscleSetsScreen";
+import { ProgressScreen } from "./progress/ProgressScreen";
 import { TABS } from "./tabs";
 import { ListSection } from "./ui/List";
 
@@ -30,20 +34,25 @@ const Stack = createNativeStackNavigator<RootStackParamList>();
 const Tabs = createBottomTabNavigator();
 
 // The scripts in scripts/sim/ open screens through these links, such as
-// svett://gallery?sheet=open and svett://exercises?q=bench, because agent-device
-// refuses taps in screen content on iOS 27. It reads UIKit's touch-transparent
-// floating bar containers as toolbars that cover the whole screen.
+// svett://gallery?sheet=open, svett://exercises?q=bench and svett://progress/muscles,
+// because agent-device refuses taps in screen content on iOS 27. It reads UIKit's
+// touch-transparent floating bar containers as toolbars that cover the whole screen.
 const linking: LinkingOptions<RootStackParamList> = {
   prefixes: ["svett://"],
   filter: (url) => !url.includes("expo-development-client"),
   config: {
     initialRouteName: "Tabs",
     screens: {
+      Tabs: { screens: { Progress: "progress" } },
       Gallery: "gallery",
       NewExercise: "exercises/new",
       Exercises: "exercises",
       EditExercise: "exercise/:id/edit",
       Exercise: "exercise/:id",
+      ProgressExercises: "progress/exercises",
+      ExerciseProgress: "progress/exercise/:exerciseId",
+      MuscleSets: "progress/muscles",
+      Measurements: "progress/measurements",
     },
   },
 };
@@ -61,26 +70,29 @@ function TabNavigator() {
             ),
           }}
         >
-          {() => (
-            <PlaceholderScreen tab={tab}>
-              {tab.name === "Train" ? (
-                <View className="mt-6 self-stretch">
-                  <ListSection>
-                    <ExerciseLibraryRow />
-                  </ListSection>
-                </View>
-              ) : null}
-              {tab.name === "Progress" ? <WorkoutCounts /> : null}
-              {tab.name === "You" ? (
-                <View className="mt-6 self-stretch">
-                  <ListSection>
-                    <PhoneChecksRow />
-                    <DesignGalleryRow />
-                  </ListSection>
-                </View>
-              ) : null}
-            </PlaceholderScreen>
-          )}
+          {() =>
+            tab.name === "Progress" ? (
+              <ProgressScreen />
+            ) : (
+              <PlaceholderScreen tab={tab}>
+                {tab.name === "Train" ? (
+                  <View className="mt-6 self-stretch">
+                    <ListSection>
+                      <ExerciseLibraryRow />
+                    </ListSection>
+                  </View>
+                ) : null}
+                {tab.name === "You" ? (
+                  <View className="mt-6 self-stretch">
+                    <ListSection>
+                      <PhoneChecksRow />
+                      <DesignGalleryRow />
+                    </ListSection>
+                  </View>
+                ) : null}
+              </PlaceholderScreen>
+            )
+          }
         </Tabs.Screen>
       ))}
     </Tabs.Navigator>
@@ -134,6 +146,26 @@ export default function App() {
           name="PhoneChecks"
           component={PhoneChecksScreen}
           options={{ headerShown: true, title: "Phone checks" }}
+        />
+        <Stack.Screen
+          name="ProgressExercises"
+          component={ExercisesScreen}
+          options={{ headerShown: true, title: "Exercises" }}
+        />
+        <Stack.Screen
+          name="ExerciseProgress"
+          component={ExerciseProgressScreen}
+          options={{ headerShown: true, title: "Exercise" }}
+        />
+        <Stack.Screen
+          name="MuscleSets"
+          component={MuscleSetsScreen}
+          options={{ headerShown: true, title: "Muscles" }}
+        />
+        <Stack.Screen
+          name="Measurements"
+          component={MeasurementsScreen}
+          options={{ headerShown: true, title: "Body measurements" }}
         />
       </Stack.Navigator>
     </NavigationContainer>
