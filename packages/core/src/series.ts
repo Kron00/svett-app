@@ -8,21 +8,15 @@ export interface SeriesPoint {
   readonly value: number;
 }
 
-/** What a chart draws for a point: its slot key, its x-axis label and its value. */
-export interface LabelledPoint {
-  readonly key: string;
+/** What a chart draws for a point: its key, its time, its x-axis label and its value. */
+export interface LabelledPoint extends SeriesPoint {
   readonly label: string;
-  readonly value: number;
 }
 
 /** Points in time order with month labels for the x axis. */
 export const labelByMonth = (points: ReadonlyArray<SeriesPoint>): ReadonlyArray<LabelledPoint> => {
   const labels = monthLabels(points.map((point) => point.at));
-  return points.map((point, index) => ({
-    key: point.key,
-    label: labels[index] ?? "",
-    value: point.value,
-  }));
+  return points.map((point, index) => ({ ...point, label: labels[index] ?? "" }));
 };
 
 export interface SeriesSummary {

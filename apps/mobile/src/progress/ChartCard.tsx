@@ -54,6 +54,7 @@ export function ChartCard({
         <Chart
           points={labelByMonth(points)}
           includeZero={mark === "bars"}
+          spacing={mark === "bars" ? "slots" : "time"}
           accessibilityLabel={describeSeries(title, points, format)}
           testID={testID}
         >

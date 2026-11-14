@@ -141,6 +141,13 @@ describe("Progress screens with the 300-workout fixture", () => {
     expect(heaviest.points[0].value).toBe(70);
     expect(heaviest.points[99].value).toBe(90);
     expect(heaviest.accessibilityLabel).toMatch(/^Heaviest weight, 100 points from .* to 90 kg/);
+    // Each point keeps its workout's time, so the line shows the gaps between workouts.
+    expect(heaviest.spacing).toBe("time");
+    const times = heaviest.points.map((point: { at: number }) => point.at);
+    expect(times).toEqual(times.toSorted((a: number, b: number) => a - b));
+    expect(
+      new Set(times.slice(1).map((at: number, i: number) => at - times[i]!)).size,
+    ).toBeGreaterThan(1);
     const all = texts(root);
     expect(all).toContain("Personal records");
     expect(all).toContain("Each point is one workout. Warm-up sets never count.");
@@ -158,6 +165,7 @@ describe("Progress screens with the 300-workout fixture", () => {
     expect(texts(root.find(byTestID("muscle-week")))).toEqual(["26 Oct to 1 Nov 2026"]);
     const chart = chartIn(root, "chart-muscle-weeks").props;
     expect(chart.points).toHaveLength(12);
+    expect(chart.spacing).toBe("slots");
     expect(chart.points.every((point: { value: number }) => point.value >= 0)).toBe(true);
     expect(root.findAll(byTestIDPrefix("muscle-row-")).length).toBeGreaterThan(3);
     expect(texts(root).filter((text) => text.startsWith("Each set counts 1"))).not.toHaveLength(0);

@@ -1,4 +1,4 @@
-import { niceTicks, placeAxisLabels, scaleLinear, type Ticks } from "@svett/core";
+import { niceTicks, placeAxisLabels, scaleLinear, type Ticks, timePositions } from "@svett/core";
 import { createContext, type ReactNode, use, useMemo, useState } from "react";
 import { View } from "react-native";
 import Svg, { Circle, Line, Path, Rect } from "react-native-svg";
@@ -8,19 +8,28 @@ import type { ColorToken } from "../design/tokens";
 import { AppText } from "./AppText";
 
 export type ChartPoint = {
-  /** Identifies the point's slot, such as its date. Unique within a chart. */
+  /** Identifies the point, such as its date. Unique within a chart. */
   readonly key: string;
-  /** The x-axis label under this point. An empty string leaves that slot blank. */
+  /** The x-axis label under this point. An empty string leaves it blank. */
   readonly label: string;
   readonly value: number;
+  /** When the value was recorded, in epoch milliseconds. A chart spaced by time needs it. */
+  readonly at?: number;
 };
+
+/**
+ * How points sit along the x axis. `slots` gives each point an equal slot,
+ * for bars of equal periods. `time` places each point by its `at`, so a line
+ * shows the real gaps between values.
+ */
+export type ChartSpacing = "slots" | "time";
 
 type Plot = {
   readonly points: ReadonlyArray<ChartPoint>;
   readonly ticks: Ticks;
   readonly width: number;
   readonly height: number;
-  /** The centre of point i's slot. Bars and line points share it, so they line up with the labels. */
+  /** Point i's x position. Marks and labels share it, so they line up. */
   readonly x: (index: number) => number;
   readonly y: (value: number) => number;
   readonly slot: number;
@@ -28,7 +37,7 @@ type Plot = {
 
 const PlotContext = createContext<Plot | null>(null);
 
-// Keeps points and lines on the top and bottom ticks from being cut in half by the SVG's edge.
+// Keeps points and lines on the plot's edges from being cut in half by the SVG's edge.
 const PLOT_INSET = 6;
 const X_LABEL_GAP = 4;
 
@@ -48,6 +57,7 @@ export function Chart({
   points,
   accessibilityLabel,
   includeZero = false,
+  spacing = "slots",
   formatValue = String,
   testID,
   children,
@@ -57,6 +67,7 @@ export function Chart({
   readonly accessibilityLabel: string;
   /** Bars start at zero. A line can start near its lowest value. */
   readonly includeZero?: boolean;
+  readonly spacing?: ChartSpacing;
   readonly formatValue?: (value: number) => string;
   readonly testID?: string;
   readonly children: ReactNode;
@@ -72,16 +83,23 @@ export function Chart({
       { includeZero },
     );
     const slot = points.length > 0 ? width / points.length : 0;
+    const timed =
+      spacing === "time"
+        ? timePositions(
+            points.map((point) => point.at ?? 0),
+            [PLOT_INSET, width - PLOT_INSET],
+          )
+        : null;
     return {
       points,
       ticks,
       width,
       height,
       slot,
-      x: (index) => slot * (index + 0.5),
+      x: (index) => (timed === null ? slot * (index + 0.5) : (timed[index] ?? 0)),
       y: scaleLinear([ticks.min, ticks.max], [height - PLOT_INSET, PLOT_INSET]),
     };
-  }, [points, includeZero, large, width, height]);
+  }, [points, includeZero, spacing, large, width, height]);
   const [labelWidths, setLabelWidths] = useState<Readonly<Record<string, number>>>({});
   const measured = points.every((point) => labelWidths[point.key] !== undefined);
   const placed = useMemo(

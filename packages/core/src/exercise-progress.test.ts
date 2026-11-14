@@ -72,8 +72,12 @@ describe("exerciseMetrics", () => {
 describe("series helpers", () => {
   const points = exerciseSeries(bench, "best_one_rep_max");
 
-  it("label the first point and each new month", () => {
-    expect(labelByMonth(points).map((point) => point.label)).toEqual(["2026", "", "Feb"]);
+  it("label the first point and each new month, keeping each point's time", () => {
+    expect(labelByMonth(points).map(({ label, at }) => [label, at])).toEqual([
+      ["2026", first[0]!.startedAt],
+      ["", second[0]!.startedAt],
+      ["Feb", third[0]!.startedAt],
+    ]);
   });
 
   it("summarise the latest, best and lowest values", () => {

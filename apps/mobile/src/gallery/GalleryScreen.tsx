@@ -172,10 +172,23 @@ function SetRowsDemo() {
   );
 }
 
-const WEEKS = [80, 80, 82.5, 85, 82.5, 87.5, 90, 92.5].map((value, index) => ({
-  key: `week-${index + 1}`,
-  label: index === 0 ? "Sep" : index === 4 ? "Oct" : "",
+// Workouts with uneven gaps, as a line spaced by time shows them.
+const WORKOUTS = (
+  [
+    [8, 1, 80],
+    [8, 4, 80],
+    [8, 8, 82.5],
+    [8, 15, 85],
+    [9, 13, 82.5],
+    [9, 16, 87.5],
+    [9, 20, 90],
+    [10, 3, 92.5],
+  ] as const
+).map(([month, day, value], index) => ({
+  key: `workout-${index + 1}`,
+  label: index === 0 ? "Sep" : index === 4 ? "Oct" : index === 7 ? "Nov" : "",
   value,
+  at: Date.UTC(2026, month, day),
 }));
 const DAYS = (
   [
@@ -384,9 +397,10 @@ export function GalleryScreen() {
             Bench press, best set
           </AppText>
           <Chart
-            points={WEEKS}
+            points={WORKOUTS}
+            spacing="time"
             formatValue={formatWeightKg}
-            accessibilityLabel="Bench press best set over eight weeks, rising from 80 to 92.5 kilograms"
+            accessibilityLabel="Bench press best set over eight workouts from 1 September to 3 November, rising from 80 to 92.5 kilograms"
           >
             <ChartGrid />
             <ChartLine />
