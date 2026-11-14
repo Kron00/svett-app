@@ -213,11 +213,7 @@ export function ActivityScreen({ route, navigation }: Props) {
           unit="km"
           testID="activity-distance"
         />
-        <StatTile
-          label="Time"
-          value={formatDuration(activity.durationS)}
-          testID="activity-time"
-        />
+        <StatTile label="Time" value={formatDuration(activity.durationS)} testID="activity-time" />
         <StatTile
           label={measure.label}
           value={formatPace(kind, distanceM, activity.durationS)}

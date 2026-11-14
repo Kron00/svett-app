@@ -136,16 +136,23 @@ describe("planImport", () => {
   });
 });
 
-describe("writtenOf", () => {
-  const sample = (fields: Record<string, unknown>) => ({
-    activitySample: [
-      row("p", { activityTrackId: "t", kind: "location", latitude: 59.33, longitude: 18.06, ...fields }),
-    ],
-  });
+/** One location sample with `fields`. */
+const locationSample = (fields: Record<string, unknown>) => ({
+  activitySample: [
+    row("p", {
+      activityTrackId: "t",
+      kind: "location",
+      latitude: 59.33,
+      longitude: 18.06,
+      ...fields,
+    }),
+  ],
+});
 
+describe("writtenOf", () => {
   it("fingerprints a location sample in the first stretch as it did before samples had a stretch", () => {
-    expect(writtenOf(sample({ segment: 0 }))).toBe(writtenOf(sample({})));
-    expect(writtenOf(sample({ segment: 1 }))).not.toBe(writtenOf(sample({})));
+    expect(writtenOf(locationSample({ segment: 0 }))).toBe(writtenOf(locationSample({})));
+    expect(writtenOf(locationSample({ segment: 1 }))).not.toBe(writtenOf(locationSample({})));
   });
 });
 

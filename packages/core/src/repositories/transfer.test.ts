@@ -475,11 +475,12 @@ describe("TransferRepository", () => {
       ...own,
       tables: {
         ...own.tables,
-        activity: (own.tables.activity ?? []).map((row) => ({ ...row, title: "Long run" })),
-        activitySample: (own.tables.activitySample ?? []).map((row) => ({
-          ...row,
-          longitude: 18.07,
-        })),
+        activity: (own.tables.activity ?? []).map((row) =>
+          Object.assign(row, { title: "Long run" }),
+        ),
+        activitySample: (own.tables.activitySample ?? []).map((row) =>
+          Object.assign(row, { longitude: 18.07 }),
+        ),
       },
     };
     const before = liveRows(phone);
@@ -497,7 +498,7 @@ describe("TransferRepository", () => {
       for (const sample of replaced["activity_sample"]) delete sample.segment;
       phone.database
         .prepare("UPDATE import_change SET replaced = ? WHERE id = ?")
-        .run(JSON.stringify(replaced), row["id"]);
+        .run(JSON.stringify(replaced), String(row["id"]));
     }
 
     const preview = await transfer(phone, (transfers) => transfers.previewUndo(importBatchId));
