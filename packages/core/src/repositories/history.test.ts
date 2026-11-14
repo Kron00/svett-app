@@ -248,6 +248,30 @@ describe("save as routine", () => {
   });
 });
 
+describe("save as routine after a deletion", () => {
+  it("puts the new routine after the highest position", async () => {
+    const { database, run, log } = open();
+    const ids = await Promise.all(
+      ["Push", "Pull", "Legs", "Arms"].map((title, day) =>
+        log(day, title, [{ exerciseId: SQUAT, sets: [set(100, 5)] }]),
+      ),
+    );
+    const save = (index: number) => database.runtime.runPromise(saveWorkoutAsRoutine(ids[index]!));
+    await save(0);
+    const pull = await save(1);
+    await save(2);
+    await run(({ routines }) => routines.removeRoutine(pull));
+    await save(3);
+
+    const saved = await run(({ routines }) => routines.listRoutines);
+    expect(saved.map((routine) => [routine.position, routine.title])).toEqual([
+      [0, "Push"],
+      [2, "Legs"],
+      [3, "Arms"],
+    ]);
+  });
+});
+
 describe("the 300-workout fixture", () => {
   it("pages through every workout once and describes the newest", async () => {
     const { driver } = openNodeDatabase();

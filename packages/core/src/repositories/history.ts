@@ -134,5 +134,7 @@ export const saveWorkoutAsRoutine = (id: ActivityId) =>
     const detail = yield* activities.get(id);
     if (Option.isNone(detail)) return yield* new RowNotFoundError({ table: "activity", id });
     const existing = yield* routines.listRoutines;
-    return yield* routines.createRoutine(routineFromWorkout(detail.value, existing.length));
+    // Deleting a routine leaves a gap, so the count of routines can be a position already taken.
+    const end = existing.reduce((next, routine) => Math.max(next, routine.position + 1), 0);
+    return yield* routines.createRoutine(routineFromWorkout(detail.value, end));
   });
