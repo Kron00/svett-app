@@ -5,7 +5,7 @@
 # Usage: scripts/sim/checks.sh [--release] [out-dir]
 #
 # It opens Phone checks from the You tab and resets the checks. Then it relaunches
-# for the Keychain check, runs the notification check from the Home Screen, runs
+# for the Keychain check, runs the notification check and leaves svett at once, runs
 # Apple Health and allows it when its sheet shows, runs GPS on a simulated route
 # with svett in the background for 70 seconds, and opens the ChatGPT sign-in sheet
 # and cancels it. After each step that leaves svett it brings svett back to Phone
@@ -170,8 +170,14 @@ screenshot reset
 relaunch
 screenshot keychain
 
+# The notification is due 10 seconds after Run, and each agent-device call takes
+# seconds, so svett leaves in the call right after the press.
+if ! agent_device settings permission grant notifications; then
+  echo "Could not grant notifications ahead, so a first Run answers the prompt" >&2
+  tap 'id="check-run-notification"'
+  accept_alerts
+fi
 tap 'id="check-run-notification"'
-accept_alerts
 agent_device home
 agent_device open com.apple.springboard
 agent_device wait text "$banner" 20000 ||

@@ -448,8 +448,9 @@ check "gallery.sh restores the default text size after a failure" \
 # or not at all with FAKE_STAYS_HOME. A scroll or press while the Home Screen is
 # in front fails and is logged. Every element has the same frame, the clipboard
 # holds a report, no permission prompt shows, and the Apple Health sheet shows
-# only with FAKE_HEALTH_SHEET. With FAKE_CHATGPT_SHEET the ChatGPT sign-in sheet
-# covers Phone checks, refuses alert dismiss and closes on a Cancel press.
+# only with FAKE_HEALTH_SHEET. FAKE_NO_GRANT refuses a permission grant ahead.
+# With FAKE_CHATGPT_SHEET the ChatGPT sign-in sheet covers Phone checks, refuses
+# alert dismiss and closes on a Cancel press.
 cat >"$fake/checks-device" <<EOF
 #!/usr/bin/env bash
 echo "\$*" >>"$root/bound-calls"
@@ -487,6 +488,7 @@ case "\$args" in
     [[ -z "\${FAKE_CHATGPT_SHEET:-}" || "\$attrs" != *check-run-chatgpt* ]] || show sheet
     [[ "\$screen" != sheet || "\$attrs" != *Cancel* ]] || show checks ;;
   *" alert dismiss "*) [[ -z "\${FAKE_CHATGPT_SHEET:-}" ]] ;;
+  *" settings permission grant "*) [[ -z "\${FAKE_NO_GRANT:-}" ]] ;;
   *" get attrs "*)
     echo "\$*" >"$root/last-attrs"
     echo '{"label": "Run", "rect": {"x": 20, "y": 300, "width": 120, "height": 40}}' ;;
@@ -524,6 +526,16 @@ never_acts_on_home_screen() {
     fail "checks.sh acted on the Home Screen: $(tr '\n' ';' <"$root/home-screen-actions")"
 }
 
+# leaves_after_notification_run checks svett goes to the Home Screen in the call
+# right after the last press on the notification check's Run, which is due 10
+# seconds later.
+leaves_after_notification_run() {
+  local after
+  after=$(sed "s/^$bound_prefix //" "$root/bound-calls" |
+    grep -A2 -xF 'get attrs id="check-run-notification"' | tail -1)
+  [[ "$after" == home ]] || fail "after Run on the notification check came \"$after\", not home"
+}
+
 you_tab_press='press label="You, tab, 5 of 5"'
 centre_press="press 80 320"
 
@@ -542,6 +554,10 @@ check "checks.sh opens Phone checks, resets, runs each check and copies the repo
   'get attrs id="check-run-notification"' 'get attrs id="check-run-health"' \
   'get attrs id="check-run-location"' 'get attrs id="check-run-chatgpt"' \
   'get attrs id="phone-checks-row"' 'get attrs id="copy-report"'
+check "checks.sh grants notifications ahead, so no prompt holds svett in front after Run" \
+  bound_got "$bound_prefix settings permission grant notifications"
+check "checks.sh leaves svett straight after pressing Run on the notification check" \
+  leaves_after_notification_run
 check "checks.sh waits for the banner on the Home Screen, then keeps svett away for over a minute for GPS" \
   only_calls "home|wait text|wait [0-9]{5,}" \
   "home" "wait text The background notification check worked. 20000" "home" "wait 70000"
@@ -588,6 +604,12 @@ check "checks.sh screenshots the Apple Health sheet and allows every type" \
   only_calls "screenshot $root/checks-health/0[56]|get attrs label" \
   "screenshot $root/checks-health/05-health-sheet.png" 'get attrs label="Turn On All"' \
   'get attrs label="Allow"' "screenshot $root/checks-health/06-health.png"
+
+case_name="checks.sh when notifications cannot be granted ahead"
+checks_sh FAKE_NO_GRANT=1 "$root/checks-no-grant"
+check "checks.sh presses Run once to answer the notification prompt, then again to leave straight after" \
+  test "$(grep -cxF -- "$bound_prefix get attrs id=\"check-run-notification\"" "$root/bound-calls")" -eq 2
+check "checks.sh leaves svett straight after the second Run" leaves_after_notification_run
 
 case_name="checks.sh when the ChatGPT sign-in sheet refuses alert dismiss"
 checks_sh FAKE_CHATGPT_SHEET=1 "$root/checks-chatgpt"
