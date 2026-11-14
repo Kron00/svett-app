@@ -7,10 +7,12 @@ import {
   checkSyncRow,
   isTooFarAhead,
   MAX_CLOCK_AHEAD_MS,
+  mergeChange,
   mergeRow,
+  type RowCopy,
   type RowVersion,
+  staysOnPhone,
 } from "./sync.ts";
-import { nextRowTime } from "./table.ts";
 
 const v = (updatedAt: number, changeId: string): RowVersion => ({ updatedAt, changeId });
 
@@ -87,14 +89,126 @@ describe("change IDs", () => {
   });
 });
 
-describe("row times", () => {
-  it("follow the phone's clock until sync has applied a newer change", () => {
-    expect(nextRowTime(1000, 0)).toBe(1000);
-    expect(nextRowTime(1000, 999)).toBe(1000);
-    expect(nextRowTime(1000, 1000)).toBe(1001);
-    expect(nextRowTime(1000, 5000)).toBe(5001);
+describe("mergeChange", () => {
+  const live = (updatedAt: number, changeId: string): RowCopy => ({
+    updatedAt,
+    changeId,
+    deletedAt: null,
+  });
+  const deleted = (at: number, changeId: string): RowCopy => ({
+    updatedAt: at,
+    changeId,
+    deletedAt: at,
   });
 
+  it.each([
+    {
+      case: "an edit made after the workout was deleted",
+      stored: deleted(3, "a"),
+      incoming: live(4, "b"),
+      deletedAbove: 3,
+      result: "keep",
+    },
+    {
+      case: "an edit made as the workout was deleted",
+      stored: deleted(3, "a"),
+      incoming: live(3, "z"),
+      deletedAbove: 3,
+      result: "keep",
+    },
+    {
+      case: "the delete arriving after a later edit",
+      stored: live(4, "b"),
+      incoming: deleted(3, "a"),
+      deletedAbove: 3,
+      result: "take",
+    },
+    {
+      case: "an edit made before the workout was deleted",
+      stored: deleted(3, "a"),
+      incoming: live(2, "b"),
+      deletedAbove: 3,
+      result: "keep",
+    },
+    {
+      case: "an edit after a set's own delete, with the workout live",
+      stored: deleted(3, "a"),
+      incoming: live(4, "b"),
+      deletedAbove: null,
+      result: "take",
+    },
+    {
+      case: "an edit after a set's own delete, before its workout's delete",
+      stored: deleted(3, "a"),
+      incoming: live(5, "b"),
+      deletedAbove: 6,
+      result: "take",
+    },
+  ] as const)("gives $result for $case", ({ stored, incoming, deletedAbove, result }) => {
+    expect(mergeChange(stored, incoming, deletedAbove)).toBe(result);
+  });
+
+  it("keeps the deleted copy in either order of arrival", () => {
+    const [edit, remove] = [live(4, "b"), deleted(3, "a")];
+    const keptFirst = mergeChange(remove, edit, 3) === "take" ? edit : remove;
+    const keptSecond = mergeChange(edit, remove, 3) === "take" ? remove : edit;
+    expect(keptFirst).toEqual(remove);
+    expect(keptSecond).toEqual(remove);
+  });
+});
+
+describe("staysOnPhone", () => {
+  const journal = (fields: object) => ({
+    itemTable: "activity",
+    rowIds: JSON.stringify({ activity: ["x"] }),
+    replaced: null,
+    ...fields,
+  });
+  const coachRow = { id: "m", content: "private" };
+
+  it.each([
+    ["a coach message", "coach_message", coachRow, true],
+    ["a coach proposal", "proposal", {}, true],
+    ["a workout's journal", "import_change", journal({}), false],
+    [
+      "a journal of a coach message",
+      "import_change",
+      journal({ itemTable: "coach_message", rowIds: JSON.stringify({ coach_message: ["m"] }) }),
+      true,
+    ],
+    [
+      "a journal that kept a replaced coach message",
+      "import_change",
+      journal({ replaced: JSON.stringify({ coach_message: [coachRow] }) }),
+      true,
+    ],
+    [
+      "a journal that kept an older journal of a coach message",
+      "import_change",
+      journal({
+        itemTable: "import_batch",
+        replaced: JSON.stringify({
+          import_change: [
+            journal({ rowIds: { activity: [] }, replaced: { coach_message: [coachRow] } }),
+          ],
+        }),
+      }),
+      true,
+    ],
+    [
+      "a journal that kept an older workout journal",
+      "import_change",
+      journal({ replaced: JSON.stringify({ import_change: [journal({ rowIds: {} })] }) }),
+      false,
+    ],
+    ["a journal it cannot read", "import_change", journal({ rowIds: "{" }), true],
+    ["a workout", "activity", { id: "a" }, false],
+  ] as const)("is %s for %s", (_, table, row, result) => {
+    expect(staysOnPhone(table, row)).toBe(result);
+  });
+});
+
+describe("row times", () => {
   it("may run up to five minutes ahead of the server", () => {
     expect(isTooFarAhead(10_000 + MAX_CLOCK_AHEAD_MS, 10_000)).toBe(false);
     expect(isTooFarAhead(10_001 + MAX_CLOCK_AHEAD_MS, 10_000)).toBe(true);
@@ -115,6 +229,26 @@ describe("checkSyncRow", () => {
       encoded: row,
       changeId: changeIdOf("folder", row),
     });
+  });
+
+  it("refuses an import journal that kept a coach message", async () => {
+    const exit = await Effect.runPromiseExit(
+      checkSyncRow("import_change", {
+        id: "0190a0b2-0000-7000-8000-000000000002",
+        updatedAt: 3,
+        deletedAt: null,
+        importBatchId: "0190a0b2-0000-7000-8000-000000000003",
+        change: "replaced",
+        itemTable: "coach_message",
+        itemId: "0190a0b2-0000-7000-8000-000000000004",
+        title: "How was leg day?",
+        itemAt: 3,
+        rowIds: JSON.stringify({ coach_message: ["0190a0b2-0000-7000-8000-000000000004"] }),
+        replaced: JSON.stringify({ coach_message: [{ content: "How was leg day?" }] }),
+        written: "f".repeat(64),
+      }),
+    );
+    expect(JSON.stringify(exit)).toContain("stays on the phone");
   });
 
   it("refuses a row its table's schema refuses", async () => {
