@@ -3,6 +3,7 @@ import { Pressable, View } from "react-native";
 
 import type { SymbolName } from "../design/tokens";
 import { AppText } from "./AppText";
+import { FieldOutline } from "./FieldOutline";
 import { Icon } from "./Icon";
 
 // Digits on the keys and stepper stop growing at twice their size, so a key
@@ -110,8 +111,9 @@ export function EntryField({
       accessibilityValue={{ text: value === "" ? "Empty" : `${value}${unit ? ` ${unit}` : ""}` }}
       accessibilityState={{ selected: focused }}
       onPress={onPress}
-      className={`min-h-target flex-row flex-wrap items-baseline justify-center gap-x-1 rounded-field px-2 py-2 ${focused ? "border-2 border-accent bg-surface" : "border-2 border-transparent bg-control"}`}
+      className={`min-h-target flex-row flex-wrap items-baseline justify-center gap-x-1 rounded-field px-2 py-2 ${focused ? "bg-surface" : "bg-control"}`}
     >
+      <FieldOutline focused={focused} />
       <AppText variant="headline" tone={value === "" ? "secondary" : "label"} numeric>
         {shown}
       </AppText>

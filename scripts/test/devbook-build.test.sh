@@ -97,14 +97,25 @@ exit 1
 EOF
 
 # Stands in for the command that T3 Code's device_open returns. The gallery's end
-# marker counts as on screen after FAKE_GALLERY_SCROLLS scrolls since the last open.
+# marker counts as on screen after FAKE_GALLERY_SCROLLS drags since the last open.
+# Each element fills a 440 by 956 point screen. A drag moves the gallery only when
+# it starts in the left gutter, and with FAKE_GALLERY_STALL only that many times,
+# and a screenshot shows how far it moved.
 cat >"$fake/bound-device" <<EOF
 #!/usr/bin/env bash
 echo "\$*" >>"$root/bound-calls"
-if [[ "\$*" == *" is visible "* ]]; then
-  scrolls=\$(awk '/ open / { n = 0 } / scroll down 0[.]6$/ { n++ } END { print n + 0 }' "$root/bound-calls")
-  ((scrolls >= \${FAKE_GALLERY_SCROLLS:-0}))
-fi
+moved() {
+  awk -v stall="\${FAKE_GALLERY_STALL:-1000}" '
+    / open / { n = 0 }
+    / gesture pan 8 765 0 -574 400$/ && n < stall { n++ }
+    END { print n + 0 }' "$root/bound-calls"
+}
+args=" \$* "
+case "\$args" in
+  *" is visible "*) (("\$(moved)" >= \${FAKE_GALLERY_SCROLLS:-0})) ;;
+  *" get attrs "*) echo '{"rect": {"x": 0, "y": 0, "width": 440, "height": 956}}' ;;
+  *" screenshot "*) echo "gallery moved \$(moved) times" >"\${@: -1}" ;;
+esac
 EOF
 
 printf '#!/usr/bin/env bash\n' >"$fake/fnm"
@@ -440,6 +451,17 @@ check "gallery.sh stops after 40 pages when the end marker never shows" \
 check "gallery.sh restores the default text size after a failure" \
   only_calls "settings" "settings text-size large" "settings text-size large"
 
+case_name="gallery.sh when the gallery stops moving"
+rm -f "$root/bound-calls"
+! env PATH="$fake:$PATH" SVETT_DEVICE_CMD="$bound_cmd" FAKE_GALLERY_SCROLLS=1000 FAKE_GALLERY_STALL=4 \
+  "$repo/scripts/sim/gallery.sh" "$root/gallery-stalled" >"$output" 2>&1 || fail "gallery.sh succeeded"
+check "gallery.sh stops at the first page that matches the one before it" \
+  grep -qxF "dark-06.png matches dark-05.png, so the drag at 8,765 did not move the gallery" "$output"
+check "gallery.sh shoots no page after the stalled one" \
+  only_calls "screenshot" "$(printf "screenshot $root/gallery-stalled/dark-%02d.png\n" 1 2 3 4 5 6)"
+check "gallery.sh drags in the gallery's left gutter, not down the middle where a control can keep the touch" \
+  only_calls "scroll|gesture" "$(printf 'gesture pan 8 765 0 -574 400\n%.0s' 1 2 3 4 5)"
+
 # Stands in for the bound command on Phone checks. It tracks what is in front:
 # the Home Screen, or svett on its tab root, the You tab or Phone checks. Like the
 # iOS 27 simulator, a Debug open by bundle id alone leaves the Home Screen in
@@ -643,6 +665,221 @@ check "checks.sh still saves the report when a check did not pass" \
 check "checks.sh still screenshots the report when a check did not pass" \
   bound_got "$bound_prefix screenshot $root/checks-unpassed/08-report.png"
 
+# Stands in for the bound command on the Progress screens. A screen's closing
+# element, whose id ends in -end, is on screen after FAKE_PROGRESS_SCROLLS scrolls
+# since the last open, by default 1. Every other element is on screen, except the
+# one FAKE_HIDDEN names. The workout counts read FAKE_COUNTS.
+cat >"$fake/progress-device" <<EOF
+#!/usr/bin/env bash
+echo "\$*" >>"$root/bound-calls"
+case "\$*" in
+  *' is visible id="'*'-end"')
+    scrolls=\$(awk '/ open / { n = 0 } / scroll down 0[.]6$/ { n++ } END { print n + 0 }' "$root/bound-calls")
+    ((scrolls >= \${FAKE_PROGRESS_SCROLLS:-1})) ;;
+  *" is visible "*) [[ -z "\${FAKE_HIDDEN:-}" || "\$*" != *"id=\"\$FAKE_HIDDEN\""* ]] ;;
+  *" get text "*) echo "\${FAKE_COUNTS:-300 workouts, 6012 sets}" ;;
+esac
+EOF
+chmod +x "$fake/progress-device"
+
+# run_progress [VAR=value...] [progress.sh args...] leaves the exit status in progress_status.
+run_progress() {
+  local -a vars=()
+  while [[ "${1:-}" == *=* ]]; do
+    vars+=("$1")
+    shift
+  done
+  rm -f "$root/simctl-calls" "$root/bound-calls" "$container_fixture"
+  progress_status=0
+  env PATH="$fake:$PATH" SVETT_DEVICE_CMD="progress-device --session 't3-test session' --device FAKE-UDID" \
+    "${vars[@]}" "$repo/scripts/sim/progress.sh" "$@" >"$output" 2>&1 || progress_status=$?
+}
+
+progress_fails() {
+  [[ "$progress_status" != 0 ]] || fail "progress.sh succeeded"
+  grep -qF -- "$1" "$output" || fail "progress.sh did not print \"$1\""
+}
+
+bench_id=76d53b4c-195c-578c-8797-16475c947397
+progress_links=(
+  "com.kron00.svett svett://progress/exercise/$bench_id?range=all"
+  "com.kron00.svett svett://progress/muscles?week=2026-10-26"
+  "com.kron00.svett svett://progress/measurements?kind=body_weight&range=all"
+  "com.kron00.svett svett://progress/measurements?kind=body_weight&range=all&sheet=open"
+)
+largest_text="settings text-size accessibility-extra-extra-extra-large"
+
+case_name="progress.sh Debug with SVETT_DEVICE_CMD"
+proof="$root/proof progress"
+run_progress "$proof"
+[[ "$progress_status" == 0 ]] || fail "progress.sh failed"
+check "progress.sh copies the generated fixture into the app's data container" \
+  grep -qxF "fake fixture" "$container_fixture"
+check "progress.sh relaunches into the dev client on the fixture, then opens each chart's link" only_open \
+  "com.kron00.svett --relaunch --launch-url $local_dev_client_url --launch-args=-svettFixture --launch-args=$container_fixture" \
+  "${progress_links[@]}"
+check "progress.sh shoots at the largest text size and restores the default" \
+  only_calls "settings" "$largest_text" "settings text-size large"
+check "progress.sh pages each screen down to its closing rule, then shoots the add sheet" \
+  only_calls "screenshot" \
+  "screenshot $proof/01-progress-01.png" "screenshot $proof/01-progress-02.png" \
+  "screenshot $proof/02-bench-01.png" "screenshot $proof/02-bench-02.png" \
+  "screenshot $proof/03-muscles-01.png" "screenshot $proof/03-muscles-02.png" \
+  "screenshot $proof/04-body-weight-01.png" "screenshot $proof/04-body-weight-02.png" \
+  "screenshot $proof/05-add-measurement.png"
+check "progress.sh looks for each chart on the first page it shoots of the screen" \
+  only_calls 'is visible id="chart' \
+  'is visible id="chart-best_one_rep_max"' 'is visible id="chart-heaviest_weight"' \
+  'is visible id="chart-session_volume"' 'is visible id="chart-muscle-weeks"' \
+  'is visible id="chart-measurement"'
+check "progress.sh presses only the Progress tab, since agent-device refuses presses in screen content" \
+  only_calls "press" 'press label="Progress, tab, 3 of 5"'
+check "progress.sh with SVETT_DEVICE_CMD calls neither simctl launch nor openurl" no_simctl_launch_or_openurl
+
+case_name="progress.sh Release with SVETT_DEVICE_CMD"
+run_progress --release "$root/proof-progress-release"
+[[ "$progress_status" == 0 ]] || fail "progress.sh --release failed"
+check "progress.sh Release relaunches the installed app on the fixture without Metro" only_open \
+  "com.kron00.svett --relaunch --launch-args=-svettFixture --launch-args=$container_fixture" \
+  "${progress_links[@]}"
+
+case_name="progress.sh when the fixture does not open"
+run_progress FAKE_COUNTS="0 workouts, 0 sets" "$root/proof-progress-empty"
+check "progress.sh fails when the Progress tab does not show the fixture's 300 workouts" \
+  progress_fails "The Progress tab did not show the fixture's 300 workouts: 0 workouts, 0 sets"
+check "progress.sh restores the default text size after a failure" \
+  only_calls "settings" "$largest_text" "settings text-size large"
+
+case_name="progress.sh when a chart does not draw"
+run_progress FAKE_HIDDEN=chart-heaviest_weight "$root/proof-progress-hidden"
+check "progress.sh fails naming a chart that was on none of the pages" \
+  progress_fails "02-bench: never on screen: chart-heaviest_weight"
+
+case_name="progress.sh without a closing rule"
+run_progress FAKE_PROGRESS_SCROLLS=1000 "$root/proof-progress-endless"
+check "progress.sh stops after 40 pages when a screen's closing rule never shows" \
+  progress_fails "01-progress: progress-end was not on screen after 40 pages"
+
+# Stands in for the bound command on the exercise library. It tracks the screen in
+# front and the saved custom exercises, which a relaunch keeps unless FAKE_FORGETS
+# is set. The bundled library holds FAKE_LIBRARY, by default "Barbell Squat".
+# A search link lists the exercises whose name starts with its text, ignoring case.
+# A press on the library opens the first result. A press on the form saves it.
+# The detail's "From" row starts below the fold, so only a scroll finds it.
+cat >"$fake/exercises-device" <<EOF
+#!/usr/bin/env bash
+echo "\$*" >>"$root/bound-calls"
+screen=\$(cat "$root/screen" 2>/dev/null || echo home)
+state() { cat "$root/\$1" 2>/dev/null || true; }
+names() {
+  echo "\${FAKE_LIBRARY:-Barbell Squat}"
+  state custom
+}
+first_result() {
+  local query
+  query=\$(state query)
+  names | awk -v q="\$query" 'index(tolower(\$0), tolower(q)) == 1 { print; exit }'
+}
+decode() { node -e 'process.stdout.write(decodeURIComponent(process.argv[1]))' "\$1"; }
+args=" \$* "
+case "\$args" in
+  *" open com.kron00.svett --relaunch "*)
+    echo tabs >"$root/screen"
+    [[ -z "\${FAKE_FORGETS:-}" ]] || rm -f "$root/custom" ;;
+  *" open com.kron00.svett svett://exercises?q="*)
+    echo library >"$root/screen"
+    decode "\${args#* svett://exercises?q=}" | sed 's/ \$//' >"$root/query" ;;
+  *" open com.kron00.svett svett://exercises/new?name="*)
+    echo form >"$root/screen"
+    query=\${args#* svett://exercises/new?name=}
+    decode "\${query%%&*}" >"$root/pending" ;;
+  *' get attrs id="exercise-result-0" '*)
+    [[ "\$screen" == library && -n "\$(first_result)" ]] || exit 1
+    printf '{"label": "%s, Chest · Cable", "rect": {"x": 0, "y": 200, "width": 440, "height": 80}}\n' "\$(first_result)" ;;
+  *" get attrs "*) echo '{"label": "Save exercise", "rect": {"x": 16, "y": 700, "width": 408, "height": 50}}' ;;
+  *' wait label="Train, tab, 2 of 5" '*) [[ "\$screen" != home ]] ;;
+  *' wait id="exercise-library" '*) [[ "\$screen" == library ]] ;;
+  *' wait id="exercise-form" '*) [[ "\$screen" == form ]] ;;
+  *' wait id="exercise-detail" '*) [[ "\$screen" == detail ]] ;;
+  *' wait id="exercise-name" label='*) [[ "\$screen" == detail && "\$args" == *"label=\"\$(state detail)\" "* ]] ;;
+  *' is visible id="exercise-source" '* | *' wait id="exercise-source" '*) exit 1 ;;
+  *' --until id="exercise-source" label="From, Custom" '*) grep -qxF -- "\$(state detail)" "$root/custom" 2>/dev/null ;;
+  *' --until id="exercise-source" label="From, svett library" '*) names | grep -qxF -- "\$(state detail)" ;;
+  *" is visible "*) [[ "\$screen" == form ]] ;;
+  *" press "[0-9]*)
+    case \$screen in
+      library) first_result >"$root/detail" ;;
+      form)
+        state pending >>"$root/custom"
+        state pending >"$root/detail" ;;
+      *) exit 1 ;;
+    esac
+    echo detail >"$root/screen" ;;
+esac
+EOF
+chmod +x "$fake/exercises-device"
+
+# run_exercises [VAR=value...] [exercises.sh args...] leaves the exit status in exercises_status.
+run_exercises() {
+  local -a vars=()
+  while [[ "${1:-}" == *=* ]]; do
+    vars+=("$1")
+    shift
+  done
+  rm -f "$root/simctl-calls" "$root/bound-calls" "$root/screen" "$root/query" "$root/pending" \
+    "$root/detail" "$root/custom"
+  exercises_status=0
+  env PATH="$fake:$PATH" SVETT_DEVICE_CMD="exercises-device --session 't3-test session' --device FAKE-UDID" \
+    SVETT_EXERCISE_NAME="Proof press 1" "${vars[@]}" "$repo/scripts/sim/exercises.sh" "$@" \
+    >"$output" 2>&1 || exercises_status=$?
+}
+
+exercise_links=("com.kron00.svett svett://exercises?q=barbell%20squat"
+  "com.kron00.svett svett://exercises/new?name=Proof%20press%201&muscle=chest&equipment=cable")
+custom_search="com.kron00.svett svett://exercises?q=Proof%20press%201"
+
+case_name="exercises.sh Debug with SVETT_DEVICE_CMD"
+run_exercises "$root/exercises"
+[[ "$exercises_status" == 0 ]] || fail "exercises.sh failed"
+check "exercises.sh searches the library, creates an exercise, relaunches into the dev client and searches for it" \
+  only_open "$debug_open" "${exercise_links[@]}" "$debug_open" "$custom_search"
+check "exercises.sh shoots at the largest text size, then restores the default" \
+  only_calls "settings text-size|settings appearance" \
+  "settings text-size accessibility-extra-extra-extra-large" "settings text-size large"
+check "exercises.sh opens the first result, saves the form and opens the saved exercise, each by its centre" \
+  only_calls "press|get attrs" \
+  'get attrs id="exercise-result-0"' "press 220 240" 'get attrs id="save-exercise"' "press 220 725" \
+  'get attrs id="exercise-result-0"' "press 220 240"
+check "exercises.sh checks the custom exercise's name and source after the relaunch" \
+  bound_got "$bound_prefix wait id=\"exercise-name\" label=\"Proof press 1\" 10000"
+check "exercises.sh screenshots each step" \
+  only_calls "screenshot" \
+  "screenshot $root/exercises/01-library-search.png" "screenshot $root/exercises/02-library-detail.png" \
+  "screenshot $root/exercises/03-new-exercise.png" "screenshot $root/exercises/04-custom-detail.png" \
+  "screenshot $root/exercises/05-custom-search-after-relaunch.png" \
+  "screenshot $root/exercises/06-custom-detail-after-relaunch.png"
+check "exercises.sh with SVETT_DEVICE_CMD never calls simctl" test ! -e "$root/simctl-calls"
+
+case_name="exercises.sh Release with SVETT_DEVICE_CMD"
+run_exercises --release "$root/exercises-release"
+[[ "$exercises_status" == 0 ]] || fail "exercises.sh --release failed"
+check "exercises.sh Release relaunches the installed app without Metro" \
+  only_open "com.kron00.svett --relaunch" "${exercise_links[@]}" "com.kron00.svett --relaunch" "$custom_search"
+
+case_name="exercises.sh when the custom exercise does not survive the relaunch"
+run_exercises FAKE_FORGETS=1 "$root/exercises-forgets"
+check "exercises.sh fails when the custom exercise is gone after the relaunch" test "$exercises_status" -ne 0
+check "exercises.sh says the search found nothing" \
+  grep -qxF 'The search for "Proof press 1" showed no result' "$output"
+check "exercises.sh restores the default text size after a failure" \
+  only_calls "settings" "settings text-size accessibility-extra-extra-extra-large" "settings text-size large"
+
+case_name="exercises.sh when the library search shows another exercise first"
+run_exercises FAKE_LIBRARY="Barbell Squat Jump" "$root/exercises-other"
+check "exercises.sh fails when the first result is not the library exercise" test "$exercises_status" -ne 0
+check "exercises.sh names the result it found instead" \
+  grep -qxF 'The first result was not "Barbell Squat". Its label is "Barbell Squat Jump, Chest · Cable".' "$output"
+
 # Stands in for swift on the Mac. FAKE_SWIFT_FAIL fails the tests.
 cat >"$fake/swift" <<EOF
 #!/usr/bin/env bash
@@ -795,5 +1032,6 @@ check "chatgpt.sh --live signs out an earlier sign-in, then waits 10 minutes for
   only_calls "get attrs|wait id=\"chatgpt-state-signedIn\"" \
   'get attrs id="chatgpt-sign-out"' 'get attrs id="chatgpt-continue"' \
   'wait id="chatgpt-state-signedIn" 600000' 'get attrs id="chatgpt-sign-out"'
+
 
 echo "$passed passed"

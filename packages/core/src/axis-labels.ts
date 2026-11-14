@@ -52,3 +52,28 @@ export const placeAxisLabels = (
   }
   return place(labels, [shown[0] ?? last], plotWidth);
 };
+
+/** A month label on a time axis: its tick's months since year 0, its centre and its width. */
+export type MonthLabel = AxisLabel & { readonly month: number };
+
+// 1, 2, 3 and 6 months divide a year, and then whole years double.
+const nextStep = (step: number) => (step < 3 ? step + 1 : step * 2);
+
+/**
+ * Keeps month labels a fixed number of months apart, the fewest that fit
+ * with `minGap` between them, so the gaps between labels stay even in time.
+ * Steps count from January, whose label names the year, so a kept January
+ * keeps the year in view. Labels are centred on their tick and moved only
+ * inside the plot's edges.
+ */
+export const placeMonthLabels = (
+  labels: ReadonlyArray<MonthLabel>,
+  plotWidth: number,
+  minGap: number,
+): ReadonlyArray<PlacedLabel> => {
+  for (let step = 1; ; step = nextStep(step)) {
+    const kept = labels.flatMap((label, index) => (label.month % step === 0 ? [index] : []));
+    const placed = place(labels, kept, plotWidth);
+    if (kept.length <= 1 || fits(labels, placed, minGap)) return placed;
+  }
+};

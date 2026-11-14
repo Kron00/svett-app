@@ -10,8 +10,10 @@
 # is on screen, then opens the sheet and saves that too. It reaches the gallery
 # and the sheet through the svett://gallery link, not taps, because agent-device
 # refuses taps in screen content on iOS 27 as covered by UIKit's
-# touch-transparent floating bar containers. Files are <pass>-NN.png and
-# <pass>-sheet.png in out-dir, by default ~/svett-proof/<branch>/gallery/. Like
+# touch-transparent floating bar containers. It pages down with a drag in the
+# gallery's left gutter, and stops with an error when a page matches the one
+# before it. Files are <pass>-NN.png and <pass>-sheet.png in out-dir, by
+# default ~/svett-proof/<branch>/gallery/. Like
 # tabs.sh, Debug opens the development client on Metro at SVETT_METRO,
 # --release opens the installed Release build, and every step runs through
 # SVETT_DEVICE_CMD when it is set.
@@ -73,9 +75,23 @@ screenshot() {
   echo "Saved $out/$1.png"
 }
 
+# agent-device's scroll drags down the middle of the screen. In the gallery that
+# can start on the native segmented control, which keeps the touch, so the page
+# stays put. The gallery's left gutter holds no control, so the drag starts
+# there, as long as scroll's 0.6 screen and 400 ms, and pages still overlap.
+gutter_drag() {
+  local frame
+  frame=$(agent_device get attrs 'id="gallery"')
+  node -e '
+    const { x, y, height } = JSON.parse(process.argv[1]).rect;
+    const travel = Math.round(height * 0.6);
+    console.log(Math.round(x + 8), Math.round(y + height / 2 + travel / 2), -travel);
+  ' "$frame"
+}
+
 # shoot <pass name> <text size>
 shoot() {
-  local pass=$1 page=1
+  local pass=$1 page=1 drag_args drag shot previous=
   agent_device settings text-size "$2"
   # A running app adopts a new text size only when it relaunches.
   agent_device open "$bundle_id" "${open_flags[@]}"
@@ -83,16 +99,23 @@ shoot() {
   agent_device open "$bundle_id" svett://gallery
   agent_device wait 'id="gallery"' 10000
   agent_device wait 1000
+  drag_args=$(gutter_drag)
+  read -r -a drag <<<"$drag_args"
 
   while true; do
-    screenshot "$(printf '%s-%02d' "$pass" "$page")"
+    shot=$(printf '%s-%02d' "$pass" "$page")
+    screenshot "$shot"
+    if [[ -n "$previous" ]] && cmp -s "$out/$previous.png" "$out/$shot.png"; then
+      echo "$shot.png matches $previous.png, so the drag at ${drag[0]},${drag[1]} did not move the gallery" >&2
+      exit 1
+    fi
     agent_device is visible 'id="gallery-end"' >/dev/null 2>&1 && break
     ((page < max_pages)) || {
       echo "The gallery's end marker was not on screen after $max_pages pages" >&2
       exit 1
     }
-    # Scrolling less than a screen overlaps the pages, so no component falls between two.
-    agent_device scroll down 0.6
+    agent_device gesture pan "${drag[0]}" "${drag[1]}" 0 "${drag[2]}" 400
+    previous=$shot
     page=$((page + 1))
   done
   echo "$pass: $page pages"

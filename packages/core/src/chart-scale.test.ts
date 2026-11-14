@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { niceTicks, scaleLinear } from "./chart-scale.ts";
+import { niceTicks, scaleLinear, timePositions } from "./chart-scale.ts";
 
 describe("niceTicks", () => {
   it("brackets the data with round steps", () => {
@@ -35,5 +35,25 @@ describe("scaleLinear", () => {
     expect(y(0)).toBe(200);
     expect(y(25)).toBe(150);
     expect(y(100)).toBe(0);
+  });
+});
+
+describe("timePositions", () => {
+  const DAY = 86_400_000;
+
+  it("spaces irregular points by the time between them, not by their order", () => {
+    // A day apart, then 179 days later, across a plot from 6 to 186.
+    expect(timePositions([0, DAY, 180 * DAY], [6, 186])).toEqual([6, 7, 186]);
+    // Twelve weekly workouts and one six months later: the gap takes most of the width.
+    const weekly = Array.from({ length: 12 }, (_, week) => week * 7 * DAY);
+    const positions = timePositions([...weekly, 11 * 7 * DAY + 182 * DAY], [0, 259]);
+    expect(positions[11]).toBe(77);
+    expect(positions[12]).toBe(259);
+  });
+
+  it("puts a lone point, or points at one time, in the middle", () => {
+    expect(timePositions([5 * DAY], [6, 186])).toEqual([96]);
+    expect(timePositions([DAY, DAY], [0, 100])).toEqual([50, 50]);
+    expect(timePositions([], [0, 100])).toEqual([]);
   });
 });

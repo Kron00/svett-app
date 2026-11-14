@@ -1,0 +1,145 @@
+import { describe, expect, it } from "vite-plus/test";
+
+import {
+  addWeeks,
+  formatDay,
+  formatWeek,
+  monthLabels,
+  monthTicks,
+  parseWeekKey,
+  rangeStart,
+  startOfWeek,
+  weekKey,
+} from "./progress-dates.ts";
+
+const local = (...parts: [number, number, number, number?, number?]) =>
+  new Date(...(parts as [number, number, number, number, number])).getTime();
+
+describe("weeks", () => {
+  it("start at midnight on Monday", () => {
+    const monday = local(2026, 0, 5, 0, 0);
+    expect(startOfWeek(monday)).toBe(monday);
+    expect(startOfWeek(local(2026, 0, 7, 12, 30))).toBe(monday);
+    expect(startOfWeek(local(2026, 0, 11, 23, 59))).toBe(monday);
+    expect(startOfWeek(local(2026, 0, 12, 0, 0))).toBe(local(2026, 0, 12, 0, 0));
+  });
+
+  it("start at Monday's midnight in a week whose Sunday began at 01:00", () => {
+    // Santiago's clocks went forward at midnight on Sunday 6 September 2026.
+    const zone = process.env["TZ"];
+    process.env["TZ"] = "America/Santiago";
+    try {
+      const monday = new Date(2026, 7, 31).getTime();
+      expect(new Date(monday).getHours()).toBe(0);
+      expect(startOfWeek(new Date(2026, 8, 6, 12, 0).getTime())).toBe(monday);
+      expect(startOfWeek(new Date(2026, 7, 31, 0, 30).getTime())).toBe(monday);
+      expect(
+        new Date(addWeeks(startOfWeek(new Date(2026, 8, 7, 9, 0).getTime()), -1)).getHours(),
+      ).toBe(0);
+    } finally {
+      if (zone === undefined) delete process.env["TZ"];
+      else process.env["TZ"] = zone;
+    }
+  });
+
+  it("move by calendar weeks, staying at midnight across a clock change", () => {
+    const march = startOfWeek(local(2026, 2, 23, 9, 0));
+    expect(new Date(addWeeks(march, 1)).getHours()).toBe(0);
+    expect(new Date(addWeeks(march, 1)).getDate()).toBe(30);
+    expect(addWeeks(local(2026, 0, 5, 0, 0), -1)).toBe(local(2025, 11, 29, 0, 0));
+  });
+
+  it("round-trip through their link key", () => {
+    const week = local(2026, 9, 26, 0, 0);
+    expect(weekKey(week)).toBe("2026-10-26");
+    expect(parseWeekKey("2026-10-26")).toBe(week);
+    expect(parseWeekKey("2026-10-29")).toBe(week);
+  });
+
+  it("refuse a key that is not a real date", () => {
+    expect(parseWeekKey("2026-02-30")).toBeNull();
+    expect(parseWeekKey("26-10-2026")).toBeNull();
+    expect(parseWeekKey("")).toBeNull();
+  });
+
+  it("read as their first and last day", () => {
+    expect(formatWeek(local(2026, 0, 5))).toBe("5 Jan to 11 Jan 2026");
+    expect(formatWeek(local(2025, 11, 29))).toBe("29 Dec 2025 to 4 Jan 2026");
+    expect(formatDay(local(2026, 9, 26, 18))).toBe("26 Oct 2026");
+  });
+});
+
+describe("monthLabels", () => {
+  it("names a month at its first point and the year in January", () => {
+    expect(
+      monthLabels([
+        local(2025, 10, 3),
+        local(2025, 10, 20),
+        local(2025, 11, 1),
+        local(2026, 0, 5),
+        local(2026, 0, 9),
+        local(2026, 1, 2),
+      ]),
+    ).toEqual(["Nov", "", "Dec", "2026", "", "Feb"]);
+  });
+
+  it("shows the year when it changes without a January point", () => {
+    expect(monthLabels([local(2025, 11, 30), local(2026, 1, 1)])).toEqual(["Dec", "2026"]);
+  });
+});
+
+describe("monthTicks", () => {
+  it("starts each month at its own midnight after a clock change at midnight", () => {
+    // Asunción's clocks went forward at midnight on 1 October 2023, so that day began at
+    // 01:00. November began at 00:00 again.
+    const zone = process.env["TZ"];
+    process.env["TZ"] = "America/Asuncion";
+    try {
+      const ticks = monthTicks(
+        new Date(2023, 8, 30, 0, 30).getTime(),
+        new Date(2023, 10, 1, 0, 30).getTime(),
+      );
+      expect(ticks.map((tick) => [tick.label, new Date(tick.at).getHours()])).toEqual([
+        ["Oct", 1],
+        ["Nov", 0],
+      ]);
+    } finally {
+      if (zone === undefined) delete process.env["TZ"];
+      else process.env["TZ"] = zone;
+    }
+  });
+
+  it("puts a tick at the start of each month in the range, with the year in January", () => {
+    const ticks = monthTicks(local(2025, 10, 14, 18), local(2026, 2, 1, 0));
+    expect(ticks.map((tick) => tick.label)).toEqual(["Dec", "2026", "Feb", "Mar"]);
+    expect(ticks.map((tick) => tick.at)).toEqual([
+      local(2025, 11, 1),
+      local(2026, 0, 1),
+      local(2026, 1, 1),
+      local(2026, 2, 1),
+    ]);
+    expect(ticks.map((tick) => tick.month)).toEqual([
+      2025 * 12 + 11,
+      2026 * 12,
+      2026 * 12 + 1,
+      2026 * 12 + 2,
+    ]);
+  });
+
+  it("names the first time's month when no month starts in the range", () => {
+    const first = local(2026, 9, 3, 9);
+    expect(monthTicks(first, local(2026, 9, 20))).toEqual([
+      { month: 2026 * 12 + 9, at: first, label: "Oct" },
+    ]);
+    expect(monthTicks(first, first)).toEqual([{ month: 2026 * 12 + 9, at: first, label: "Oct" }]);
+  });
+});
+
+describe("rangeStart", () => {
+  it("goes back three months or a year from now, or shows everything", () => {
+    const now = local(2026, 10, 13, 10);
+    expect(rangeStart("three_months", now)).toBe(local(2026, 7, 13, 10));
+    expect(rangeStart("year", now)).toBe(local(2025, 10, 13, 10));
+    expect(rangeStart("all", now)).toBeNull();
+  });
+});

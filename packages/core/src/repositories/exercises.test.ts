@@ -3,6 +3,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import { databaseLayer } from "../database.ts";
 import { exerciseLibrary, fromLibraryEntry, libraryExerciseId } from "../exercise-library.ts";
+import { NO_FILTER, searchExercises } from "../exercise-search.ts";
 import { Ids } from "../ids.ts";
 import { manualClock } from "../manual-clock.ts";
 import { openNodeDatabase } from "../node-sqlite.ts";
@@ -117,5 +118,39 @@ describe("ExerciseRepository", () => {
     await run(database, (exercises) => exercises.remove(id));
     expect(await run(database, (exercises) => exercises.get(id))).toEqual(Option.none());
     expect(await run(database, (exercises) => exercises.count)).toBe(876);
+  });
+
+  it("keeps any number of custom exercises with their own IDs across a reopen", async () => {
+    const { driver } = openNodeDatabase();
+    const open = () =>
+      ManagedRuntime.make(
+        Layer.provideMerge(databaseLayer(driver, Ids.layerSeeded(1)), manualClock(T0).layer),
+      );
+    const created = await open().runPromise(
+      Effect.flatMap(Effect.service(ExerciseRepository), (exercises) =>
+        Effect.forEach(
+          Array.from({ length: 300 }, (_, index) => index),
+          (index) =>
+            exercises.create({
+              name: `Custom press ${index}`,
+              category: "strength",
+              equipment: "cable",
+              primaryMuscles: ["chest"],
+              secondaryMuscles: [],
+              origin: MADE_HERE,
+            }),
+        ),
+      ),
+    );
+    expect(new Set(created).size).toBe(300);
+    // A custom exercise gets a random version 7 UUID, not one derived from its name.
+    expect(created.every((id) => id[14] === "7")).toBe(true);
+
+    const listed = await open().runPromise(
+      Effect.flatMap(Effect.service(ExerciseRepository), (exercises) => exercises.list),
+    );
+    expect(listed).toHaveLength(876 + 300);
+    const found = searchExercises(listed, { ...NO_FILTER, text: "custom press 299" });
+    expect(found[0]).toMatchObject({ id: created[299], source: "svett", sourceId: null });
   });
 });

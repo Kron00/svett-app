@@ -28,10 +28,13 @@ import { Chart, ChartBars, ChartGrid, ChartLine } from "../ui/Chart";
 import { EmptyState } from "../ui/EmptyState";
 import { ListRow, ListSection, SectionHeader } from "../ui/List";
 import { EntryField, Keypad, Stepper } from "../ui/NumberEntry";
+import { OptionSheet } from "../ui/OptionSheet";
+import { SearchField } from "../ui/SearchField";
 import { SegmentedControl } from "../ui/SegmentedControl";
 import { type SetField, SetRow, SetRowHeader } from "../ui/SetRow";
 import { Sheet } from "../ui/Sheet";
 import { StatTile } from "../ui/StatTile";
+import { TextField } from "../ui/TextField";
 import { WorkoutBar } from "../ui/WorkoutBar";
 
 const LIMITS: Readonly<Record<SetField, NumberEntryLimits>> = {
@@ -169,10 +172,22 @@ function SetRowsDemo() {
   );
 }
 
-const WEEKS = [80, 80, 82.5, 85, 82.5, 87.5, 90, 92.5].map((value, index) => ({
-  key: `week-${index + 1}`,
-  label: index === 0 ? "Sep" : index === 4 ? "Oct" : "",
+// Workouts with uneven gaps, as a line spaced by time shows them.
+const WORKOUTS = (
+  [
+    [8, 1, 80],
+    [8, 4, 80],
+    [8, 8, 82.5],
+    [8, 15, 85],
+    [9, 13, 82.5],
+    [9, 16, 87.5],
+    [9, 20, 90],
+    [10, 3, 92.5],
+  ] as const
+).map(([month, day, value], index) => ({
+  key: `workout-${index + 1}`,
   value,
+  at: Date.UTC(2026, month, day),
 }));
 const DAYS = (
   [
@@ -186,6 +201,12 @@ const DAYS = (
   ] as const
 ).map(([key, label, value]) => ({ key, label, value }));
 
+const MUSCLES = [
+  { value: "chest", label: "Chest" },
+  { value: "lats", label: "Lats" },
+  { value: "shoulders", label: "Shoulders" },
+] as const;
+
 type GalleryParams = { Gallery: { sheet?: "open" } | undefined };
 
 /**
@@ -198,6 +219,10 @@ export function GalleryScreen() {
   const [awake, setAwake] = useState(true);
   const [weight, setWeight] = useState(80);
   const [reps, setReps] = useState(8);
+  const [search, setSearch] = useState("bench");
+  const [name, setName] = useState("");
+  const [muscle, setMuscle] = useState<(typeof MUSCLES)[number]["value"] | null>("chest");
+  const [optionsOpen, setOptionsOpen] = useState(false);
   // The sheet's state is a route param so svett://gallery?sheet=open can show it.
   const navigation = useNavigation<NativeStackNavigationProp<GalleryParams, "Gallery">>();
   const sheetOpen = useRoute<RouteProp<GalleryParams>>().params?.sheet === "open";
@@ -293,6 +318,39 @@ export function GalleryScreen() {
         </View>
       </Section>
 
+      <Section id="fields" title="Fields">
+        <Card>
+          <SearchField
+            label="Search exercises"
+            placeholder="Search exercises"
+            value={search}
+            onChangeText={setSearch}
+          />
+          <TextField
+            label="Name"
+            placeholder="Landmine press"
+            value={name}
+            onChangeText={setName}
+          />
+          <Button
+            label={MUSCLES.find((option) => option.value === muscle)?.label ?? "All muscles"}
+            symbol="figure.strengthtraining.traditional"
+            variant="secondary"
+            onPress={() => setOptionsOpen(true)}
+          />
+        </Card>
+        <OptionSheet
+          title="Muscle"
+          mode="single"
+          noneLabel="All muscles"
+          options={MUSCLES}
+          selected={muscle}
+          onSelect={setMuscle}
+          isPresented={optionsOpen}
+          onDismiss={() => setOptionsOpen(false)}
+        />
+      </Section>
+
       <Section id="steppers" title="Steppers">
         <Card>
           <Stepper
@@ -338,9 +396,10 @@ export function GalleryScreen() {
             Bench press, best set
           </AppText>
           <Chart
-            points={WEEKS}
+            points={WORKOUTS}
+            spacing="time"
             formatValue={formatWeightKg}
-            accessibilityLabel="Bench press best set over eight weeks, rising from 80 to 92.5 kilograms"
+            accessibilityLabel="Bench press best set over eight workouts from 1 September to 3 November, rising from 80 to 92.5 kilograms"
           >
             <ChartGrid />
             <ChartLine />
