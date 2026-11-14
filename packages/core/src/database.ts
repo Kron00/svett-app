@@ -18,7 +18,6 @@ import { SyncRepository } from "./repositories/sync.ts";
 import { TrainingReads } from "./repositories/training.ts";
 import { TransferRepository } from "./repositories/transfer.ts";
 import { Sql, type SqlDriver } from "./sql.ts";
-import { NewestSeen } from "./table.ts";
 
 export const AccountId = Schema.String.check(Schema.isPattern(/^[A-Za-z0-9_-]{1,128}$/)).pipe(
   Schema.brand("AccountId"),
@@ -63,7 +62,6 @@ const prepared = (onStep: (step: OpenStep) => void) =>
       const exercises = yield* ExerciseRepository;
       const sync = yield* SyncRepository;
       yield* sync.quietly(exercises.seedLibrary());
-      yield* sync.loadNewestSeen;
       yield* Effect.sync(() => onStep("seeded"));
     }),
   );
@@ -77,11 +75,7 @@ export const databaseLayer = (
   ids: Layer.Layer<Ids>,
   onStep: (step: OpenStep) => void = () => {},
 ) => {
-  const base = Layer.mergeAll(
-    Sql.layer(driver),
-    ids,
-    Layer.sync(NewestSeen, () => ({ millis: 0 })),
-  );
+  const base = Layer.merge(Sql.layer(driver), ids);
   const repositories = Repositories.pipe(Layer.provideMerge(base));
   return Layer.provideMerge(prepared(onStep), repositories);
 };
