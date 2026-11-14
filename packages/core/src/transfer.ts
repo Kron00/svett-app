@@ -40,6 +40,7 @@ export const PARENT: Readonly<
   importBatch: null,
   importChange: { table: "importBatch", key: "importBatchId" },
   exercise: null,
+  exerciseAlias: null,
   activity: null,
   activityExercise: { table: "activity", key: "activityId" },
   activitySet: { table: "activityExercise", key: "activityExerciseId" },
@@ -85,6 +86,7 @@ const NOUN: Readonly<Record<TableKey, readonly [one: string, other: string]>> = 
   importBatch: ["import", "imports"],
   importChange: ["import record", "import records"],
   exercise: ["exercise", "exercises"],
+  exerciseAlias: ["exercise name match", "exercise name matches"],
   activity: ["workout", "workouts"],
   activityExercise: ["workout exercise", "workout exercises"],
   activitySet: ["workout set", "workout sets"],
@@ -230,6 +232,7 @@ export const summarize = (item: Item): ItemSummary => {
       };
     case "folder":
     case "exercise":
+    case "exerciseAlias":
       return { ...base, title: text(top["name"]) || fallback, at: null };
     case "measurement":
       return {
@@ -269,7 +272,44 @@ export type PlannedItem =
   | ({ readonly status: "changed" } & Writes)
   | { readonly status: "unchanged"; readonly summary: ItemSummary };
 
+/**
+ * A record the file holds that may be one already here or another in the file, such as a
+ * workout with the same start, or the same sets a few hours from one here. It is imported only
+ * when you choose it.
+ */
+export interface PossibleDuplicate {
+  readonly key: string;
+  readonly summary: ItemSummary;
+  readonly reason: "same_start" | "same_sets";
+  /** The record it may repeat. */
+  readonly other: ItemSummary;
+  readonly kept: boolean;
+}
+
+/** What an import brings: rows by table, and the records held back as possible duplicates. */
+export interface ImportRows {
+  readonly tables: TableRows;
+  readonly duplicates: ReadonlyArray<PossibleDuplicate>;
+}
+
+/**
+ * Something to import from. A svett file's rows carry their own IDs and arrive as they are.
+ * Another app's file gives rows that depend on what is here, such as the exercises its names
+ * match, so it reads them from the rows here, at the time of the import.
+ */
+export interface ImportInput {
+  readonly source: ImportSource;
+  readonly read: (local: Snapshot, at: EpochMillis) => ImportRows;
+}
+
+export const svettFileInput = (file: { readonly tables: TableRows }): ImportInput => ({
+  source: "svett_file",
+  read: () => ({ tables: file.tables, duplicates: [] }),
+});
+
 export interface ImportPlan {
+  /** Records held back as possible duplicates, kept or not. */
+  readonly duplicates: ReadonlyArray<PossibleDuplicate>;
   readonly items: ReadonlyArray<PlannedItem>;
   /** New records per table, in table order, for the tables that have any. */
   readonly added: ReadonlyArray<{ readonly table: TableKey; readonly count: number }>;
@@ -306,7 +346,11 @@ export const isLive = (rows: TableRows) =>
  * whose rows all match, however long ago each changed, is unchanged and left alone. Any other
  * is changed, and the preview lists it.
  */
-export const planImport = (local: TableRows, incoming: TableRows): ImportPlan => {
+export const planImport = (
+  local: TableRows,
+  incoming: TableRows,
+  duplicates: ReadonlyArray<PossibleDuplicate> = [],
+): ImportPlan => {
   const lookup = Object.fromEntries(
     TABLE_KEYS.map((key) => [key, [...(incoming[key] ?? []), ...(local[key] ?? [])]]),
   ) as TableRows;
@@ -340,6 +384,7 @@ export const planImport = (local: TableRows, incoming: TableRows): ImportPlan =>
     ).length,
   })).filter(({ count }) => count > 0);
   return {
+    duplicates,
     items,
     added,
     deleted: items.filter((item) => item.status === "new" && !isLive(item.writes)).length,
@@ -395,7 +440,10 @@ export const journalProblem = (change: ImportChange): string | undefined => {
 };
 
 export const isNothingToImport = (plan: ImportPlan): boolean =>
-  plan.added.length === 0 && plan.deleted === 0 && plan.changed.length === 0;
+  plan.added.length === 0 &&
+  plan.deleted === 0 &&
+  plan.changed.length === 0 &&
+  plan.duplicates.length === 0;
 
 export const recordsLabel = (count: number): string =>
   `${count.toLocaleString("en-US")} ${count === 1 ? "record" : "records"}`;

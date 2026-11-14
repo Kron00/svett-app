@@ -23,7 +23,7 @@ import { columnOf, TABLES } from "../table.ts";
 import { openTestDatabase, T0 } from "../test-database.ts";
 import { PARENT, REFERENCES, TABLE_KEYS, undoSelection } from "../transfer.ts";
 import { type ActivityDraft, ActivityRepository } from "./activities.ts";
-import { ExerciseRepository } from "./exercises.ts";
+import { ExerciseAliasRepository, ExerciseRepository } from "./exercises.ts";
 import { MADE_HERE, type Origin } from "./origin.ts";
 import {
   CoachMessageRepository,
@@ -210,6 +210,9 @@ const fillEveryTable = async (database: Database) => {
         origin: MADE_HERE,
       });
       yield* activities.create(workout("Legs", sled));
+      yield* (yield* ExerciseAliasRepository).remember("hevy", [
+        { name: "Sled Push (Heavy)", exerciseId: sled },
+      ]);
       yield* activities.create({
         ...workout("Easy run"),
         kind: "run",
