@@ -78,7 +78,8 @@ case "\$2" in
   list) printf -- '%s\n' \
     '-- iOS 27.0 --' '    iPhone 16 Pro Max (STOCK-UDID) (Shutdown)' \
     '-- iOS 26.0 --' '    svett iPhone 16 Pro Max (OLD-UDID) (Shutdown)' \
-    '-- iOS 27.2 --' '    svett iPhone 16 Pro Max (FAKE-UDID) (Booted)' ;;
+    '-- iOS 27.2 --' '    svett iPhone 16 Pro Max (FAKE-UDID) (Booted)' \
+    '    svett iPhone 16 Pro Max B (FAKE-UDID-B) (Booted)' ;;
   install)
     cat "\$4/built-from" >"$root/installed"
     cat "\$4/build-settings" >"$root/installed-settings" ;;
@@ -1741,5 +1742,244 @@ run_signin FAKE_NO_CLERK=1 "$root/signin-no-clerk"
 check "signin.sh fails on a build without a Clerk key" test "$signin_status" -ne 0
 check "signin.sh says to build with the publishable key" \
   grep -qF "Build it with EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY set" "$output"
+
+# Stands in for the bound commands of two phones on one account, told apart by
+# --device FAKE-A or FAKE-B, and for the server between them. Each phone keeps its
+# screen, its sign-in, its custom exercises and the ones it has not uploaded. A
+# relaunch with -svettServer in its launch arguments is offline until the next
+# relaunch. Sync now uploads and then downloads every exercise when online, and
+# otherwise says how many changes wait. Sync now and Save start below the fold,
+# so only a scroll finds them. FAKE_LOST names a phone whose uploads never reach
+# the server, and FAKE_ALWAYS_ONLINE ignores -svettServer.
+cat >"$fake/sync-device" <<EOF
+#!/usr/bin/env bash
+echo "\$*" >>"$root/bound-calls"
+args=" \$* "
+device=\${args#* --device }
+device=\${device%% *}
+state="$root/sync-state/\$device"
+server="$root/sync-state/server"
+mkdir -p "\$state"
+touch "\$server" "\$state/custom" "\$state/queue"
+get() { cat "\$state/\$1" 2>/dev/null || echo "\$2"; }
+put() { echo "\$2" >"\$state/\$1"; }
+screen=\$(get screen home)
+step=\$(get step choose)
+scrolled=\$(get scrolled no)
+show() { put screen "\$1"; put scrolled no; }
+id_of() { sed -nE 's/.*id="([^"]+)".*/\1/p' <<<"\$1"; }
+decode() { node -e 'process.stdout.write(decodeURIComponent(process.argv[1]))' "\$1"; }
+waiting() {
+  local count
+  count=\$(grep -c . "\$state/queue" || true)
+  if [[ "\$count" == 1 ]]; then
+    echo "Cannot reach svett. 1 change waits on this phone, and sync tries again soon."
+  else
+    echo "Cannot reach svett. \$count changes wait on this phone, and sync tries again soon."
+  fi
+}
+first_result() {
+  awk -v q="\$(get query)" 'index(tolower(\$0), tolower(q)) == 1 { print; exit }' "\$state/custom"
+}
+on_screen() {
+  case "\$screen:\$1" in
+    account:account) true ;;
+    account:*)
+      case "\$step:\$1" in
+        choose:sign-in-choose | email:sign-in-email | email:email-field | code:sign-in-code | \\
+          code:code-field | signedin:signed-in | signedin:sync-status) true ;;
+        choose:continue-with-email | email:send-code | code:check-code | signedin:sync-now)
+          [[ "\$scrolled" == yes ]] ;;
+        *) false ;;
+      esac ;;
+    form:exercise-form) true ;;
+    form:save-exercise) [[ "\$scrolled" == yes ]] ;;
+    library:exercise-library) true ;;
+    library:exercise-result-0) [[ -n "\$(first_result)" ]] ;;
+    *) false ;;
+  esac
+}
+exists() { on_screen "\$1" || { scrolled=yes; on_screen "\$1"; }; }
+target=\$(id_of "\$args")
+case "\$args" in
+  *" open com.kron00.svett --relaunch "*)
+    show tabs
+    put status "Not synced yet on this launch."
+    if [[ "\$args" == *" --launch-args=-svettServer "* && -z "\${FAKE_ALWAYS_ONLINE:-}" ]]; then
+      put online no
+    else
+      put online yes
+    fi ;;
+  *" open com.kron00.svett svett://account "*) show account ;;
+  *" open com.kron00.svett svett://exercises/new?name="*)
+    show form
+    name=\${args#* svett://exercises/new?name=}
+    { decode "\${name%%&*}"; echo; } >"\$state/pending" ;;
+  *" open com.kron00.svett svett://exercises?q="*)
+    show library
+    decode "\${args#* svett://exercises?q=}" | sed 's/ \$//' >"\$state/query" ;;
+  *" scroll "*" --until "*) exists "\$target" && put scrolled yes ;;
+  *" scroll "*) put scrolled yes ;;
+  *' get attrs id="exercise-result-0" '*)
+    on_screen exercise-result-0 || exit 1
+    printf '{"label": "%s, Chest · Cable", "rect": {"x": 0, "y": 200, "width": 440, "height": 80}}\n' "\$(first_result)" ;;
+  *" get attrs "*)
+    on_screen "\$target" || exit 1
+    put last "\$target"
+    echo '{"label": "Field", "rect": {"x": 20, "y": 300, "width": 120, "height": 40}}' ;;
+  *" fill 80 320 "*) put "\$(get last)" "\${args#* fill 80 320 }" ;;
+  *" press 80 320 "*)
+    case "\$screen:\$step:\$(get last)" in
+      account:choose:continue-with-email) put step email ;;
+      account:email:send-code) put step code ;;
+      account:code:check-code)
+        [[ "\$(get code-field)" == "424242 " ]] || exit 1
+        put step signedin ;;
+      account:signedin:sync-now)
+        if [[ "\$(get online)" == yes ]]; then
+          [[ "\${FAKE_LOST:-}" == "\$device" ]] || cat "\$state/queue" >>"\$server"
+          : >"\$state/queue"
+          sort -u "\$state/custom" "\$server" -o "\$state/custom"
+          put status "Up to date"
+        else
+          put status "\$(waiting)"
+        fi ;;
+      form:*:save-exercise)
+        cat "\$state/pending" >>"\$state/custom"
+        cat "\$state/pending" >>"\$state/queue"
+        put detail "\$(cat "\$state/pending")"
+        show detail ;;
+      *) echo "fake device: press on \$(get last) on \$screen at step \$step" >&2; exit 1 ;;
+    esac ;;
+  *' get text id="sync-status" '*) get status "" ;;
+  *' wait id="exercise-name" label='*) [[ "\$screen" == detail && "\$args" == *"label=\"\$(get detail)\" "* ]] ;;
+  *' wait label="Train, tab, 2 of 5" '*) [[ "\$screen" != home ]] ;;
+  *" wait "[0-9]*) true ;;
+  *" is visible "* | *" wait "*) [[ -n "\$target" ]] && on_screen "\$target" ;;
+esac
+EOF
+chmod +x "$fake/sync-device"
+
+# run_sync [VAR=value...] [sync.sh args...] leaves the exit status in sync_status.
+run_sync() {
+  local -a vars=()
+  while [[ "${1:-}" == *=* ]]; do
+    vars+=("$1")
+    shift
+  done
+  rm -rf "$root/simctl-calls" "$root/bound-calls" "$root/sync-state"
+  sync_status=0
+  env PATH="$fake:$PATH" SVETT_DEVICE_CMD="sync-device --session 't3-test session' --device FAKE-A" \
+    SVETT_DEVICE_CMD_B="sync-device --session 't3-test session B' --device FAKE-B" \
+    SVETT_SYNC_STAMP=1 "${vars[@]}" "$repo/scripts/sim/sync.sh" "$@" >"$output" 2>&1 || sync_status=$?
+}
+
+# phone_calls <device pattern> <call pattern> prints the matching bound calls of
+# the phones whose device matches, without the session and device.
+phone_calls() {
+  grep -E -- "--device $1 $2" "$root/bound-calls" |
+    sed -E 's/^--session t3-test session( B)? --device FAKE-[AB] //' || true
+}
+
+# phone_opens <device> <expected open arguments>... checks that phone's opens, in order.
+phone_opens() {
+  local device=$1
+  shift
+  phone_got "$device" "open " "${@/#/open }"
+}
+
+# phone_got <device pattern> <call pattern> <expected call>... checks those calls, in order.
+phone_got() {
+  local device=$1 pattern=$2 got expected
+  shift 2
+  got=$(phone_calls "$device" "$pattern")
+  expected=$(printf '%s\n' "$@")
+  [[ "$got" == "$expected" ]] || {
+    { echo "phone $device calls:"; echo "$got"; } >>"$output"
+    fail "phone $device did not get exactly these calls: $expected"
+  }
+}
+
+sync_offline="--launch-args=-svettServer --launch-args=http://127.0.0.1:9"
+new_a="com.kron00.svett svett://exercises/new?name=Sync%20A%201&muscle=chest&equipment=cable"
+new_b="com.kron00.svett svett://exercises/new?name=Sync%20B%201&muscle=chest&equipment=cable"
+search_a="com.kron00.svett svett://exercises?q=Sync%20A%201"
+search_b="com.kron00.svett svett://exercises?q=Sync%20B%201"
+account_link="com.kron00.svett svett://account"
+waits="Cannot reach svett. 1 change waits on this phone, and sync tries again soon."
+
+case_name="sync.sh Debug with SVETT_DEVICE_CMD and SVETT_DEVICE_CMD_B"
+run_sync "$root/sync"
+[[ "$sync_status" == 0 ]] || fail "sync.sh failed"
+check "sync.sh stops svett, drops the Clerk sessions and empties svett's data on both simulators" \
+  only_simctl "simctl list devices available" "simctl list devices available" \
+  "simctl terminate FAKE-UDID com.kron00.svett" "simctl keychain FAKE-UDID reset" \
+  "simctl get_app_container FAKE-UDID com.kron00.svett data" \
+  "simctl terminate FAKE-UDID-B com.kron00.svett" "simctl keychain FAKE-UDID-B reset" \
+  "simctl get_app_container FAKE-UDID-B com.kron00.svett data"
+check "sync.sh signs phone A in, edits offline, syncs online twice, then searches for both edits" \
+  phone_opens FAKE-A "$debug_open" "$account_link" "$account_link" \
+  "$debug_open $sync_offline" "$new_a" "$account_link" "$debug_open" "$account_link" \
+  "$debug_open" "$account_link" "$search_a" "$search_b"
+check "sync.sh signs phone B in, edits offline, syncs online once, then searches for both edits" \
+  phone_opens FAKE-B "$debug_open" "$account_link" "$account_link" \
+  "$debug_open $sync_offline" "$new_b" "$account_link" "$debug_open" "$account_link" \
+  "$search_a" "$search_b"
+check "sync.sh syncs phone A, then B, then A again once both are online" \
+  test "$(grep -oE -- "--device FAKE-[AB] open com.kron00.svett --relaunch --launch-url [^ ]+ ?$" "$root/bound-calls" | cut -d' ' -f2 | tail -3 | tr '\n' ' ')" == "FAKE-A FAKE-B FAKE-A "
+check "sync.sh signs both phones in to the one test account with the test code" \
+  phone_got "FAKE-[AB]" "fill " \
+  "fill 80 320 svett-sync-proof+clerk_test@example.com" "fill 80 320 424242" \
+  "fill 80 320 svett-sync-proof+clerk_test@example.com" "fill 80 320 424242"
+# The drag that closes the keyboard after each field brings Send code and Check
+# code on screen.
+check "sync.sh scrolls to each button under the fold before it presses it" \
+  phone_got FAKE-B "scroll down --until" 'scroll down --until id="continue-with-email"' \
+  'scroll down --until id="sync-now"' 'scroll down --until id="save-exercise"' \
+  'scroll down --until id="sync-now"' 'scroll down --until id="sync-now"'
+check "sync.sh says each phone could not upload its offline edit" \
+  test "$(grep -cxF -e "Phone a: $waits" -e "Phone b: $waits" "$output")" == 2
+check "sync.sh says both phones find both offline edits" \
+  test "$(grep -cE '^Phone [ab] finds "Sync [AB] 1"$' "$output")" == 4
+check "sync.sh shoots both phones at the largest text size, then restores the default" \
+  phone_got "FAKE-[AB]" "settings text-size" "settings text-size accessibility-extra-extra-extra-large" \
+  "settings text-size accessibility-extra-extra-extra-large" "settings text-size large" \
+  "settings text-size large"
+check "sync.sh screenshots each phone's steps, named by phone" \
+  phone_got "FAKE-[AB]" "screenshot" \
+  "screenshot $root/sync/01-a-signed-in.png" "screenshot $root/sync/02-b-signed-in.png" \
+  "screenshot $root/sync/03-a-offline-edit.png" "screenshot $root/sync/04-b-offline-edit.png" \
+  "screenshot $root/sync/05-a-synced.png" "screenshot $root/sync/06-b-synced.png" \
+  "screenshot $root/sync/07-a-synced.png" "screenshot $root/sync/08-a-finds-a.png" \
+  "screenshot $root/sync/09-a-finds-b.png" "screenshot $root/sync/10-b-finds-a.png" \
+  "screenshot $root/sync/11-b-finds-b.png"
+check "sync.sh with bound commands calls neither simctl launch nor openurl" no_simctl_launch_or_openurl
+
+case_name="sync.sh Release with SVETT_DEVICE_CMD and SVETT_DEVICE_CMD_B"
+run_sync --release "$root/sync-release"
+[[ "$sync_status" == 0 ]] || fail "sync.sh --release failed"
+check "sync.sh Release relaunches the installed app without Metro, offline through the launch arguments" \
+  phone_opens FAKE-B "com.kron00.svett --relaunch" "$account_link" "$account_link" \
+  "com.kron00.svett --relaunch $sync_offline" "$new_b" "$account_link" \
+  "com.kron00.svett --relaunch" "$account_link" "$search_a" "$search_b"
+
+case_name="sync.sh when phone B's edit never reaches the server"
+run_sync FAKE_LOST=FAKE-B "$root/sync-lost"
+check "sync.sh fails when phone A never gets phone B's edit" test "$sync_status" -ne 0
+check "sync.sh says which phone missed which edit" \
+  grep -qxF 'Phone a: The search for "Sync B 1" showed no result' "$output"
+check "sync.sh restores the default text size on both phones after a failure" \
+  phone_got "FAKE-[AB]" "settings text-size large" "settings text-size large" "settings text-size large"
+
+case_name="sync.sh when the offline launch still reaches the server"
+run_sync FAKE_ALWAYS_ONLINE=1 "$root/sync-online"
+check "sync.sh fails when a phone is not offline for its offline edit" test "$sync_status" -ne 0
+check "sync.sh says the phone synced when it should have been offline" \
+  grep -qF "Phone a: The sync status should read \"$waits\", but it reads \"Up to date\"" "$output"
+
+case_name="sync.sh with a bound command for phone A only"
+run_sync SVETT_DEVICE_CMD_B= "$root/sync-one"
+check "sync.sh refuses to run with one bound command" test "$sync_status" -eq 64
+check "sync.sh asks for phone B's bound command" grep -qF "SVETT_DEVICE_CMD_B must hold" "$output"
 
 echo "$passed passed"
