@@ -675,7 +675,11 @@ describe("a profile's activities", { timeout: 60_000 }, () => {
     const sent = JSON.stringify(other);
     expect(sent).not.toContain(hidden.id);
     expect(sent).not.toContain(String(hidden.startedAt));
-    expect(sent).not.toContain("410");
+    // A random social ID can hold any digits, so the values are checked without it.
+    const values = JSON.stringify(other, (key, value: unknown) =>
+      key === "id" ? undefined : value,
+    );
+    expect(values).not.toContain("410");
     expect(sent).not.toContain("audience");
   });
 
