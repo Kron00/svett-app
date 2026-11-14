@@ -1,12 +1,11 @@
 import { Clock, Context, Effect, Layer } from "effect";
 
-import { Sql, type SqlValue } from "../sql.ts";
+import { Sql } from "../sql.ts";
 import {
   type CheckedRow,
   checkSyncRow,
   deletedAboveOf,
   deletionMatters,
-  inDraftWorkout,
   isTooFarAhead,
   MAX_CLOCK_AHEAD_MS,
   MAX_SYNC_ROWS,
@@ -17,10 +16,17 @@ import {
   type SyncPull,
   type SyncPushResult,
 } from "../sync.ts";
-import { columnOf, selectRowsWithDeleted, TABLES } from "../table.ts";
+import { selectRowsWithDeleted, TABLES } from "../table.ts";
+import {
+  draftWorkoutHere,
+  forget,
+  keepAside,
+  lookup,
+  rawRows,
+  save,
+  storedRows,
+} from "./sync-rows.ts";
 import { journalFingerprint } from "./transfer.ts";
-
-const TABLE_BY_NAME = new Map(SYNCED_TABLES.map((table) => [table.name, table]));
 
 /** A row this phone changed and the server has not confirmed yet. */
 export interface QueuedRow {
@@ -31,44 +37,8 @@ export interface QueuedRow {
   readonly row: unknown;
 }
 
-const tableOf = (name: string) => {
-  const table = TABLE_BY_NAME.get(name as SyncedTable);
-  if (table === undefined)
-    throw new Error(`The sync queue names a table that does not sync: ${name}`);
-  return table;
-};
-
 const makeSyncRepository = Effect.gen(function* () {
   const sql = yield* Sql;
-
-  /** The rows in their stored form, keyed by ID, without any that stay on the phone. */
-  const rawRows = (table: SyncedTable, ids: ReadonlyArray<string>) =>
-    Effect.gen(function* () {
-      const target = tableOf(table);
-      const rows = yield* sql.all(
-        `SELECT ${target.keys.map(columnOf).join(", ")} FROM ${table} WHERE id IN (${ids.map(() => "?").join(", ")})`,
-        ids,
-      );
-      return rows.map((row) =>
-        Object.fromEntries(target.keys.map((key) => [key, row[columnOf(key)] ?? null])),
-      );
-    });
-
-  const storedRows = (table: SyncedTable, ids: ReadonlyArray<string>) =>
-    Effect.gen(function* () {
-      const raw = yield* rawRows(table, ids);
-      const checked = yield* Effect.forEach(
-        raw.filter((row) => !staysOnPhone(table, row)),
-        (row) => checkSyncRow(table, row),
-      );
-      return new Map(checked.map((row) => [row.id, row]));
-    });
-
-  const lookup = (table: SyncedTable, id: string) =>
-    Effect.map(rawRows(table, [id]), ([row]) => row);
-
-  const forget = (table: SyncedTable, id: string) =>
-    sql.run("DELETE FROM sync_outbox WHERE table_name = ? AND row_id = ?", [table, id]);
 
   /**
    * Up to `limit` queued rows after `after`, oldest change first, as the server takes them.
@@ -136,23 +106,6 @@ const makeSyncRepository = Effect.gen(function* () {
       (found) => found.length > 0,
     );
 
-  /** Writes `row` as given, over any copy here, and drops it from the queue. */
-  const save = (row: CheckedRow, encoded: Readonly<Record<string, unknown>>) =>
-    Effect.gen(function* () {
-      const target = tableOf(row.table);
-      const columns = target.keys.map(columnOf);
-      const values = encoded as Readonly<Record<string, SqlValue | undefined>>;
-      yield* sql.run(
-        `INSERT INTO ${row.table} (${columns.join(", ")}) VALUES (${columns.map(() => "?").join(", ")})
-         ON CONFLICT (id) DO UPDATE SET ${columns
-           .filter((column) => column !== "id")
-           .map((column) => `${column} = excluded.${column}`)
-           .join(", ")}`,
-        target.keys.map((key) => values[key] ?? null),
-      );
-      yield* forget(row.table, row.id);
-    });
-
   /**
    * Saves a pulled page and the cursor after it in one transaction, so a pull cut short
    * resumes from the last page it saved. The server's copy is the one every phone ends with,
@@ -161,10 +114,8 @@ const makeSyncRepository = Effect.gen(function* () {
    * lost. Every row applied, and every row passed over, moves the clock past its time.
    *
    * A workout in progress here, and every row under it, stays as it is here, whatever the
-   * queue holds and in whatever order its rows arrive. Finishing it gives each of its rows a
-   * time after every one passed over, so this phone's copy wins everywhere. A row the server
-   * has under it that this phone lacks, such as a set another phone added, is saved deleted,
-   * so finishing deletes it everywhere too.
+   * queue holds and in whatever order its rows arrive. The pulled copies of its rows wait
+   * aside until it is finished or discarded, and then merge by the same rules.
    */
   const apply = (rows: ReadonlyArray<CheckedRow>, next: number) =>
     sql.transaction(
@@ -176,13 +127,9 @@ const makeSyncRepository = Effect.gen(function* () {
           newest = Math.max(newest, row.updatedAt);
           const here = yield* lookup(row.table, row.id);
           const encoded = row.encoded as Readonly<Record<string, unknown>>;
-          if (
-            (here !== undefined && (yield* inDraftWorkout(row.table, here, lookup))) ||
-            (yield* inDraftWorkout(row.table, encoded, lookup))
-          ) {
-            if (here === undefined) {
-              yield* save(row, { ...encoded, deletedAt: row.deletedAt ?? row.updatedAt });
-            }
+          const draft = yield* draftWorkoutHere(row, here);
+          if (draft !== undefined) {
+            yield* keepAside(row, draft);
             continue;
           }
           const local = (yield* storedRows(row.table, [row.id])).get(row.id);
@@ -296,9 +243,11 @@ const makeSyncRepository = Effect.gen(function* () {
           return result;
         }),
       ),
-    queued,
+    queued: (after: QueuedRow | undefined, limit?: number) =>
+      queued(after, limit).pipe(Effect.provideService(Sql, sql)),
     confirm,
-    apply,
+    apply: (rows: ReadonlyArray<CheckedRow>, next: number) =>
+      apply(rows, next).pipe(Effect.provideService(Sql, sql)),
     restamp: (limit: number) => restamp(limit).pipe(Effect.provideService(Sql, sql)),
     /** The last `seq` this phone has fully saved, its clock, and the newest change it applied. */
     state,

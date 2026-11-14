@@ -26,6 +26,7 @@ import {
   restoreRows,
   RowNotFoundError,
   selectById,
+  selectRowsWithDeleted,
   selectRows,
   softDeleteRows,
   TABLES,
@@ -40,6 +41,7 @@ import {
   setsForFields,
 } from "../logger.ts";
 import { MADE_HERE, type Origin, provenance, rowId } from "./origin.ts";
+import { draftVersion, settleKeptAside } from "./sync-rows.ts";
 
 type Draft<A, Parent extends string = never> = Omit<
   A,
@@ -534,6 +536,7 @@ const makeActivityRepository = Effect.gen(function* () {
       sql.transaction(
         Effect.gen(function* () {
           const activity = yield* inProgressActivity(id);
+          const draft = yield* draftVersion(id);
           const exercises = yield* liveExercises(id);
           const sets = yield* selectRows(TABLES.activitySet, childrenOf.sets, [id], "position, id");
           const plan = finishPlan(
@@ -566,12 +569,15 @@ const makeActivityRepository = Effect.gen(function* () {
               yield* updateRow(TABLES.activityExercise, exercise.id, { position });
             }
           }
-          return yield* updateRow(TABLES.activity, id, {
+          const finished = yield* updateRow(TABLES.activity, id, {
             status: "finished",
             durationS: DurationSeconds.make(
               Math.max(0, ((yield* Clock.currentTimeMillis) - activity.startedAt) / 1000),
             ),
           });
+          yield* settleKeptAside(id, { finished: draft });
+          const [settled] = yield* selectRowsWithDeleted(TABLES.activity, "id = ?", [id]);
+          return settled ?? finished;
         }),
       ),
     );
@@ -657,12 +663,15 @@ const makeActivityRepository = Effect.gen(function* () {
       sql.transaction(
         Effect.gen(function* () {
           const at = yield* currentTime;
+          const before = yield* selectById(TABLES.activity, id);
+          const discarded = Option.isSome(before) && before.value.status === "in_progress";
           const removed = yield* softDeleteRows(TABLES.activity, "id = ?", [id], at);
           if (removed === 0) return yield* new RowNotFoundError({ table: "activity", id });
           yield* softDeleteRows(TABLES.activitySet, childrenOf.sets, [id], at);
           yield* softDeleteRows(TABLES.activityExercise, childrenOf.exercises, [id], at);
           yield* softDeleteRows(TABLES.activitySample, childrenOf.samples, [id], at);
           yield* softDeleteRows(TABLES.activityTrack, childrenOf.tracks, [id], at);
+          if (discarded) yield* settleKeptAside(id, "discarded");
         }),
       ),
     );
@@ -775,9 +784,17 @@ const makeActivityRepository = Effect.gen(function* () {
       run(
         sql.transaction(
           Effect.gen(function* () {
+            const before = yield* selectById(TABLES.activity, id);
+            const draft =
+              Option.isSome(before) && before.value.status === "in_progress"
+                ? yield* draftVersion(id)
+                : undefined;
             const next = yield* updateRow(TABLES.activity, id, patch);
             if (next.status === "in_progress") yield* noOtherInProgress(id);
-            return next;
+            if (draft === undefined || next.status === "in_progress") return next;
+            yield* settleKeptAside(id, { finished: draft });
+            const [settled] = yield* selectRowsWithDeleted(TABLES.activity, "id = ?", [id]);
+            return settled ?? next;
           }),
         ),
       ),

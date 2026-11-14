@@ -216,13 +216,54 @@ ${workoutChildren(id)
   .map(([table, where]) => `  UNION ALL SELECT '${table}', id FROM ${table} WHERE ${where}`)
   .join("\n")}`;
 
+// The columns of each workout table at migration 9, frozen, for the copies kept aside.
+const workoutColumns: Readonly<Record<string, ReadonlyArray<string>>> = {
+  activity: [
+    "id", "updated_at", "deleted_at", "kind", "status", "routine_id", "started_at", "duration_s",
+    "title", "notes", "energy_kcal", "audience", "hidden_fields", "source", "source_id",
+    "fingerprint", "import_batch_id",
+  ],
+  activity_exercise: [
+    "id", "updated_at", "deleted_at", "activity_id", "exercise_id", "position", "superset_group",
+    "notes", "set_fields", "rest_s",
+  ],
+  activity_set: [
+    "id", "updated_at", "deleted_at", "activity_exercise_id", "position", "set_type", "weight_kg",
+    "reps", "duration_s", "distance_m", "rpe", "done", "target_reps_min", "target_reps_max",
+  ],
+  activity_track: [
+    "id", "updated_at", "deleted_at", "activity_id", "distance_m", "elevation_gain_m",
+    "hide_start_m", "hide_end_m",
+  ],
+  activity_sample: [
+    "id", "updated_at", "deleted_at", "activity_track_id", "recorded_at", "kind", "latitude",
+    "longitude", "altitude_m", "bpm", "distance_m", "duration_s",
+  ],
+};
+
+/** A row of `table` as sync sends it, a JSON object keyed by field, read from `source`. */
+const rowJson = (table: string, source: string) =>
+  `json_object(${(workoutColumns[table] ?? [])
+    .map(
+      (column) =>
+        `'${column.replace(/_([a-z])/g, (_, letter: string) => letter.toUpperCase())}', ${source}.${column}`,
+    )
+    .join(", ")})`;
+
 // Writes to a workout in progress queue nothing. Finishing it queues every row it has, the
-// ones written while it was in progress too, and a finished workout put back in progress
-// takes its rows out of the queue again. Discarding one sends nothing, since nothing of it
-// was queued. The rows a database already queued for a workout in progress leave the queue.
-// A pull leaves a workout in progress alone, so finishing gives each of its rows the finish
-// time, which is after every change the phone has seen, and the phone's copy wins everywhere.
+// ones written while it was in progress too, each with its own time, and a finished workout
+// put back in progress takes its rows out of the queue again. Discarding one sends nothing of
+// what was written while it was in progress. The rows a database already queued for a
+// workout in progress leave the queue.
+//
+// A pull leaves a workout in progress here alone. The copies it brings of the workout's rows
+// wait in sync_aside, which never syncs, until the workout is finished or discarded. Putting
+// a finished workout back in progress first keeps aside its rows as they are, so a discard
+// can put it back as every other phone has it.
 const localDrafts = `
+CREATE TABLE sync_aside (table_name TEXT NOT NULL, row_id TEXT NOT NULL,
+  workout_id TEXT NOT NULL, row TEXT NOT NULL, PRIMARY KEY (table_name, row_id)) STRICT;
+CREATE INDEX sync_aside_workout ON sync_aside (workout_id);
 ${Object.keys(inDraft)
   .flatMap((table) => [
     `DROP TRIGGER ${table}_queue_insert;`,
@@ -239,13 +280,6 @@ ${Object.entries(inDraft)
 CREATE TRIGGER activity_queue_update AFTER UPDATE ON activity
 WHEN (SELECT quiet FROM sync_state) = 0
 BEGIN
-${workoutChildren("NEW.id")
-  .map(
-    ([table, where]) =>
-      `  UPDATE ${table} SET updated_at = NEW.updated_at WHERE ${where}
-    AND OLD.status = 'in_progress' AND NEW.status <> 'in_progress';`,
-  )
-  .join("\n")}
   UPDATE sync_state SET mark = mark + 1;
   DELETE FROM sync_outbox WHERE (table_name, row_id) IN (${workoutRows("NEW.id")})
     AND (OLD.status = 'in_progress' OR NEW.status = 'in_progress');
@@ -253,6 +287,20 @@ ${workoutChildren("NEW.id")
   INSERT INTO sync_outbox (table_name, row_id, mark)
     SELECT table_name, row_id, (SELECT mark FROM sync_state) FROM (${workoutRows("NEW.id")})
     WHERE NEW.status <> 'in_progress' AND (OLD.status = 'in_progress' OR table_name = 'activity');
+END;
+CREATE TRIGGER activity_keep_aside AFTER UPDATE OF status ON activity
+WHEN OLD.status <> 'in_progress' AND NEW.status = 'in_progress'
+BEGIN
+  DELETE FROM sync_aside WHERE workout_id = NEW.id;
+  INSERT INTO sync_aside (table_name, row_id, workout_id, row)
+    VALUES ('activity', NEW.id, NEW.id, ${rowJson("activity", "OLD")});
+${workoutChildren("NEW.id")
+  .map(
+    ([table, where]) =>
+      `  INSERT INTO sync_aside (table_name, row_id, workout_id, row)
+    SELECT '${table}', id, NEW.id, ${rowJson(table, table)} FROM ${table} WHERE ${where};`,
+  )
+  .join("\n")}
 END;
 ${Object.entries(inDraft)
   .map(

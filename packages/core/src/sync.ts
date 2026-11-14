@@ -157,10 +157,31 @@ export const deletedAboveOf = <E, R>(
   });
 
 /**
- * True when `row` is a workout in progress or sits under one, such as a set of its exercises,
- * read through `lookup`, which gives a row above it in its encoded form. A row above that is
- * missing ends the walk.
+ * The ID of the workout in progress that `row` is, or sits under, such as a set of its
+ * exercises, read through `lookup`, which gives a row above it in its encoded form. A row
+ * above that is missing ends the walk.
  */
+export const draftWorkoutOf = <E, R>(
+  table: SyncedTable,
+  row: Readonly<Record<string, unknown>>,
+  lookup: (
+    table: SyncedTable,
+    id: string,
+  ) => Effect.Effect<Readonly<Record<string, unknown>> | undefined, E, R>,
+): Effect.Effect<string | undefined, E, R> =>
+  Effect.gen(function* () {
+    if (isDraftWorkout(table, row)) return String(row["id"]);
+    let above = parentOf(table, row);
+    for (let depth = 0; above !== undefined && depth < 8; depth++) {
+      const found = yield* lookup(above.table, above.id);
+      if (found === undefined) return undefined;
+      if (isDraftWorkout(above.table, found)) return above.id;
+      above = parentOf(above.table, found);
+    }
+    return undefined;
+  });
+
+/** True when `row` is a workout in progress or sits under one. See `draftWorkoutOf`. */
 export const inDraftWorkout = <E, R>(
   table: SyncedTable,
   row: Readonly<Record<string, unknown>>,
@@ -169,17 +190,7 @@ export const inDraftWorkout = <E, R>(
     id: string,
   ) => Effect.Effect<Readonly<Record<string, unknown>> | undefined, E, R>,
 ): Effect.Effect<boolean, E, R> =>
-  Effect.gen(function* () {
-    if (isDraftWorkout(table, row)) return true;
-    let above = parentOf(table, row);
-    for (let depth = 0; above !== undefined && depth < 8; depth++) {
-      const found = yield* lookup(above.table, above.id);
-      if (found === undefined) return false;
-      if (isDraftWorkout(above.table, found)) return true;
-      above = parentOf(above.table, found);
-    }
-    return false;
-  });
+  Effect.map(draftWorkoutOf(table, row, lookup), (id) => id !== undefined);
 
 /** How far ahead of the server's clock a change may be. */
 export const MAX_CLOCK_AHEAD_MS = 5 * 60 * 1000;
