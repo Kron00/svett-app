@@ -138,6 +138,11 @@ const seed = (url: Redacted.Redacted) =>
           ('user_b', '0190c1e2-0000-7000-8000-000000000001', 'Easy run', '2026-11-13T17:05:00+01:00', null, null, null, null),
           ('user_a', '0190c1e2-0000-7000-8000-000000000002', null, '2026-11-01T00:00:00Z', 0, '[]', '', '2026-11-02T00:00:00Z')
       `;
+      // A restore must bring back this many: the seeded table and every migrated one.
+      const counted = yield* sql<{ readonly tables: number }>`
+        select count(*)::int as tables from information_schema.tables where table_schema = 'public'
+      `;
+      return counted[0]?.tables ?? 0;
     }),
   );
 
@@ -254,7 +259,7 @@ describe("server backups", { timeout: 120_000 }, () => {
 
   it("checks a backup restores in a scratch database and drops it after", async () => {
     const source = await newDatabase();
-    await seed(source);
+    const tables = await seed(source);
     const dir = await tempDir();
 
     const [good, broken] = await Effect.runPromise(
@@ -268,8 +273,7 @@ describe("server backups", { timeout: 120_000 }, () => {
       }).pipe(Effect.provide(backupsLayer(source, dir))),
     );
 
-    // The seeded table and the migrations table come back.
-    expect(good.tables).toBe(2);
+    expect(good.tables).toBe(tables);
     expect(broken.tables).toBeUndefined();
     expect(await scratchDatabases()).toEqual([]);
     expect((await snapshot(source)).rows).toHaveLength(3);
@@ -277,7 +281,7 @@ describe("server backups", { timeout: 120_000 }, () => {
 
   it("lets one backup run at a time across servers, and the others skip", async () => {
     const source = await newDatabase();
-    await seed(source);
+    const tables = await seed(source);
     const dir = await tempDir();
     // Both start in the same second, so they would pick the same backup name.
     const now = Date.parse("2026-11-14T03:00:00Z");
@@ -297,7 +301,7 @@ describe("server backups", { timeout: 120_000 }, () => {
         backups.checkRestore(written[0]!.value),
       ).pipe(Effect.provide(backupsLayer(source, dir))),
     );
-    expect(check.tables).toBe(2);
+    expect(check.tables).toBe(tables);
   });
 
   it("never replaces a backup that already has the name", async () => {
@@ -319,7 +323,7 @@ describe("server backups", { timeout: 120_000 }, () => {
 
   it("runs overlapping restore checks from several servers without touching each other", async () => {
     const source = await newDatabase();
-    await seed(source);
+    const tables = await seed(source);
     const dir = await tempDir();
     const backup = await Effect.runPromise(takeNow.pipe(Effect.provide(backupsLayer(source, dir))));
     const onServer = () =>
@@ -331,7 +335,7 @@ describe("server backups", { timeout: 120_000 }, () => {
 
     const checks = await Promise.all([onServer(), onServer(), onServer()]);
 
-    expect(checks.map(({ tables }) => tables)).toEqual([2, 2, 2]);
+    expect(checks.map((check) => check.tables)).toEqual([tables, tables, tables]);
     expect(await scratchDatabases()).toEqual([]);
   });
 
@@ -357,7 +361,7 @@ describe("server backups", { timeout: 120_000 }, () => {
 
   it("drops scratch databases older than a day on start and keeps younger ones", async () => {
     const { tag, url: source } = await newLive();
-    await seed(source);
+    const tables = await seed(source);
     const dir = await tempDir();
     const crashed = restoreScratchName(tag, Date.now() - 25 * HOUR, "aaaaaaaaaaaa");
     const running = restoreScratchName(tag, Date.now() - HOUR, "bbbbbbbbbbbb");
@@ -371,7 +375,7 @@ describe("server backups", { timeout: 120_000 }, () => {
       Effect.flatMap(Effect.service(Backups), (backups) => backups.lastRestoreCheck),
     );
 
-    expect(check.tables).toBe(2);
+    expect(check.tables).toBe(tables);
     expect(await scratchDatabases()).toEqual([running]);
     await run(
       postgres.url("postgres"),
@@ -505,7 +509,7 @@ describe("server backups", { timeout: 120_000 }, () => {
 
   it("backs up at once on start when the newest is old, then on every tick, keeping the newest", async () => {
     const source = await newDatabase();
-    await seed(source);
+    const tables = await seed(source);
     const dir = await tempDir();
     const old = "svett-20261101T030000Z.dump";
     await writeFile(join(dir, old), "an old backup");
@@ -525,13 +529,13 @@ describe("server backups", { timeout: 120_000 }, () => {
     const names = (await readdir(dir)).toSorted();
     expect(names).toHaveLength(3);
     expect(names.every((name) => /^svett-\d{8}T\d{6}Z\.dump$/.test(name))).toBe(true);
-    // Each new backup is checked by a restore, which brings back both tables.
-    expect(check.tables).toBe(2);
+    // Each new backup is checked by a restore, which brings back every table.
+    expect(check.tables).toBe(tables);
   });
 
   it("only checks the newest backup on start when it is less than a day old", async () => {
     const source = await newDatabase();
-    await seed(source);
+    const tables = await seed(source);
     const dir = await tempDir();
     const layer = backupsLayer(source, dir);
     const taken = await Effect.runPromise(
@@ -545,7 +549,7 @@ describe("server backups", { timeout: 120_000 }, () => {
       Effect.flatMap(Effect.service(Backups), (backups) => backups.lastRestoreCheck),
     );
 
-    expect(check).toMatchObject({ backupTakenAt: taken.takenAt, tables: 2 });
+    expect(check).toMatchObject({ backupTakenAt: taken.takenAt, tables });
     expect(await readdir(dir)).toEqual([taken.file.split("/").pop()]);
     await rm(dir, { recursive: true });
   });
