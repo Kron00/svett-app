@@ -66,6 +66,8 @@ export interface HttpSyncOptions {
   readonly fetch: typeof globalThis.fetch;
 }
 
+const REQUEST_TIMEOUT_MS = 30_000;
+
 const failed = (problem: SyncProblem, message: string) => new SyncFailed({ problem, message });
 
 /** The server's sync API over HTTP. Answers pass through their schemas before use. */
@@ -85,23 +87,26 @@ export const httpSyncApi = (options: HttpSyncOptions): SyncApi<SyncFailed> => {
         return yield* failed("wrong_account", "The session is for another account.");
       }
       const response = yield* Effect.tryPromise({
-        try: (signal) =>
-          options.fetch(`${options.server}${path}`, {
-            method: init.method,
-            body: init.body ?? null,
-            signal,
-            headers: {
-              authorization: `Bearer ${token}`,
-              ...(init.body === undefined ? {} : { "content-type": "application/json" }),
-            },
-          }),
+        // A timer, not Effect's clock, bounds the wait: a test database's clock only moves
+        // when told, and a sync must not move it.
+        try: (interrupted) => {
+          const deadline = new AbortController();
+          const timer = setTimeout(() => deadline.abort(), REQUEST_TIMEOUT_MS);
+          interrupted.addEventListener("abort", () => deadline.abort());
+          return options
+            .fetch(`${options.server}${path}`, {
+              method: init.method,
+              body: init.body ?? null,
+              signal: deadline.signal,
+              headers: {
+                authorization: `Bearer ${token}`,
+                ...(init.body === undefined ? {} : { "content-type": "application/json" }),
+              },
+            })
+            .finally(() => clearTimeout(timer));
+        },
         catch: () => failed("offline", "Could not reach the svett server."),
-      }).pipe(
-        Effect.timeoutOrElse({
-          duration: "30 seconds",
-          orElse: () => Effect.fail(failed("offline", "The svett server did not answer.")),
-        }),
-      );
+      });
       const body: unknown = yield* Effect.tryPromise({
         try: () => response.json(),
         catch: () => failed("server", `The server answered ${response.status} without JSON.`),
