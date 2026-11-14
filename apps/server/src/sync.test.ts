@@ -1029,8 +1029,10 @@ describe("sync", { timeout: 120_000 }, () => {
     expect(underRemoved.map((set) => set["id"])).toContain(added);
     expect(underRemoved.every((set) => set["deleted_at"] !== null)).toBe(true);
     expect(
-      underRemoved.filter((set) => set["id"] !== added).map((set) => [set["id"], set["reps"]]),
-    ).toEqual(removed.sets.map((set) => [set.id, 5]).sort());
+      Object.fromEntries(
+        underRemoved.filter((set) => set["id"] !== added).map((set) => [set["id"], set["reps"]]),
+      ),
+    ).toEqual(Object.fromEntries(removed.sets.map((set) => [set.id, 5])));
     const [onA, onB] = await Promise.all([detail(a, id), detail(b, id)]);
     expect(onA).toEqual(onB);
     expect(Option.getOrThrow(onB).exercises.map(({ exercise: { id: kept } }) => kept)).toEqual([
@@ -1062,11 +1064,14 @@ describe("sync", { timeout: 120_000 }, () => {
     const all = await Promise.all([a, b, c].map((phone) => phone.rows()));
     expect(all[1]).toEqual(all[0]);
     expect(all[2]).toEqual(all[0]);
-    for (const phone of [a, b, c]) {
-      expect(Option.getOrThrow(await detail(phone, id)).activity.title).toBe("Legs");
-      expect(await setsOf(phone, id)).toEqual(before);
-      expect(await queuedCount(phone)).toBe(0);
-    }
+    const seen = await Promise.all(
+      [a, b, c].map(async (phone) => ({
+        title: Option.getOrThrow(await detail(phone, id)).activity.title,
+        sets: await setsOf(phone, id),
+        queued: await queuedCount(phone),
+      })),
+    );
+    expect(seen).toEqual([a, b, c].map(() => ({ title: "Legs", sets: before, queued: 0 })));
   });
 
   it("drops a change that would bring back a deleted workout without an Undo, and the queue drains", async () => {

@@ -221,7 +221,8 @@ describe("SyncRepository", () => {
     const removed = await queued();
     expect(removed).toHaveLength(7);
     expect(removed.every(({ restores }) => restores === null)).toBe(true);
-    const deletedAt = (removed[0]?.row as { deletedAt: number }).deletedAt;
+    const deletedAt = (removed[0]?.row as { deletedAt: number } | undefined)?.deletedAt;
+    expect(deletedAt).toBeTypeOf("number");
     await confirmAll();
 
     await on.at(T0 + 2 * MINUTE);
