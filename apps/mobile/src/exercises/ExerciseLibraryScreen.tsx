@@ -195,8 +195,9 @@ export function ExerciseLibraryScreen() {
     );
 
   return (
-    <View testID="exercise-library" className="flex-1 bg-background">
+    <>
       <LegendList
+        testID="exercise-library"
         data={results}
         keyExtractor={(exercise) => exercise.id}
         estimatedItemSize={64}
@@ -239,6 +240,6 @@ export function ExerciseLibraryScreen() {
         onDismiss={() => setPicker(null)}
         testID="equipment-options"
       />
-    </View>
+    </>
   );
 }

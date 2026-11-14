@@ -320,6 +320,8 @@ describe("in pounds", () => {
 
   it("shows a past workout's sets and volume in pounds", async () => {
     const tree = await render(<WorkoutScreen {...screenProps("Workout", { id: newest })} />);
+    // The workout and the unit setting are separate reads, so wait for the sets to show.
+    await showsLine(tree, "2,260 lb");
     const shown = lines(tree);
     expect(shown).toEqual(
       expect.arrayContaining(["132.28 lb × 8", "231.49 lb × 5", "220.46 lb × 5"]),

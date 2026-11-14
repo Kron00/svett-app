@@ -5,11 +5,12 @@ import {
   type WeightUnit,
 } from "@svett/core";
 import { Effect } from "effect";
-import { Alert, View } from "react-native";
+import { Alert } from "react-native";
 
 import type { OpenDatabase } from "../data/current";
 import { type Query, useQuery, writeTo } from "../data/store";
 import { EmptyState } from "../ui/EmptyState";
+import { NoticeScreen } from "../ui/NoticeScreen";
 
 const readAll = () => Effect.flatMap(Effect.service(GearRepository), (gear) => gear.all);
 
@@ -44,7 +45,7 @@ export const changeBarsAndPlates = (
 /** What a screen of plates and bars shows while they load, or why they did not. */
 export function GearNotReady({ query }: { readonly query: Query<unknown> }) {
   return (
-    <View className="flex-1 justify-center bg-background">
+    <NoticeScreen>
       {query.status === "failed" ? (
         <EmptyState
           symbol="exclamationmark.triangle"
@@ -52,6 +53,6 @@ export function GearNotReady({ query }: { readonly query: Query<unknown> }) {
           message={query.message}
         />
       ) : null}
-    </View>
+    </NoticeScreen>
   );
 }
