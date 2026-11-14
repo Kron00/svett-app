@@ -95,6 +95,35 @@ export const monthLabels = (times: ReadonlyArray<number>): ReadonlyArray<string>
     return date.getMonth() === 0 || newYear ? String(date.getFullYear()) : MONTHS[date.getMonth()]!;
   });
 
+/** A month on a time axis: its months since year 0, where it starts and its label. */
+export type MonthTick = {
+  readonly month: number;
+  readonly at: EpochMillis;
+  readonly label: string;
+};
+
+const monthTick = (date: Date): MonthTick => ({
+  month: date.getFullYear() * 12 + date.getMonth(),
+  at: at(date),
+  label: date.getMonth() === 0 ? String(date.getFullYear()) : MONTHS[date.getMonth()]!,
+});
+
+/**
+ * A tick at the start of each month from `first` to `last`, named by the
+ * month, or by the year in January. When no month starts in that time, the
+ * one tick is `first` itself with its month's name.
+ */
+export const monthTicks = (first: number, last: number): ReadonlyArray<MonthTick> => {
+  const start = new Date(first);
+  const date = new Date(start.getFullYear(), start.getMonth(), 1);
+  if (date.getTime() < first) date.setMonth(date.getMonth() + 1);
+  const ticks: Array<MonthTick> = [];
+  for (; date.getTime() <= last; date.setMonth(date.getMonth() + 1)) {
+    ticks.push(monthTick(date));
+  }
+  return ticks.length > 0 ? ticks : [monthTick(start)];
+};
+
 export const CHART_RANGES = ["three_months", "year", "all"] as const;
 export type ChartRange = (typeof CHART_RANGES)[number];
 

@@ -52,7 +52,7 @@ export function ChartCard({
         <AppText tone="secondary">Nothing logged in this range.</AppText>
       ) : (
         <Chart
-          points={labelByMonth(points)}
+          points={mark === "bars" ? labelByMonth(points) : points}
           includeZero={mark === "bars"}
           spacing={mark === "bars" ? "slots" : "time"}
           accessibilityLabel={describeSeries(title, points, format)}

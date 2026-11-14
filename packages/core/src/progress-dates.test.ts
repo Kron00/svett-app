@@ -5,6 +5,7 @@ import {
   formatDay,
   formatWeek,
   monthLabels,
+  monthTicks,
   parseWeekKey,
   rangeStart,
   startOfWeek,
@@ -66,6 +67,33 @@ describe("monthLabels", () => {
 
   it("shows the year when it changes without a January point", () => {
     expect(monthLabels([local(2025, 11, 30), local(2026, 1, 1)])).toEqual(["Dec", "2026"]);
+  });
+});
+
+describe("monthTicks", () => {
+  it("puts a tick at the start of each month in the range, with the year in January", () => {
+    const ticks = monthTicks(local(2025, 10, 14, 18), local(2026, 2, 1, 0));
+    expect(ticks.map((tick) => tick.label)).toEqual(["Dec", "2026", "Feb", "Mar"]);
+    expect(ticks.map((tick) => tick.at)).toEqual([
+      local(2025, 11, 1),
+      local(2026, 0, 1),
+      local(2026, 1, 1),
+      local(2026, 2, 1),
+    ]);
+    expect(ticks.map((tick) => tick.month)).toEqual([
+      2025 * 12 + 11,
+      2026 * 12,
+      2026 * 12 + 1,
+      2026 * 12 + 2,
+    ]);
+  });
+
+  it("names the first time's month when no month starts in the range", () => {
+    const first = local(2026, 9, 3, 9);
+    expect(monthTicks(first, local(2026, 9, 20))).toEqual([
+      { month: 2026 * 12 + 9, at: first, label: "Oct" },
+    ]);
+    expect(monthTicks(first, first)).toEqual([{ month: 2026 * 12 + 9, at: first, label: "Oct" }]);
   });
 });
 

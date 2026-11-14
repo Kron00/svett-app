@@ -1,4 +1,13 @@
-import { niceTicks, placeAxisLabels, scaleLinear, type Ticks, timePositions } from "@svett/core";
+import {
+  monthTicks,
+  niceTicks,
+  placeAxisLabels,
+  placeMonthLabels,
+  type PlacedLabel,
+  scaleLinear,
+  type Ticks,
+  timeScale,
+} from "@svett/core";
 import { createContext, type ReactNode, use, useMemo, useState } from "react";
 import { View } from "react-native";
 import Svg, { Circle, Line, Path, Rect } from "react-native-svg";
@@ -10,8 +19,11 @@ import { AppText } from "./AppText";
 export type ChartPoint = {
   /** Identifies the point, such as its date. Unique within a chart. */
   readonly key: string;
-  /** The x-axis label under this point. An empty string leaves it blank. */
-  readonly label: string;
+  /**
+   * The x-axis label under this point in a chart spaced by slots. An empty
+   * string leaves it blank. A chart spaced by time labels the months itself.
+   */
+  readonly label?: string;
   readonly value: number;
   /** When the value was recorded, in epoch milliseconds. A chart spaced by time needs it. */
   readonly at?: number;
@@ -19,13 +31,19 @@ export type ChartPoint = {
 
 /**
  * How points sit along the x axis. `slots` gives each point an equal slot,
- * for bars of equal periods. `time` places each point by its `at`, so a line
- * shows the real gaps between values.
+ * for bars of equal periods, under its own label. `time` places each point by
+ * its `at`, so a line shows the real gaps between values, and labels the
+ * start of each month on the same scale.
  */
 export type ChartSpacing = "slots" | "time";
 
+type XLabel = { readonly key: string; readonly text: string };
+
 type Plot = {
   readonly points: ReadonlyArray<ChartPoint>;
+  readonly labels: ReadonlyArray<XLabel>;
+  /** Which labels to draw and their left edges, given each label's measured width. */
+  readonly placeLabels: (widths: ReadonlyArray<number>) => ReadonlyArray<PlacedLabel>;
   readonly ticks: Ticks;
   readonly width: number;
   readonly height: number;
@@ -83,41 +101,54 @@ export function Chart({
       { includeZero },
     );
     const slot = points.length > 0 ? width / points.length : 0;
-    const timed =
-      spacing === "time"
-        ? timePositions(
-            points.map((point) => point.at ?? 0),
-            [PLOT_INSET, width - PLOT_INSET],
-          )
+    const times = points.map((point) => point.at ?? 0);
+    const time = timeScale(times, [PLOT_INSET, width - PLOT_INSET]);
+    const x = (index: number) =>
+      spacing === "time" ? time(times[index] ?? 0) : slot * (index + 0.5);
+    const months =
+      spacing === "time" && points.length > 0
+        ? monthTicks(Math.min(...times), Math.max(...times))
         : null;
+    const labels: ReadonlyArray<XLabel> = months
+      ? months.map((tick) => ({ key: `month-${tick.month}`, text: tick.label }))
+      : points.map((point) => ({ key: point.key, text: point.label ?? "" }));
+    const placeLabels = (widths: ReadonlyArray<number>) =>
+      months
+        ? placeMonthLabels(
+            months.map((tick, index) => ({
+              month: tick.month,
+              center: time(tick.at),
+              width: widths[index] ?? 0,
+            })),
+            width,
+            X_LABEL_GAP,
+          )
+        : placeAxisLabels(
+            points.map((_, index) => ({ center: x(index), width: widths[index] ?? 0 })),
+            width,
+            X_LABEL_GAP,
+          );
     return {
       points,
+      labels,
+      placeLabels,
       ticks,
       width,
       height,
       slot,
-      x: (index) => (timed === null ? slot * (index + 0.5) : (timed[index] ?? 0)),
+      x,
       y: scaleLinear([ticks.min, ticks.max], [height - PLOT_INSET, PLOT_INSET]),
     };
   }, [points, includeZero, spacing, large, width, height]);
   const [labelWidths, setLabelWidths] = useState<Readonly<Record<string, number>>>({});
-  const measured = points.every((point) => labelWidths[point.key] !== undefined);
-  const placed = useMemo(
-    () =>
-      new Map(
-        measured
-          ? placeAxisLabels(
-              points.map((point, index) => ({
-                center: plot.x(index),
-                width: labelWidths[point.key] ?? 0,
-              })),
-              width,
-              X_LABEL_GAP,
-            ).map(({ index, left }) => [index, left])
-          : [],
-      ),
-    [points, plot, labelWidths, measured, width],
-  );
+  const placed = useMemo(() => {
+    const widths = plot.labels.flatMap((label) => {
+      const measured = labelWidths[label.key];
+      return measured === undefined ? [] : [measured];
+    });
+    if (widths.length < plot.labels.length) return new Map<number, number>();
+    return new Map(plot.placeLabels(widths).map(({ index, left }) => [index, left]));
+  }, [plot, labelWidths]);
 
   return (
     <View
@@ -140,16 +171,16 @@ export function Chart({
             ) : null}
           </View>
           <View>
-            {/* Sets the row's height. Each label keeps its own width, centred on its point,
-                and labels that would overlap at large text sizes are left out. */}
+            {/* Sets the row's height. Each label keeps its own width, centred on its point
+                or its month's start, and labels that would overlap are left out. */}
             <AppText variant="caption1" style={{ opacity: 0 }}>
               0
             </AppText>
-            {points.map((point, index) => {
+            {plot.labels.map((label, index) => {
               const left = placed.get(index);
               return (
                 <AppText
-                  key={point.key}
+                  key={label.key}
                   variant="caption1"
                   tone="secondary"
                   numberOfLines={1}
@@ -162,13 +193,13 @@ export function Chart({
                   onLayout={({ nativeEvent }) => {
                     const measuredWidth = nativeEvent.layout.width;
                     setLabelWidths((widths) =>
-                      widths[point.key] === measuredWidth
+                      widths[label.key] === measuredWidth
                         ? widths
-                        : { ...widths, [point.key]: measuredWidth },
+                        : { ...widths, [label.key]: measuredWidth },
                     );
                   }}
                 >
-                  {point.label}
+                  {label.text}
                 </AppText>
               );
             })}

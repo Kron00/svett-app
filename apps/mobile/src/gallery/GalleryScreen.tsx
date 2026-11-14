@@ -186,7 +186,6 @@ const WORKOUTS = (
   ] as const
 ).map(([month, day, value], index) => ({
   key: `workout-${index + 1}`,
-  label: index === 0 ? "Sep" : index === 4 ? "Oct" : index === 7 ? "Nov" : "",
   value,
   at: Date.UTC(2026, month, day),
 }));
