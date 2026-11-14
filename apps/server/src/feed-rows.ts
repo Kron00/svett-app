@@ -523,6 +523,7 @@ export class FeedRows extends Context.Service<FeedRows, FeedRowsShape>()("svett/
               select c.id, p.username, c.body, c.created_ms as at, c.author_id as "authorId"
               from activity_comment c join profile p on p.account_id = c.author_id
               where c.owner_id = ${owner} and c.activity_id = ${activityId}
+                and not ${blockedWith(sql, viewer, "c.author_id")}
               order by c.created_ms, c.id
               limit ${COMMENT_PAGE}
             `;
