@@ -5,6 +5,7 @@ export type RootStackParamList = {
   Tabs: undefined;
   Gallery: { sheet?: "open" } | undefined;
   PhoneChecks: undefined;
+  ChatGPT: undefined;
   Exercises: { q?: string; muscle?: string; equipment?: string } | undefined;
   Exercise: { id: string };
   NewExercise:

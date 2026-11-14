@@ -16,6 +16,7 @@ import { type ComponentProps, type ReactNode, useEffect, useRef, useState } from
 import { Platform, ScrollView, TextInput, View } from "react-native";
 
 import SvettNative from "../../modules/svett-native";
+import { SafariPaste } from "../chatgpt/SafariPaste";
 import { useColor } from "../design/hooks";
 import { AppText, type TextTone } from "../ui/AppText";
 import { Button } from "../ui/Button";
@@ -107,29 +108,6 @@ function CountField({
         placeholder="0"
         className="w-20 text-right"
       />
-    </View>
-  );
-}
-
-function SafariPaste({ paste }: { readonly paste: (address: string) => Promise<string | null> }) {
-  const [address, setAddress] = useState("");
-  const [problem, setProblem] = useState<string | null>(null);
-  return (
-    <View className="w-full gap-2">
-      <Field
-        accessibilityLabel="Address Safari could not open"
-        value={address}
-        onChangeText={setAddress}
-        autoCapitalize="none"
-        autoCorrect={false}
-        placeholder="http://127.0.0.1:…/auth/callback?…"
-      />
-      {problem === null ? null : (
-        <AppText variant="subheadline" tone="destructive">
-          {problem}
-        </AppText>
-      )}
-      <Button label="Use address" onPress={() => void paste(address).then(setProblem)} />
     </View>
   );
 }

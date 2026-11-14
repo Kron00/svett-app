@@ -15,3 +15,5 @@ metro.log
 research/screenshots/
 .claude/
 .fixtures/
+.build/
+.swiftpm/
