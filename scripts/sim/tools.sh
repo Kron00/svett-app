@@ -252,8 +252,9 @@ expect_exercise() {
 # options are an action sheet, whose buttons are found by their labels.
 option() {
   tap "id=\"exercise-options-$1\""
-  agent_device wait "label=\"$2\"" 5000 >/dev/null || fail "The options of exercise $(($1 + 1)) have no \"$2\""
-  tap "label=\"$2\""
+  # iOS nests each sheet button in containers with the same label, so ask for the button.
+  agent_device wait "role=\"button\" label=\"$2\"" 5000 >/dev/null || fail "The options of exercise $(($1 + 1)) have no \"$2\""
+  tap "role=\"button\" label=\"$2\""
 }
 
 # Checks the picker's first result is the exercise named $1, then presses it.

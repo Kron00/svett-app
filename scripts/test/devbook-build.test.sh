@@ -2130,7 +2130,7 @@ const PLATES = {
 };
 const elements = () => {
   const found = [];
-  const add = (id, label = "", selected = false) => found.push({ id, label, selected });
+  const add = (id, label = "", selected = false, role = null) => found.push({ id, label, selected, role });
   if (state.screen === "home") return found;
   if (state.screen === "springboard") {
     if (state.rest !== null && !process.env.FAKE_NO_NOTIFICATION) add(null, "Rest is over");
@@ -2147,7 +2147,8 @@ const elements = () => {
   }
   if (state.screen === "train") { add("train"); if (!workout) add("start-empty-workout"); }
   if (state.screen === "picker") { add("exercise-library"); add("exercise-result-0", `${LIBRARY[state.query]}, Hamstrings · Barbell`); }
-  if (state.screen === "options") for (const label of options(state.options)) add(null, label);
+  // iOS nests each action sheet button in three containers with the same label.
+  if (state.screen === "options") for (const label of options(state.options)) add(null, label, false, "button");
   if (state.screen === "rest-sheet") { add("rest-sheet"); for (const seconds of [0, 15, 30, 45, 60, 90]) add(`rest-sheet-${seconds}`); }
   if (state.screen === "plates") {
     add("plates");
@@ -2180,12 +2181,13 @@ const parse = (selector) => ({
   id: /id="([^"]*)"/.exec(selector)?.[1] ?? null,
   label: /label="([^"]*)"/.exec(selector)?.[1] ?? null,
   selected: /selected=true/.test(selector),
+  role: /role="([^"]*)"/.exec(selector)?.[1] ?? null,
 });
 const find = (selector) => {
   const wanted = parse(selector);
   return elements().find((element) =>
     (wanted.id === null || element.id === wanted.id) && (wanted.label === null || element.label === wanted.label) &&
-    (!wanted.selected || element.selected)) ?? null;
+    (!wanted.selected || element.selected) && (element.role === null || wanted.role === element.role)) ?? null;
 };
 const isField = (id) => /^set-\d+-\d+-(weight|reps)$/.test(id ?? "");
 // Where an element is after `reads` reads of its frame. A gliding field stops after three.
