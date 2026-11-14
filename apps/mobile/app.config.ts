@@ -19,7 +19,7 @@ const config: ExpoConfig = {
   platforms: ["ios"],
   orientation: "portrait",
   icon: "./assets/icon.png",
-  userInterfaceStyle: "automatic",
+  userInterfaceStyle: "dark",
   ios: {
     bundleIdentifier: "com.kron00.svett",
     buildNumber,

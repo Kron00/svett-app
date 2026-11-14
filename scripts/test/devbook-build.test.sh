@@ -83,10 +83,15 @@ echo "\$*" >"$root/open-args"
 exit 1
 EOF
 
-# Stands in for the command that T3 Code's device_open returns.
+# Stands in for the command that T3 Code's device_open returns. The gallery's end
+# marker counts as on screen after FAKE_GALLERY_SCROLLS scrolls since the last open.
 cat >"$fake/bound-device" <<EOF
 #!/usr/bin/env bash
 echo "\$*" >>"$root/bound-calls"
+if [[ "\$*" == *" is visible "* ]]; then
+  scrolls=\$(awk '/ open / { n = 0 } / scroll down 0[.]6$/ { n++ } END { print n + 0 }' "$root/bound-calls")
+  ((scrolls >= \${FAKE_GALLERY_SCROLLS:-0}))
+fi
 EOF
 
 printf '#!/usr/bin/env bash\n' >"$fake/fnm"
@@ -348,5 +353,57 @@ check "fixture.sh launches plainly, then with -svettFixture on the copied file, 
   "com.kron00.svett --relaunch --launch-url $local_dev_client_url --launch-args=-svettFixture --launch-args=$container_fixture"
 check "fixture.sh screenshots the fixture's counts" bound_got "$bound_prefix screenshot $root/proof fixture/02-fixture.png"
 check "fixture.sh with SVETT_DEVICE_CMD calls neither simctl launch nor openurl" no_simctl_launch_or_openurl
+
+# only_calls <pattern> <expected call>... checks the bound command calls that
+# start with the extended regex are exactly these, in order, without the prefix.
+only_calls() {
+  local pattern=$1 calls expected
+  shift
+  calls=$(grep -E -- "^$bound_prefix ($pattern)" "$root/bound-calls" | sed "s/^$bound_prefix //" || true)
+  expected=$(printf '%s\n' "$@")
+  [[ "$calls" == "$expected" ]] || {
+    { echo "bound command calls matching $pattern:"; echo "$calls"; } >>"$output"
+    fail "the bound command did not get exactly these calls: $expected"
+  }
+}
+
+debug_open="com.kron00.svett --relaunch --launch-url $local_dev_client_url"
+
+case_name="gallery.sh Debug with SVETT_DEVICE_CMD"
+FAKE_GALLERY_SCROLLS=2 sim_script gallery.sh "$root/gallery"
+gallery_links=("com.kron00.svett svett://gallery" "com.kron00.svett svett://gallery?sheet=open")
+check "gallery.sh relaunches into the dev client on Metro once per pass, then opens the gallery links" \
+  only_open "$debug_open" "${gallery_links[@]}" "$debug_open" "${gallery_links[@]}"
+check "gallery.sh sets each pass's text size before relaunching, then restores it" \
+  only_calls "settings|open" \
+  "settings text-size large" "open $debug_open" \
+  "open ${gallery_links[0]}" "open ${gallery_links[1]}" \
+  "settings text-size accessibility-extra-extra-extra-large" "open $debug_open" \
+  "open ${gallery_links[0]}" "open ${gallery_links[1]}" \
+  "settings text-size large"
+check "gallery.sh never sets the appearance, since the app is dark only" only_calls "settings appearance"
+check "gallery.sh pages each pass down to the end marker, then shoots the sheet" \
+  only_calls "screenshot" \
+  "screenshot $root/gallery/dark-01.png" "screenshot $root/gallery/dark-02.png" \
+  "screenshot $root/gallery/dark-03.png" "screenshot $root/gallery/dark-sheet.png" \
+  "screenshot $root/gallery/largest-text-01.png" "screenshot $root/gallery/largest-text-02.png" \
+  "screenshot $root/gallery/largest-text-03.png" "screenshot $root/gallery/largest-text-sheet.png"
+check "gallery.sh presses nothing in screen content, which agent-device refuses as covered on iOS 27" \
+  only_calls "press"
+check "gallery.sh with SVETT_DEVICE_CMD never calls simctl" test ! -e "$root/simctl-calls"
+
+case_name="gallery.sh Release with SVETT_DEVICE_CMD"
+sim_script gallery.sh --release "$root/gallery-release"
+check "gallery.sh Release relaunches the installed app without Metro" \
+  only_open "com.kron00.svett --relaunch" "${gallery_links[@]}" "com.kron00.svett --relaunch" "${gallery_links[@]}"
+
+case_name="gallery.sh without an end marker"
+rm -f "$root/bound-calls"
+! env PATH="$fake:$PATH" SVETT_DEVICE_CMD="$bound_cmd" FAKE_GALLERY_SCROLLS=1000 \
+  "$repo/scripts/sim/gallery.sh" "$root/gallery-endless" >"$output" 2>&1 || fail "gallery.sh succeeded"
+check "gallery.sh stops after 40 pages when the end marker never shows" \
+  grep -qF "The gallery's end marker was not on screen after 40 pages" "$output"
+check "gallery.sh restores the default text size after a failure" \
+  only_calls "settings" "settings text-size large" "settings text-size large"
 
 echo "$passed passed"

@@ -1,2 +1,75 @@
 @import "tailwindcss";
 @import "uniwind";
+
+/*
+ * Colour tokens. svett is dark only, so each one is defined once, and
+ * src/design/tokens.ts names them for code that needs a raw value.
+ * src/design/tokens.test.ts checks both lists match and checks contrast.
+ * Values follow Apple's accessible system colours, so text passes WCAG AA.
+ * Static keeps tokens that only useColor reads, which no class uses.
+ */
+@theme static {
+  --color-background: #000000;
+  --color-surface: #1c1c1e;
+  --color-control: #2c2c2e;
+  --color-label: #ffffff;
+  --color-secondary-label: #aeaeb2;
+  --color-tertiary-label: #6c6c70;
+  --color-separator: #38383a;
+  --color-accent: #ed6a73;
+  --color-accent-fill: #e4202e;
+  --color-on-accent: #ffffff;
+  --color-on-tint: #000000;
+  --color-destructive: #ff6961;
+  --color-destructive-fill: #3b1517;
+  --color-success: #30d158;
+  --color-success-fill: #0f2a17;
+  --color-set-warm-up: #ffd426;
+  --color-set-normal: #ffffff;
+  --color-set-failure: #ff6961;
+  --color-set-drop: #409cff;
+  --color-sport-strength: #ff6b86;
+  --color-sport-run: #ff9f0a;
+  --color-sport-ride: #409cff;
+  --color-sport-walk: #30d158;
+  --color-sport-hike: #b59469;
+  --color-sport-other: #aeaeb2;
+}
+
+/*
+ * iOS text styles at the default text size. AppText pairs each with its
+ * dynamicTypeRamp, so iOS scales it on the same curve as native text.
+ */
+@theme {
+  --text-large-title: 34px;
+  --text-large-title--line-height: 41px;
+  --text-title1: 28px;
+  --text-title1--line-height: 34px;
+  --text-title2: 22px;
+  --text-title2--line-height: 28px;
+  --text-title3: 20px;
+  --text-title3--line-height: 25px;
+  --text-headline: 17px;
+  --text-headline--line-height: 22px;
+  --text-body: 17px;
+  --text-body--line-height: 22px;
+  --text-callout: 16px;
+  --text-callout--line-height: 21px;
+  --text-subheadline: 15px;
+  --text-subheadline--line-height: 20px;
+  --text-footnote: 13px;
+  --text-footnote--line-height: 18px;
+  --text-caption1: 12px;
+  --text-caption1--line-height: 16px;
+  --text-caption2: 11px;
+  --text-caption2--line-height: 13px;
+
+  --spacing-gutter: 16px;
+  --spacing-target: 44px;
+  /* Keys and stepper buttons are used mid-set, so they are larger than the 44 point minimum. */
+  --spacing-key: 60px;
+
+  --radius-card: 26px;
+  --radius-field: 12px;
+  --radius-key: 18px;
+}

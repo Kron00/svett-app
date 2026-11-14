@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Takes the tab and appearance proof screenshots on rena-devbook. Run it after
+# Takes the tab proof screenshots on rena-devbook. Run it after
 # devbook-build.sh, with the same --release choice.
 #
 # Usage: scripts/sim/tabs.sh [--release] [out-dir]
@@ -65,15 +65,10 @@ open_flags=(--relaunch)
 # agent-device's own Expo detection falls back to that when it is inconclusive.
 [[ "$release" == true ]] || open_flags+=(--launch-url "$(dev_client_url "http://$metro")")
 
-# Leaves the simulator light and frees its own session, also when a step fails.
-if [[ -n "${SVETT_DEVICE_CMD:-}" ]]; then
-  trap 'agent_device settings appearance light || true' EXIT
-else
-  trap 'agent_device settings appearance light || true; agent_device close || true' EXIT
-fi
+# Frees its own session, also when a step fails.
+[[ -n "${SVETT_DEVICE_CMD:-}" ]] || trap 'agent_device close || true' EXIT
 
 agent_device open "$bundle_id" "${open_flags[@]}"
-agent_device settings appearance light
 agent_device wait "$(tab_label 0) selected=true" 120000
 screenshot launch
 
@@ -82,9 +77,5 @@ for i in "${!tabs[@]}"; do
   agent_device wait "$(tab_label "$i") selected=true" 10000
   screenshot "$(tr '[:upper:]' '[:lower:]' <<<"${tabs[i]}")"
 done
-
-agent_device settings appearance dark
-agent_device wait 1500
-screenshot dark
 
 echo "Screenshots are in $out"
