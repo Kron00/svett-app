@@ -28,6 +28,10 @@ public class SvettNativeModule: Module {
 
         Constant("launchedAt") { processLaunch.timeIntervalSince1970 * 1000 }
 
+        Constant("launchMarks") { LaunchMarks.marks }
+
+        Constant("prewarmed") { LaunchMarks.prewarmed }
+
         Function("signedEntitlements") { () -> [String]? in
             SignedEntitlements.keys()
         }

@@ -52,6 +52,8 @@ const config: ExpoConfig = {
     // svett schedules only local notifications. Push needs aps-environment, which a
     // free Apple account cannot sign, so AltStore could not install the app.
     ["expo-notifications", { enableRemoteNotifications: false }],
+    // Records main() and didFinishLaunching for the cold start timing on the Train tab.
+    "./plugins/launch-marks.ts",
   ],
 };
 

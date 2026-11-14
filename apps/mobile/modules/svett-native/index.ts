@@ -11,6 +11,14 @@ type SvettNativeEvents = {
 declare class SvettNative extends NativeModule<SvettNativeEvents> {
   /** When the kernel started this process, in milliseconds since 1970. */
   readonly launchedAt: number;
+  /**
+   * When main() and didFinishLaunching started and when didFinishLaunching ended, in
+   * milliseconds since 1970, keyed "main", "finishing" and "finished". A step the app delegate
+   * did not record is missing.
+   */
+  readonly launchMarks: Readonly<Record<string, number>>;
+  /** True when iOS prewarmed this launch: it started the process before anyone tapped svett. */
+  readonly prewarmed: boolean;
   /** The entitlement keys the running app is signed with, or null when they cannot be read. */
   signedEntitlements(): string[] | null;
   requestWorkoutAccess(): Promise<WorkoutAccess>;
