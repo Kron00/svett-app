@@ -35,14 +35,20 @@ const openApp = (path: string) => {
   const { database, driver } = openNodeDatabase(path);
   let held: Array<() => void> | null = null;
   let reached: (() => void) | null = null;
-  let failing = false;
+  let failing: string | null = null;
+  const failHere = (sql: string) => {
+    if (failing === null || !sql.startsWith(failing)) return;
+    failing = null;
+    throw new Error("disk I/O error");
+  };
   const slow: SqlDriver = {
     ...driver,
+    all: async (sql, params) => {
+      failHere(sql);
+      return driver.all(sql, params);
+    },
     run: async (sql, params) => {
-      if (failing && sql.startsWith("UPDATE activity_set")) {
-        failing = false;
-        throw new Error("disk I/O error");
-      }
+      failHere(sql);
       if (held !== null && sql.startsWith("UPDATE activity_set")) {
         reached?.();
         await new Promise<void>((resume) => held!.push(resume));
@@ -64,9 +70,9 @@ const openApp = (path: string) => {
       held = null;
       for (const resume of waiting) resume();
     },
-    /** Fails the next set write. */
-    failNext: () => {
-      failing = true;
+    /** Fails the next statement that starts with `sql`, by default a set write. */
+    failNext: (sql = "UPDATE activity_set") => {
+      failing = sql;
     },
   };
 };
@@ -323,5 +329,48 @@ describe("the Finish item in the workout's header", () => {
     );
     expect(leave).not.toHaveBeenCalled();
     expect(running.store.currentWorkout()).not.toBe(null);
+  });
+});
+
+/** The Discard workout button, pressed and confirmed. */
+const pressDiscard = async (leave: () => void) => {
+  const { confirmDiscard } = await import("./finish");
+  confirmDiscard(leave);
+  const [title, , buttons] = alert.mock.lastCall!;
+  expect(title).toBe("Discard this workout?");
+  buttons[1].onPress();
+};
+
+describe("the Discard workout button", () => {
+  it("deletes the workout and leaves the screen", async () => {
+    const opened = openApp(":memory:");
+    await startSquats(opened.runtime);
+    const running = await launch(opened.runtime);
+    const leave = vi.fn();
+
+    await pressDiscard(leave);
+    await vi.waitFor(() => expect(leave).toHaveBeenCalledOnce());
+    expect(running.store.currentWorkout()).toBe(null);
+  });
+
+  it("stays and says why when the delete fails, with the workout still in progress", async () => {
+    const opened = openApp(":memory:");
+    await startSquats(opened.runtime);
+    const running = await launch(opened.runtime);
+    const workout = running.store.currentWorkout()!.activity.id;
+    const leave = vi.fn();
+
+    opened.failNext("UPDATE activity SET deleted_at");
+    await pressDiscard(leave);
+    await vi.waitFor(() =>
+      expect(running.store.workoutState()).toMatchObject({
+        problem: expect.any(String),
+      }),
+    );
+    expect(leave).not.toHaveBeenCalled();
+    expect(running.store.currentWorkout()!.activity.id).toBe(workout);
+
+    const relaunched = await launch(opened.runtime);
+    expect(relaunched.store.currentWorkout()!.activity.id).toBe(workout);
   });
 });

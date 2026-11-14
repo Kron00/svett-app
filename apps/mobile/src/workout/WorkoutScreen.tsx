@@ -22,7 +22,6 @@ import { Keypad } from "../ui/NumberEntry";
 import { OptionSheet } from "../ui/OptionSheet";
 import { TextField } from "../ui/TextField";
 import {
-  discard,
   logBy,
   removeSet,
   renameWorkout,
@@ -32,7 +31,7 @@ import {
   typeValue,
 } from "./actions";
 import { ExerciseCard } from "./ExerciseCard";
-import { finishItems } from "./finish";
+import { confirmDiscard, finishItems } from "./finish";
 import { type Focus, focusField, liveFocus, nextField, pressKey } from "./focus";
 import { reloadWorkout, useWorkout } from "./store";
 import { showTiming, useElapsed, useLastDoneTiming } from "./timing";
@@ -210,16 +209,7 @@ function Logger({
               label="Discard workout"
               symbol="trash"
               variant="destructive"
-              onPress={() =>
-                Alert.alert("Discard this workout?", "Nothing from it is saved to your history.", [
-                  { text: "Cancel", style: "cancel" },
-                  {
-                    text: "Discard",
-                    style: "destructive",
-                    onPress: () => void discard().then(() => navigation.goBack()),
-                  },
-                ])
-              }
+              onPress={() => confirmDiscard(() => navigation.goBack())}
               testID="discard-workout"
             />
           </View>

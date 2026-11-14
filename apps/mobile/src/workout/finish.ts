@@ -2,7 +2,7 @@ import type { NativeStackHeaderItem } from "@react-navigation/native-stack";
 import { unfinishedSets } from "@svett/core";
 import { Alert } from "react-native";
 
-import { finish } from "./actions";
+import { discard, finish } from "./actions";
 import { currentWorkout } from "./store";
 
 const confirmFinish = (onFinished: () => void) => {
@@ -25,6 +25,20 @@ const confirmFinish = (onFinished: () => void) => {
     ],
   );
 };
+
+/** Asks before it discards the workout in progress, and leaves only once the delete is saved. */
+export const confirmDiscard = (onDiscarded: () => void) =>
+  Alert.alert("Discard this workout?", "Nothing from it is saved to your history.", [
+    { text: "Cancel", style: "cancel" },
+    {
+      text: "Discard",
+      style: "destructive",
+      onPress: () =>
+        void discard().then((discarded) => {
+          if (discarded) onDiscarded();
+        }),
+    },
+  ]);
 
 /**
  * The workout header's items: Finish while a workout is ready, else none. A native bar

@@ -159,8 +159,15 @@ export const finish = async (): Promise<FinishResult> => {
   return result ?? { finished: false, problem: "The workout was not saved." };
 };
 
-/** Discards the workout in progress. Nothing from it reaches history. */
-export const discard = async () => {
+/**
+ * Discards the workout in progress. Nothing from it reaches history. False when the delete
+ * fails, so the workout stays in progress and the screen shows why.
+ */
+export const discard = async (): Promise<boolean> => {
   const id = inProgress();
-  if (id !== null) await saveWorkout(withActivities((activities) => activities.remove(id)));
+  if (id === null) return true;
+  const removed = await saveWorkout(
+    withActivities((activities) => activities.remove(id)).pipe(Effect.as(true)),
+  );
+  return removed ?? false;
 };
