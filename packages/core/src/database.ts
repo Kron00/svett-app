@@ -14,6 +14,7 @@ import {
   ProposalRepository,
 } from "./repositories/records.ts";
 import { RoutineRepository } from "./repositories/routines.ts";
+import { TrainingReads } from "./repositories/training.ts";
 import { TransferRepository } from "./repositories/transfer.ts";
 import { Sql, type SqlDriver } from "./sql.ts";
 
@@ -45,6 +46,7 @@ export const Repositories = Layer.mergeAll(
   HistoryRepository.layer,
   TransferRepository.layer,
   GearRepository.layer,
+  TrainingReads.layer,
 );
 
 /** The steps of opening a database that the app times at launch. */

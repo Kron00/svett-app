@@ -25,6 +25,7 @@ vi.mock("@react-navigation/native-stack", () => ({
 vi.mock("react-native", () => ({ Text: "Text", View: "View" }));
 vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 vi.mock("./progress/ProgressScreen", () => ({ ProgressScreen: () => "progress screen" }));
+vi.mock("./coach/CoachScreen", () => ({ CoachScreen: () => "coach screen" }));
 vi.mock("./chatgpt/ChatGPTRow", () => ({ ChatGPTRow: () => "chatgpt row" }));
 vi.mock("./PhoneChecksRow", () => ({ PhoneChecksRow: () => "phone checks row" }));
 vi.mock("./transfer/DataRow", () => ({ DataRow: () => "data row" }));
@@ -69,5 +70,18 @@ describe("TabNavigator", () => {
     expect(progress?.findAll((node) => node.children.includes("progress screen"))).not.toEqual([]);
     const train = ofType(tree.root, "TabScreen").find((tab) => tab.props.name === "Train");
     expect(train?.findAll((node) => node.children.includes("train screen"))).not.toEqual([]);
+  });
+
+  it("shows the coach in the Coach tab, on the screen svett://coach?ask=... links to", () => {
+    let tree: ReturnType<typeof create> | undefined;
+    act(() => {
+      tree = create(<TabNavigator />);
+    });
+    if (!tree) throw new Error("did not render");
+    const coach = ofType(tree.root, "TabScreen").find((tab) => tab.props.name === "Coach")!;
+    const [screen] = ofType(coach, "StackScreen");
+    // App.tsx links svett://coach to this screen's name.
+    expect(screen?.props.name).toBe("CoachRoot");
+    expect(coach.findAll((node) => node.children.includes("coach screen"))).not.toEqual([]);
   });
 });

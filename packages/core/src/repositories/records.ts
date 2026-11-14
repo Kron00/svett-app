@@ -5,6 +5,8 @@ import {
   type CoachMessage,
   CoachMessageId,
   type ConversationId,
+  ConversationId as ConversationIdSchema,
+  EpochMillis,
   type ImportBatchId,
   ImportBatchId as ImportBatchIdSchema,
   type ImportSource,
@@ -152,21 +154,51 @@ export type CoachMessageDraft = Pick<CoachMessage, "conversationId" | "role" | "
 const makeCoachMessageRepository = Effect.gen(function* () {
   const run = yield* makeRunner;
   return {
+    /**
+     * Adds a message after the conversation's last one. Its time is at least a millisecond after
+     * the last message's, so messages written in the same millisecond keep their order.
+     */
     append: (draft: CoachMessageDraft) =>
       run(
         Effect.gen(function* () {
-          const id = CoachMessageId.make(yield* rowId(TABLES.coachMessage, MADE_HERE));
-          const now = yield* currentTime;
-          yield* insertRows(TABLES.coachMessage, [
-            { ...draft, id, createdAt: now, updatedAt: now, deletedAt: null },
-          ]);
-          return id;
+          const sql = yield* Sql;
+          return yield* sql.transaction(
+            Effect.gen(function* () {
+              const id = CoachMessageId.make(yield* rowId(TABLES.coachMessage, MADE_HERE));
+              const now = yield* currentTime;
+              const [last] = yield* sql.all(
+                "SELECT max(created_at) AS at FROM coach_message WHERE conversation_id = ?",
+                [draft.conversationId],
+              );
+              const after =
+                last?.["at"] === null || last?.["at"] === undefined ? -1 : Number(last["at"]);
+              const createdAt = EpochMillis.make(Math.max(now, after + 1));
+              yield* insertRows(TABLES.coachMessage, [
+                { ...draft, id, createdAt, updatedAt: now, deletedAt: null },
+              ]);
+              return id;
+            }),
+          );
         }),
       ),
     conversation: (conversationId: ConversationId) =>
       run(
         selectRows(TABLES.coachMessage, "conversation_id = ?", [conversationId], "created_at, id"),
       ),
+    /** The conversation with the newest message, or null when there is none. */
+    latestConversation: run(
+      Effect.flatMap(Effect.service(Sql), (sql) =>
+        Effect.map(
+          sql.all(
+            "SELECT conversation_id FROM coach_message WHERE deleted_at IS NULL ORDER BY created_at DESC, id DESC LIMIT 1",
+          ),
+          (rows) =>
+            rows[0] === undefined
+              ? null
+              : ConversationIdSchema.make(String(rows[0]["conversation_id"])),
+        ),
+      ),
+    ),
     removeConversation: (conversationId: ConversationId) =>
       run(
         Effect.flatMap(currentTime, (at) =>

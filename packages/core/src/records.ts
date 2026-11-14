@@ -2,6 +2,7 @@ import { DurationSeconds, formatDuration } from "./duration.ts";
 import {
   groupByWorkout,
   isWorkingSet,
+  isLiftedSet,
   loadsBodyWeight,
   type PerformedSet,
 } from "./performed-set.ts";
@@ -40,9 +41,6 @@ export interface RecordRule {
 // Rounding to hundredths keeps 100 × (1 + 3 ÷ 30) = 110.00000000000001 from beating 110.
 const hundredths = (value: number) => Math.round(value * 100) / 100;
 
-const lifted = (set: SetValues) =>
-  set.weightKg !== null && set.weightKg > 0 && set.reps !== null && set.reps >= 1;
-
 const ONE_REP_MAX_MAX_REPS = 12;
 
 const ADDED_WEIGHT = "On a bodyweight exercise it counts only the added weight.";
@@ -63,7 +61,7 @@ export const RECORD_RULES: Readonly<Record<RecordKind, RecordRule>> = {
     unit: "kg",
     rule: "Weight × (1 + reps ÷ 30), Epley's formula, from sets of 1 to 12 reps. A single counts as its weight. Bodyweight exercises have none, because svett does not know your body weight at each set.",
     valueOf: (set) =>
-      lifted(set) && !loadsBodyWeight(set)
+      isLiftedSet(set) && !loadsBodyWeight(set)
         ? estimatedOneRepMax(set.weightKg ?? 0, set.reps ?? 0)
         : null,
   },
@@ -71,13 +69,13 @@ export const RECORD_RULES: Readonly<Record<RecordKind, RecordRule>> = {
     label: "Heaviest weight",
     unit: "kg",
     rule: `The most weight in one set of at least one rep. ${ADDED_WEIGHT}`,
-    valueOf: (set) => (lifted(set) ? set.weightKg : null),
+    valueOf: (set) => (isLiftedSet(set) ? set.weightKg : null),
   },
   best_set_volume: {
     label: "Best set volume",
     unit: "kg",
     rule: `Weight × reps in one set. ${ADDED_WEIGHT}`,
-    valueOf: (set) => (lifted(set) ? hundredths((set.weightKg ?? 0) * (set.reps ?? 0)) : null),
+    valueOf: (set) => (isLiftedSet(set) ? hundredths((set.weightKg ?? 0) * (set.reps ?? 0)) : null),
   },
   most_reps: {
     label: "Most reps",
