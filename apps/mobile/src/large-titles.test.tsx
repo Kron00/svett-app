@@ -102,7 +102,7 @@ vi.mock("@legendapp/list/react-native", async () => {
   };
 });
 vi.mock("../global.css", () => ({}));
-vi.mock("../modules/svett-native", () => ({ default: { launchedAt: 0 } }));
+vi.mock("../modules/svett-native", () => ({ default: { launchedAt: 0, launchMarks: {} } }));
 vi.mock("expo", () => ({ uuid: { v4: () => "00000000-0000-4000-8000-000000000000" } }));
 // K1's recorder and map load native modules; the guard only needs them to import.
 vi.mock("expo-location", () => ({
