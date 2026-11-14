@@ -250,7 +250,7 @@ finish_workout() {
 agent_device settings text-size accessibility-extra-extra-extra-large
 relaunch
 link "svett://train"
-expect 'id="routine-list"' "The Train tab did not list the routines"
+train_routines 10000 || fail "The Train tab did not list the routines"
 screenshot train
 
 routine=$(node scripts/workout-rows.ts routine "$out/svett-fixture.db" Legs) ||
