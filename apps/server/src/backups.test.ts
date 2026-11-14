@@ -385,7 +385,7 @@ describe("server backups", { timeout: 120_000 }, () => {
 
   it("keeps an old scratch database that a running restore check still owns", async () => {
     const { tag, url: source } = await newLive();
-    await seed(source);
+    const tables = await seed(source);
     const dir = await tempDir();
     const backup = await Effect.runPromise(takeNow.pipe(Effect.provide(backupsLayer(source, dir))));
     const gate = join(dir, "gate");
@@ -403,8 +403,8 @@ describe("server backups", { timeout: 120_000 }, () => {
         const dropped = yield* dropStaleRestoreDatabases(source);
         const left = yield* Effect.promise(scratchDatabases);
         yield* Effect.promise(() => writeFile(gate, ""));
-        const tables = yield* Fiber.join(fiber);
-        return { owned, dropped, left, tables };
+        const restored = yield* Fiber.join(fiber);
+        return { owned, dropped, left, restored };
       }),
     );
 
@@ -412,14 +412,14 @@ describe("server backups", { timeout: 120_000 }, () => {
     expect(seen.owned[0]).toMatch(new RegExp(`^svett_restore_${tag}_${startedAt}_[0-9a-f]{12}$`));
     expect(seen.dropped).toEqual([]);
     expect(seen.left).toEqual(seen.owned);
-    expect(seen.tables).toBe(2);
+    expect(seen.restored).toBe(tables);
     expect(await scratchDatabases()).toEqual([]);
   });
 
   it("keeps an old scratch database that a check of another live database owns", async () => {
     const owner = await newDatabase();
     const sweeper = await newDatabase();
-    await seed(owner);
+    const tables = await seed(owner);
     const dir = await tempDir();
     const backup = await Effect.runPromise(takeNow.pipe(Effect.provide(backupsLayer(owner, dir))));
     const gate = join(dir, "gate");
@@ -436,15 +436,15 @@ describe("server backups", { timeout: 120_000 }, () => {
         const dropped = yield* dropStaleRestoreDatabases(sweeper);
         const left = yield* Effect.promise(scratchDatabases);
         yield* Effect.promise(() => writeFile(gate, ""));
-        const tables = yield* Fiber.join(fiber);
-        return { owned, dropped, left, tables };
+        const restored = yield* Fiber.join(fiber);
+        return { owned, dropped, left, restored };
       }),
     );
 
     expect(seen.owned).toHaveLength(1);
     expect(seen.dropped).toEqual([]);
     expect(seen.left).toEqual(seen.owned);
-    expect(seen.tables).toBe(2);
+    expect(seen.restored).toBe(tables);
     expect(await scratchDatabases()).toEqual([]);
   });
 
