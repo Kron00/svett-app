@@ -4,14 +4,20 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { readFileSync } from "node:fs";
+
+import { bytesSource, readSourceFile, sourceFileSummary } from "@svett/core";
+import { Result } from "effect";
 import { afterAll, describe, expect, it } from "vite-plus/test";
 
 import {
   EXPORT_FILE,
   GPX_FILE,
   judge,
+  judgePreview,
   MANUAL,
   manualLink,
+  PREVIEWS,
   readState,
   seed,
   type Stage,
@@ -73,6 +79,40 @@ describe("the health proof", () => {
       duration: "1:05:00",
       distance: "25.4",
       notes: "Coast loop",
+    });
+  });
+
+  it("writes an export svett reads whole, but for the one run it holds unreadable on purpose", async () => {
+    writeFiles(directory);
+    const read = async (name: string) =>
+      Result.getOrThrow(
+        await readSourceFile(bytesSource(readFileSync(join(directory, name))), {
+          hourOf: (at) => new Date(at).getUTCHours(),
+        }),
+      );
+    const exported = await read(EXPORT_FILE);
+    expect(exported.workouts.map(({ kind, title }) => `${kind} ${title}`)).toEqual([
+      "run Morning run",
+      "strength Evening workout",
+      "ride Afternoon ride",
+      "other Yoga",
+    ]);
+    expect(exported.skipped).toBe(1);
+    expect(sourceFileSummary(exported)).toBe(PREVIEWS[EXPORT_FILE].summary);
+    const gpx = await read(GPX_FILE);
+    expect(gpx.skipped).toBe(0);
+    expect(sourceFileSummary(gpx)).toBe(PREVIEWS[GPX_FILE].summary);
+  });
+
+  it("passes a preview only when svett shows the summary the proof expects", () => {
+    expect(judgePreview(EXPORT_FILE, `${PREVIEWS[EXPORT_FILE].summary}\n`).ok).toBe(true);
+    expect(judgePreview(EXPORT_FILE, "An Apple Health export with 4 workouts.")).toEqual({
+      ok: false,
+      lines: [
+        expect.stringMatching(
+          /^FAILED: preview of svett-health-export.zip, .*svett shows "An Apple Health export with 4 workouts."$/,
+        ),
+      ],
     });
   });
 });

@@ -2,6 +2,7 @@
 // for tests of scripts/health-proof.ts and sim/health.sh.
 // Usage: node scripts/test/health-app.ts import <svett.db> <export.zip or ride.gpx> [--keep-both]
 //        node scripts/test/health-app.ts manual <svett.db>
+//        node scripts/test/health-app.ts summary <export.zip or ride.gpx>
 import { readFileSync } from "node:fs";
 
 import {
@@ -12,6 +13,7 @@ import {
   manualEntryDraft,
   NO_CHOICES,
   readSourceFile,
+  sourceFileSummary,
   TransferRepository,
 } from "@svett/core";
 import { openNodeDatabase } from "@svett/core/node";
@@ -33,15 +35,22 @@ const withDatabase = async <A>(
   }
 };
 
+const readFile = async (filePath: string) =>
+  Result.getOrThrow(
+    await readSourceFile(bytesSource(readFileSync(filePath)), {
+      hourOf: (at) => new Date(at).getUTCHours(),
+    }),
+  );
+
+/** The line svett shows atop the file's preview. */
+export const summary = async (filePath: string) => sourceFileSummary(await readFile(filePath));
+
 /**
  * Imports every workout in the file, linking each possible duplicate as Import does by
  * default, or keeping each apart with `keepBoth`.
  */
 export const importFile = async (databasePath: string, filePath: string, keepBoth = false) => {
-  const read = await readSourceFile(bytesSource(readFileSync(filePath)), {
-    hourOf: (at) => new Date(at).getUTCHours(),
-  });
-  const file = Result.getOrThrow(read);
+  const file = await readFile(filePath);
   return withDatabase(
     databasePath,
     Effect.flatMap(Effect.service(TransferRepository), (transfers) =>
@@ -75,5 +84,6 @@ if (import.meta.main) {
   const [command, databasePath = "", filePath = "", flag] = process.argv.slice(2);
   if (command === "import") await importFile(databasePath, filePath, flag === "--keep-both");
   else if (command === "manual") await saveManual(databasePath);
+  else if (command === "summary") console.log(await summary(databasePath));
   else throw new Error(`Unknown command ${command}`);
 }

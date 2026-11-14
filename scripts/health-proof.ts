@@ -4,7 +4,8 @@
 //   node scripts/health-proof.ts seed <svett.db>          a database holding one Hevy-shaped workout
 //   node scripts/health-proof.ts manual-link              the svett://manual link that fills the form
 //   node scripts/health-proof.ts check <svett.db> <stage> checks the database after a step
-// `check` prints PASSED or FAILED for each expectation of the stage and exits 1 on any failure.
+//   node scripts/health-proof.ts preview <file> <shown>   checks the line a file's preview opens with
+// `check` and `preview` print PASSED or FAILED for each expectation and exit 1 on any failure.
 // The sample files are made up. No real Health data is ever used.
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -25,6 +26,38 @@ export const EXPORT_FILE = "svett-health-export.zip";
 export const GPX_FILE = "svett-ride.gpx";
 
 /** What manual entry is filled with, 8 November 2026 at 17:00 UTC. */
+/**
+ * The line each sample file's preview opens with. The export's fifth workout, a run whose
+ * dates are not dates, is there on purpose to show that svett skips what it cannot read.
+ */
+export const PREVIEWS = {
+  [EXPORT_FILE]: {
+    summary: "An Apple Health export with 4 workouts. svett could not read 1 of its entries.",
+    line: "the export reads as 4 workouts and 1 entry svett cannot read, the run the sample dates with text that is not a date on purpose",
+  },
+  [GPX_FILE]: {
+    summary: "A GPX file with Saturday ride & coffee.",
+    line: "the GPX file reads as its one ride, with nothing it cannot read",
+  },
+} as const;
+
+export const isPreviewed = (file: string): file is keyof typeof PREVIEWS =>
+  Object.hasOwn(PREVIEWS, file);
+
+/** Judges the line svett shows atop the preview of `file`. */
+export const judgePreview = (file: keyof typeof PREVIEWS, shown: string) => {
+  const { summary, line } = PREVIEWS[file];
+  const ok = shown.trim() === summary;
+  return {
+    ok,
+    lines: [
+      ok
+        ? `PASSED: preview of ${file}, ${line}`
+        : `FAILED: preview of ${file}, ${line}. svett shows "${shown.trim()}"`,
+    ],
+  };
+};
+
 export const MANUAL = {
   kind: "ride",
   start: Date.UTC(2026, 10, 8, 17),
@@ -212,6 +245,13 @@ if (import.meta.main) {
     case "manual-link":
       console.log(manualLink());
       break;
+    case "preview": {
+      if (!isPreviewed(first)) throw new Error(`Unknown file ${first}`);
+      const result = judgePreview(first, second);
+      console.log(result.lines.join("\n"));
+      process.exitCode = result.ok ? 0 : 1;
+      break;
+    }
     case "check": {
       if (!isStage(second)) throw new Error(`Unknown stage ${second}`);
       const result = judge(second, readState(first));

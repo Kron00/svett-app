@@ -5,6 +5,7 @@ import {
   type SourceChoices,
   type SourceFile,
   type SourceImportResult,
+  sourceFileSummary,
   sourceImportOutcome,
   sourceName,
   type SourcePlan,
@@ -77,11 +78,6 @@ const withState =
 /** A long list stops here, with a line for the rest, so a whole Health history stays quick. */
 const LISTED = 30;
 
-const fileSummary = (file: SourceFile) =>
-  file.source === "gpx"
-    ? `A GPX file with ${file.workouts[0]?.title ?? "one workout"}.`
-    : `An Apple Health export with ${workoutsLabel(file.workouts.length)}.`;
-
 const toggled = (key: string) => (current: ReadonlySet<string>) => {
   const next = new Set(current);
   if (!next.delete(key)) next.add(key);
@@ -108,9 +104,8 @@ function Plan({
 
   return (
     <>
-      <AppText tone="secondary" className="px-gutter">
-        {fileSummary(file)}
-        {file.skipped > 0 ? ` svett could not read ${file.skipped} of its entries.` : ""}
+      <AppText tone="secondary" className="px-gutter" testID="health-summary">
+        {sourceFileSummary(file)}
       </AppText>
       {isNothingFromSource(plan) ? (
         <View testID="health-nothing-new" className="gap-4">

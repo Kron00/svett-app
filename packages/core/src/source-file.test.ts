@@ -9,7 +9,7 @@ import {
   sampleGpx,
   sampleHealthZip,
 } from "./health-sample.ts";
-import { readSourceFile } from "./source-file.ts";
+import { readSourceFile, sourceFileSummary } from "./source-file.ts";
 import { bytesSource } from "./zip.ts";
 
 const options = { hourOf: (at: number) => new Date(at).getUTCHours() };
@@ -95,6 +95,18 @@ describe("readSourceFile", () => {
     const afterPoint = gpx.indexOf("</trkpt>") + "</trkpt>".length;
     expect(await refusal(strToU8(gpx.slice(0, afterPoint)))).toBe(
       "The file ends partway through, so it may be cut short.",
+    );
+  });
+
+  it("opens the preview with what the file holds and what svett could not read", async () => {
+    expect(sourceFileSummary(await readBytes(sampleHealthZip()))).toBe(
+      "An Apple Health export with 4 workouts. svett could not read 1 of its entries.",
+    );
+    expect(sourceFileSummary(await readBytes(strToU8(sampleGpx())))).toBe(
+      "A GPX file with Saturday ride & coffee.",
+    );
+    expect(sourceFileSummary({ source: "apple_health", workouts: [], skipped: 0 })).toBe(
+      "An Apple Health export with 0 workouts.",
     );
   });
 });

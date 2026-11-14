@@ -7,14 +7,20 @@
 # At the largest text size, it writes a made-up Apple Health export.zip and a GPX
 # ride into svett's Documents, as data.sh does with a svett file, and opens svett
 # on a database that holds one Hevy-shaped strength workout. It previews the
-# export and declines, then previews it again and imports it, which links the
-# Health copy of the Hevy workout. It imports the export once more and sees
+# export, checks the line atop it, and declines. The export holds one run whose
+# dates are not dates, on purpose, so the preview says svett could not read 1 of
+# its entries, and proof.txt says so. Then it previews the export again and
+# imports it, which links the Health copy of the Hevy workout. It imports the export once more and sees
 # nothing new, imports the GPX ride, opens the linked workout, and saves a ride
 # through manual entry. After each step scripts/health-proof.ts checks the
 # database and the script fails on any check that does not pass. It reaches the
 # screens through svett://health-import?file=<name>, svett://activity/<id> and
 # svett://manual, because agent-device 0.21.37 refuses selector presses in screen
 # content on iOS 27, so it presses an element's centre instead, as checks.sh does.
+# agent-device's wait sees only what is on screen, and at the largest text size each
+# screen's buttons sit below it. So it waits for an element at the top of each
+# screen, then scrolls each button on screen and clear of the bottom edge before it
+# presses it, as cardio.sh does.
 # Screenshots and proof.txt go to out-dir, by default ~/svett-proof/<branch>/health/.
 # Like tabs.sh, Debug opens the development client on Metro at SVETT_METRO,
 # --release opens the installed Release build, and every step runs through
@@ -103,23 +109,48 @@ reveal() {
 # agent-device 0.21.37 refuses a selector press inside screen content on iOS 27 as
 # covered by another element. It reads UIKit's touch-transparent floating bar
 # containers as toolbars over the whole screen. A press at coordinates skips that
-# check, so press_centre presses the centre of the element's frame from the snapshot.
-press_centre() {
-  local frame point
-  frame=$(agent_device get attrs "$1") || return 1
-  point=$(node -e '
+# check, so tap presses the centre of the element's frame from the snapshot.
+centre_of() {
+  local frame
+  frame=$(agent_device get attrs "$1") || fail "Could not read where $1 is"
+  node -e '
     const { x, y, width, height } = JSON.parse(process.argv[1]).rect;
     console.log(Math.round(x + width / 2), Math.round(y + height / 2));
-  ' "$frame") || return 1
+  ' "$frame"
+}
+
+# Below this line a press lands on the screen's bottom edge, where iOS 27 keeps the
+# home indicator, so a control merely peeking up from there takes no press.
+safe_bottom=${SVETT_SAFE_BOTTOM:-880}
+
+# Brings the element $1 on screen, drags it up clear of the bottom edge and presses its centre.
+tap() {
+  local point drags=0
+  reveal "$1" || fail "$1 was not on screen to press"
+  point=$(centre_of "$1")
+  while ((${point#* } > safe_bottom)); do
+    ((drags < 3)) || fail "$1 stayed at the bottom edge of the screen"
+    agent_device gesture pan 20 600 0 -300 400
+    drags=$((drags + 1))
+    point=$(centre_of "$1")
+  done
+  # A drag leaves the screen gliding, and iOS takes a tap on a gliding screen as a
+  # stop, not a press, so the press waits until two reads of the frame agree.
+  if ((drags > 0)); then
+    local before=$point reads=0
+    while ((reads < 10)); do
+      agent_device wait 250 >/dev/null
+      point=$(centre_of "$1")
+      [[ "$point" != "$before" ]] || break
+      before=$point
+      reads=$((reads + 1))
+    done
+  fi
   agent_device press "${point% *}" "${point#* }"
 }
 
-tap() {
-  reveal "$1" || fail "$1 was not on screen to press"
-  press_centre "$1"
-}
-
-# open_link <url> <element> opens a svett link and waits for the element.
+# open_link <url> <element> opens a svett link and waits for the element, which
+# must sit at the top of the screen, since wait sees only what is on screen.
 open_link() {
   agent_device open "$bundle_id" "$1"
   agent_device wait "$2" 180000 || fail "$2 did not show after opening $1"
@@ -149,9 +180,20 @@ check() {
   echo "Checked $1"
 }
 
+# expect_preview <file> checks the line atop the file's preview into proof.txt.
+expect_preview() {
+  local shown
+  shown=$(agent_device get text 'id="health-summary"') || fail "Could not read the preview of $1"
+  node scripts/health-proof.ts preview "$1" "$shown" >>"$proof" || {
+    grep FAILED "$proof" >&2
+    fail "The preview of $1 is not what the proof expects. See $proof."
+  }
+  echo "Checked the preview of $1"
+}
+
 # close_import presses Done, so the next link opens a fresh preview.
 close_import() {
-  tap 'label="Done"'
+  tap 'role="button" label="Done"'
   agent_device wait absent 'id="health-import"' 10000 || fail "Done did not close the import"
 }
 
@@ -161,28 +203,33 @@ agent_device open "$bundle_id" "${launch_flags[@]}" --launch-args=-svettFixture 
 agent_device wait "$you_tab" 120000
 check seeded
 
-open_link "svett://health-import?file=$export_file" 'id="health-decline"'
+open_link "svett://health-import?file=$export_file" 'id="health-summary"'
+expect_preview "$export_file"
 pages preview 'id="health-decline"'
 tap 'id="health-decline"'
 agent_device wait absent 'id="health-import"' 10000 || fail "Don't import did not close the preview"
 screenshot declined
 check declined
 
-open_link "svett://health-import?file=$export_file" 'id="health-duplicates"'
-reveal 'id="health-duplicate-0"'
+open_link "svett://health-import?file=$export_file" 'id="health-summary"'
+reveal 'id="health-duplicate-0"' || fail "The preview lists no possible duplicate"
 screenshot duplicate
 tap 'id="health-apply"'
+# What the import did replaces the whole preview, so it shows at the top of the screen.
 agent_device wait 'id="health-done"' 300000 || fail "The import did not finish"
 screenshot imported
 check imported
 close_import
 
-open_link "svett://health-import?file=$export_file" 'id="health-nothing-new"'
+open_link "svett://health-import?file=$export_file" 'id="health-summary"'
+reveal 'id="health-nothing-new"' || fail "The second import of the export did not find nothing new"
 screenshot import-again
 check again
 close_import
 
-open_link "svett://health-import?file=$gpx_file" 'id="health-new"'
+open_link "svett://health-import?file=$gpx_file" 'id="health-summary"'
+expect_preview "$gpx_file"
+reveal 'id="health-new"' || fail "The GPX preview lists no new workout"
 screenshot gpx-preview
 tap 'id="health-apply"'
 agent_device wait 'id="health-done"' 60000 || fail "The GPX import did not finish"
@@ -190,10 +237,11 @@ screenshot gpx-imported
 check gpx
 close_import
 
-open_link "svett://activity/$hevy_id" 'id="activity-heart-average"'
+open_link "svett://activity/$hevy_id" 'id="activity"'
 pages linked-workout 'id="activity-sources"'
+reveal 'id="activity-heart-average"' || fail "The linked workout shows no heart rate"
 
-open_link "$(node scripts/health-proof.ts manual-link)" 'id="manual-save"'
+open_link "$(node scripts/health-proof.ts manual-link)" 'id="manual-cardio"'
 pages manual 'id="manual-save"'
 tap 'id="manual-save"'
 agent_device wait 'id="activity"' 30000 || fail "Saving the manual ride did not open it"

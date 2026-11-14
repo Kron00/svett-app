@@ -4,7 +4,7 @@ import { DecodeUTF8 } from "fflate";
 import { GpxError, parseGpx } from "./gpx.ts";
 import { HealthExportReader } from "./health-export.ts";
 import type { ImportedSource } from "./schema.ts";
-import { fromGpx, fromHealthWorkout, type SourceWorkout } from "./source-import.ts";
+import { fromGpx, fromHealthWorkout, type SourceWorkout, workoutsLabel } from "./source-import.ts";
 import { XmlError } from "./xml.ts";
 import {
   type ByteSource,
@@ -29,6 +29,13 @@ export interface SourceFile {
   /** Workouts or routes the file holds that svett could not read. */
   readonly skipped: number;
 }
+
+/** The line the import preview opens with, naming what the file holds and what svett could not read. */
+export const sourceFileSummary = (file: SourceFile) =>
+  (file.source === "gpx"
+    ? `A GPX file with ${file.workouts[0]?.title ?? "one workout"}.`
+    : `An Apple Health export with ${workoutsLabel(file.workouts.length)}.`) +
+  (file.skipped > 0 ? ` svett could not read ${file.skipped} of its entries.` : "");
 
 export interface ReadOptions {
   /** The phone's local hour of a time, for the title of a GPX workout. */
