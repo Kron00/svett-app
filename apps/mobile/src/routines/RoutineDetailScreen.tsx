@@ -3,8 +3,6 @@ import {
   type FolderId,
   moveItem,
   type RoutineId,
-  setBadges,
-  setTargetText,
   startWorkoutFromRoutine,
 } from "@svett/core";
 import { type RouteProp, useNavigation, useRoute } from "@react-navigation/native";
@@ -12,13 +10,15 @@ import { Effect, Option } from "effect";
 import { useState } from "react";
 import { Alert, ScrollView, View } from "react-native";
 
+import { useWorkoutSettings } from "../settings/store";
 import type { RootNavigation, RootStackParamList } from "../navigation";
 import { AppText } from "../ui/AppText";
 import { Button } from "../ui/Button";
 import { EmptyState } from "../ui/EmptyState";
 import { ListRow, ListSection } from "../ui/List";
 import { OptionSheet } from "../ui/OptionSheet";
-import { exerciseName, runOnDatabase, type RoutineView, useRoutine, withRoutines } from "./data";
+import { runOnDatabase, type RoutineView, useRoutine, withRoutines } from "./data";
+import { RoutineExercises } from "./RoutineExercises";
 
 type Started = { readonly started: true } | { readonly started: false; readonly title: string };
 
@@ -46,6 +46,7 @@ function Details({ view, reload }: { readonly view: RoutineView; readonly reload
   const { routine, exercises } = view.detail;
   const [choosingFolder, setChoosingFolder] = useState(false);
   const [starting, setStarting] = useState(false);
+  const { unit } = useWorkoutSettings();
   const folder = view.folders.find((candidate) => candidate.id === routine.folderId);
   const index = view.siblings.findIndex((sibling) => sibling.id === routine.id);
 
@@ -113,34 +114,16 @@ function Details({ view, reload }: { readonly view: RoutineView; readonly reload
           testID="start-routine"
         />
       </View>
-      {exercises.map(({ exercise, sets }, exerciseIndex) => {
-        const badges = setBadges(sets.map((set) => set.setType));
-        return (
-          <ListSection
-            key={exercise.id}
-            header={exerciseName(view.names, exercise.exerciseId)}
-            footer={exercise.notes === "" ? undefined : exercise.notes}
-          >
-            {sets.length === 0 ? (
-              <ListRow key="none" title="No sets" />
-            ) : (
-              sets.map((set, setIndex) => {
-                const target = setTargetText(set);
-                const badge = badges[setIndex]!;
-                return (
-                  <ListRow
-                    key={set.id}
-                    title={badge.label}
-                    value={target.text}
-                    accessibilityLabel={`${badge.label}, ${target.label}`}
-                    testID={`routine-set-${exerciseIndex}-${setIndex}`}
-                  />
-                );
-              })
-            )}
-          </ListSection>
-        );
-      })}
+      <RoutineExercises
+        names={view.names}
+        unit={unit}
+        exercises={exercises.map(({ exercise, sets }) => ({
+          key: exercise.id,
+          exerciseId: exercise.exerciseId,
+          notes: exercise.notes,
+          sets: sets.map((set) => ({ ...set, key: set.id })),
+        }))}
+      />
       <ListSection header="Routine">
         <ListRow
           key="edit"

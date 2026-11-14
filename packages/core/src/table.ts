@@ -47,6 +47,7 @@ export const TABLES = {
   measurement: table("measurement", Model.Measurement),
   proposal: table("proposal", Model.Proposal),
   coachMessage: table("coach_message", Model.CoachMessage),
+  gear: table("gear", Model.Gear),
 } as const;
 
 type TableName = { readonly name: string };

@@ -28,7 +28,8 @@ const value = (row: Row, column: string, unit: string) =>
 
 /**
  * The newest live workout with this title as lines a person can read and a script can match:
- * its status, then each live exercise in order with what it records, then each live set.
+ * its status, then each live exercise in order with what it records and its superset, then
+ * each live set with its RPE.
  * Null when there is no such workout.
  */
 export function workoutRows(path: string, title: string): ReadonlyArray<string> | null {
@@ -52,19 +53,20 @@ export function workoutRows(path: string, title: string): ReadonlyArray<string> 
     ];
     const exercises = database
       .prepare(
-        `SELECT e.id, e.set_fields, e.notes, coalesce(x.name, 'Deleted exercise') AS name
+        `SELECT e.id, e.set_fields, e.notes, e.superset_group, coalesce(x.name, 'Deleted exercise') AS name
          FROM activity_exercise e LEFT JOIN exercise x ON x.id = e.exercise_id
          WHERE e.deleted_at IS NULL AND e.activity_id = ? ORDER BY e.position, e.id`,
       )
       .all(String(activity["id"]));
     for (const [index, exercise] of exercises.entries()) {
       const notes = String(exercise["notes"]);
+      const superset = exercise["superset_group"];
       lines.push(
-        `Exercise ${index + 1}: ${String(exercise["name"])}, by ${String(exercise["set_fields"])}${notes === "" ? "" : `, notes: ${notes}`}`,
+        `Exercise ${index + 1}: ${String(exercise["name"])}, by ${String(exercise["set_fields"])}${superset === null ? "" : `, superset ${String(superset)}`}${notes === "" ? "" : `, notes: ${notes}`}`,
       );
       const sets = database
         .prepare(
-          `SELECT set_type, weight_kg, reps, duration_s, distance_m, done FROM activity_set
+          `SELECT set_type, weight_kg, reps, duration_s, distance_m, rpe, done FROM activity_set
            WHERE deleted_at IS NULL AND activity_exercise_id = ? ORDER BY position, id`,
         )
         .all(String(exercise["id"]));
@@ -74,6 +76,7 @@ export function workoutRows(path: string, title: string): ReadonlyArray<string> 
           ...value(set, "reps", "reps"),
           ...value(set, "duration_s", "s"),
           ...value(set, "distance_m", "m"),
+          ...(set["rpe"] === null ? [] : [`RPE ${String(set["rpe"])}`]),
         ];
         lines.push(
           `Set ${index + 1}.${setIndex + 1}: ${[String(set["set_type"]), ...values, set["done"] === 1 ? "done" : "to do"].join(", ")}`,

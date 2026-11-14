@@ -16,6 +16,7 @@ import { type RouteProp, useNavigation, useRoute } from "@react-navigation/nativ
 import { type ReactNode, useEffect, useMemo, useState } from "react";
 import { ScrollView, View } from "react-native";
 
+import { useWorkoutSettings } from "../settings/store";
 import { useOnFocus } from "../data/loaded";
 import { useIsAccessibilityTextSize } from "../design/hooks";
 import { useExerciseList } from "../exercises/data";
@@ -44,6 +45,7 @@ function ExerciseCard({
   const navigation = useNavigation<RootNavigation>();
   const badges = setBadges(exercise.sets.map((set) => set.setType));
   const stacked = useIsAccessibilityTextSize();
+  const { unit } = useWorkoutSettings();
   return (
     <View className="gap-2" testID={`routine-exercise-${index}`}>
       <View className={`gap-2 px-gutter ${stacked ? "" : "flex-row items-center"}`}>
@@ -78,7 +80,7 @@ function ExerciseCard({
       </View>
       <ListSection>
         {exercise.sets.map((set, setIndex) => {
-          const target = setTargetText(set);
+          const target = setTargetText(set, unit);
           const badge = badges[setIndex]!;
           return (
             <ListRow

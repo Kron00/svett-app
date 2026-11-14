@@ -1571,6 +1571,128 @@ check "chatgpt.sh --live signs out an earlier sign-in, then waits 10 minutes for
   'get attrs id="chatgpt-sign-out"' 'get attrs id="chatgpt-continue"' \
   'wait id="chatgpt-state-signedIn" 600000' 'get attrs id="chatgpt-sign-out"'
 
+# Stands in for the bound command on the coach. The question field is two lines tall at
+# the largest text size, or FAKE_FIELD_HEIGHT, with Send under it above the tab bar. Every
+# other element has the same frame, every wait succeeds except one containing
+# FAKE_MISSING, the coach's answer is on screen, and opening the ask link writes
+# FAKE_RECORDING, as a live run would.
+cat >"$fake/coach-device" <<EOF
+#!/usr/bin/env bash
+echo "\$*" >>"$root/bound-calls"
+args=" \$* "
+case "\$args" in
+  *" get attrs id=\"coach-input\" "*)
+    echo "{\"rect\": {\"x\": 16, \"y\": 560, \"width\": 408, \"height\": \${FAKE_FIELD_HEIGHT:-172}}}" ;;
+  *" get attrs id=\"coach-send\" "*) echo '{"rect": {"x": 16, "y": 740, "width": 408, "height": 86}}' ;;
+  *" get attrs label=\"You, tab, 5 of 5\" "*) echo '{"rect": {"x": 352, "y": 874, "width": 88, "height": 48}}' ;;
+  *" get attrs "*) echo '{"rect": {"x": 20, "y": 300, "width": 120, "height": 40}}' ;;
+  *" open "*"svett://coach?ask="*) [[ -z "\${FAKE_RECORDING:-}" ]] || echo '{"source": "live"}' >"\$FAKE_RECORDING" ;;
+  *" is visible "*) [[ "\$args" == *coach-answer* ]] ;;
+  *" wait "*) [[ -z "\${FAKE_MISSING:-}" || "\$args" != *"\$FAKE_MISSING"* ]] ;;
+esac
+EOF
+chmod +x "$fake/coach-device"
+
+# run_coach [VAR=value...] [coach.sh args...] leaves the exit status in coach_status.
+run_coach() {
+  local -a vars=()
+  while [[ "${1:-}" == *=* ]]; do
+    vars+=("$1")
+    shift
+  done
+  rm -f "$root/simctl-calls" "$root/bound-calls" "$root/swift-calls"
+  coach_status=0
+  env PATH="$fake:$PATH" HOME="$root/home" \
+    SVETT_DEVICE_CMD="coach-device --session 't3-test session' --device FAKE-UDID" \
+    "${vars[@]}" "$repo/scripts/sim/coach.sh" "$@" >"$output" 2>&1 || coach_status=$?
+}
+
+documents="$root/data container/Documents"
+coach_fixture="--launch-args=-svettFixture --launch-args=$documents/svett-fixture.db"
+coach_signed_in="--launch-args=-svettChatGPTStub --launch-args=signedIn"
+ask_link="com.kron00.svett svett://coach?ask=What%20was%20my%20best%20squat%20set%20last%20month%3F"
+
+case_name="coach.sh Debug with SVETT_DEVICE_CMD"
+run_coach "$root/coach"
+[[ "$coach_status" == 0 ]] || fail "coach.sh failed"
+check "coach.sh runs the Swift tests and saves their output" \
+  grep -qxF "fake swift test output" "$root/coach/swift-test.txt"
+check "coach.sh copies the generated fixture and both stand-ins into the app's data container" \
+  test "$(cat "$documents/svett-fixture.db")" == "fake fixture" -a \
+  -s "$documents/coach-best-squat.json" -a -s "$documents/coach-plan-limit.json"
+check "coach.sh relaunches on the fixture once per state, then opens the coach or asks by link" \
+  only_open \
+  "$debug_open $coach_fixture --launch-args=-svettChatGPTStub --launch-args=signedOut" \
+  "com.kron00.svett svett://coach" \
+  "$debug_open $coach_fixture --launch-args=-svettChatGPTStub --launch-args=noPlanUsage" \
+  "com.kron00.svett svett://coach" \
+  "$debug_open $coach_fixture $coach_signed_in --launch-args=-svettCoachStub --launch-args=$documents/coach-best-squat.json" \
+  "$ask_link" \
+  "$debug_open $coach_fixture $coach_signed_in --launch-args=-svettCoachStub --launch-args=$documents/coach-plan-limit.json" \
+  "$ask_link"
+check "coach.sh checks the answer names the best set and the data the tools read" \
+  only_calls "wait text" \
+  "wait text Go, Plus, Pro and Business 15000" "wait text 117.5 kg for 8 reps 15000" \
+  "wait text Best sets of Barbell Squat, 2026-10-01 to 2026-10-31 15000" \
+  "wait text reached your ChatGPT plan's limit 15000"
+check "coach.sh shoots at the largest text size, then restores the default" \
+  only_calls "settings text-size" \
+  "settings text-size accessibility-extra-extra-extra-large" "settings text-size large"
+check "coach.sh screenshots each state" \
+  only_calls "screenshot" \
+  "screenshot $root/coach/01-signed-out.png" "screenshot $root/coach/02-no-plan-usage.png" \
+  "screenshot $root/coach/03-answer.png" "screenshot $root/coach/04-composer.png" \
+  "screenshot $root/coach/05-plan-limit.png"
+check "coach.sh measures the question field, Send and the tab bar under the answer" \
+  only_calls "get attrs" \
+  'get attrs id="coach-input"' 'get attrs id="coach-send"' 'get attrs label="You, tab, 5 of 5"'
+check "coach.sh with SVETT_DEVICE_CMD calls neither simctl launch nor openurl" no_simctl_launch_or_openurl
+
+case_name="coach.sh Release with SVETT_DEVICE_CMD"
+run_coach --release "$root/coach-release"
+[[ "$coach_status" == 0 ]] || fail "coach.sh --release failed"
+check "coach.sh Release relaunches the installed app without Metro" \
+  bound_got "$bound_prefix open com.kron00.svett --relaunch $coach_fixture --launch-args=-svettChatGPTStub --launch-args=signedOut"
+
+case_name="coach.sh when the answer does not show what it read"
+run_coach FAKE_MISSING="Best sets of Barbell Squat" "$root/coach-missing"
+check "coach.sh fails when the answer's data does not show" test "$coach_status" -ne 0
+check "coach.sh names what did not show" \
+  grep -qF "Expected the best sets the tools read from the fixture, which did not show" "$output"
+check "coach.sh restores the default text size after a failure" \
+  only_calls "settings text-size" \
+  "settings text-size accessibility-extra-extra-extra-large" "settings text-size large"
+
+case_name="coach.sh when the question field is clipped"
+run_coach FAKE_FIELD_HEIGHT=44 "$root/coach-clipped"
+check "coach.sh fails when the question field stays at its minimum height" test "$coach_status" -ne 0
+check "coach.sh says the question field is clipped" \
+  grep -qF "The composer is not whole: the question field is 44 points tall, so its text is clipped" "$output"
+check "coach.sh keeps the composer screenshot of a clipped field and stops before the plan's limit" \
+  only_calls "screenshot" \
+  "screenshot $root/coach-clipped/01-signed-out.png" "screenshot $root/coach-clipped/02-no-plan-usage.png" \
+  "screenshot $root/coach-clipped/03-answer.png" "screenshot $root/coach-clipped/04-composer.png"
+
+case_name="coach.sh when the Swift tests fail"
+run_coach FAKE_SWIFT_FAIL=1 "$root/coach-swift"
+check "coach.sh fails when the Swift tests fail" test "$coach_status" -ne 0
+check "coach.sh opens nothing when the Swift tests fail" test ! -e "$root/bound-calls"
+
+case_name="coach.sh --live"
+run_coach FAKE_RECORDING="$documents/coach-live.json" --release --live "$root/coach-live"
+[[ "$coach_status" == 0 ]] || fail "coach.sh --live failed"
+check "coach.sh --live skips the Swift tests" test ! -e "$root/swift-calls"
+check "coach.sh --live records against OpenAI with no stand-in, then asks by link" \
+  only_open \
+  "com.kron00.svett --relaunch $coach_fixture --launch-args=-svettCoachRecord --launch-args=$documents/coach-live.json" \
+  "com.kron00.svett svett://coach" "$ask_link"
+check "coach.sh --live saves the recorded exchange in out-dir" \
+  grep -qF '"source": "live"' "$root/coach-live/coach-live.json"
+
+case_name="coach.sh --live when svett recorded nothing"
+run_coach --release --live "$root/coach-live-empty"
+check "coach.sh --live fails without a recording" test "$coach_status" -ne 0
+check "coach.sh --live says nothing was recorded" grep -qF "svett recorded no exchange" "$output"
 
 # Stands in for the bound command while routines.sh builds and starts a routine.
 # It keeps the screen in front, the routine being edited, the saved routine and
@@ -1915,9 +2037,9 @@ node -e '
     CREATE TABLE exercise (id TEXT PRIMARY KEY, name TEXT);
     CREATE TABLE activity (id TEXT PRIMARY KEY, deleted_at INTEGER, title TEXT, status TEXT, notes TEXT, started_at INTEGER);
     CREATE TABLE activity_exercise (id TEXT PRIMARY KEY, deleted_at INTEGER, activity_id TEXT, exercise_id TEXT,
-      position INTEGER, set_fields TEXT, notes TEXT);
+      position INTEGER, set_fields TEXT, notes TEXT, superset_group INTEGER);
     CREATE TABLE activity_set (id TEXT PRIMARY KEY, deleted_at INTEGER, activity_exercise_id TEXT, position INTEGER,
-      set_type TEXT, weight_kg REAL, reps INTEGER, duration_s REAL, distance_m REAL, done INTEGER);
+      set_type TEXT, weight_kg REAL, reps INTEGER, duration_s REAL, distance_m REAL, done INTEGER, rpe REAL);
     INSERT INTO routine VALUES ('\''push-routine'\'', NULL, '\''Push'\'', 0), ('\''legs-routine'\'', NULL, '\''Legs'\'', 2);
   `);
 ' "$3"
@@ -1943,9 +2065,9 @@ const save = () => {
     database.prepare("INSERT INTO activity VALUES (?, NULL, ?, ?, '', ?)").run(`a${w}`, workout.title, workout.status, w);
     workout.exercises.forEach((exercise, e) => {
       database.prepare("INSERT OR IGNORE INTO exercise VALUES (?, ?)").run(exercise.name, exercise.name);
-      database.prepare("INSERT INTO activity_exercise VALUES (?, NULL, ?, ?, ?, ?, '')").run(`a${w}e${e}`, `a${w}`, exercise.name, e, exercise.fields);
+      database.prepare("INSERT INTO activity_exercise VALUES (?, NULL, ?, ?, ?, ?, '', NULL)").run(`a${w}e${e}`, `a${w}`, exercise.name, e, exercise.fields);
       exercise.sets.forEach((set, s) => {
-        database.prepare("INSERT INTO activity_set VALUES (?, NULL, ?, ?, ?, ?, ?, ?, NULL, ?)")
+        database.prepare("INSERT INTO activity_set VALUES (?, NULL, ?, ?, ?, ?, ?, ?, NULL, ?, NULL)")
           .run(`a${w}e${e}s${s}`, `a${w}e${e}`, s, set.type, set.weight, set.reps, set.time, set.done ? 1 : 0);
       });
     });
@@ -2263,6 +2385,700 @@ run_logger FAKE_NO_TIMING=1 "$root/logger-untimed"
 check "logger.sh fails without the time a set took to show done" test "$logger_status" -ne 0
 check "logger.sh says what the timing line showed" \
   grep -qxF 'The workout did not time the set marked done. It says "No set marked done yet"' "$output"
+
+# tools.sh runs against the logger's fake fixture, a fake app and the real
+# workout-rows.ts. The fake device keeps the workout in $FAKE_STATE and writes it
+# to the database it was launched on after every change, as the app saves each
+# change. Romanian Deadlift's elements and the plate calculator's heavier load
+# sit below the fold until a scroll down reaches them. A press acts on the
+# element whose frame was read last. The rest notification shows on the Home
+# Screen while a rest runs, unless FAKE_NO_NOTIFICATION, and the rest has run out
+# once it shows. A relaunch keeps a running rest, unless FAKE_FORGETS_REST.
+# FAKE_REST_IN_SUPERSET rests after the first exercise of a superset, and
+# FAKE_STORES_LB stores a weight typed in pounds as kilograms without converting it.
+# An entry field is selected while the keypad types into it. FAKE_FIELD_MISSES=n
+# makes the first n presses on entry fields miss. With FAKE_GLIDES an entry field
+# is still moving up for its first three reads, and a press where it was before
+# it stopped misses.
+cat >"$fake/tools-device" <<'EOF'
+#!/usr/bin/env node
+const fs = require("node:fs");
+const { DatabaseSync } = require("node:sqlite");
+const args = process.argv.slice(2);
+fs.appendFileSync(`${process.env.FAKE_ROOT}/bound-calls`, `${args.join(" ")}\n`);
+const command = args.slice(4);
+const KG_PER_LB = 0.45359237;
+const stateFile = `${process.env.FAKE_STATE}/state.json`;
+const state = fs.existsSync(stateFile)
+  ? JSON.parse(fs.readFileSync(stateFile, "utf8"))
+  : { screen: "home", unit: "kg", workout: null, scrolled: [], rest: null, focus: null, fieldPresses: 0, reads: {} };
+const save = () => {
+  fs.mkdirSync(process.env.FAKE_STATE, { recursive: true });
+  fs.writeFileSync(stateFile, JSON.stringify(state));
+  if (!state.db || state.workout === null) return;
+  const database = new DatabaseSync(state.db);
+  database.exec("DELETE FROM activity; DELETE FROM activity_exercise; DELETE FROM activity_set; DELETE FROM exercise;");
+  const workout = state.workout;
+  database.prepare("INSERT INTO activity VALUES ('a0', NULL, ?, ?, '', 0)").run(workout.title, workout.status);
+  workout.exercises.forEach((exercise, e) => {
+    database.prepare("INSERT OR IGNORE INTO exercise VALUES (?, ?)").run(exercise.name, exercise.name);
+    database.prepare("INSERT INTO activity_exercise VALUES (?, NULL, 'a0', ?, ?, 'weight_reps', '', ?)")
+      .run(`e${e}`, exercise.name, e, exercise.superset);
+    exercise.sets.forEach((set, s) => {
+      database.prepare("INSERT INTO activity_set VALUES (?, NULL, ?, ?, ?, ?, ?, NULL, NULL, ?, NULL)")
+        .run(`e${e}s${s}`, `e${e}`, s, set.type, set.weight, set.reps, set.done ? 1 : 0);
+    });
+  });
+  database.close();
+};
+const LIBRARY = { "barbell squat": "Barbell Squat", "romanian deadlift": "Romanian Deadlift" };
+// Last time's sets, which marking a set done fills in, in kilograms.
+const LAST = {
+  "Barbell Squat": [["warm_up", 60, 10], ["normal", 100, 5], ["normal", 100, 5]],
+  "Romanian Deadlift": [["normal", 80, 8], ["normal", 80, 8]],
+};
+const shown = (kg) => String(Math.round((state.unit === "lb" ? kg / KG_PER_LB : kg) * 100) / 100);
+const badges = (exercise) => {
+  let normal = 0;
+  return exercise.sets.map((one) => one.type === "normal" ? `Set ${++normal}` : "Warm-up set");
+};
+const doneLabel = (exercise, index) => {
+  const one = exercise.sets[index];
+  const parts = [];
+  if (one.weight !== null) parts.push(`${process.env.FAKE_STORES_LB ? one.typed : shown(one.weight)} ${state.unit}`);
+  if (one.reps !== null) parts.push(`${one.reps} reps`);
+  return [badges(exercise)[index], ...(parts.length ? parts : ["No target"]), one.done ? "Done" : "To do"].join(", ");
+};
+const inSuperset = (e) => state.workout.exercises[e]?.superset != null;
+const joinsNext = (e) => inSuperset(e) && state.workout.exercises[e + 1]?.superset === state.workout.exercises[e].superset;
+const options = (e) => {
+  const count = state.workout.exercises.length;
+  return [
+    ...(inSuperset(e) ? ["Remove from superset"] : []),
+    ...(e < count - 1 && !joinsNext(e) ? ["Superset with next exercise"] : []),
+    `Rest timer: ${state.workout.exercises[e].rest === 30 ? "0:30" : "1:30"}`,
+    "Warm-up sets", "Plate calculator", "Replace exercise", "Log by: Weight and reps", "Remove exercise", "Cancel",
+  ];
+};
+const PLATES = {
+  "225": [["plates-result", "On the barbell, 225 lb. Each side, 2 plates of 45 lb."]],
+  "220.46": [
+    ["plates-result", "Your plates cannot make 220.46 lb exactly."],
+    ["plates-lighter", "Nearest lighter, 220 lb. Each side, 1 plate of 45 lb, 1 plate of 35 lb, 1 plate of 5 lb, 1 plate of 2.5 lb."],
+    ["plates-heavier", "Nearest heavier, 225 lb. Each side, 2 plates of 45 lb."],
+  ],
+};
+const elements = () => {
+  const found = [];
+  const add = (id, label = "", selected = false, role = null) => found.push({ id, label, selected, role });
+  if (state.screen === "home") return found;
+  if (state.screen === "springboard") {
+    if (state.rest !== null && !process.env.FAKE_NO_NOTIFICATION) add(null, "Rest is over");
+    return found;
+  }
+  add(null, "Train, tab, 2 of 5");
+  const workout = state.workout?.status === "in_progress" ? state.workout : null;
+  if (state.screen === "tabs" && workout) add("workout-bar", `Workout in progress, ${workout.title}, 12:34`);
+  if (state.screen === "settings") {
+    add("workout-settings");
+    add(null, "Kilograms");
+    add(null, "Pounds");
+    add("unit-note", `Weights show and are typed in ${state.unit === "lb" ? "pounds" : "kilograms"}. svett stores kilograms, so switching changes no workout.`);
+  }
+  if (state.screen === "train") { add("train"); if (!workout) add("start-empty-workout"); }
+  if (state.screen === "picker") { add("exercise-library"); add("exercise-result-0", `${LIBRARY[state.query]}, Hamstrings · Barbell`); }
+  // iOS nests each action sheet button in three containers with the same label.
+  if (state.screen === "options") for (const label of options(state.options)) add(null, label, false, "button");
+  if (state.screen === "rest-sheet") { add("rest-sheet"); for (const seconds of [0, 15, 30, 45, 60, 90]) add(`rest-sheet-${seconds}`); }
+  if (state.screen === "plates") {
+    add("plates");
+    for (const [id, label] of PLATES[shown(state.platesKg)] ?? [["plates-result", `Plates for ${shown(state.platesKg)} ${state.unit}`]]) add(id, label);
+  }
+  if (state.screen === "workout") {
+    add("workout");
+    if (!workout) return found;
+    add("workout-title", workout.title);
+    add("bar-finish", "Finish");
+    if (state.alert) add("alert-finish", "Finish workout", false, "button");
+    workout.exercises.forEach((exercise, e) => {
+      add(`workout-exercise-${e}`, exercise.name);
+      add(`exercise-options-${e}`);
+      if (inSuperset(e)) add(`workout-superset-${e}`, "Superset A");
+      exercise.sets.forEach((_, s) => {
+        add(`workout-set-${e}-${s}`, doneLabel(exercise, s));
+        for (const column of ["weight", "reps"]) {
+          const focus = state.focus;
+          add(`set-${e}-${s}-${column}`, "", focus?.e === e && focus.s === s && focus.column === column);
+        }
+      });
+    });
+    if (state.focus) for (const key of "0123456789") add(`key-${key}`);
+    if (state.rest !== null) { add("rest-timer"); add("rest-timer-left", `Rest, ${state.rest} seconds left`); }
+  }
+  return found;
+};
+const parse = (selector) => ({
+  id: /id="([^"]*)"/.exec(selector)?.[1] ?? null,
+  label: /label="([^"]*)"/.exec(selector)?.[1] ?? null,
+  selected: /selected=true/.test(selector),
+  role: /role="([^"]*)"/.exec(selector)?.[1] ?? null,
+});
+const find = (selector) => {
+  const wanted = parse(selector);
+  return elements().find((element) =>
+    (wanted.id === null || element.id === wanted.id) && (wanted.label === null || element.label === wanted.label) &&
+    (!wanted.selected || element.selected) && (element.role === null || wanted.role === element.role)) ?? null;
+};
+const isField = (id) => /^set-\d+-\d+-(weight|reps)$/.test(id ?? "");
+// Where an element is after `reads` reads of its frame. A gliding field stops after three.
+const topAt = (id, reads) =>
+  process.env.FAKE_LOW && id === process.env.FAKE_LOW && !state.panned
+    ? 905
+    : process.env.FAKE_GLIDES && isField(id)
+      ? 600 + 20 * Math.max(0, 3 - reads)
+      : 600;
+const centre = (top) => `${16 + 408 / 2} ${top + 50 / 2}`;
+const belowFold = (element) =>
+  /^(workout-exercise|workout-superset|workout-set|exercise-options|set)-1/.test(element.id ?? "") ||
+  element.id === "plates-heavier";
+const visible = (element) => element !== null && (!belowFold(element) || state.scrolled.includes(element.id));
+const show = (screen) => { state.screen = screen; state.scrolled = []; };
+const heaviest = (exercise) => Math.max(...exercise.sets.filter((one) => one.type !== "warm_up" && one.weight !== null).map((one) => one.weight));
+const press = (point) => {
+  const target = state.target;
+  if (isField(target)) {
+    state.fieldPresses += 1;
+    const missed = state.fieldPresses <= Number(process.env.FAKE_FIELD_MISSES ?? 0) ||
+      point !== centre(topAt(target, state.reads[target] ?? 0));
+    if (missed) return;
+  }
+  const workout = state.workout;
+  let m;
+  if (target === "label:Pounds") state.unit = "lb";
+  else if (target === "label:Kilograms") state.unit = "kg";
+  else if (target === "start-empty-workout") {
+    state.workout = { title: "Evening workout", status: "in_progress", exercises: [] };
+    show("workout");
+  } else if (target === "exercise-result-0") {
+    const name = LIBRARY[state.query];
+    workout.exercises.push({ name, rest: 90, superset: null,
+      sets: LAST[name].map(([type]) => ({ type, weight: null, reps: null, done: false, typed: null })) });
+    show("workout");
+  } else if ((m = /^exercise-options-(\d+)$/.exec(target))) { state.options = Number(m[1]); show("options"); }
+  else if (target === "label:Rest timer: 1:30" || target === "label:Rest timer: 0:30") show("rest-sheet");
+  else if ((m = /^rest-sheet-(\d+)$/.exec(target))) {
+    workout.exercises[state.options].rest = Number(m[1]);
+    show("workout");
+  } else if (target === "label:Superset with next exercise") {
+    workout.exercises[state.options].superset = 0;
+    workout.exercises[state.options + 1].superset = 0;
+    show("workout");
+  } else if (target === "label:Plate calculator") {
+    state.platesKg = heaviest(workout.exercises[state.options]);
+    show("plates");
+  } else if ((m = /^set-(\d+)-(\d+)-(\w+)$/.exec(target))) {
+    state.focus = { e: Number(m[1]), s: Number(m[2]), column: m[3], text: "" };
+  } else if ((m = /^key-(\d)$/.exec(target))) {
+    const focus = state.focus;
+    focus.text += m[1];
+    const one = workout.exercises[focus.e].sets[focus.s];
+    if (focus.column === "weight") {
+      one.typed = focus.text;
+      one.weight = state.unit === "lb" && !process.env.FAKE_STORES_LB ? Number(focus.text) * KG_PER_LB : Number(focus.text);
+    } else one.reps = Number(focus.text);
+  } else if ((m = /^workout-set-(\d+)-(\d+)$/.exec(target))) {
+    const e = Number(m[1]);
+    const exercise = workout.exercises[e];
+    const one = exercise.sets[Number(m[2])];
+    const [, weight, reps] = LAST[exercise.name][Number(m[2])];
+    one.weight ??= weight;
+    one.reps ??= reps;
+    one.done = true;
+    const last = !inSuperset(e) || !inSuperset(e + 1);
+    if (last || process.env.FAKE_REST_IN_SUPERSET) state.rest = exercise.rest;
+  } else if (target === "bar-finish") state.alert = true;
+  else if (target === "alert-finish") {
+    state.alert = false;
+    for (const exercise of workout.exercises) exercise.sets = exercise.sets.filter((one) => one.done);
+    workout.exercises = workout.exercises.filter((exercise) => exercise.sets.length > 0);
+    workout.status = "finished";
+    state.rest = null;
+    show("tabs");
+  } else process.exit(1);
+};
+const fail = () => process.exit(1);
+switch (command[0]) {
+  case "settings":
+  case "screenshot":
+    break;
+  case "home":
+    show("home");
+    break;
+  case "open": {
+    const url = command[1] === "com.apple.springboard" ? "springboard" : command[2];
+    if (url === "springboard") show("springboard");
+    else if (url === "--relaunch") {
+      state.db = command.find((arg) => arg.endsWith(".db"))?.replace("--launch-args=", "") ?? state.db;
+      if (process.env.FAKE_FORGETS_REST) state.rest = null;
+      state.focus = null;
+      show("tabs");
+    } else if (url === "svett://settings/workout") show("settings");
+    else if (url === "svett://train") show("train");
+    else if (url === "svett://train/workout") show("workout");
+    else if (url === "svett://tools/plates?kg=100") { state.platesKg = 100; show("plates"); }
+    else if (url.startsWith("svett://train/workout/exercises?q=")) {
+      state.query = decodeURIComponent(url.slice("svett://train/workout/exercises?q=".length));
+      show("picker");
+    } else fail();
+    break;
+  }
+  case "wait":
+    if (/^\d+$/.test(command[1])) break;
+    if (command[1] === "text") {
+      if (find(`label="${command[2]}"`) === null) fail();
+      if (command[2] === "Rest is over") state.rest = null;
+      break;
+    }
+    if (command[1] === "absent") { if (find(command[2]) !== null) fail(); break; }
+    if (!visible(find(command[1]))) fail();
+    break;
+  case "is":
+    if (!visible(find(command[2]))) fail();
+    break;
+  case "scroll": {
+    const element = find(command[3]);
+    if (element === null || (command[1] === "up" && !visible(element))) fail();
+    state.scrolled.push(element.id);
+    break;
+  }
+  case "get": {
+    const element = find(command[2]);
+    if (element === null) fail();
+    state.target = element.id ?? `label:${element.label}`;
+    const reads = state.reads[state.target] ?? 0;
+    state.reads[state.target] = reads + 1;
+    console.log(JSON.stringify({ label: element.label, rect: { x: 16, y: topAt(state.target, reads), width: 408, height: 50 } }));
+    break;
+  }
+  case "press":
+    // A press at a point must get two numbers, as agent-device would demand.
+    if (!command[1].includes("=") && !/^\d+ \d+$/.test(`${command[1]} ${command[2]}`)) fail();
+    press(`${command[1]} ${command[2]}`);
+    break;
+  case "gesture":
+    // agent-device reports each gesture on stdout, which must not reach a coordinate.
+    state.panned = true;
+    console.log(`Panned (${command[2]}, ${command[3]}) by (${command[4]}, ${command[5]})`);
+    break;
+  case "alert":
+    if (command[1] === "wait" && !state.alert) fail();
+    if (command[1] === "accept") fail();
+    break;
+  default:
+    fail();
+}
+save();
+EOF
+chmod +x "$fake/tools-device"
+
+# run_tools [VAR=value...] [tools.sh args...] leaves the exit status in tools_status.
+run_tools() {
+  local -a vars=()
+  while [[ "${1:-}" == *=* ]]; do
+    vars+=("$1")
+    shift
+  done
+  rm -rf "$root/tools-state" "$root/data container"
+  rm -f "$root/simctl-calls" "$root/bound-calls"
+  tools_status=0
+  env PATH="$logger_bin:$fake:$PATH" FAKE_ROOT="$root" FAKE_STATE="$root/tools-state" \
+    SVETT_DEVICE_CMD="tools-device --session 't3-test session' --device FAKE-UDID" \
+    "${vars[@]}" "$repo/scripts/sim/tools.sh" "$@" >"$output" 2>&1 || tools_status=$?
+}
+
+tools_args="--launch-args=-svettFixture --launch-args=$root/data container/Documents/svett-tools.db"
+tools_links=("com.kron00.svett svett://settings/workout" "com.kron00.svett svett://train"
+  "com.kron00.svett svett://train/workout/exercises?q=barbell%20squat"
+  "com.kron00.svett svett://train/workout/exercises?q=romanian%20deadlift"
+  "com.apple.springboard")
+squat_kg=$(node -e 'console.log(225 * 0.45359237)')
+
+case_name="tools.sh Debug with SVETT_DEVICE_CMD"
+run_tools "$root/tools"
+[[ "$tools_status" == 0 ]] || fail "tools.sh failed"
+check "tools.sh launches on the copied fixture, goes to the Home Screen for the rest, and launches again during the next" \
+  only_open "$debug_open $tools_args" "${tools_links[@]}" "$debug_open $tools_args" \
+  "com.kron00.svett svett://train/workout" "$debug_open $tools_args" \
+  "com.kron00.svett svett://train/workout" "com.kron00.svett svett://tools/plates?kg=100" \
+  "com.kron00.svett svett://train/workout"
+check "tools.sh never launches or opens a link with simctl" no_simctl_launch_or_openurl
+check "tools.sh grants notifications ahead, and shoots at the largest text size, then restores the default" \
+  only_calls "settings" "settings permission grant notifications" \
+  "settings text-size accessibility-extra-extra-extra-large" "settings text-size large"
+# done_then_home checks the call right after the press that marks the set done,
+# which starts the rest, is the Home Screen, before any screenshot or database check.
+done_then_home() {
+  grep -A2 -F 'get attrs id="workout-set-0-1"' "$root/bound-calls" | sed 's/^.*FAKE-UDID //' |
+    tail -2 | tr '\n' '|' | grep -qxE "press [0-9]+ [0-9]+\|home\|"
+}
+check "tools.sh leaves svett in the call right after it marks the set done" done_then_home
+check "tools.sh waits on the Home Screen for the rest notification" \
+  bound_got "--session t3-test session --device FAKE-UDID wait text Rest is over 60000"
+check "tools.sh types 225 lb on the keypad, then the reps, without the keypad's Next or Done" \
+  only_calls 'get attrs id="(set-[0-9]+-[0-9]+-|key-|keypad-)' \
+  'get attrs id="set-0-1-weight"' 'get attrs id="set-0-1-weight"' 'get attrs id="set-0-1-weight"' \
+  'get attrs id="key-2"' 'get attrs id="key-2"' 'get attrs id="key-5"' \
+  'get attrs id="set-0-1-reps"' 'get attrs id="set-0-1-reps"' 'get attrs id="set-0-1-reps"' \
+  'get attrs id="key-5"'
+check "tools.sh types only once the field it pressed is selected with the keypad open" \
+  only_calls 'wait id="(set-[0-9]+-[0-9]+-[a-z]+" selected=true|key-2")' \
+  'wait id="set-0-1-weight" selected=true 3000' 'wait id="key-2" 3000' \
+  'wait id="set-0-1-reps" selected=true 3000' 'wait id="key-2" 3000'
+check "tools.sh scrolls down to the second exercise's superset before it checks it" \
+  bound_got '--session t3-test session --device FAKE-UDID scroll down --until id="workout-superset-1" label="Superset A"'
+check "tools.sh finds 225 lb stored as kilograms while the workout is in progress" \
+  grep -qxF "Set 1.2: normal, $squat_kg kg, 5 reps, done" "$root/tools/pounds.txt"
+check "tools.sh finds the finished workout's superset in the database" \
+  grep -qxF "Exercise 2: Romanian Deadlift, by weight_reps, superset 0" "$root/tools/finished.txt"
+check "tools.sh screenshots each step" \
+  only_calls "screenshot" \
+  "screenshot $root/tools/01-pounds.png" "screenshot $root/tools/02-pounds-typed.png" \
+  "screenshot $root/tools/03-rest-notification.png" "screenshot $root/tools/04-set-done.png" \
+  "screenshot $root/tools/05-superset.png" "screenshot $root/tools/06-rest-restored.png" \
+  "screenshot $root/tools/07-plates.png" "screenshot $root/tools/08-plates-nearest.png" \
+  "screenshot $root/tools/09-finished.png"
+
+case_name="tools.sh Release with SVETT_DEVICE_CMD"
+run_tools --release "$root/tools-release"
+[[ "$tools_status" == 0 ]] || fail "tools.sh --release failed"
+check "tools.sh Release launches the installed app on the fixture without Metro" \
+  only_open "com.kron00.svett --relaunch $tools_args" "${tools_links[@]}" \
+  "com.kron00.svett --relaunch $tools_args" "com.kron00.svett svett://train/workout" \
+  "com.kron00.svett --relaunch $tools_args" "com.kron00.svett svett://train/workout" \
+  "com.kron00.svett svett://tools/plates?kg=100" "com.kron00.svett svett://train/workout"
+
+case_name="tools.sh when Start empty workout sits at the screen's bottom edge"
+run_tools FAKE_LOW=start-empty-workout "$root/tools-low"
+check "tools.sh drags a control up from the bottom edge and still presses a number" \
+  test "$tools_status" -eq 0
+check "tools.sh drags once before pressing Start empty workout" \
+  only_calls "gesture" "gesture pan 20 600 0 -300 400"
+
+case_name="tools.sh when the rest notification never shows"
+run_tools FAKE_NO_NOTIFICATION=1 "$root/tools-silent"
+check "tools.sh fails without the rest notification" test "$tools_status" -ne 0
+check "tools.sh says the notification did not show in the background" \
+  grep -qxF "The rest timer's notification did not show with svett in the background" "$output"
+check "tools.sh restores the default text size after a failure" \
+  only_calls "settings" "settings permission grant notifications" \
+  "settings text-size accessibility-extra-extra-extra-large" "settings text-size large"
+
+case_name="tools.sh when the first exercise of a superset rests"
+run_tools FAKE_REST_IN_SUPERSET=1 "$root/tools-superset"
+check "tools.sh fails when a superset rests before its round ends" test "$tools_status" -ne 0
+check "tools.sh names the set that rested" \
+  grep -qxF "A set of Barbell Squat, first in its superset, started a rest" "$output"
+
+case_name="tools.sh when a relaunch forgets the running rest"
+run_tools FAKE_FORGETS_REST=1 "$root/tools-forgets"
+check "tools.sh fails when the rest does not come back after svett is killed" test "$tools_status" -ne 0
+check "tools.sh says the rest did not come back" \
+  grep -qxF "The rest did not come back after svett was killed" "$output"
+
+case_name="tools.sh when a weight typed in pounds is stored unconverted"
+run_tools FAKE_STORES_LB=1 "$root/tools-unconverted"
+check "tools.sh fails when the database holds pounds as kilograms" test "$tools_status" -ne 0
+check "tools.sh says the workout is not stored as logged" \
+  grep -qxF "The database does not hold \"Evening workout\" as logged. See $root/tools-unconverted/pounds.txt" "$output"
+
+case_name="tools.sh when the first press on an entry field misses"
+run_tools FAKE_FIELD_MISSES=1 "$root/tools-missed"
+[[ "$tools_status" == 0 ]] || fail "tools.sh failed after one missed press"
+check "tools.sh presses the weight field again, then types 225 lb into it" \
+  grep -qxF "Set 1.2: normal, $squat_kg kg, 5 reps, done" "$root/tools-missed/pounds.txt"
+check "tools.sh says the first press did not select the field" \
+  grep -qxF "Pressing the weight of Barbell Squat's first working set did not select it with the keypad open, try 1 of 2" "$output"
+
+case_name="tools.sh when every press on an entry field misses"
+run_tools FAKE_FIELD_MISSES=99 "$root/tools-missing"
+check "tools.sh fails when the field never takes a press" test "$tools_status" -ne 0
+check "tools.sh names the field the keypad never opened for" \
+  grep -qxF "Pressing the weight of Barbell Squat's first working set (id=\"set-0-1-weight\") did not select it and open the keypad, after two presses" "$output"
+check "tools.sh never types on the keypad when the field never took a press" \
+  only_calls 'get attrs id="key-'
+
+case_name="tools.sh when an entry field is still moving after a scroll"
+run_tools FAKE_GLIDES=1 "$root/tools-glides"
+[[ "$tools_status" == 0 ]] || fail "tools.sh failed on a field that was still moving"
+check "tools.sh presses the field where it stopped, at the first try" \
+  bash -c '! grep -qF "try 1 of 2" "$1"' _ "$output"
+check "tools.sh still types 225 lb into the field" \
+  grep -qxF "Set 1.2: normal, $squat_kg kg, 5 reps, done" "$root/tools-glides/pounds.txt"
+
+# Stands in for the bound command while proposals.sh asks the coach for proposals. It
+# keeps the screen in front, the stand-in svett was launched with, the stand-ins asked
+# and each proposal's state as files under $FAKE_STATE. A card, the refusal, the end
+# of the preview and every Train row start below the fold, so only a scroll finds
+# them. A press acts on the element whose frame was read last, and a press below
+# y=840 lands on the home indicator and does nothing. FAKE_TRAIN_EARLY lists a
+# proposal on the Train tab before Apply, FAKE_UNDO_KEEPS after Undo, FAKE_NO_REFUSAL
+# shows no refusal for the malformed routine, and FAKE_LEG_CARD shows a card for it.
+# FAKE_CARD_LOW keeps the routine's card at the bottom edge until a drag, and
+# FAKE_GLIDE moves an element on the first read after a scroll. The chat ends on the
+# card or the refusal, so the answer's text sits above the screen, out of a wait's reach.
+cat >"$fake/proposals-device" <<'EOF'
+#!/usr/bin/env bash
+echo "$*" >>"$FAKE_ROOT/bound-calls"
+shift 4
+s=$FAKE_STATE
+mkdir -p "$s"
+get() { cat "$s/$1" 2>/dev/null || true; }
+put() { printf '%s\n' "$2" >"$s/$1"; }
+screen=$(get screen)
+screen=${screen:-home}
+routine_row='id="routine-row" label="Upper body strength, Barbell Bench Press - Medium Grip, Bent Over Barbell Row, Standing Military Press"'
+program_rows='id="routine-row" label="Day 1 Push, Barbell Bench Press - Medium Grip, Standing Military Press, Dips - Triceps Version"
+id="routine-row" label="Day 2 Pull, Barbell Deadlift, Pullups, Seated Cable Rows"
+id="routine-row" label="Day 3 Legs, Barbell Squat, Romanian Deadlift, Lying Leg Curls"
+id="folder-name" label="Coach 3-day split"'
+kind_of() {
+  case "$1" in
+    "Upper body strength") echo routine ;;
+    "Coach 3-day split") echo program ;;
+  esac
+}
+# on_train <kind>: the Train tab lists what the proposal created.
+on_train() {
+  local state
+  state=$(get "status-$1")
+  [[ "$state" == applied || ("$state" == pending && -n "${FAKE_TRAIN_EARLY:-}") ||
+    ("$state" == undone && -n "${FAKE_UNDO_KEEPS:-}") ]]
+}
+status_text() {
+  case "$(get "status-$(kind_of "$(get current)")")" in
+    pending) echo "Not applied. Nothing is saved until you tap Apply." ;;
+    applied) echo "Applied. It is on the Train tab." ;;
+    undone) echo "Undone. svett removed what Apply created." ;;
+  esac
+}
+# holds <selector>: the element is on the screen in front, maybe below the fold.
+holds() {
+  case "$1" in
+    'label="You, tab, 5 of 5"') [[ "$screen" != home ]] ;;
+    'id="coach"' | 'id="coach-answer"') [[ "$screen" == coach ]] ;;
+    'role="button" label="Preview Upper body strength"') [[ "$screen" == coach && -f "$s/asked-routine" ]] ;;
+    'role="button" label="Preview Coach 3-day split"') [[ "$screen" == coach && -f "$s/asked-program" ]] ;;
+    'role="button" label="Preview Leg day"') [[ "$screen" == coach && -f "$s/asked-malformed" && -n "${FAKE_LEG_CARD:-}" ]] ;;
+    'id="coach-proposal-error"') [[ "$screen" == coach && -f "$s/asked-malformed" && -z "${FAKE_NO_REFUSAL:-}" ]] ;;
+    'id="routine-list"') [[ "$screen" == train ]] ;;
+    "$routine_row") [[ "$screen" == train ]] && on_train routine ;;
+    'id="routine-row" label='* | 'id="folder-name" label='*)
+      [[ "$screen" == train ]] && grep -qxF -- "$1" <<<"$program_rows" && on_train program ;;
+    'id="proposal"' | 'id="proposal-'*) [[ "$screen" == proposal ]] ;;
+    'role="button" label="Apply"') [[ "$screen" == proposal && "$(get "status-$(kind_of "$(get current)")")" == pending ]] ;;
+    'role="button" label="Undo"') [[ "$screen" == proposal && "$(get "status-$(kind_of "$(get current)")")" == applied ]] ;;
+    *) return 1 ;;
+  esac
+}
+# below_fold <selector>: an element only a scroll brings on screen.
+below_fold() {
+  case "$1" in
+    'role="button" label="Preview '* | 'id="coach-proposal-error"' | 'id="routine-row"'* | 'id="folder-name"'* | \
+      'id="proposal-end"' | 'id="proposal-set-'* | 'id="proposal-routine-'*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+press() {
+  local target kind
+  (($2 <= 840)) || return 0
+  target=$(get target)
+  case "$target" in
+    'role="button" label="Preview '*)
+      kind=${target#role=\"button\" label=\"Preview }
+      put current "${kind%\"}"
+      put screen proposal ;;
+    'role="button" label="Apply"') put "status-$(kind_of "$(get current)")" applied ;;
+    'role="button" label="Undo"') put "status-$(kind_of "$(get current)")" undone ;;
+    *) exit 1 ;;
+  esac
+}
+case "$1" in
+  settings | screenshot) ;;
+  gesture) touch "$s/dragged" ;;
+  open)
+    case "$3" in
+      --relaunch)
+        put screen tabs
+        stub="$*"
+        stub=${stub##*coach-propose-}
+        put stub "${stub%.json}" ;;
+      svett://coach\?ask=*)
+        kind=$(get stub)
+        touch "$s/asked-$kind"
+        [[ -n "$(get "status-$kind")" ]] || put "status-$kind" pending
+        rm -f "$s/dragged"
+        put screen coach ;;
+      svett://coach) put screen coach ;;
+      svett://train) put screen train ;;
+      *) exit 1 ;;
+    esac ;;
+  wait) [[ "$2" =~ ^[0-9]+$ ]] || { holds "$2" && ! below_fold "$2" && [[ "$2" != 'id="coach-answer"' ]]; } ;;
+  is) holds "$3" && ! below_fold "$3" && [[ "$3" != 'id="coach-answer"' ]] ;;
+  scroll)
+    touch "$s/gliding"
+    holds "$4" ;;
+  get)
+    holds "$3" || exit 1
+    case "$2" in
+      text)
+        case "$3" in
+          'id="proposal-title"') get current ;;
+          'id="proposal-status"') status_text ;;
+          'id="coach-proposal-error"') echo "svett refused a proposal from the coach, so nothing was saved. Expected no excess property" ;;
+          *) echo "" ;;
+        esac ;;
+      attrs)
+        put target "$3"
+        y=600
+        if [[ -n "${FAKE_CARD_LOW:-}" && "$3" == 'role="button" label="Preview Upper body strength"' && ! -f "$s/dragged" ]]; then
+          y=900
+        elif [[ -n "${FAKE_GLIDE:-}" && -f "$s/gliding" ]]; then
+          rm -f "$s/gliding"
+          y=640
+        fi
+        echo "{\"rect\": {\"x\": 16, \"y\": $((y - 25)), \"width\": 408, \"height\": 50}}" ;;
+    esac ;;
+  press) press "$2" "$3" ;;
+  *) exit 1 ;;
+esac
+EOF
+chmod +x "$fake/proposals-device"
+
+# run_proposals [VAR=value...] [proposals.sh args...] leaves the exit status in proposals_status.
+run_proposals() {
+  local -a vars=()
+  while [[ "${1:-}" == *=* ]]; do
+    vars+=("$1")
+    shift
+  done
+  rm -rf "$root/simctl-calls" "$root/bound-calls" "$root/proposals-state"
+  proposals_status=0
+  env PATH="$fake:$PATH" HOME="$root/home" FAKE_ROOT="$root" FAKE_STATE="$root/proposals-state" \
+    SVETT_DEVICE_CMD="proposals-device --session 't3-test session' --device FAKE-UDID" \
+    "${vars[@]}" "$repo/scripts/sim/proposals.sh" "$@" >"$output" 2>&1 || proposals_status=$?
+}
+
+stub_args() {
+  echo "--launch-args=-svettFixture --launch-args=$documents/svett-fixture.db $coach_signed_in --launch-args=-svettCoachStub --launch-args=$documents/coach-propose-$1.json"
+}
+ask_of() {
+  echo "com.kron00.svett svett://coach?ask=$(node -e 'process.stdout.write(encodeURIComponent(process.argv[1]))' "$1")"
+}
+routine_ask=$(ask_of "Plan an upper body routine for me")
+program_ask=$(ask_of "Plan a three-day push, pull and legs program for me")
+malformed_ask=$(ask_of "Plan a leg day for me")
+to_coach="com.kron00.svett svett://coach"
+to_train="com.kron00.svett svett://train"
+upper_row='id="routine-row" label="Upper body strength, Barbell Bench Press - Medium Grip, Bent Over Barbell Row, Standing Military Press"'
+
+# presses_clear_of_the_edge checks every press is at a point above the home indicator.
+presses_clear_of_the_edge() {
+  local pressed
+  pressed=$(grep -E "^$bound_prefix press " "$root/bound-calls" | awk '{ print $NF }')
+  [[ -n "$pressed" ]] && ! awk '$1 > 840 { found = 1 } END { exit !found }' <<<"$pressed"
+}
+
+case_name="proposals.sh Debug with SVETT_DEVICE_CMD"
+run_proposals "$root/proposals"
+[[ "$proposals_status" == 0 ]] || fail "proposals.sh failed"
+check "proposals.sh copies the fixture and the three proposal stand-ins into the app's data container" \
+  test "$(cat "$documents/svett-fixture.db")" == "fake fixture" -a \
+  -s "$documents/coach-propose-routine.json" -a -s "$documents/coach-propose-program.json" -a \
+  -s "$documents/coach-propose-malformed.json"
+check "proposals.sh relaunches on each stand-in signed in, asks by link, and checks the Train tab around Apply and Undo" \
+  only_open \
+  "$debug_open $(stub_args routine)" "$routine_ask" "$to_train" "$to_coach" "$to_train" "$to_coach" "$to_train" \
+  "$debug_open $(stub_args program)" "$program_ask" "$to_train" "$to_coach" "$to_train" "$to_coach" "$to_train" \
+  "$debug_open $(stub_args malformed)" "$malformed_ask"
+check "proposals.sh presses Apply and Undo in the header, and the cards, at their centres" \
+  only_calls "get attrs role=\"button\" label=\"(Apply|Undo|Preview)" \
+  'get attrs role="button" label="Preview Upper body strength"' 'get attrs role="button" label="Preview Upper body strength"' \
+  'get attrs role="button" label="Apply"' 'get attrs role="button" label="Apply"' \
+  'get attrs role="button" label="Preview Upper body strength"' 'get attrs role="button" label="Preview Upper body strength"' \
+  'get attrs role="button" label="Undo"' 'get attrs role="button" label="Undo"' \
+  'get attrs role="button" label="Preview Coach 3-day split"' 'get attrs role="button" label="Preview Coach 3-day split"' \
+  'get attrs role="button" label="Apply"' 'get attrs role="button" label="Apply"' \
+  'get attrs role="button" label="Preview Coach 3-day split"' 'get attrs role="button" label="Preview Coach 3-day split"' \
+  'get attrs role="button" label="Undo"' 'get attrs role="button" label="Undo"'
+check "proposals.sh reaches the routine on the Train tab by scrolling" \
+  bound_got "$bound_prefix scroll down --until $upper_row"
+check "proposals.sh looks for the routine on the Train tab before Apply, after Apply and after Undo" \
+  only_calls "is visible id=\"routine-row\" label=\"Upper" \
+  "is visible $upper_row" "is visible $upper_row" "is visible $upper_row"
+check "proposals.sh checks the malformed routine's refusal and that no card shows for it" \
+  only_calls "get text id=\"coach-proposal-error\"|is visible role=\"button\" label=\"Preview Leg day\"" \
+  'get text id="coach-proposal-error"' 'is visible role="button" label="Preview Leg day"'
+check "proposals.sh presses only above the home indicator" presses_clear_of_the_edge
+check "proposals.sh shoots at the largest text size, then restores the default" \
+  only_calls "settings text-size" \
+  "settings text-size accessibility-extra-extra-extra-large" "settings text-size large"
+check "proposals.sh screenshots each step" \
+  only_calls "screenshot" \
+  "screenshot $root/proposals/01-routine-answer.png" "screenshot $root/proposals/02-routine-preview.png" \
+  "screenshot $root/proposals/03-routine-preview-end.png" "screenshot $root/proposals/04-routine-applied.png" \
+  "screenshot $root/proposals/05-routine-on-train.png" "screenshot $root/proposals/06-routine-undone.png" \
+  "screenshot $root/proposals/07-routine-gone.png" "screenshot $root/proposals/08-program-answer.png" \
+  "screenshot $root/proposals/09-program-preview.png" "screenshot $root/proposals/10-program-preview-end.png" \
+  "screenshot $root/proposals/11-program-on-train.png" "screenshot $root/proposals/12-program-gone.png" \
+  "screenshot $root/proposals/13-malformed.png"
+check "proposals.sh with SVETT_DEVICE_CMD calls neither simctl launch nor openurl" no_simctl_launch_or_openurl
+
+case_name="proposals.sh Release with SVETT_DEVICE_CMD"
+run_proposals --release "$root/proposals-release"
+[[ "$proposals_status" == 0 ]] || fail "proposals.sh --release failed"
+check "proposals.sh Release relaunches the installed app without Metro" \
+  bound_got "$bound_prefix open com.kron00.svett --relaunch $(stub_args routine)"
+
+case_name="proposals.sh when the routine is on the Train tab before Apply"
+run_proposals FAKE_TRAIN_EARLY=1 "$root/proposals-early"
+check "proposals.sh fails when a proposal shows on the Train tab before Apply" test "$proposals_status" -ne 0
+check "proposals.sh says the routine was listed before Apply" \
+  grep -qF 'The Train tab lists "Upper body strength" before Apply.' "$output"
+check "proposals.sh restores the default text size after a failure" \
+  only_calls "settings text-size" \
+  "settings text-size accessibility-extra-extra-extra-large" "settings text-size large"
+
+case_name="proposals.sh when Undo leaves the routine on the Train tab"
+run_proposals FAKE_UNDO_KEEPS=1 "$root/proposals-kept"
+check "proposals.sh fails when Undo leaves the routine" test "$proposals_status" -ne 0
+check "proposals.sh says the routine is still listed after Undo" \
+  grep -qF 'The Train tab still lists "Upper body strength" after Undo.' "$output"
+
+case_name="proposals.sh when the malformed routine shows no refusal"
+run_proposals FAKE_NO_REFUSAL=1 "$root/proposals-silent"
+check "proposals.sh fails without the refusal" test "$proposals_status" -ne 0
+check "proposals.sh says the answer to the malformed routine never ended in a refusal" \
+  grep -qF 'The coach'"'"'s answer to "Plan a leg day for me" did not show.' "$output"
+
+case_name="proposals.sh when the malformed routine shows a card"
+run_proposals FAKE_LEG_CARD=1 "$root/proposals-leg-card"
+check "proposals.sh fails when a card shows for the malformed routine" test "$proposals_status" -ne 0
+check "proposals.sh says the malformed routine got a card" \
+  grep -qF 'The chat shows a card for the malformed "Leg day".' "$output"
+
+case_name="proposals.sh when the card sits at the bottom edge"
+run_proposals FAKE_CARD_LOW=1 "$root/proposals-low"
+[[ "$proposals_status" == 0 ]] || fail "proposals.sh failed with the card at the bottom edge"
+check "proposals.sh drags the card up before it presses it" \
+  bound_got "$bound_prefix gesture pan 20 600 0 -300 400"
+check "proposals.sh presses the card only once it is clear of the bottom edge" presses_clear_of_the_edge
+
+case_name="proposals.sh when an element glides after a scroll"
+run_proposals FAKE_GLIDE=1 "$root/proposals-glide"
+[[ "$proposals_status" == 0 ]] || fail "proposals.sh failed while elements glide"
+check "proposals.sh waits until two reads of the frame agree, then presses where it settled" \
+  test "$(grep -cE "^$bound_prefix press 220 600$" "$root/bound-calls")" -eq 8 -a \
+  "$(grep -cE "^$bound_prefix press " "$root/bound-calls")" -eq 8
 
 
 # Stands in for the bound command on Record and the saved activity. It tracks what

@@ -31,6 +31,7 @@ import {
 } from "../transfer.ts";
 import { type ActivityDraft, ActivityRepository } from "./activities.ts";
 import { ExerciseAliasRepository, ExerciseRepository } from "./exercises.ts";
+import { GearRepository } from "./gear.ts";
 import { MADE_HERE, type Origin } from "./origin.ts";
 import {
   CoachMessageRepository,
@@ -263,6 +264,10 @@ const fillEveryTable = async (database: Database) => {
         measuredAt: EpochMillis.make(T0 - 3_600_000),
         value: 81.4,
         origin: MADE_HERE,
+      });
+      yield* (yield* GearRepository).save("kg", {
+        plates: [{ weight: 20, pairs: 3 }],
+        bars: [{ name: "Safety squat bar", weight: 30 }],
       });
       const messageId = yield* coach.append({
         conversationId: ConversationId.make("01900000-0000-7000-8000-000000000001"),
@@ -705,27 +710,30 @@ describe("TransferRepository", () => {
     expect(everyRow(fresh, batch)).toEqual(allRows(upgraded));
   });
 
-  it.each([1, 2, 3])("imports a route from a version %i file as one stretch", async (version) => {
-    const original = openTestDatabase(1);
-    await original.runtime.runPromise(
-      Effect.flatMap(Effect.service(ActivityRepository), (activities) =>
-        activities.create(routeRun("Morning run", [0, 0, 0])),
-      ),
-    );
-    const { text } = await transfer(original, (repository) => repository.exportFile);
-    const file = Result.getOrThrow(decodeSvettFile(asVersionBeforeSegments(text, version)));
-    expect(file.version).toBe(version);
+  it.each([1, 2, 3, 4, 5])(
+    "imports a route from a version %i file as one stretch",
+    async (version) => {
+      const original = openTestDatabase(1);
+      await original.runtime.runPromise(
+        Effect.flatMap(Effect.service(ActivityRepository), (activities) =>
+          activities.create(routeRun("Morning run", [0, 0, 0])),
+        ),
+      );
+      const { text } = await transfer(original, (repository) => repository.exportFile);
+      const file = Result.getOrThrow(decodeSvettFile(asVersionBeforeSegments(text, version)));
+      expect(file.version).toBe(version);
 
-    const wiped = openTestDatabase(2);
-    const imported = await transfer(wiped, (repository) => repository.applyImport(file, []));
-    const batch = Option.getOrThrow(imported).importBatchId;
-    expect(everyRow(wiped, batch)).toEqual(allRows(original));
-    // The same file again finds nothing new or changed.
-    const again = await transfer(wiped, (repository) => repository.previewImport(file));
-    expect({ added: again.added, changed: again.changed }).toEqual({ added: [], changed: [] });
-  });
+      const wiped = openTestDatabase(2);
+      const imported = await transfer(wiped, (repository) => repository.applyImport(file, []));
+      const batch = Option.getOrThrow(imported).importBatchId;
+      expect(everyRow(wiped, batch)).toEqual(allRows(original));
+      // The same file again finds nothing new or changed.
+      const again = await transfer(wiped, (repository) => repository.previewImport(file));
+      expect({ added: again.added, changed: again.changed }).toEqual({ added: [], changed: [] });
+    },
+  );
 
-  it("writes version 4 and keeps each location sample's stretch through export and import", async () => {
+  it("writes version 6 and keeps each location sample's stretch through export and import", async () => {
     const original = openTestDatabase(1);
     await original.runtime.runPromise(
       Effect.flatMap(Effect.service(ActivityRepository), (activities) =>
@@ -733,7 +741,7 @@ describe("TransferRepository", () => {
       ),
     );
     const { text } = await transfer(original, (repository) => repository.exportFile);
-    expect(JSON.parse(text).version).toBe(4);
+    expect(JSON.parse(text).version).toBe(6);
     const file = Result.getOrThrow(decodeSvettFile(text));
 
     const wiped = openTestDatabase(2);

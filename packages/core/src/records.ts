@@ -2,11 +2,18 @@ import { DurationSeconds, formatDuration } from "./duration.ts";
 import {
   groupByWorkout,
   isWorkingSet,
+  isLiftedSet,
   loadsBodyWeight,
   type PerformedSet,
 } from "./performed-set.ts";
 import type { ActivityId, ActivitySetId, EpochMillis, ExerciseId } from "./schema.ts";
 import { formatWeightKg } from "./set-format.ts";
+import {
+  formatWeightNumber,
+  formatWeightWithUnit,
+  type WeightUnit,
+  weightIn,
+} from "./weight-unit.ts";
 
 export const RECORD_KINDS = [
   "best_one_rep_max",
@@ -34,9 +41,6 @@ export interface RecordRule {
 // Rounding to hundredths keeps 100 × (1 + 3 ÷ 30) = 110.00000000000001 from beating 110.
 const hundredths = (value: number) => Math.round(value * 100) / 100;
 
-const lifted = (set: SetValues) =>
-  set.weightKg !== null && set.weightKg > 0 && set.reps !== null && set.reps >= 1;
-
 const ONE_REP_MAX_MAX_REPS = 12;
 
 const ADDED_WEIGHT = "On a bodyweight exercise it counts only the added weight.";
@@ -57,7 +61,7 @@ export const RECORD_RULES: Readonly<Record<RecordKind, RecordRule>> = {
     unit: "kg",
     rule: "Weight × (1 + reps ÷ 30), Epley's formula, from sets of 1 to 12 reps. A single counts as its weight. Bodyweight exercises have none, because svett does not know your body weight at each set.",
     valueOf: (set) =>
-      lifted(set) && !loadsBodyWeight(set)
+      isLiftedSet(set) && !loadsBodyWeight(set)
         ? estimatedOneRepMax(set.weightKg ?? 0, set.reps ?? 0)
         : null,
   },
@@ -65,13 +69,13 @@ export const RECORD_RULES: Readonly<Record<RecordKind, RecordRule>> = {
     label: "Heaviest weight",
     unit: "kg",
     rule: `The most weight in one set of at least one rep. ${ADDED_WEIGHT}`,
-    valueOf: (set) => (lifted(set) ? set.weightKg : null),
+    valueOf: (set) => (isLiftedSet(set) ? set.weightKg : null),
   },
   best_set_volume: {
     label: "Best set volume",
     unit: "kg",
     rule: `Weight × reps in one set. ${ADDED_WEIGHT}`,
-    valueOf: (set) => (lifted(set) ? hundredths((set.weightKg ?? 0) * (set.reps ?? 0)) : null),
+    valueOf: (set) => (isLiftedSet(set) ? hundredths((set.weightKg ?? 0) * (set.reps ?? 0)) : null),
   },
   most_reps: {
     label: "Most reps",
@@ -100,18 +104,37 @@ export const RECORD_RULES: Readonly<Record<RecordKind, RecordRule>> = {
 export const RECORDS_RULE =
   "Warm-up sets never count. A workout's best set sets a record when it beats every earlier workout with that exercise. A tie is not a record. The first workout with an exercise sets the starting point.";
 
-export const formatRecordValue = (unit: RecordUnit, value: number): string => {
+/** A value as the app shows it: a weight in `weightUnit`, any other unit as it is. */
+export const recordValueIn = (unit: RecordUnit, value: number, weightUnit: WeightUnit): number =>
+  unit === "kg" ? weightIn(value, weightUnit) : value;
+
+/** A value already in the unit the app shows, such as a chart point or tick from recordValueIn. */
+export const formatShownRecordValue = (
+  unit: RecordUnit,
+  shown: number,
+  weightUnit: WeightUnit,
+): string => {
   switch (unit) {
     case "kg":
-      return `${formatWeightKg(value)} kg`;
+      return `${formatWeightNumber(shown)} ${weightUnit}`;
     case "reps":
-      return `${value} ${value === 1 ? "rep" : "reps"}`;
+      return `${shown} ${shown === 1 ? "rep" : "reps"}`;
     case "duration":
-      return formatDuration(DurationSeconds.make(value));
+      return formatDuration(DurationSeconds.make(shown));
     case "metres":
-      return value >= 1000 ? `${formatWeightKg(value / 1000)} km` : `${formatWeightKg(value)} m`;
+      return shown >= 1000 ? `${formatWeightKg(shown / 1000)} km` : `${formatWeightKg(shown)} m`;
   }
 };
+
+/** A stored value, weights in kilograms, as the app shows it, such as "225 lb" or "12 reps". */
+export const formatRecordValue = (
+  unit: RecordUnit,
+  value: number,
+  weightUnit: WeightUnit,
+): string =>
+  unit === "kg"
+    ? formatWeightWithUnit(value, weightUnit)
+    : formatShownRecordValue(unit, value, weightUnit);
 
 /** The best value an exercise has reached for one kind of record, and the set that reached it first. */
 export interface PersonalBest {

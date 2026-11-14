@@ -7,6 +7,7 @@ import { StatusBar } from "expo-status-bar";
 import { ActivityScreen } from "./cardio/ActivityScreen";
 import { RecordScreen } from "./cardio/RecordScreen";
 import { ChatGPTScreen } from "./chatgpt/ChatGPTScreen";
+import { ProposalScreen } from "./coach/ProposalScreen";
 import { PhoneChecksScreen } from "./checks/PhoneChecksScreen";
 import { markLaunchOnNextFrame } from "./data/launch-timing";
 import { useNavigationTheme } from "./design/hooks";
@@ -30,13 +31,20 @@ import { TabNavigator } from "./TabNavigator";
 import { DataScreen } from "./transfer/DataScreen";
 import { ImportPreviewScreen } from "./transfer/ImportPreviewScreen";
 import { UndoImportScreen } from "./transfer/UndoImportScreen";
-import { reloadWorkout } from "./workout/store";
+import { restoreRestTimer } from "./workout/rest";
+import { currentWorkout, reloadWorkout, workoutState } from "./workout/store";
+import { PlatesScreen } from "./tools/PlatesScreen";
+import { WarmUpScreen } from "./tools/WarmUpScreen";
+import { WorkoutSettingsScreen } from "./tools/WorkoutSettingsScreen";
 import { WorkoutScreen as ActiveWorkoutScreen } from "./workout/WorkoutScreen";
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
 
-// A workout left in progress, even by an app that was killed, shows above the tabs at launch.
-void reloadWorkout();
+// A workout left in progress, even by an app that was killed, shows above the tabs at launch,
+// with the rest that was running. A workout that could not be read leaves the rest as kept.
+void reloadWorkout().then(() => {
+  if (workoutState().status === "ready") void restoreRestTimer(currentWorkout());
+});
 
 export default function App() {
   return (
@@ -72,6 +80,11 @@ export default function App() {
           name="ChatGPT"
           component={ChatGPTScreen}
           options={{ headerShown: true, title: "ChatGPT" }}
+        />
+        <Stack.Screen
+          name="Proposal"
+          component={ProposalScreen}
+          options={{ headerShown: true, title: "Coach proposal" }}
         />
         <Stack.Screen
           name="Exercises"
@@ -143,6 +156,21 @@ export default function App() {
           name="ReplaceWorkoutExercise"
           component={ExerciseLibraryScreen}
           options={{ headerShown: true, title: "Replace exercise", headerLargeTitle: true }}
+        />
+        <Stack.Screen
+          name="WarmUp"
+          component={WarmUpScreen}
+          options={{ headerShown: true, title: "Warm-up sets", headerLargeTitle: true }}
+        />
+        <Stack.Screen
+          name="Plates"
+          component={PlatesScreen}
+          options={{ headerShown: true, title: "Plate calculator", headerLargeTitle: true }}
+        />
+        <Stack.Screen
+          name="WorkoutSettings"
+          component={WorkoutSettingsScreen}
+          options={{ headerShown: true, title: "Units and plates", headerLargeTitle: true }}
         />
         <Stack.Screen
           name="PhoneChecks"

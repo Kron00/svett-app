@@ -4,6 +4,7 @@ import { Ids } from "./ids.ts";
 import { migrate } from "./migrations.ts";
 import { ActivityRepository } from "./repositories/activities.ts";
 import { ExerciseAliasRepository, ExerciseRepository } from "./repositories/exercises.ts";
+import { GearRepository } from "./repositories/gear.ts";
 import { ProgressRepository } from "./repositories/progress.ts";
 import { HistoryRepository } from "./repositories/history.ts";
 import {
@@ -13,6 +14,7 @@ import {
   ProposalRepository,
 } from "./repositories/records.ts";
 import { RoutineRepository } from "./repositories/routines.ts";
+import { TrainingReads } from "./repositories/training.ts";
 import { TransferRepository } from "./repositories/transfer.ts";
 import { Sql, type SqlDriver } from "./sql.ts";
 
@@ -43,6 +45,8 @@ export const Repositories = Layer.mergeAll(
   ProgressRepository.layer,
   HistoryRepository.layer,
   TransferRepository.layer,
+  GearRepository.layer,
+  TrainingReads.layer,
 );
 
 /** The steps of opening a database that the app times at launch. */

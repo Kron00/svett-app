@@ -193,7 +193,7 @@ describe("migrate", () => {
 
   it("puts every location sample saved before routes had stretches into the first one", async () => {
     const { database, run } = open();
-    await run(migrate(MIGRATIONS.slice(0, 5)));
+    await run(migrate(MIGRATIONS.slice(0, 7)));
     database.exec(
       `INSERT INTO activity_sample (id, updated_at, deleted_at, activity_track_id, recorded_at, kind, latitude, longitude)
        VALUES ('l', 1, NULL, 't', 1, 'location', 59.3, 18.0), ('s', 1, NULL, 't', 2, 'split', NULL, NULL)`,

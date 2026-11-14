@@ -30,7 +30,7 @@ afterEach(() => {
 });
 
 /** A database file holding a routine and a workout logged through the repositories. */
-const loggedDatabase = async (finishIt: boolean) => {
+const loggedDatabase = async (finishIt: boolean, superset = false) => {
   folder = mkdtempSync(join(tmpdir(), "svett-workout-rows-"));
   const path = join(folder, "svett.db");
   const { database, driver } = openNodeDatabase(path);
@@ -79,6 +79,12 @@ const loggedDatabase = async (finishIt: boolean) => {
         durationS: DurationSeconds.make(60),
         done: true,
       });
+      if (superset) {
+        yield* activities.groupExercises(
+          log.exercises.map((exercise) => ({ id: exercise.row.id, supersetGroup: 0 })),
+        );
+        yield* activities.updateSet(first!.id, { rpe: 8.5 });
+      }
       if (finishIt) yield* activities.finishWorkout(id);
       return created;
     }),
@@ -121,5 +127,18 @@ describe("workout-rows", () => {
       "Set 2.1: normal, 60 s, done",
     ]);
     expect(workoutRows(path, "Morning workout")).toBeNull();
+  });
+
+  it("reads each exercise's superset and each set's RPE", async () => {
+    const { path } = await loggedDatabase(true, true);
+    expect(workoutRows(path, "Evening workout")).toEqual([
+      "Evening workout: finished",
+      "Notes: Felt strong",
+      "Workouts in progress: 0",
+      "Exercise 1: Barbell Squat, by weight_reps, superset 0",
+      "Set 1.1: normal, 100 kg, 5 reps, RPE 8.5, done",
+      "Exercise 2: Plank, by time, superset 0, notes: Hold",
+      "Set 2.1: normal, 60 s, done",
+    ]);
   });
 });

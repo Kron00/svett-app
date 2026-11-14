@@ -1,12 +1,18 @@
 import type { SetType } from "./schema.ts";
+import { formatWeight, type WeightUnit } from "./weight-unit.ts";
 
 /** Rounds to at most two decimals and drops trailing zeros, so 82.50 reads "82.5". */
 export const formatWeightKg = (kg: number): string => String(Math.round(kg * 100) / 100);
 
 /** A set's weight and reps as the logger's previous column shows them, or null when it has neither. */
-export const formatSetLoad = (weightKg: number | null, reps: number | null): string | null => {
-  if (weightKg !== null && reps !== null) return `${formatWeightKg(weightKg)} kg × ${reps}`;
-  if (weightKg !== null) return `${formatWeightKg(weightKg)} kg`;
+export const formatSetLoad = (
+  weightKg: number | null,
+  reps: number | null,
+  unit: WeightUnit = "kg",
+): string | null => {
+  if (weightKg !== null && reps !== null)
+    return `${formatWeight(weightKg, unit)} ${unit} × ${reps}`;
+  if (weightKg !== null) return `${formatWeight(weightKg, unit)} ${unit}`;
   if (reps !== null) return `${reps} ${reps === 1 ? "rep" : "reps"}`;
   return null;
 };

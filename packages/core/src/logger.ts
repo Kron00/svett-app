@@ -8,7 +8,7 @@ import {
 } from "./number-entry.ts";
 import type { PlannedSet } from "./repositories/activities.ts";
 import type { ActivitySet, Exercise, SetFields, SetType } from "./schema.ts";
-import { formatWeightKg } from "./set-format.ts";
+import { formatWeight, kgFromText, WEIGHT_ENTRY, type WeightUnit } from "./weight-unit.ts";
 
 /** One value a set records. */
 export type SetColumn = "weight" | "reps" | "time" | "distance";
@@ -68,6 +68,17 @@ export const COLUMN_ENTRY: Readonly<Record<SetColumn, NumberEntryLimits>> = {
   distance: DISTANCE_M_ENTRY,
 };
 
+/** The column title and unit after a value in the user's weight unit, such as "LB" and "lb". */
+export const columnTitle = (column: SetColumn, unit: WeightUnit): string =>
+  column === "weight" ? unit.toUpperCase() : SET_COLUMN[column].title;
+
+export const columnUnit = (column: SetColumn, unit: WeightUnit): string =>
+  column === "weight" ? unit : SET_COLUMN[column].unit;
+
+/** How a column is typed, with weights in the user's unit. */
+export const columnEntry = (column: SetColumn, unit: WeightUnit): NumberEntryLimits =>
+  column === "weight" ? WEIGHT_ENTRY[unit] : COLUMN_ENTRY[column];
+
 type SetValues = Pick<ActivitySet, "weightKg" | "reps" | "durationS" | "distanceM">;
 
 const COLUMN_KEY = {
@@ -110,25 +121,42 @@ export const formatTimeDigits = (digits: string): string => {
 const timeDigits = (seconds: number): string =>
   formatDuration(DurationSeconds.make(seconds)).replaceAll(":", "").replace(/^0+/, "");
 
-/** The text a field holds when the keypad opens on a stored value. */
-export const entryText = (column: SetColumn, value: number | null): string => {
+/** The text a field holds when the keypad opens on a stored value. Weights read in `unit`. */
+export const entryText = (
+  column: SetColumn,
+  value: number | null,
+  unit: WeightUnit = "kg",
+): string => {
   if (value === null) return "";
   if (column === "time") return timeDigits(value);
-  if (column === "weight") return formatWeightKg(value);
+  if (column === "weight") return formatWeight(value, unit);
   return String(value);
 };
 
 /** A stored value as a field shows it while the keypad is closed. */
-export const columnText = (column: SetColumn, value: number | null): string => {
+export const columnText = (
+  column: SetColumn,
+  value: number | null,
+  unit: WeightUnit = "kg",
+): string => {
   if (value === null) return "";
   if (column === "time") return formatDuration(DurationSeconds.make(value));
-  if (column === "weight") return formatWeightKg(value);
+  if (column === "weight") return formatWeight(value, unit);
   return String(value);
 };
 
-/** The value a field's text stands for, or null while it is empty. */
-export const entryValue = (column: SetColumn, text: string): number | null => {
+/**
+ * The value to store for a field's text, or null while it is empty. A weight is typed in
+ * `unit` and stored in kilograms, and text that still reads as `stored` keeps it exactly.
+ */
+export const entryValue = (
+  column: SetColumn,
+  text: string,
+  unit: WeightUnit = "kg",
+  stored: number | null = null,
+): number | null => {
   if (column === "time") return secondsFromTimeDigits(text);
+  if (column === "weight") return kgFromText(text, stored, unit);
   const value = Number.parseFloat(text);
   return Number.isFinite(value) ? value : null;
 };
@@ -142,7 +170,8 @@ export const typeIntoField = (
   text: string,
   key: KeypadKey,
   fresh: boolean,
-): string => editNumberEntry(fresh && key !== "delete" ? "" : text, key, COLUMN_ENTRY[column]);
+  unit: WeightUnit = "kg",
+): string => editNumberEntry(fresh && key !== "delete" ? "" : text, key, columnEntry(column, unit));
 
 type SetPresence = { readonly [K in keyof SetValues]: number | null };
 
@@ -214,13 +243,17 @@ const repsText = (reps: number) => `${reps} ${reps === 1 ? "rep" : "reps"}`;
  * A set's values in the fields it records, such as "60 kg × 8" or "500 m in 2:00", or null
  * when it holds none of them.
  */
-export const setValuesText = (set: SetValues, fields: SetFields): SetText | null => {
+export const setValuesText = (
+  set: SetValues,
+  fields: SetFields,
+  unit: WeightUnit = "kg",
+): SetText | null => {
   const parts = SET_FIELD_COLUMNS[fields].flatMap((column): Array<SetText> => {
     const value = columnValue(set, column);
     if (value === null) return [];
     switch (column) {
       case "weight": {
-        const weight = `${formatWeightKg(value)} kg`;
+        const weight = `${formatWeight(value, unit)} ${unit}`;
         return [{ text: weight, label: weight }];
       }
       case "reps":
@@ -260,9 +293,10 @@ export const placeholderFor = (
   set: Pick<ActivitySet, "targetRepsMin" | "targetRepsMax">,
   column: SetColumn,
   previous: SetValues | null,
+  unit: WeightUnit = "kg",
 ): Placeholder | null => {
   const last = previous === null ? null : columnValue(previous, column);
-  if (last !== null) return { text: columnText(column, last), value: last };
+  if (last !== null) return { text: columnText(column, last, unit), value: last };
   if (column !== "reps") return null;
   const { targetRepsMin: min, targetRepsMax: max } = set;
   if (min !== null && max !== null && min !== max) return { text: `${min}-${max}`, value: null };

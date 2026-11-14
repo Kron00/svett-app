@@ -1,15 +1,26 @@
-import { databaseLayer, Ids, libraryExerciseId } from "@svett/core";
+import { databaseLayer, Ids, libraryExerciseId, type MeasurementRepository } from "@svett/core";
 import { buildFixture, manualClock, openNodeDatabase } from "@svett/core/node";
 import { Layer, ManagedRuntime } from "effect";
 import type { ReactElement, ReactNode } from "react";
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
-import { afterAll, beforeAll, describe, expect, it, vi } from "vite-plus/test";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vite-plus/test";
 
+import { changeWorkoutSettings } from "../settings/store";
 import { Chart } from "../ui/Chart";
 import { ExerciseProgressScreen } from "./ExerciseProgressScreen";
 import { MeasurementsScreen } from "./MeasurementsScreen";
 import { MuscleSetsScreen } from "./MuscleSetsScreen";
 import { ProgressScreen } from "./ProgressScreen";
+import { measurements } from "./queries";
 
 const app = vi.hoisted(() => ({
   runtime: undefined as unknown,
@@ -22,6 +33,7 @@ vi.mock("react-native", () => ({
   AppState: { addEventListener: () => ({ remove: () => {} }) },
   Pressable: "Pressable",
   ScrollView: "ScrollView",
+  Settings: { get: () => undefined, set: () => undefined },
   Switch: "Switch",
   Text: "Text",
   View: "View",
@@ -280,5 +292,62 @@ describe("Progress screens with the 300-workout fixture", () => {
       "showing the new weight",
     );
     expect(chartIn(root, "chart-measurement").props.points).toHaveLength(before + 1);
+  });
+});
+
+describe("Progress screens in pounds", () => {
+  beforeEach(() => changeWorkoutSettings((settings) => ({ ...settings, unit: "lb" })));
+  afterEach(() => changeWorkoutSettings((settings) => ({ ...settings, unit: "kg" })));
+
+  it("shows the recent records in pounds", async () => {
+    const root = await show(<ProgressScreen />, "recent-record");
+    await until(() => root.findAll(byTestID("recent-record")).length === 5, "listing records");
+    const values = texts(root).filter((text) => /^[\d.]+ (kg|lb)$/.test(text));
+    expect(values.length).toBeGreaterThan(0);
+    expect(values.filter((value) => value.endsWith("kg"))).toEqual([]);
+  });
+
+  it("charts bench press and lists its records in pounds", async () => {
+    const root = await show(<ExerciseProgressScreen />, "exercise-progress", {
+      exerciseId: BENCH,
+      range: "all",
+    });
+    const heaviest = chartIn(root, "chart-heaviest_weight").props;
+    // 70 kg and 90 kg, the fixture's first and last bench press.
+    expect(heaviest.points[0].value).toBeCloseTo(154.32, 2);
+    expect(heaviest.points[99].value).toBeCloseTo(198.42, 2);
+    expect(heaviest.accessibilityLabel).toMatch(/to 198\.42 lb/);
+    const all = texts(root);
+    expect(all).toContain("198.42 lb");
+    expect(all.filter((text) => text.endsWith(" kg"))).toEqual([]);
+  });
+
+  it("charts body weight in pounds and saves a weight typed in pounds as kilograms", async () => {
+    const root = await show(<MeasurementsScreen />, "measurements", {
+      kind: "body_weight",
+      range: "all",
+      sheet: "open",
+    });
+    expect(texts(root.find(byTestID("measurement-range")))).toEqual(["From 45 to 881 lb."]);
+    const keypad = root
+      .find(byTestID("measurement-sheet"))
+      .find((node) => typeof node.props.onKey === "function");
+    await act(async () => {
+      for (const key of ["1", "7", "5"]) keypad.props.onKey(key);
+    });
+    await act(async () => {
+      root
+        .find(
+          (node) => node.props.testID === "save-measurement" && String(node.type) === "Pressable",
+        )
+        .props.onPress();
+    });
+    await until(() => texts(root).includes("175 lb"), "showing the new weight");
+    const points = chartIn(root, "chart-measurement").props.points;
+    expect(points[points.length - 1].value).toBeCloseTo(175, 6);
+    const runtime = app.runtime as ManagedRuntime.ManagedRuntime<MeasurementRepository, never>;
+    const { rows } = await runtime.runPromise(measurements);
+    // svett stores kilograms: 175 lb is 79.3787 kg.
+    expect(rows.filter((row) => Math.abs(row.value - 79.37866475) < 1e-6)).toHaveLength(1);
   });
 });

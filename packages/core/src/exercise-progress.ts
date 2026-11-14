@@ -1,6 +1,7 @@
 import { isWorkingSet, groupByWorkout, type PerformedSet } from "./performed-set.ts";
-import { RECORD_RULES, type RecordKind, type RecordUnit } from "./records.ts";
+import { RECORD_RULES, type RecordKind, type RecordUnit, recordValueIn } from "./records.ts";
 import type { SeriesPoint } from "./series.ts";
+import type { WeightUnit } from "./weight-unit.ts";
 
 export const EXERCISE_METRICS = [
   "best_one_rep_max",
@@ -82,6 +83,17 @@ export const exerciseSeries = (
     const value = EXERCISE_METRIC_RULES[metric].summarize(workout.filter(isWorkingSet));
     return value === null ? [] : [{ key: first.activityId, at: first.startedAt, value }];
   });
+
+/**
+ * Points in the unit the app shows, so a chart's line, ticks and summary read in pounds when
+ * weights do. Kilogram values become `weightUnit`, other units stay as they are.
+ */
+export const seriesIn = (
+  points: ReadonlyArray<SeriesPoint>,
+  unit: RecordUnit,
+  weightUnit: WeightUnit,
+): ReadonlyArray<SeriesPoint> =>
+  points.map((point) => ({ ...point, value: recordValueIn(unit, point.value, weightUnit) }));
 
 /** The metrics an exercise's history has values for, in EXERCISE_METRICS order. */
 export const exerciseMetrics = (

@@ -105,6 +105,16 @@ UPDATE activity_exercise SET set_fields = CASE
 END;
 `;
 
+// Exercises logged before the rest timer have no rest time, which the timer reads as off.
+const restTimer = `
+ALTER TABLE activity_exercise ADD COLUMN rest_s REAL;
+`;
+
+// Plates and bars as JSON arrays, one row per weight unit.
+const gear = `
+CREATE TABLE gear (${row}, unit TEXT NOT NULL, plates TEXT NOT NULL, bars TEXT NOT NULL) STRICT;
+`;
+
 // A recorded route is one line per stretch between pauses. Earlier location samples
 // came from one stretch.
 const sampleSegment = `
@@ -119,7 +129,9 @@ export const MIGRATIONS: ReadonlyArray<Migration> = [
   { version: 3, name: "exercise aliases", sql: exerciseAliases },
   { version: 4, name: "workout in progress", sql: workoutInProgress },
   { version: 5, name: "set fields", sql: setFields },
-  { version: 6, name: "sample segment", sql: sampleSegment },
+  { version: 6, name: "rest timer", sql: restTimer },
+  { version: 7, name: "plates and bars", sql: gear },
+  { version: 8, name: "sample segment", sql: sampleSegment },
 ];
 
 export class DatabaseTooNewError extends Data.TaggedError("DatabaseTooNewError")<{

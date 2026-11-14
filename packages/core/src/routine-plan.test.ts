@@ -237,6 +237,7 @@ describe("workoutFromRoutine", () => {
         {
           exerciseId: bench,
           supersetGroup: null,
+          restS: 90,
           notes: "Pause on the chest",
           sets: [
             {
@@ -262,6 +263,7 @@ describe("workoutFromRoutine", () => {
         {
           exerciseId: plank,
           supersetGroup: null,
+          restS: 90,
           notes: "",
           sets: [
             {
@@ -439,5 +441,13 @@ describe("set target entry", () => {
     expect(setTargetFromEntry(setTargetEntry(exact), exact)).toEqual(exact);
     const range = { ...EMPTY_TARGET, repsMin: 8, repsMax: 12 };
     expect(setTargetFromEntry(setTargetEntry(range), range)).toEqual(range);
+  });
+
+  it("types a target in pounds, stores kilograms, and keeps them when saved unchanged", () => {
+    const exact = { ...EMPTY_TARGET, weightKg: 82.5, repsMin: 5, repsMax: 5 };
+    expect(setTargetEntry(exact, "lb").weight).toBe("181.88");
+    expect(setTargetFromEntry(setTargetEntry(exact, "lb"), exact, "lb")).toEqual(exact);
+    const entry = { setType: "normal" as const, weight: "135", repsFrom: "5", repsTo: "" };
+    expect(setTargetFromEntry(entry, EMPTY_TARGET, "lb").weightKg).toBe(135 * 0.45359237);
   });
 });

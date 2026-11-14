@@ -10,7 +10,8 @@ import {
   type SetType,
   setEditFrom,
   setEditPatch,
-  WEIGHT_KG_ENTRY,
+  WEIGHT_ENTRY,
+  type WeightUnit,
   type WorkoutSet,
 } from "@svett/core";
 import { Effect, Option, Schema } from "effect";
@@ -18,6 +19,7 @@ import { useRef, useState } from "react";
 import { ScrollView, View } from "react-native";
 
 import { useQuery, write } from "../data/store";
+import { workoutSettings } from "../settings/store";
 import { useIsAccessibilityTextSize } from "../design/hooks";
 import type { RootStackParamList } from "../navigation";
 import { AppText } from "../ui/AppText";
@@ -29,10 +31,10 @@ import { SegmentedControl } from "../ui/SegmentedControl";
 type Props = NativeStackScreenProps<RootStackParamList, "SetEdit">;
 type Field = "weight" | "reps";
 
-const LIMITS: Readonly<Record<Field, NumberEntryLimits>> = {
-  weight: WEIGHT_KG_ENTRY,
+const limits = (unit: WeightUnit): Readonly<Record<Field, NumberEntryLimits>> => ({
+  weight: WEIGHT_ENTRY[unit],
   reps: REPS_ENTRY,
-};
+});
 
 const SET_TYPES: ReadonlyArray<{ readonly value: SetType; readonly label: string }> = [
   { value: "warm_up", label: "Warm-up" },
@@ -55,7 +57,9 @@ function SetEditor({
   readonly onDone: () => void;
 }) {
   const stacked = useIsAccessibilityTextSize();
-  const [edit, setEdit] = useState(() => setEditFrom(set));
+  // The unit the set opened in, so a switch elsewhere mid-edit never misreads the field.
+  const [unit] = useState(() => workoutSettings().unit);
+  const [edit, setEdit] = useState(() => setEditFrom(set, unit));
   const [field, setField] = useState<Field>("weight");
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -64,7 +68,7 @@ function SetEditor({
 
   const save = () => {
     if (savingNow.current) return;
-    const result = setEditPatch(edit, set);
+    const result = setEditPatch(edit, set, unit);
     if (!result.ok) {
       setError(result.message);
       return;
@@ -82,7 +86,7 @@ function SetEditor({
     });
   };
 
-  const entry = (name: Field, label: string, unit: string) => (
+  const entry = (name: Field, label: string, suffix: string) => (
     <View key={name} className={stacked ? "gap-1" : "flex-1 gap-1"}>
       <AppText variant="footnote" tone="secondary">
         {label}
@@ -90,7 +94,7 @@ function SetEditor({
       <EntryField
         label={label}
         value={edit[name]}
-        unit={unit}
+        unit={suffix}
         focused={field === name}
         onPress={() => setField(name)}
       />
@@ -116,16 +120,16 @@ function SetEditor({
         onSelect={(setType) => setEdit((current) => ({ ...current, setType }))}
       />
       <View className={stacked ? "gap-3" : "flex-row gap-3"}>
-        {entry("weight", "Weight", "kg")}
+        {entry("weight", "Weight", unit)}
         {entry("reps", "Reps", "reps")}
       </View>
       <Keypad
-        limits={LIMITS[field]}
+        limits={limits(unit)[field]}
         onKey={(key) => {
           setError(null);
           setEdit((current) => ({
             ...current,
-            [field]: editNumberEntry(current[field], key, LIMITS[field]),
+            [field]: editNumberEntry(current[field], key, limits(unit)[field]),
           }));
         }}
       />
