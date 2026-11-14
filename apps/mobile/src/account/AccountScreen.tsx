@@ -6,7 +6,7 @@ import {
   moveOfferMessage,
   SIGN_IN_START,
   type SignInEvent,
-  signInProblemMessage,
+  accountProblemMessage,
   type SignInState,
   signInStep,
 } from "@svett/core";
@@ -59,7 +59,7 @@ function SignIn() {
     request.then(
       (problem) => act(problem === undefined ? done : { type: "failed", problem }),
       (error: unknown) =>
-        act({ type: "failed", problem: signInProblemMessage(clerkErrorCode(error)) }),
+        act({ type: "failed", problem: accountProblemMessage(clerkErrorCode(error)) }),
     );
 
   // Applies `event`, and starts the request a step needs when the event starts that step. The

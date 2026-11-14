@@ -93,7 +93,6 @@ vi.mock("../data/current", async () => {
   );
   return {
     appDatabase: () => runtime,
-    databaseVersion: () => 0,
     subscribeDatabase: () => () => undefined,
   };
 });

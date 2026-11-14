@@ -10,7 +10,7 @@ import {
   SIGN_IN_START,
   type SignInEvent,
   type SignInState,
-  signInProblemMessage,
+  accountProblemMessage,
   signInStep,
 } from "./sign-in.ts";
 
@@ -92,7 +92,7 @@ describe("signing in with email", () => {
       { type: "codeSent" },
       { type: "editCode", code: "111111" },
       { type: "checkCode" },
-      { type: "failed", problem: signInProblemMessage("form_code_incorrect") },
+      { type: "failed", problem: accountProblemMessage("form_code_incorrect") },
     );
     expect(state).toEqual({
       step: "code",
@@ -221,10 +221,10 @@ describe("Clerk errors", () => {
   });
 
   it("says what went wrong in plain words", () => {
-    expect(signInProblemMessage("verification_expired")).toBe(
+    expect(accountProblemMessage("verification_expired")).toBe(
       "That code has expired. Go back and send a new one.",
     );
-    expect(signInProblemMessage("something_new")).toBe(
+    expect(accountProblemMessage("something_new")).toBe(
       "The sign-in did not work. Try again in a moment.",
     );
   });

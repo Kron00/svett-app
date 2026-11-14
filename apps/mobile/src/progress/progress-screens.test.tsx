@@ -95,7 +95,6 @@ vi.mock("@react-navigation/native", async () => {
 });
 vi.mock("../data/current", () => ({
   appDatabase: () => app.runtime,
-  databaseVersion: () => 0,
   subscribeDatabase: () => () => undefined,
 }));
 

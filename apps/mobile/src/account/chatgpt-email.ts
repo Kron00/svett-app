@@ -9,8 +9,7 @@ export interface ChatGPTEmail {
 
 const NO_EMAIL = "ChatGPT did not share an email address. Continue with email instead.";
 
-const emailOf = (status: ChatGPTStatus) =>
-  status.state === "signedIn" ? status.email : undefined;
+const emailOf = (status: ChatGPTStatus) => (status.state === "signedIn" ? status.email : undefined);
 
 /**
  * The email address of the ChatGPT account, to fill in for the svett sign-in. It reuses the

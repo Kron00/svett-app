@@ -1,8 +1,8 @@
 import { Cause, type Effect, Exit } from "effect";
 import { useFocusEffect } from "@react-navigation/native";
-import { useCallback, useState, useSyncExternalStore } from "react";
+import { useCallback, useState } from "react";
 
-import { appDatabase, databaseVersion, subscribeDatabase } from "./current";
+import { appDatabase, subscribeDatabase } from "./current";
 import type { AppServices } from "./database";
 
 export type QueryState<A> =
@@ -23,8 +23,6 @@ export function useQuery<A, E>(
   readonly reload: () => void;
 } {
   const [state, setState] = useState<QueryState<A>>({ status: "loading" });
-  // Signing in or out swaps the database, so a screen in view reads the new one.
-  const generation = useSyncExternalStore(subscribeDatabase, databaseVersion);
   const load = useCallback(() => {
     let current = true;
     void appDatabase()
@@ -40,7 +38,20 @@ export function useQuery<A, E>(
     return () => {
       current = false;
     };
-  }, [query, generation]);
-  useFocusEffect(load);
+  }, [query]);
+  useFocusEffect(
+    useCallback(() => {
+      let cancel = load();
+      // Signing in or out swaps the database, so a screen in view reads the new one.
+      const stop = subscribeDatabase(() => {
+        cancel();
+        cancel = load();
+      });
+      return () => {
+        stop();
+        cancel();
+      };
+    }, [load]),
+  );
   return { state, reload: load };
 }

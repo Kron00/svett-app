@@ -133,7 +133,7 @@ export const clerkErrorCode = (error: unknown): string | undefined => {
 export const isNewAccount = (code: string | undefined) => code === "form_identifier_not_found";
 
 /** What to tell the person about a Clerk failure. */
-export const signInProblemMessage = (code: string | undefined): string => {
+export const accountProblemMessage = (code: string | undefined): string => {
   switch (code) {
     case "form_code_incorrect":
       return "That code is not right. Check the email and try again.";

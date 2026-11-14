@@ -123,9 +123,6 @@ export const dataChanged = () => {
 /** The database runtime every screen reads and writes through, the current owner's. */
 export const appDatabase = () => currentDatabase().handle.runtime;
 
-/** Goes up whenever the current database changes as a whole. */
-export const databaseVersion = () => currentDatabase().version;
-
 /** Calls `listener` whenever the current database changes as a whole. */
 export const subscribeDatabase = (listener: () => void) => {
   listeners.add(listener);

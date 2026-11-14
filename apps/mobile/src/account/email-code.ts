@@ -1,8 +1,8 @@
 import { useSignIn, useSignUp } from "@clerk/expo";
-import { clerkErrorCode, isNewAccount, signInProblemMessage } from "@svett/core";
+import { clerkErrorCode, isNewAccount, accountProblemMessage } from "@svett/core";
 import { useRef } from "react";
 
-const problemOf = (error: unknown) => signInProblemMessage(clerkErrorCode(error));
+const problemOf = (error: unknown) => accountProblemMessage(clerkErrorCode(error));
 
 /**
  * Clerk's email code, for a new or a returning account. Each call resolves to a problem to
