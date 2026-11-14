@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { EpochMillis } from "./schema.ts";
+import { EpochMillis, type ImportChange, ImportChangeId } from "./schema.ts";
 import {
   type AnyRow,
   countLabel,
@@ -8,8 +8,10 @@ import {
   importOutcome,
   isNothingToImport,
   planImport,
+  type UndoEntry,
   undoOutcome,
   undoPlanLabel,
+  undoSelection,
 } from "./transfer.ts";
 
 const row = (id: string, fields: Record<string, unknown> = {}, updatedAt = 1): AnyRow => ({
@@ -174,6 +176,12 @@ describe("outcome text", () => {
     expect(undoPlanLabel({ removing: 0, restoring: 0 })).toBe(
       "Undo leaves every record as it is, because you changed each one after the import.",
     );
+    expect(undoPlanLabel({ removing: 1, restoring: 0, keeping: 1 })).toBe(
+      "Undo removes the 1 record this import added. It keeps 1 record that records you keep still use.",
+    );
+    expect(undoPlanLabel({ removing: 0, restoring: 0, keeping: 2 })).toBe(
+      "Undo changes nothing. It keeps 2 records that records you keep still use.",
+    );
   });
 
   it("says what Undo did, and what it left", () => {
@@ -183,5 +191,66 @@ describe("outcome text", () => {
     expect(undoOutcome({ removed: 1, restored: 0, left: 1 })).toBe(
       "Removed 1 record. Left 1 record you changed after the import.",
     );
+    expect(undoOutcome({ removed: 0, restored: 0, left: 1, kept: 1 })).toBe(
+      "Nothing was taken back. Kept 1 record that records you keep still use. Left 1 record you changed after the import.",
+    );
+  });
+});
+
+describe("undoSelection", () => {
+  const id = (n: number) => ImportChangeId.make(`01900000-0000-7000-8000-00000000000${n}`);
+  const entry = (
+    n: number,
+    change: ImportChange["change"],
+    edited: boolean,
+    usedBy: ReadonlyArray<ReadonlyArray<number>> = [],
+  ): UndoEntry => ({
+    change: { id: id(n), change } as ImportChange,
+    edited,
+    usedBy: usedBy.map((removers) => removers.map(id)),
+  });
+  const selected = (entries: ReadonlyArray<UndoEntry>, alsoEdited: ReadonlyArray<number> = []) => {
+    const { undone, ...counts } = undoSelection(entries, alsoEdited.map(id));
+    return { undone: undone.map(({ change }) => change.id), ...counts };
+  };
+
+  it("keeps a record a row outside the import uses", () => {
+    expect(selected([entry(1, "added", false, [[]]), entry(2, "added", false)])).toEqual({
+      undone: [id(2)],
+      removing: 1,
+      restoring: 0,
+      keeping: 1,
+      leaving: 0,
+    });
+  });
+
+  it("keeps a record a left workout uses, and removes it when that workout goes too", () => {
+    const entries = [entry(1, "replaced", false, [[2]]), entry(2, "added", true)];
+    expect(selected(entries)).toMatchObject({ undone: [], keeping: 1, leaving: 1 });
+    expect(selected(entries, [2])).toMatchObject({
+      undone: [id(1), id(2)],
+      removing: 1,
+      restoring: 1,
+      keeping: 0,
+    });
+  });
+
+  it("keeps what a kept record uses in turn", () => {
+    // 3 is an import batch an exercise (2) points at, and a left workout (1) uses the exercise.
+    const entries = [
+      entry(1, "added", true),
+      entry(2, "added", false, [[1]]),
+      entry(3, "added", false, [[2]]),
+    ];
+    expect(selected(entries)).toMatchObject({ undone: [], keeping: 2, leaving: 1 });
+  });
+
+  it("removes a record once every change that removes a row using it is taken back", () => {
+    const entries = [
+      entry(1, "added", false, [[2, 3]]),
+      entry(2, "added", true),
+      entry(3, "added", false),
+    ];
+    expect(selected(entries)).toMatchObject({ undone: [id(1), id(3)], keeping: 0, leaving: 1 });
   });
 });

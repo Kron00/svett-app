@@ -19,8 +19,9 @@ import {
 import { MIGRATIONS, migrate } from "../migrations.ts";
 import { Sql } from "../sql.ts";
 import { decodeSvettFile, type SvettFile } from "../svett-file.ts";
-import { TABLES } from "../table.ts";
+import { columnOf, TABLES } from "../table.ts";
 import { openTestDatabase, T0 } from "../test-database.ts";
+import { PARENT, REFERENCES, TABLE_KEYS, undoSelection } from "../transfer.ts";
 import { type ActivityDraft, ActivityRepository } from "./activities.ts";
 import { ExerciseRepository } from "./exercises.ts";
 import { MADE_HERE, type Origin } from "./origin.ts";
@@ -126,6 +127,58 @@ const workoutNow = (database: Database) => {
     reps: reps?.toSorted(),
   };
 };
+
+/** Live rows that point at a deleted row, through a parent key or a reference. */
+const pointersToDeleted = (database: Database) =>
+  [
+    ...REFERENCES,
+    ...TABLE_KEYS.flatMap((table) => {
+      const parent = PARENT[table];
+      return parent === null ? [] : [{ table, key: parent.key, target: parent.table }];
+    }),
+  ].flatMap(({ table, key, target }) =>
+    database.database
+      .prepare(
+        `SELECT r.id FROM ${TABLES[table].name} r JOIN ${TABLES[target].name} t ON t.id = r.${columnOf(key)} WHERE r.deleted_at IS NULL AND t.deleted_at IS NOT NULL`,
+      )
+      .all()
+      .map((row) => `${TABLES[table].name}/${String(row["id"])}`),
+  );
+
+const liveExercise = (database: Database, name: string) =>
+  database.database
+    .prepare("SELECT deleted_at FROM exercise WHERE name = ?")
+    .all(name)
+    .map((row) => row["deleted_at"]);
+
+/** A file from another phone with a custom exercise and a workout that uses it. */
+const pushDayFile = async () => {
+  const other = openTestDatabase(2);
+  await other.runtime.runPromise(
+    Effect.gen(function* () {
+      const landmine = yield* (yield* ExerciseRepository).create({
+        name: "Landmine press",
+        category: "strength",
+        equipment: "barbell",
+        primaryMuscles: ["shoulders"],
+        secondaryMuscles: ["triceps"],
+        origin: MADE_HERE,
+      });
+      yield* (yield* ActivityRepository).create(workout("Push Day", landmine));
+    }),
+  );
+  const file = await exportFile(other);
+  const landmine = (file.tables.exercise ?? []).find((row) => row["name"] === "Landmine press")!;
+  const pushDay = (file.tables.activity ?? []).find((row) => row["title"] === "Push Day")!;
+  return { file, landmine: landmine.id as ExerciseId, pushDay: pushDay.id };
+};
+
+const editNotes = (database: Database, id: string) =>
+  database.runtime.runPromise(
+    Effect.flatMap(Effect.service(ActivityRepository), (activities) =>
+      activities.update(id as never, { notes: "Felt strong" }),
+    ),
+  );
 
 /** Puts at least one row in every table, the way the app makes them. */
 const fillEveryTable = async (database: Database) => {
@@ -402,6 +455,7 @@ describe("TransferRepository", () => {
       removed: 1,
       restored: 0,
       left: 0,
+      kept: 0,
     });
     expect(liveRows(phone)["activity_set"]).toEqual([]);
   });
@@ -532,7 +586,7 @@ describe("TransferRepository", () => {
       ["Legs", "replaced", false],
     ]);
     const undone = await transfer(phone, (transfers) => transfers.undoImport(importBatchId, []));
-    expect(undone).toEqual({ removed: 1, restored: 1, left: 0 });
+    expect(undone).toEqual({ removed: 1, restored: 1, left: 0, kept: 0 });
 
     // Undo writes the restored rows anew, so only their times differ from before.
     const withoutTimes = (rows: ReturnType<typeof liveRows>) =>
@@ -578,6 +632,7 @@ describe("TransferRepository", () => {
       removed: 1,
       restored: 0,
       left: 1,
+      kept: 0,
     });
     expect(liveTitles(leave)).toEqual(["Chest"]);
 
@@ -627,6 +682,7 @@ describe("TransferRepository", () => {
       removed: 0,
       restored: 0,
       left: 1,
+      kept: 0,
     });
     expect(workoutNow(leave)).toEqual({ notes: ["Felt strong"], reps: [6, 8] });
 
@@ -639,6 +695,7 @@ describe("TransferRepository", () => {
       removed: 0,
       restored: 1,
       left: 0,
+      kept: 0,
     });
     expect(workoutNow(both)).toEqual({ notes: ["Felt strong"], reps: [5, 8] });
   });
@@ -739,5 +796,150 @@ describe("TransferRepository", () => {
     expect(imports.map((batch) => [batch.source, batch.status])).toEqual([
       ["svett_file", "applied"],
     ]);
+  });
+
+  it("keeps an imported exercise that a workout logged after the import uses", async () => {
+    const { file, landmine } = await pushDayFile();
+    const phone = openTestDatabase(1);
+    const imported = await transfer(phone, (transfers) => transfers.applyImport(file, []));
+    const batch = Option.getOrThrow(imported).importBatchId;
+    await phone.runtime.runPromise(
+      Effect.flatMap(Effect.service(ActivityRepository), (activities) =>
+        activities.create(workout("Later push", landmine)),
+      ),
+    );
+
+    const preview = await transfer(phone, (transfers) => transfers.previewUndo(batch));
+    expect(undoSelection(preview.changes, [])).toMatchObject({ removing: 1, keeping: 1 });
+    expect(await transfer(phone, (transfers) => transfers.undoImport(batch, []))).toEqual({
+      removed: 1,
+      restored: 0,
+      left: 0,
+      kept: 1,
+    });
+    expect(liveTitles(phone)).toEqual(["Later push"]);
+    expect(liveExercise(phone, "Landmine press")).toEqual([null]);
+    expect(pointersToDeleted(phone)).toEqual([]);
+  });
+
+  it("keeps an imported exercise that a workout Undo leaves still uses, unless you undo it too", async () => {
+    const { file, pushDay } = await pushDayFile();
+    const importAndEdit = async (database: Database) => {
+      const imported = await transfer(database, (transfers) => transfers.applyImport(file, []));
+      await editNotes(database, pushDay);
+      return Option.getOrThrow(imported).importBatchId;
+    };
+
+    const leave = openTestDatabase(1);
+    const leftBatch = await importAndEdit(leave);
+    expect(await transfer(leave, (transfers) => transfers.undoImport(leftBatch, []))).toEqual({
+      removed: 0,
+      restored: 0,
+      left: 1,
+      kept: 1,
+    });
+    expect(liveTitles(leave)).toEqual(["Push Day"]);
+    expect(liveExercise(leave, "Landmine press")).toEqual([null]);
+    expect(pointersToDeleted(leave)).toEqual([]);
+
+    const both = openTestDatabase(1);
+    const bothBatch = await importAndEdit(both);
+    const preview = await transfer(both, (transfers) => transfers.previewUndo(bothBatch));
+    const edited = preview.changes.filter((entry) => entry.edited).map(({ change }) => change.id);
+    expect(undoSelection(preview.changes, edited)).toMatchObject({ removing: 2, keeping: 0 });
+    expect(await transfer(both, (transfers) => transfers.undoImport(bothBatch, edited))).toEqual({
+      removed: 2,
+      restored: 0,
+      left: 0,
+      kept: 0,
+    });
+    expect(liveTitles(both)).toEqual([]);
+    expect(liveExercise(both, "Landmine press")).toHaveLength(1);
+    expect(liveExercise(both, "Landmine press")).not.toEqual([null]);
+    expect(pointersToDeleted(both)).toEqual([]);
+  });
+
+  it("keeps a re-imported exercise deleted by an earlier Undo when a workout it leaves uses it", async () => {
+    const { file, pushDay } = await pushDayFile();
+    const phone = openTestDatabase(1);
+    const first = await transfer(phone, (transfers) => transfers.applyImport(file, []));
+    await transfer(phone, (transfers) =>
+      transfers.undoImport(Option.getOrThrow(first).importBatchId, []),
+    );
+    const plan = await transfer(phone, (transfers) => transfers.previewImport(file));
+    expect(plan.changed.map((item) => item.title).toSorted()).toEqual([
+      "Landmine press",
+      "Push Day",
+    ]);
+    const second = await transfer(phone, (transfers) =>
+      transfers.applyImport(
+        file,
+        plan.changed.map((item) => item.key),
+      ),
+    );
+    const batch = Option.getOrThrow(second).importBatchId;
+    await editNotes(phone, pushDay);
+
+    expect(await transfer(phone, (transfers) => transfers.undoImport(batch, []))).toEqual({
+      removed: 0,
+      restored: 0,
+      left: 1,
+      kept: 1,
+    });
+    expect(liveTitles(phone)).toEqual(["Push Day"]);
+    expect(liveRows(phone)["activity_set"]).toHaveLength(2);
+    expect(liveExercise(phone, "Landmine press")).toEqual([null]);
+    expect(pointersToDeleted(phone)).toEqual([]);
+  });
+
+  it("keeps an imported folder that a routine made after the import is in", async () => {
+    const other = openTestDatabase(2);
+    await other.runtime.runPromise(
+      Effect.flatMap(Effect.service(RoutineRepository), (routines) =>
+        routines.createFolder({ name: "Strength block", position: 0 }),
+      ),
+    );
+    const file = await exportFile(other);
+    const folderId = (file.tables.folder ?? [])[0]!.id;
+    const phone = openTestDatabase(1);
+    const imported = await transfer(phone, (transfers) => transfers.applyImport(file, []));
+    await phone.runtime.runPromise(
+      Effect.flatMap(Effect.service(RoutineRepository), (routines) =>
+        routines.createRoutine({
+          folderId: folderId as never,
+          title: "Heavy",
+          notes: "",
+          position: 0,
+          exercises: [],
+        }),
+      ),
+    );
+
+    expect(
+      await transfer(phone, (transfers) =>
+        transfers.undoImport(Option.getOrThrow(imported).importBatchId, []),
+      ),
+    ).toEqual({ removed: 0, restored: 0, left: 0, kept: 1 });
+    expect(liveRows(phone)["folder"]).toHaveLength(1);
+    expect(pointersToDeleted(phone)).toEqual([]);
+  });
+
+  it("lists every key that points at another table as a parent or a reference", () => {
+    const listed = new Set([
+      ...REFERENCES.map(({ table, key }) => `${table}.${key}`),
+      ...TABLE_KEYS.flatMap((table) => {
+        const parent = PARENT[table];
+        return parent === null ? [] : [`${table}.${parent.key}`];
+      }),
+    ]);
+    // A source's own ID and a conversation are not rows of any table. An import change names
+    // its record by table and ID, as a journal that outlives the record.
+    const notRows = new Set(["sourceId", "conversationId", "itemId"]);
+    const pointers = TABLE_KEYS.flatMap((table) =>
+      TABLES[table].keys
+        .filter((key) => key.endsWith("Id") && !notRows.has(key))
+        .map((key) => `${table}.${key}`),
+    );
+    expect(pointers.filter((pointer) => !listed.has(pointer))).toEqual([]);
   });
 });

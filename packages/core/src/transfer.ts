@@ -6,6 +6,7 @@ import {
   EpochMillis,
   Fingerprint,
   type ImportChange,
+  type ImportChangeId,
   type ImportSource,
   type MeasurementKind,
 } from "./schema.ts";
@@ -52,6 +53,25 @@ export const PARENT: Readonly<
   proposal: null,
   coachMessage: null,
 };
+
+/**
+ * Keys that point at a row of another record, such as a workout exercise's exercise. Undo
+ * keeps a record that a live row still points at, so no live row is left pointing at a
+ * deleted one.
+ */
+export const REFERENCES: ReadonlyArray<{
+  readonly table: TableKey;
+  readonly key: string;
+  readonly target: TableKey;
+}> = [
+  { table: "activityExercise", key: "exerciseId", target: "exercise" },
+  { table: "routineExercise", key: "exerciseId", target: "exercise" },
+  { table: "routine", key: "folderId", target: "folder" },
+  { table: "proposal", key: "coachMessageId", target: "coachMessage" },
+  { table: "activity", key: "importBatchId", target: "importBatch" },
+  { table: "exercise", key: "importBatchId", target: "importBatch" },
+  { table: "measurement", key: "importBatchId", target: "importBatch" },
+];
 
 export const CHILDREN: Readonly<Record<TableKey, ReadonlyArray<TableKey>>> = Object.fromEntries(
   TABLE_KEYS.map((key) => [key, TABLE_KEYS.filter((child) => PARENT[child]?.table === key)]),
@@ -395,20 +415,80 @@ export const importOutcome = ({
     : `Added ${recordsLabel(added)} and took ${took}.`;
 };
 
+/** One change of an import as Undo sees it. */
+export interface UndoEntry {
+  readonly change: ImportChange;
+  /** True when the record changed after the import. */
+  readonly edited: boolean;
+  /**
+   * One entry per live row that points at this record, such as a workout that uses an
+   * imported exercise. Each lists the changes of this import whose Undo removes that row.
+   * An empty list is a row Undo never removes, such as a workout logged after the import.
+   */
+  readonly usedBy: ReadonlyArray<ReadonlyArray<ImportChangeId>>;
+}
+
+/**
+ * Which changes Undo takes back. A change edited after the import is left, unless it is in
+ * `alsoEdited`. A change whose record a live row still points at after Undo is kept, so no
+ * live row points at a deleted one.
+ */
+export const undoSelection = <A extends UndoEntry>(
+  entries: ReadonlyArray<A>,
+  alsoEdited: ReadonlyArray<ImportChangeId>,
+) => {
+  const left = new Set(
+    entries
+      .filter((entry) => entry.edited && !alsoEdited.includes(entry.change.id))
+      .map((entry) => entry.change.id),
+  );
+  const kept = new Set<ImportChangeId>();
+  const stays = (id: ImportChangeId) => left.has(id) || kept.has(id);
+  // Keeping a record can keep a row that points at another, so this runs until nothing changes.
+  for (let grew = true; grew;) {
+    grew = false;
+    for (const entry of entries) {
+      if (stays(entry.change.id)) continue;
+      if (entry.usedBy.some((removers) => removers.every(stays))) {
+        kept.add(entry.change.id);
+        grew = true;
+      }
+    }
+  }
+  const undone = entries.filter((entry) => !stays(entry.change.id));
+  return {
+    undone,
+    removing: undone.filter((entry) => entry.change.change === "added").length,
+    restoring: undone.filter((entry) => entry.change.change === "replaced").length,
+    keeping: kept.size,
+    leaving: left.size,
+  };
+};
+
+const STILL_USED = "that records you keep still use";
+
 /** What Undo is about to do, from the changes it will take back. */
 export const undoPlanLabel = ({
   removing,
   restoring,
+  keeping = 0,
 }: {
   readonly removing: number;
   readonly restoring: number;
+  readonly keeping?: number;
 }): string => {
+  const keeps = keeping === 0 ? "" : ` It keeps ${recordsLabel(keeping)} ${STILL_USED}.`;
   if (removing === 0 && restoring === 0) {
-    return "Undo leaves every record as it is, because you changed each one after the import.";
+    return keeping === 0
+      ? "Undo leaves every record as it is, because you changed each one after the import."
+      : `Undo changes nothing.${keeps}`;
   }
-  if (restoring === 0) return `Undo removes the ${recordsLabel(removing)} this import added.`;
-  if (removing === 0) return `Undo puts back the ${recordsLabel(restoring)} this import replaced.`;
-  return `Undo removes the ${recordsLabel(removing)} this import added and puts back the ${recordsLabel(restoring)} it replaced.`;
+  if (restoring === 0)
+    return `Undo removes the ${recordsLabel(removing)} this import added.${keeps}`;
+  if (removing === 0) {
+    return `Undo puts back the ${recordsLabel(restoring)} this import replaced.${keeps}`;
+  }
+  return `Undo removes the ${recordsLabel(removing)} this import added and puts back the ${recordsLabel(restoring)} it replaced.${keeps}`;
 };
 
 /** What Undo did. */
@@ -416,10 +496,12 @@ export const undoOutcome = ({
   removed,
   restored,
   left,
+  kept = 0,
 }: {
   readonly removed: number;
   readonly restored: number;
   readonly left: number;
+  readonly kept?: number;
 }): string => {
   const done =
     removed > 0 && restored > 0
@@ -429,5 +511,9 @@ export const undoOutcome = ({
         : restored > 0
           ? `Put back ${recordsLabel(restored)}.`
           : "Nothing was taken back.";
-  return left === 0 ? done : `${done} Left ${recordsLabel(left)} you changed after the import.`;
+  return [
+    done,
+    kept === 0 ? "" : ` Kept ${recordsLabel(kept)} ${STILL_USED}.`,
+    left === 0 ? "" : ` Left ${recordsLabel(left)} you changed after the import.`,
+  ].join("");
 };

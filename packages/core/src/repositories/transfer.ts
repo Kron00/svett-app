@@ -31,11 +31,14 @@ import {
   isLive,
   PARENT,
   planImport,
+  REFERENCES,
   type Snapshot,
   TABLE_KEYS,
   type TableKey,
   type TableRows,
   tableKeyOf,
+  type UndoEntry,
+  undoSelection,
   writtenOf,
 } from "../transfer.ts";
 import { MADE_HERE, rowId } from "./origin.ts";
@@ -54,8 +57,11 @@ export interface ImportResult {
 
 export interface UndoPreview {
   readonly batch: ImportBatch;
-  /** Each record the import added or replaced, and whether it changed after the import. */
-  readonly changes: ReadonlyArray<{ readonly change: ImportChange; readonly edited: boolean }>;
+  /**
+   * Each record the import added or replaced, whether it changed after the import, and the
+   * live rows that point at it. `undoSelection` tells from them what Undo takes back.
+   */
+  readonly changes: ReadonlyArray<UndoEntry>;
 }
 
 export interface UndoResult {
@@ -63,6 +69,8 @@ export interface UndoResult {
   readonly restored: number;
   /** Records changed after the import that Undo left as they are. */
   readonly left: number;
+  /** Records Undo kept because records it keeps still point at them. */
+  readonly kept: number;
 }
 
 const anyTable = (key: TableKey) => TABLES[key] as unknown as Table<AnyRow>;
@@ -243,6 +251,82 @@ const isEdited = (change: ImportChange) =>
     (rows) => writtenOf(rows) !== change.written,
   );
 
+const rowKey = (key: TableKey, id: string) => `${key}/${id}`;
+
+/** What undoing one change writes, and the rows it leaves deleted that are live now. */
+interface UndoStep extends UndoEntry {
+  readonly before: TableRows;
+  readonly added: TableRows;
+  readonly ends: ReadonlySet<string>;
+}
+
+/**
+ * What undoing each change of an import would do. The rows it adds go, with every row
+ * below them, and the versions it replaced come back, deleted ones deleted.
+ */
+const undoSteps = (importBatchId: ImportBatchId) =>
+  Effect.gen(function* () {
+    const steps = yield* Effect.forEach(yield* changesOf(importBatchId), (change) =>
+      Effect.gen(function* () {
+        const edited = yield* isEdited(change);
+        const current = yield* journalRows(change.rowIds);
+        const before = yield* decodeRows(change.replaced ?? {});
+        const kept = new Set(
+          TABLE_KEYS.flatMap((key) => (before[key] ?? []).map((row) => rowKey(key, row.id))),
+        );
+        const added = Object.fromEntries(
+          Object.entries(change.rowIds).flatMap(([name, written]) => {
+            const key = tableKeyOf(name);
+            if (key === undefined) return [];
+            const fresh = new Set<string>(written.filter((id) => !kept.has(rowKey(key, id))));
+            return [[key, (current[key] ?? []).filter((row) => fresh.has(row.id))]];
+          }),
+        ) as TableRows;
+        const ends = new Set<string>();
+        for (const key of TABLE_KEYS) {
+          const parent = PARENT[key];
+          for (const row of current[key] ?? []) {
+            const goes =
+              (added[key] ?? []).some((gone) => gone.id === row.id) ||
+              (parent !== null && ends.has(rowKey(parent.table, String(row[parent.key]))));
+            if (goes) ends.add(rowKey(key, row.id));
+          }
+          for (const row of before[key] ?? []) {
+            if (row.deletedAt !== null) ends.add(rowKey(key, row.id));
+          }
+        }
+        return { change, edited, before, added, ends };
+      }),
+    );
+    const removers = new Map<string, Array<ImportChangeId>>();
+    for (const step of steps) {
+      for (const row of step.ends)
+        removers.set(row, [...(removers.get(row) ?? []), step.change.id]);
+    }
+    return yield* Effect.forEach(steps, (step) =>
+      Effect.gen(function* () {
+        const usedBy = new Map<string, ReadonlyArray<ImportChangeId>>();
+        for (const reference of REFERENCES) {
+          const targets = [...step.ends].flatMap((row) => {
+            const [key, id] = row.split("/") as [TableKey, string];
+            return key === reference.target ? [id] : [];
+          });
+          if (targets.length === 0) continue;
+          const users = yield* selectRows(
+            anyTable(reference.table),
+            `${columnOf(reference.key)} IN (SELECT value FROM json_each(?))`,
+            [JSON.stringify(targets)],
+          );
+          for (const user of users) {
+            const key = rowKey(reference.table, user.id);
+            usedBy.set(key, removers.get(key) ?? []);
+          }
+        }
+        return { ...step, usedBy: [...usedBy.values()] } satisfies UndoStep;
+      }),
+    );
+  });
+
 const makeTransferRepository = Effect.gen(function* () {
   const sql = yield* Sql;
   const ids = yield* Ids;
@@ -313,8 +397,8 @@ const makeTransferRepository = Effect.gen(function* () {
         if (Option.isNone(batch)) {
           return yield* new RowNotFoundError({ table: "import_batch", id: importBatchId });
         }
-        const changes = yield* Effect.forEach(yield* changesOf(importBatchId), (change) =>
-          Effect.map(isEdited(change), (edited) => ({ change, edited })),
+        const changes = (yield* undoSteps(importBatchId)).map(
+          ({ change, edited, usedBy }): UndoEntry => ({ change, edited, usedBy }),
         );
         return { batch: batch.value, changes } satisfies UndoPreview;
       }),
@@ -322,7 +406,9 @@ const makeTransferRepository = Effect.gen(function* () {
 
   /**
    * Removes the records an import added and puts back the versions it replaced. A record
-   * changed after the import stays as it is, unless its change is in `alsoEdited`.
+   * changed after the import stays as it is, unless its change is in `alsoEdited`. A record
+   * that a live row still points at after Undo, such as an exercise a kept workout uses,
+   * stays too.
    */
   const undoImport = (importBatchId: ImportBatchId, alsoEdited: ReadonlyArray<ImportChangeId>) =>
     run(
@@ -336,34 +422,21 @@ const makeTransferRepository = Effect.gen(function* () {
             return yield* new ImportNotUndoableError({ importBatchId, status: batch.value.status });
           }
           const at = yield* currentTime;
-          let removed = 0;
-          let restored = 0;
-          let left = 0;
-          for (const change of yield* changesOf(importBatchId)) {
-            if ((yield* isEdited(change)) && !alsoEdited.includes(change.id)) {
-              left++;
-              continue;
-            }
-            const current = yield* journalRows(change.rowIds);
-            const before = yield* decodeRows(change.replaced ?? {});
-            const kept = new Set(
-              TABLE_KEYS.flatMap((key) => (before[key] ?? []).map((row) => `${key}/${row.id}`)),
-            );
-            const added = Object.fromEntries(
-              Object.entries(change.rowIds).flatMap(([name, written]) => {
-                const key = tableKeyOf(name);
-                if (key === undefined) return [];
-                const fresh = new Set<string>(written.filter((id) => !kept.has(`${key}/${id}`)));
-                return [[key, (current[key] ?? []).filter((row) => fresh.has(row.id))]];
-              }),
-            ) as TableRows;
-            yield* putAll(restamped(before, at));
-            yield* deleteWithChildren(added, at);
-            if (change.change === "added") removed++;
-            else restored++;
+          const { undone, removing, restoring, keeping, leaving } = undoSelection(
+            yield* undoSteps(importBatchId),
+            alsoEdited,
+          );
+          for (const step of undone) {
+            yield* putAll(restamped(step.before, at));
+            yield* deleteWithChildren(step.added, at);
           }
           yield* imports.setStatus(importBatchId, "undone");
-          return { removed, restored, left } satisfies UndoResult;
+          return {
+            removed: removing,
+            restored: restoring,
+            left: leaving,
+            kept: keeping,
+          } satisfies UndoResult;
         }),
       ),
     );

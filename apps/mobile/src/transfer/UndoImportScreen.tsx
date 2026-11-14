@@ -6,6 +6,7 @@ import {
   type UndoResult,
   undoOutcome,
   undoPlanLabel,
+  undoSelection,
 } from "@svett/core";
 import { Option, Schema } from "effect";
 import { useEffect, useState } from "react";
@@ -40,7 +41,10 @@ function Plan({
   const [included, setIncluded] = useState<ReadonlySet<string>>(new Set());
   const { batch, changes } = preview;
   const edited = changes.filter((entry) => entry.edited);
-  const taken = changes.filter((entry) => !entry.edited || included.has(entry.change.id));
+  const selection = undoSelection(
+    changes,
+    edited.map(({ change }) => change.id).filter((id) => included.has(id)),
+  );
   const toggle = (id: string) =>
     setIncluded((current) => {
       const next = new Set(current);
@@ -63,11 +67,7 @@ function Plan({
   return (
     <>
       <AppText tone="secondary" className="px-gutter">
-        {importTitle(batch.source)} from {formatDay(batch.createdAt)}.{" "}
-        {undoPlanLabel({
-          removing: taken.filter((entry) => entry.change.change === "added").length,
-          restoring: taken.filter((entry) => entry.change.change === "replaced").length,
-        })}
+        {importTitle(batch.source)} from {formatDay(batch.createdAt)}. {undoPlanLabel(selection)}
       </AppText>
       {edited.length === 0 ? null : (
         <View testID="undo-edited">
