@@ -445,26 +445,28 @@ describe("a Hevy import across signing in", () => {
   });
 });
 
-describe("Undo of a deleted workout across signing in", () => {
-  const legs = async (runtime: Runtime) => {
-    const [activity] = await runtime.runPromise(
-      Effect.flatMap(Effect.service(ActivityRepository), (activities) => activities.list()),
-    );
-    if (activity === undefined) throw new Error("no workout");
-    return { id: activity.id, title: activity.title };
-  };
-  const remove = (runtime: Runtime, id: Parameters<typeof deleteWorkout>[0]["id"]) =>
-    runtime.runPromise(
-      Effect.flatMap(Effect.service(ActivityRepository), (activities) => activities.remove(id)),
-    );
+/** The one workout `runtime` holds, as history names it when it deletes it. */
+const onlyWorkout = async (runtime: Runtime) => {
+  const [activity] = await runtime.runPromise(
+    Effect.flatMap(Effect.service(ActivityRepository), (activities) => activities.list()),
+  );
+  if (activity === undefined) throw new Error("no workout");
+  return { id: activity.id, title: activity.title };
+};
 
+const remove = (runtime: Runtime, id: Parameters<typeof deleteWorkout>[0]["id"]) =>
+  runtime.runPromise(
+    Effect.flatMap(Effect.service(ActivityRepository), (activities) => activities.remove(id)),
+  );
+
+describe("Undo of a deleted workout across signing in", () => {
   it("closes the offer when another account opens, and its Undo restores into neither", async () => {
     // Both hold the same imported workout with the same ID, deleted in each.
     await transfers(account, (repository) => repository.applyImport(decode(older), []));
-    const workout = await legs(phone);
-    await remove(phone, workout.id);
+    const legs = await onlyWorkout(phone);
+    await remove(phone, legs.id);
     await signIn();
-    await deleteWorkout(workout);
+    await deleteWorkout(legs);
     const offer = deletedWorkout();
     expect(offer?.title).toBe("Legs");
 
@@ -481,8 +483,8 @@ describe("Undo of a deleted workout across signing in", () => {
   });
 
   it("still brings the workout back in the account it was deleted from", async () => {
-    const workout = await legs(phone);
-    await deleteWorkout(workout);
+    const legs = await onlyWorkout(phone);
+    await deleteWorkout(legs);
     const offer = deletedWorkout();
     if (offer === null) throw new Error("no offer");
     expect(await titles(phone)).toEqual([]);

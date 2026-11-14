@@ -1,7 +1,14 @@
 import type { Effect } from "effect";
 import { useEffect, useEffectEvent, useState, useSyncExternalStore } from "react";
 
-import { appDatabase, currentDatabase, type OpenDatabase, stillOpen, subscribeDatabase } from "./current";
+import {
+  appDatabase,
+  currentDatabase,
+  movePending,
+  type OpenDatabase,
+  stillOpen,
+  subscribeDatabase,
+} from "./current";
 import type { AppServices } from "./database";
 
 let version = 0;
@@ -36,7 +43,7 @@ export const writeTo = async <A, E>(
 ): Promise<A> => {
   try {
     if (!stillOpen(database)) throw new Error(SWITCHED_BEFORE_WRITE);
-    if (database.handle.target.kind === "empty") throw new Error(MOVE_UNFINISHED);
+    if (movePending(database)) throw new Error(MOVE_UNFINISHED);
     return await database.handle.runtime.runPromise(effect);
   } finally {
     changed();

@@ -298,10 +298,7 @@ describe("signing out", () => {
 describe("an unfinished move with nobody signed in", () => {
   beforeEach(() => {
     // The move into the first account named it and has not deleted the phone's file yet.
-    app.storage.set(
-      "svett.moveJournal",
-      encodeMoveJournal({ state: "copying", account: FIRST }),
-    );
+    app.storage.set("svett.moveJournal", encodeMoveJournal({ state: "copying", account: FIRST }));
     switchOwner(ANONYMOUS);
   });
 

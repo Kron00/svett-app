@@ -106,6 +106,7 @@ vi.mock("../data/current", () => {
   return {
     appDatabase: () => app.runtime,
     currentDatabase: () => database,
+    movePending: () => false,
     stillOpen: (open: unknown) => open === database,
     subscribeDatabase: () => () => undefined,
   };

@@ -132,7 +132,7 @@ export const sessionLapsed = (database: CurrentDatabase, userId: string | null |
   database.owner.kind === "account" && !userId;
 
 /** True while a move into an account is unfinished and nobody may see or change the phone's data. */
-export const movePending = (database: CurrentDatabase) => database.handle.target.kind === "empty";
+export const movePending = (database: OpenDatabase) => database.handle.target.kind === "empty";
 
 /** Opens the right file again for whoever is signed in, after a move changed which one it is. */
 export const reopenDatabase = () => switchOwner(currentDatabase().owner);

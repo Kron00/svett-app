@@ -76,6 +76,7 @@ vi.mock("../data/current", () => {
   return {
     appDatabase: () => app.runtime,
     currentDatabase: () => database,
+    movePending: () => false,
     useCurrentDatabase: () => database,
     sameDatabase: (a: unknown, b: unknown) => a === b || JSON.stringify(a) === JSON.stringify(b),
     stillOpen: () => true,
