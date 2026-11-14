@@ -45,13 +45,19 @@ const sqlOf = (database: Database) => database.runtime.runPromise(Effect.service
 const everyRow = (database: Database) =>
   Object.fromEntries(
     database.database
-      .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'")
+      // Each file keeps its own sync queue, in the order its own rows were written.
+      .prepare(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE 'sync_%'",
+      )
       .all()
       .map(({ name }) => [
         String(name),
         database.database.prepare(`SELECT * FROM ${String(name)} ORDER BY 1`).all(),
       ]),
   );
+
+const queuedRows = (database: Database) =>
+  database.database.prepare("SELECT table_name, row_id FROM sync_outbox ORDER BY 1, 2").all();
 
 /** The anonymous database: imported Hevy history, one workout made here, and one deleted. */
 const anonymousWithHistory = async () => {
@@ -87,6 +93,8 @@ describe("copyDatabase", () => {
 
     expect(everyRow(account)).toEqual(everyRow(anonymous));
     expect(copied).toBeGreaterThan(0);
+    // The account uploads everything it took in at its first sync.
+    expect(queuedRows(account)).toEqual(queuedRows(anonymous));
     expect(
       account.database
         .prepare("SELECT title, deleted_at IS NOT NULL AS deleted FROM activity ORDER BY title")
