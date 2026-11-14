@@ -1,5 +1,6 @@
 import { Clock, Data, Effect, Semaphore } from "effect";
 
+import type { DatabaseOwner } from "./database.ts";
 import { cardioDraft, cardioTitle, summarizeRecording } from "./cardio.ts";
 import { Ids } from "./ids.ts";
 import {
@@ -105,8 +106,11 @@ export const makeRecorder = (ports: RecorderPorts) => {
   return {
     get: () => current,
 
-    /** Starts a recording, or does nothing while one is in progress. */
-    start: (kind: CardioKind) =>
+    /**
+     * Starts a recording that saves into `owner`'s database, or does nothing while one is
+     * in progress.
+     */
+    start: (kind: CardioKind, owner: DatabaseOwner) =>
       serially(
         Effect.gen(function* () {
           if (current !== undefined) return;
@@ -115,7 +119,7 @@ export const makeRecorder = (ports: RecorderPorts) => {
           );
           const at = yield* Clock.currentTimeMillis;
           yield* startUpdates;
-          yield* write([{ type: "start", at, kind, activityId }]).pipe(
+          yield* write([{ type: "start", at, kind, activityId, owner }]).pipe(
             Effect.tapError(() => stopQuietly),
           );
         }),

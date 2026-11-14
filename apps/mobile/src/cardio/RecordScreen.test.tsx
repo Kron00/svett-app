@@ -31,8 +31,8 @@ vi.mock("@react-navigation/native", () => ({ DarkTheme: {}, useNavigation: () =>
 vi.mock("./recorder", async () => {
   const { createStore } = await import("../checks/store");
   return {
-    recording: createStore(undefined),
     recordingProblem: createStore(undefined),
+    useRecording: () => ({ current: undefined, database: {} }),
     startRecording: async () => phone.outcome,
     pauseRecording: async () => undefined,
     resumeRecording: async () => undefined,

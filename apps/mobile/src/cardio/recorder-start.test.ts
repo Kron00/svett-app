@@ -43,6 +43,10 @@ vi.mock("expo-location", () => ({
   ActivityType: { Fitness: 3 },
 }));
 vi.mock("expo-task-manager", () => ({ defineTask: () => undefined }));
+vi.mock("expo-sqlite/kv-store", () => ({
+  default: { getItemSync: () => null, setItemSync: () => {}, removeItemSync: () => {} },
+}));
+vi.mock("../account/config", () => ({ CLERK_PUBLISHABLE_KEY: undefined }));
 vi.mock("../data/database", async () => {
   const effect = await import("effect");
   const { databaseLayer, Ids } = await import("@svett/core");
@@ -50,32 +54,36 @@ vi.mock("../data/database", async () => {
   const runtime = effect.ManagedRuntime.make(
     databaseLayer(openNodeDatabase().driver, Ids.layerSeeded(3)),
   );
-  return { appDatabase: () => runtime };
+  return {
+    launchFixture: () => undefined,
+    openDatabaseHandle: (target: unknown) => ({ target, runtime, close: async () => {} }),
+  };
 });
 
+const { currentDatabase } = await import("../data/current");
 const { discardRecording, recording, startRecording } = await import("./recorder");
 
 describe("starting a recording", () => {
   beforeEach(async () => {
-    await discardRecording();
+    await discardRecording(currentDatabase());
     Object.assign(phone, { permission: undefined, granted: true, gps: undefined });
   });
 
   it("starts when location is allowed and GPS starts", async () => {
-    expect(await startRecording("run")).toEqual({ kind: "started" });
+    expect(await startRecording("run", currentDatabase())).toEqual({ kind: "started" });
     expect(recording.get()?.kind).toBe("run");
     expect(phone.started).toBe(true);
   });
 
   it("says location was denied", async () => {
     phone.granted = false;
-    expect(await startRecording("walk")).toEqual({ kind: "denied" });
+    expect(await startRecording("walk", currentDatabase())).toEqual({ kind: "denied" });
     expect(recording.get()).toBeUndefined();
   });
 
   it("reports a permission request that fails, instead of leaving Start waiting", async () => {
     phone.permission = new Error("The operation couldn't be completed. (kCLErrorDomain error 0.)");
-    expect(await startRecording("run")).toEqual({
+    expect(await startRecording("run", currentDatabase())).toEqual({
       kind: "error",
       step: "permission",
       message: "The operation couldn't be completed. (kCLErrorDomain error 0.)",
@@ -85,7 +93,7 @@ describe("starting a recording", () => {
 
   it("reports GPS that will not start with the recorder's step and reason", async () => {
     phone.gps = new Error("Location services are disabled");
-    expect(await startRecording("ride")).toEqual({
+    expect(await startRecording("ride", currentDatabase())).toEqual({
       kind: "error",
       step: "location",
       message: "Location services are disabled",

@@ -12,9 +12,10 @@ import { File, Paths } from "expo-file-system";
 import * as Location from "expo-location";
 import * as TaskManager from "expo-task-manager";
 
-import { createStore } from "../checks/store";
-import { appDatabase } from "../data/database";
-import { write } from "../data/store";
+import { createStore, useStore } from "../checks/store";
+import { type OpenDatabase, sameOwner, useCurrentDatabase } from "../data/current";
+import { quietWriteTo, writeRefusal, writeTo } from "../data/store";
+import { holdOpen } from "../data/turns";
 
 // Imported from index.ts, because iOS starts svett in the background to hand it
 // readings while the screen is locked, and the task must be defined before then.
@@ -25,7 +26,10 @@ export const CARDIO_TASK = "svett-cardio-location";
 // ending svett in the background all leave the recording where it was.
 const journal = new File(Paths.document, "svett-recording.jsonl");
 
-/** The recording in progress, if there is one. */
+/**
+ * The recording in progress on this phone, whoever started it. It saves into the database open
+ * when it started, and shows only while that database is open again, through `useRecording`.
+ */
 export const recording = createStore<Recording | undefined>(undefined);
 
 const recorder = makeRecorder({
@@ -84,7 +88,8 @@ TaskManager.defineTask<{ locations: ReadonlyArray<LocationReading> }>(
   CARDIO_TASK,
   async ({ data, error }) => {
     if (error !== null) return;
-    // Awaited, so iOS does not suspend svett before the readings are in the journal.
+    // Readings join the recording whoever is signed in now, since it saves into the database
+    // it started in. Awaited, so iOS does not suspend svett before they are in the journal.
     try {
       await Effect.runPromise(recorder.addFixes(data.locations.map(fixOf)));
       // Only its own problem, so a reading saved does not hide why a pause failed.
@@ -117,7 +122,45 @@ const failedAt = (step: StartStep, error: unknown): StartOutcome => ({
   message: problemOf(error),
 });
 
-export async function startRecording(kind: CardioKind): Promise<StartOutcome> {
+export const OTHER_OWNER_RECORDING =
+  "A recording started before someone signed in or out is still going on this phone. Sign in to that account again to finish or discard it.";
+
+/** The recording `database`'s owner sees: theirs, and never another owner's. */
+export const shownRecording = (database: OpenDatabase): Recording | undefined => {
+  const current = recording.get();
+  return current !== undefined && sameOwner(current.owner, database.owner) ? current : undefined;
+};
+
+/**
+ * The recording in progress for the open database, with the database it saves into. Another
+ * owner's recording goes on in the background, and never shows here.
+ */
+export function useRecording(): {
+  readonly current: Recording | undefined;
+  readonly database: OpenDatabase;
+} {
+  useStore(recording);
+  const database = useCurrentDatabase();
+  return { current: shownRecording(database), database };
+}
+
+/**
+ * Why a change made from `database`, the one a screen showed, would be refused now, or null:
+ * someone signed in or out since, a move is unfinished, or another owner's recording is going.
+ */
+const changeRefusal = (database: OpenDatabase): string | null =>
+  writeRefusal(database) ??
+  (recording.get() === undefined || shownRecording(database) !== undefined
+    ? null
+    : OTHER_OWNER_RECORDING);
+
+/** Starts a recording that saves into `database`, the one the Record screen showed. */
+export async function startRecording(
+  kind: CardioKind,
+  database: OpenDatabase,
+): Promise<StartOutcome> {
+  const refusal = changeRefusal(database);
+  if (refusal !== null) return { kind: "error", step: "start", message: refusal };
   // Either request can reject, such as when iOS reports a location error while it asks.
   try {
     const foreground = await Location.requestForegroundPermissionsAsync();
@@ -129,7 +172,7 @@ export async function startRecording(kind: CardioKind): Promise<StartOutcome> {
     return failedAt("permission", error);
   }
   try {
-    await appDatabase().runPromise(recorder.start(kind));
+    await quietWriteTo(database, recorder.start(kind, database.owner));
   } catch (error) {
     return failedAt("start", error);
   }
@@ -137,16 +180,35 @@ export async function startRecording(kind: CardioKind): Promise<StartOutcome> {
   return { kind: "started" };
 }
 
+/** Refuses with why, leaving `recordingProblem` for the phone refusing a change. */
+const refuseUnlessShown = (database: OpenDatabase) => {
+  const refusal = changeRefusal(database);
+  if (refusal !== null) throw new Error(refusal);
+};
+
 /** Pauses, or leaves the reason it could not in `recordingProblem`. */
-export const pauseRecording = () =>
-  tracked(Effect.runPromise(recorder.pause)).catch(() => undefined);
+export const pauseRecording = async (database: OpenDatabase) => {
+  refuseUnlessShown(database);
+  await tracked(Effect.runPromise(recorder.pause)).catch(() => undefined);
+};
 
 /** Resumes, or stays paused and leaves the reason in `recordingProblem`. */
-export const resumeRecording = () =>
-  tracked(Effect.runPromise(recorder.resume)).catch(() => undefined);
+export const resumeRecording = async (database: OpenDatabase) => {
+  refuseUnlessShown(database);
+  await tracked(Effect.runPromise(recorder.resume)).catch(() => undefined);
+};
 
-/** Saves the recording as an activity and returns its ID. History and every other screen read again. */
-export const finishRecording = (): Promise<ActivityId> => tracked(write(recorder.finish));
+/**
+ * Saves the recording into `database`, the one it started in, as an activity and returns its
+ * ID. History and every other screen read again. The database stays open until it is saved,
+ * even when someone signs in or out meanwhile.
+ */
+export const finishRecording = async (database: OpenDatabase): Promise<ActivityId> => {
+  refuseUnlessShown(database);
+  return tracked(holdOpen(writeTo(database, recorder.finish)));
+};
 
-export const discardRecording = () =>
-  tracked(Effect.runPromise(recorder.discard)).catch(() => undefined);
+export const discardRecording = async (database: OpenDatabase) => {
+  refuseUnlessShown(database);
+  await tracked(Effect.runPromise(recorder.discard)).catch(() => undefined);
+};

@@ -1,5 +1,6 @@
 import { Option, Schema } from "effect";
 
+import { ANONYMOUS, DatabaseOwner } from "./database.ts";
 import { ActivityId } from "./schema.ts";
 import {
   addReading,
@@ -73,12 +74,16 @@ export const fixOf = ({ timestamp, coords }: LocationReading): Fix => {
  * a journal while recording, so a recording survives svett being closed or reloaded.
  */
 export const RecordingEvent = Schema.Union([
-  /** `activityId` is the ID the activity is saved under, so saving twice saves once. */
+  /**
+   * `activityId` is the ID the activity is saved under, so saving twice saves once. `owner`
+   * is whose database it saves into, and a journal written before accounts has none.
+   */
   Schema.Struct({
     type: Schema.Literal("start"),
     at: Millis,
     kind: CardioKind,
     activityId: ActivityId,
+    owner: Schema.optionalKey(DatabaseOwner),
   }),
   Schema.Struct({ type: Schema.Literal("fix"), fix: Fix }),
   Schema.Struct({ type: Schema.Literal("pause"), at: Millis }),
@@ -97,6 +102,8 @@ export interface Segment extends Track<Fix> {
 
 export interface Recording {
   readonly activityId: ActivityId;
+  /** Whose database the recording saves into: the one open when it started. */
+  readonly owner: DatabaseOwner;
   readonly kind: CardioKind;
   readonly startedAt: number;
   readonly segments: ReadonlyArray<Segment>;
@@ -163,6 +170,7 @@ export const applyEvent = (
     return (
       recording ?? {
         activityId: event.activityId,
+        owner: event.owner ?? ANONYMOUS,
         kind: event.kind,
         startedAt: event.at,
         segments: [segmentFrom(event.at, event.kind)],
