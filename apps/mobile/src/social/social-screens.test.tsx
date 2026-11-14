@@ -2,6 +2,7 @@ import { act, create, type ReactTestInstance, type ReactTestRenderer } from "rea
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 import {
+  BlocksScreen,
   ConnectionsScreen,
   EditProfileScreen,
   FollowRequestsScreen,
@@ -10,6 +11,12 @@ import {
 import { ProfileScreen } from "./ProfileScreens";
 
 type Answer = { readonly status: number; readonly body: unknown };
+type AlertButton = { readonly text: string; readonly style?: string; readonly onPress?: () => void };
+type HeaderItem = {
+  readonly label: string;
+  readonly accessibilityLabel: string;
+  readonly onPress: () => void;
+};
 
 const app = vi.hoisted(() => ({
   route: { params: {} as Record<string, unknown> },
@@ -18,9 +25,15 @@ const app = vi.hoisted(() => ({
   answers: new Map<string, Array<Answer>>(),
   navigated: [] as Array<string>,
   getToken: async () => "session-token",
+  alerts: [] as Array<{ readonly title: string; readonly buttons: ReadonlyArray<AlertButton> }>,
+  headerItems: [] as ReadonlyArray<HeaderItem>,
 }));
 
 vi.mock("react-native", () => ({
+  Alert: {
+    alert: (title: string, _message: string, buttons: ReadonlyArray<AlertButton>) =>
+      app.alerts.push({ title, buttons }),
+  },
   Pressable: "Pressable",
   ScrollView: "ScrollView",
   Switch: "Switch",
@@ -50,6 +63,9 @@ vi.mock("@react-navigation/native", async () => {
     navigate: (name: string) => app.navigated.push(name),
     push: (name: string, params: { username: string }) =>
       app.navigated.push(`${name} ${params.username}`),
+    setOptions: (options: { unstable_headerRightItems?: () => ReadonlyArray<HeaderItem> }) => {
+      app.headerItems = options.unstable_headerRightItems?.() ?? [];
+    },
   };
   return {
     useNavigation: () => navigation,
@@ -71,6 +87,8 @@ beforeEach(() => {
   app.sent = [];
   app.answers.clear();
   app.navigated = [];
+  app.alerts = [];
+  app.headerItems = [];
   vi.stubGlobal("fetch", async (url: string, init: { method: string; body: string | null }) => {
     const request = `${init.method} ${url.replace("https://svett.test", "")}`;
     app.sent.push(init.body === null ? request : `${request} ${init.body}`);
@@ -122,6 +140,14 @@ async function render(screen: React.ReactElement, shows: string) {
 const press = (root: ReactTestInstance, id: string) =>
   act(async () => {
     find(root, id).props.onPress();
+  });
+
+/** Presses the last alert's button with this label, as the person would. */
+const answerAlert = (label: string) =>
+  act(async () => {
+    const button = app.alerts.at(-1)?.buttons.find((each) => each.text === label);
+    if (button === undefined) throw new Error(`No alert button ${label}`);
+    button.onPress?.();
   });
 
 const profile = (overrides: Record<string, unknown>) => ({
@@ -222,6 +248,32 @@ describe("someone's profile", () => {
       "GET /v1/profiles/Anna.K",
       "GET /v1/profiles/Anna.K/activities?cursor=after-1",
     ]);
+  });
+
+  it("blocks from the navigation bar only after asking", async () => {
+    answer("GET /v1/profiles/Anna.K", ok(profile({ follow: "following" })));
+    answer("PUT /v1/profiles/Anna.K/block", ok({}));
+    const root = await render(<ProfileScreen />, "follow-button");
+    const [block] = app.headerItems;
+    expect(block?.accessibilityLabel).toBe("Block Anna.K");
+
+    await act(async () => block?.onPress());
+    expect(app.alerts.map((alert) => alert.title)).toEqual(["Block Anna.K?"]);
+    await answerAlert("Cancel");
+    expect(app.sent).toEqual(["GET /v1/profiles/Anna.K"]);
+
+    await act(async () => block?.onPress());
+    await answerAlert("Block");
+    await until(() => has(root, "profile-blocked"), "saying the account is blocked");
+    expect(texts(root)).toContain("You blocked Anna.K");
+    expect(has(root, "follow-button")).toBe(false);
+    expect(app.sent).toEqual(["GET /v1/profiles/Anna.K", "PUT /v1/profiles/Anna.K/block"]);
+  });
+
+  it("offers no Block button on your own profile", async () => {
+    answer("GET /v1/profiles/Anna.K", ok(profile({ self: true })));
+    await render(<ProfileScreen />, "profile-username");
+    expect(app.headerItems).toEqual([]);
   });
 
   it("says why it did not load", async () => {
@@ -329,6 +381,67 @@ describe("followers", () => {
       "GET /v1/profiles/Anna.K/followers",
       "GET /v1/profiles/Anna.K/followers?after=ben",
     ]);
+  });
+});
+
+describe("your own followers", () => {
+  it("removes a follower after asking, without blocking them, and reads the list again", async () => {
+    app.route.params = { username: "Anna.K", list: "followers", own: "yes" };
+    answer(
+      "GET /v1/profiles/Anna.K/followers",
+      ok({ profiles: [person("ben")], next: null }),
+      ok({ profiles: [], next: null }),
+    );
+    answer("DELETE /v1/followers/ben", ok({}));
+    const root = await render(<ConnectionsScreen />, "remove-ben");
+    await press(root, "remove-ben");
+    expect(app.alerts.map((alert) => alert.title)).toEqual(["Remove ben?"]);
+    expect(app.sent).toEqual(["GET /v1/profiles/Anna.K/followers"]);
+
+    await answerAlert("Remove");
+    await until(() => has(root, "connections-empty"), "the empty list");
+    expect(app.sent).toEqual([
+      "GET /v1/profiles/Anna.K/followers",
+      "DELETE /v1/followers/ben",
+      "GET /v1/profiles/Anna.K/followers",
+    ]);
+  });
+
+  it("offers no Remove on someone else's followers", async () => {
+    app.route.params = { username: "Anna.K", list: "followers" };
+    answer("GET /v1/profiles/Anna.K/followers", ok({ profiles: [person("ben")], next: null }));
+    const root = await render(<ConnectionsScreen />, "person-ben");
+    expect(has(root, "remove-ben")).toBe(false);
+  });
+});
+
+describe("blocked accounts", () => {
+  const BLOCK = "0190a0b2-0000-4000-8000-0000000b10c0";
+
+  it("unblocks an account by its block's ID and reads the list again", async () => {
+    app.route.params = {};
+    answer(
+      "GET /v1/blocks",
+      ok({ blocks: [{ id: BLOCK, username: "ben" }] }),
+      ok({ blocks: [] }),
+    );
+    answer(`DELETE /v1/blocks/${BLOCK}`, ok({}));
+    const root = await render(<BlocksScreen />, "unblock-ben");
+    await press(root, "unblock-ben");
+    await until(() => has(root, "blocks-empty"), "the empty list");
+    expect(app.sent).toEqual(["GET /v1/blocks", `DELETE /v1/blocks/${BLOCK}`, "GET /v1/blocks"]);
+  });
+
+  it("says when a request was refused for going too fast", async () => {
+    app.route.params = {};
+    answer("GET /v1/blocks", ok({ blocks: [{ id: BLOCK, username: "ben" }] }));
+    answer(`DELETE /v1/blocks/${BLOCK}`, { status: 429, body: { error: "rate_limited" } });
+    const root = await render(<BlocksScreen />, "unblock-ben");
+    await press(root, "unblock-ben");
+    await until(
+      () => texts(root).includes("That was a lot at once. Wait a moment and try again."),
+      "the message",
+    );
   });
 });
 

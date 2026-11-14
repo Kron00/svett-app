@@ -1,5 +1,6 @@
 import { type RouteProp, useNavigation, useRoute } from "@react-navigation/native";
 import {
+  type Block,
   type FollowRequest,
   type OwnProfile,
   type ProfilePage,
@@ -12,7 +13,7 @@ import {
   usernameProblem,
 } from "@svett/core";
 import { useCallback, useEffect, useState } from "react";
-import { View } from "react-native";
+import { Alert, View } from "react-native";
 
 import { useIsAccessibilityTextSize } from "../design/hooks";
 import type { RootNavigation, RootStackParamList } from "../navigation";
@@ -233,15 +234,84 @@ type ConnectionsProps = {
   readonly api: SocialApi;
   readonly username: string;
   readonly list: "followers" | "following";
+  /** The signed-in account's own followers, each of whom can be removed. */
+  readonly own: boolean;
 };
+
+/** One of your followers, whom you can remove without blocking. */
+function Follower({
+  api,
+  profile,
+  onRemoved,
+}: {
+  readonly api: SocialApi;
+  readonly profile: ProfileSummary;
+  readonly onRemoved: () => void;
+}) {
+  const navigation = useNavigation<RootNavigation>();
+  const stacked = useIsAccessibilityTextSize();
+  const [busy, setBusy] = useState(false);
+  const [problem, setProblem] = useState<string>();
+  const remove = () => {
+    setBusy(true);
+    setProblem(undefined);
+    void runSocial(api.removeFollower(profile.username)).then((result) => {
+      setBusy(false);
+      if (result.ok) onRemoved();
+      else setProblem(result.message);
+    });
+  };
+  const confirm = () =>
+    Alert.alert(
+      `Remove ${profile.username}?`,
+      "They stop following you and are not told. They can ask to follow you again.",
+      [
+        { text: "Cancel", style: "cancel" },
+        { text: "Remove", style: "destructive", onPress: remove },
+      ],
+    );
+  return (
+    <View
+      className="mx-gutter gap-3 rounded-card bg-surface p-gutter"
+      testID={rowId("follower", profile.username)}
+    >
+      <AppText variant="headline">{profile.username}</AppText>
+      <View className={stacked ? "gap-2" : "flex-row gap-2"}>
+        <Button
+          label="Profile"
+          variant="secondary"
+          disabled={busy}
+          onPress={() => navigation.push("Profile", { username: profile.username })}
+          accessibilityHint={`Opens ${profile.username}'s profile`}
+          testID={rowId("open", profile.username)}
+        />
+        <Button
+          label={busy ? "Removing" : "Remove"}
+          variant="destructive"
+          disabled={busy}
+          onPress={confirm}
+          accessibilityHint={`Stops ${profile.username} following you, without blocking them`}
+          testID={rowId("remove", profile.username)}
+        />
+      </View>
+      {problem === undefined ? null : (
+        <AppText tone="destructive" accessibilityLiveRegion="polite">
+          {problem}
+        </AppText>
+      )}
+    </View>
+  );
+}
 
 /** The list's first page, and the pages after it as Show more reads them. */
 function ConnectionsPages({
   api,
   username,
   list,
+  own,
   first,
-}: ConnectionsProps & { first: ProfilePage }) {
+  reload,
+}: ConnectionsProps & { readonly first: ProfilePage; readonly reload: () => void }) {
   // Pages read after an older first page are dropped when the screen reads it again.
   const [more, setMore] = useState<{ readonly after: ProfilePage; readonly page: ProfilePage }>();
   const [loading, setLoading] = useState(false);
@@ -269,17 +339,26 @@ function ConnectionsPages({
       }
     });
   };
+  const removable = own && list === "followers";
   return (
     <>
-      <People
-        profiles={shown.profiles}
-        empty={
-          list === "followers"
-            ? `Nobody follows ${username} yet.`
-            : `${username} does not follow anyone yet.`
-        }
-        testID="connections"
-      />
+      {removable && shown.profiles.length > 0 ? (
+        <View className="gap-3">
+          {shown.profiles.map((profile) => (
+            <Follower key={profile.username} api={api} profile={profile} onRemoved={reload} />
+          ))}
+        </View>
+      ) : (
+        <People
+          profiles={shown.profiles}
+          empty={
+            list === "followers"
+              ? `Nobody follows ${username} yet.`
+              : `${username} does not follow anyone yet.`
+          }
+          testID="connections"
+        />
+      )}
       {problem === undefined ? null : (
         <AppText tone="destructive" className="mx-gutter" testID="connections-more-failed">
           {problem}
@@ -299,27 +378,38 @@ function ConnectionsPages({
   );
 }
 
-function ConnectionsRead({ api, username, list }: ConnectionsProps) {
+function ConnectionsRead({ api, username, list, own }: ConnectionsProps) {
   const read = useCallback(
     () => (list === "followers" ? api.followers(username) : api.following(username)),
     [api, list, username],
   );
-  const { state } = useSocialRead(read);
+  const { state, reload } = useSocialRead(read);
   return (
     <SocialView state={state} testID="connections">
-      {(first) => <ConnectionsPages api={api} username={username} list={list} first={first} />}
+      {(first) => (
+        <ConnectionsPages
+          api={api}
+          username={username}
+          list={list}
+          own={own}
+          first={first}
+          reload={reload}
+        />
+      )}
     </SocialView>
   );
 }
 
 /** Who follows a profile, or whom it follows. */
 export function ConnectionsScreen() {
-  const { username, list } = useRoute<RouteProp<RootStackParamList, "Connections">>().params;
+  const { username, list, own } = useRoute<RouteProp<RootStackParamList, "Connections">>().params;
   return (
     <Screen testID="connections">
       {isList(list) ? (
         <SignedInOnly>
-          {(api) => <ConnectionsRead api={api} username={username} list={list} />}
+          {(api) => (
+            <ConnectionsRead api={api} username={username} list={list} own={own === "yes"} />
+          )}
         </SignedInOnly>
       ) : (
         <AppText tone="destructive" className="mx-gutter">
@@ -412,6 +502,82 @@ export function FollowRequestsScreen() {
   return (
     <Screen testID="requests">
       <SignedInOnly>{(api) => <RequestsRead api={api} />}</SignedInOnly>
+    </Screen>
+  );
+}
+
+function BlockedAccount({
+  api,
+  block,
+  onUnblocked,
+}: {
+  readonly api: SocialApi;
+  readonly block: Block;
+  readonly onUnblocked: () => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [problem, setProblem] = useState<string>();
+  const unblock = () => {
+    setBusy(true);
+    setProblem(undefined);
+    // The block's own ID, so this never reaches whoever holds the username now.
+    void runSocial(api.unblock(block.id)).then((result) => {
+      setBusy(false);
+      if (result.ok) onUnblocked();
+      else setProblem(result.message);
+    });
+  };
+  return (
+    <View
+      className="mx-gutter gap-3 rounded-card bg-surface p-gutter"
+      testID={rowId("blocked", block.username)}
+    >
+      <AppText variant="headline">{block.username}</AppText>
+      <Button
+        label={busy ? "Unblocking" : "Unblock"}
+        variant="secondary"
+        disabled={busy}
+        onPress={unblock}
+        accessibilityHint={`Lets ${block.username} find you and ask to follow you again`}
+        testID={rowId("unblock", block.username)}
+      />
+      {problem === undefined ? null : (
+        <AppText tone="destructive" accessibilityLiveRegion="polite">
+          {problem}
+        </AppText>
+      )}
+    </View>
+  );
+}
+
+function BlocksRead({ api }: { readonly api: SocialApi }) {
+  const read = useCallback(() => api.blocks(), [api]);
+  const { state, reload } = useSocialRead(read);
+  return (
+    <SocialView state={state} testID="blocks">
+      {({ blocks }) =>
+        blocks.length === 0 ? (
+          <AppText tone="secondary" className="mx-gutter" testID="blocks-empty">
+            You have not blocked anyone. Block someone from the button at the top of their
+            profile.
+          </AppText>
+        ) : (
+          <View className="gap-3">
+            {blocks.map((block) => (
+              <BlockedAccount key={block.id} api={api} block={block} onUnblocked={reload} />
+            ))}
+          </View>
+        )
+      }
+    </SocialView>
+  );
+}
+
+/** The accounts you blocked, each of which you can unblock. */
+export function BlocksScreen() {
+  return (
+    <Screen testID="blocks">
+      <SignedInOnly>{(api) => <BlocksRead api={api} />}</SignedInOnly>
     </Screen>
   );
 }

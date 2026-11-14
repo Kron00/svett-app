@@ -7,13 +7,14 @@ import {
   type ProfileView,
   type SocialApi,
 } from "@svett/core";
-import { type ReactNode, useCallback, useState } from "react";
-import { ScrollView, View } from "react-native";
+import { type ReactNode, useCallback, useLayoutEffect, useState } from "react";
+import { Alert, ScrollView, View } from "react-native";
 
 import type { RootNavigation, RootStackParamList } from "../navigation";
 import { formatDay } from "../progress/dates";
 import { AppText } from "../ui/AppText";
 import { Button } from "../ui/Button";
+import { EmptyState } from "../ui/EmptyState";
 import { ListRow, ListSection } from "../ui/List";
 import { runSocial, SignedInOnly, SocialView, useSocialRead } from "./api";
 
@@ -40,10 +41,13 @@ function Counts({
   username,
   followers,
   following,
+  own = false,
 }: {
   readonly username: string;
   readonly followers: number;
   readonly following: number;
+  /** The signed-in account's own lists, where a follower can be removed. */
+  readonly own?: boolean;
 }) {
   const navigation = useNavigation<RootNavigation>();
   return (
@@ -54,7 +58,12 @@ function Counts({
         testID="followers-row"
         trailing={{
           type: "chevron",
-          onPress: () => navigation.push("Connections", { username, list: "followers" }),
+          onPress: () =>
+            navigation.push("Connections", {
+              username,
+              list: "followers",
+              ...(own ? { own: "yes" } : {}),
+            }),
         }}
       />
       <ListRow
@@ -104,7 +113,12 @@ function OwnProfileContent({ own }: { readonly own: OwnProfile }) {
           />
         </View>
       ) : (
-        <Counts username={own.username} followers={own.followers} following={own.following} />
+        <Counts
+          username={own.username}
+          followers={own.followers}
+          following={own.following}
+          own
+        />
       )}
       <ListSection footer="People who asked to follow your private profile wait here until you answer.">
         <ListRow
@@ -119,6 +133,14 @@ function OwnProfileContent({ own }: { readonly own: OwnProfile }) {
           icon={{ symbol: "magnifyingglass", color: "accent" }}
           testID="find-people-row"
           trailing={{ type: "chevron", onPress: () => navigation.navigate("People") }}
+        />
+      </ListSection>
+      <ListSection footer="Accounts you blocked cannot find you, see your posts, follow, like or comment, and you see none of theirs.">
+        <ListRow
+          title="Blocked accounts"
+          icon={{ symbol: "hand.raised.fill", color: "set-failure" }}
+          testID="blocks-row"
+          trailing={{ type: "chevron", onPress: () => navigation.navigate("Blocks") }}
         />
       </ListSection>
     </>
@@ -262,6 +284,62 @@ function ProfileActivities({
   );
 }
 
+/**
+ * The profile's Block button in the navigation bar. It asks first, since a block ends any
+ * follow between the two accounts.
+ */
+function useBlockButton(
+  api: SocialApi,
+  profile: ProfileView,
+  onBlocked: () => void,
+  onProblem: (message: string) => void,
+) {
+  const navigation = useNavigation<RootNavigation>();
+  useLayoutEffect(() => {
+    if (profile.self) return;
+    const block = () =>
+      void runSocial(api.block(profile.username)).then((result) => {
+        if (result.ok) onBlocked();
+        else onProblem(result.message);
+      });
+    navigation.setOptions({
+      unstable_headerRightItems: () => [
+        {
+          type: "button",
+          label: "Block",
+          icon: { type: "sfSymbol", name: "hand.raised" },
+          accessibilityLabel: `Block ${profile.username}`,
+          identifier: "block-profile",
+          onPress: () =>
+            Alert.alert(
+              `Block ${profile.username}?`,
+              "Neither of you will find the other, see the other's posts, or follow, like or comment. Any follow between you ends. You can unblock them under Blocked accounts on your profile.",
+              [
+                { text: "Cancel", style: "cancel" },
+                { text: "Block", style: "destructive", onPress: block },
+              ],
+            ),
+        },
+      ],
+    });
+    return () => navigation.setOptions({ unstable_headerRightItems: () => [] });
+  }, [api, navigation, onBlocked, onProblem, profile.self, profile.username]);
+}
+
+function Blocked({ username }: { readonly username: string }) {
+  const navigation = useNavigation<RootNavigation>();
+  return (
+    <View testID="profile-blocked">
+      <EmptyState
+        symbol="hand.raised.fill"
+        title={`You blocked ${username}`}
+        message="Neither of you sees the other any more, and any follow between you ended."
+        action={{ label: "Blocked accounts", onPress: () => navigation.navigate("Blocks") }}
+      />
+    </View>
+  );
+}
+
 function ProfileContent({
   api,
   profile,
@@ -271,6 +349,11 @@ function ProfileContent({
   readonly profile: ProfileView;
   readonly reload: () => void;
 }) {
+  const [blocked, setBlocked] = useState(false);
+  const [problem, setProblem] = useState<string>();
+  const onBlocked = useCallback(() => setBlocked(true), []);
+  useBlockButton(api, profile, onBlocked, setProblem);
+  if (blocked) return <Blocked username={profile.username} />;
   const notes = [
     profile.private ? "Private profile" : "Public profile",
     profile.followsYou ? "Follows you" : undefined,
@@ -282,6 +365,11 @@ function ProfileContent({
           {profile.username}
         </AppText>
         <AppText tone="secondary">{notes.join(" · ")}</AppText>
+        {problem === undefined ? null : (
+          <AppText tone="destructive" accessibilityLiveRegion="polite" testID="block-problem">
+            {problem}
+          </AppText>
+        )}
       </View>
       {profile.self ? null : <FollowControl api={api} profile={profile} onChange={reload} />}
       <Counts

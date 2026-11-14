@@ -39,6 +39,7 @@ export const linking: LinkingOptions<RootStackParamList> = {
       UndoImport: "imports/:importBatchId/undo",
       EditProfile: "profile/edit",
       FollowRequests: "profile/requests",
+      Blocks: "profile/blocked",
       OwnProfile: "profile",
       Connections: "people/:username/:list",
       Profile: "people/:username",

@@ -9,3 +9,6 @@ export const storedMoveJournal = () => decodeMoveJournal(Storage.getItemSync(JOU
 
 export const storeMoveJournal = (journal: MoveJournal) =>
   Storage.setItemSync(JOURNAL_KEY, encodeMoveJournal(journal));
+
+/** Forgets the answer, so the next sign-in offers to move the phone's own data again. */
+export const forgetMoveJournal = () => Storage.removeItemSync(JOURNAL_KEY);

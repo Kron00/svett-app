@@ -12,7 +12,7 @@ import {
   syncStatusMessage,
 } from "@svett/core";
 import { type ReactNode, useEffect, useRef, useState } from "react";
-import { ScrollView, View } from "react-native";
+import { Alert, ScrollView, View } from "react-native";
 
 import {
   movePending,
@@ -28,6 +28,7 @@ import { EmptyState } from "../ui/EmptyState";
 import { TextField } from "../ui/TextField";
 import { chatGPTEmail } from "./chatgpt-email";
 import { CLERK_PUBLISHABLE_KEY } from "./config";
+import { deleteAccount } from "./delete";
 import { useEmailCode } from "./email-code";
 import { declineMove, moveIntoAccount, pendingMoveOffer, resumeMove } from "./move";
 import { syncNow, useSyncStatus } from "./sync";
@@ -264,6 +265,92 @@ function SyncState({ accountId }: { readonly accountId: string }) {
   );
 }
 
+type Deletion =
+  | { readonly step: "idle" }
+  | { readonly step: "choose" }
+  | { readonly step: "deleting" }
+  | { readonly step: "failed"; readonly problem: string };
+
+const KEEP_MESSAGE =
+  "svett deletes your account, profile, follows, likes and comments from its server and signs you out on every phone. Your workouts stay on this phone with no account.";
+const ERASE_MESSAGE =
+  "svett deletes your account, profile, follows, likes and comments from its server and signs you out on every phone, and erases your workouts from this phone. This cannot be undone.";
+
+/**
+ * Deleting the account. It asks what happens to the copy on this phone, then asks once more
+ * before anything is deleted.
+ */
+function DeleteAccount({ accountId }: { readonly accountId: string }) {
+  const { getToken, signOut } = useAuth();
+  const [state, setState] = useState<Deletion>({ step: "idle" });
+  const owner = ownerOf(accountId);
+  const run = (keep: boolean) => {
+    if (owner.kind !== "account") return;
+    setState({ step: "deleting" });
+    void deleteAccount(owner.accountId, keep, () => getToken(), signOut).then(
+      (problem) => {
+        if (problem !== undefined) setState({ step: "failed", problem });
+      },
+      (error: unknown) =>
+        setState({ step: "failed", problem: `The deletion did not finish. ${String(error)}` }),
+    );
+  };
+  const confirm = (keep: boolean) =>
+    Alert.alert(
+      keep ? "Delete your account and keep a copy?" : "Delete your account and erase this phone?",
+      keep ? KEEP_MESSAGE : ERASE_MESSAGE,
+      [
+        { text: "Cancel", style: "cancel" },
+        { text: "Delete account", style: "destructive", onPress: () => run(keep) },
+      ],
+    );
+  if (state.step === "idle" || state.step === "failed") {
+    return (
+      <View className="gap-2">
+        <Problem text={state.step === "failed" ? state.problem : undefined} />
+        <Button
+          label="Delete account"
+          variant="destructive"
+          onPress={() => setState({ step: "choose" })}
+          accessibilityHint="Asks what happens to the data on this phone before anything is deleted"
+          testID="delete-account"
+        />
+      </View>
+    );
+  }
+  const deleting = state.step === "deleting";
+  return (
+    <View className="gap-3" testID="delete-account-choice">
+      <Heading
+        title={deleting ? "Deleting your account" : "Delete your svett account?"}
+        message="svett deletes everything it keeps for you on its server and signs you out on every phone. Choose what happens to the copy on this phone."
+      />
+      <Button
+        label="Keep a copy on this phone"
+        variant="secondary"
+        disabled={deleting}
+        onPress={() => confirm(true)}
+        accessibilityHint="Your workouts stay on this phone with no account"
+        testID="delete-keep-copy"
+      />
+      <Button
+        label="Erase it from this phone"
+        variant="destructive"
+        disabled={deleting}
+        onPress={() => confirm(false)}
+        testID="delete-erase-copy"
+      />
+      <Button
+        label="Cancel"
+        variant="plain"
+        disabled={deleting}
+        onPress={() => setState({ step: "idle" })}
+        testID="delete-cancel"
+      />
+    </View>
+  );
+}
+
 function SignedIn({ accountId }: { readonly accountId: string }) {
   const { signOut } = useAuth();
   const { user } = useUser();
@@ -345,6 +432,7 @@ function SignedIn({ accountId }: { readonly accountId: string }) {
         }}
         testID="sign-out"
       />
+      <DeleteAccount accountId={accountId} />
     </Card>
   );
 }

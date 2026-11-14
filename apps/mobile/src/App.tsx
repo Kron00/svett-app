@@ -11,6 +11,7 @@ import { PhoneChecksScreen } from "./checks/PhoneChecksScreen";
 import {
   ConnectionsScreen,
   EditProfileScreen,
+  BlocksScreen,
   FollowRequestsScreen,
   PeopleScreen,
 } from "./social/PeopleScreens";
@@ -91,6 +92,11 @@ export default function App() {
             name="FollowRequests"
             component={FollowRequestsScreen}
             options={{ headerShown: true, title: "Follow requests" }}
+          />
+          <Stack.Screen
+            name="Blocks"
+            component={BlocksScreen}
+            options={{ headerShown: true, title: "Blocked accounts" }}
           />
           <Stack.Screen
             name="People"
