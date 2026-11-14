@@ -209,7 +209,8 @@ screenshot location
 tap 'id="check-run-chatgpt"'
 agent_device wait 3000
 screenshot chatgpt-sheet
-agent_device alert dismiss || tap 'label="Cancel"' ||
+# The sign-in sheet covers Phone checks, so Cancel is pressed without show.
+agent_device alert dismiss || press_centre 'label="Cancel"' ||
   echo "Could not cancel the sign-in sheet, so the relaunch closes it" >&2
 
 relaunch

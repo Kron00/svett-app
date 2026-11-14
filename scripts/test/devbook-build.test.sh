@@ -448,7 +448,8 @@ check "gallery.sh restores the default text size after a failure" \
 # or not at all with FAKE_STAYS_HOME. A scroll or press while the Home Screen is
 # in front fails and is logged. Every element has the same frame, the clipboard
 # holds a report, no permission prompt shows, and the Apple Health sheet shows
-# only with FAKE_HEALTH_SHEET.
+# only with FAKE_HEALTH_SHEET. With FAKE_CHATGPT_SHEET the ChatGPT sign-in sheet
+# covers Phone checks, refuses alert dismiss and closes on a Cancel press.
 cat >"$fake/checks-device" <<EOF
 #!/usr/bin/env bash
 echo "\$*" >>"$root/bound-calls"
@@ -481,7 +482,11 @@ case "\$args" in
   *' press label="You, tab, 5 of 5" '*) refuse_on_home press You tab; show you ;;
   *" press "*)
     refuse_on_home press
-    [[ "\$screen" != you || "\$(cat "$root/last-attrs")" != *phone-checks-row* ]] || show checks ;;
+    attrs=\$(cat "$root/last-attrs")
+    [[ "\$screen" != you || "\$attrs" != *phone-checks-row* ]] || show checks
+    [[ -z "\${FAKE_CHATGPT_SHEET:-}" || "\$attrs" != *check-run-chatgpt* ]] || show sheet
+    [[ "\$screen" != sheet || "\$attrs" != *Cancel* ]] || show checks ;;
+  *" alert dismiss "*) [[ -z "\${FAKE_CHATGPT_SHEET:-}" ]] ;;
   *" get attrs "*)
     echo "\$*" >"$root/last-attrs"
     echo '{"label": "Run", "rect": {"x": 20, "y": 300, "width": 120, "height": 40}}' ;;
@@ -583,5 +588,12 @@ check "checks.sh screenshots the Apple Health sheet and allows every type" \
   only_calls "screenshot $root/checks-health/0[56]|get attrs label" \
   "screenshot $root/checks-health/05-health-sheet.png" 'get attrs label="Turn On All"' \
   'get attrs label="Allow"' "screenshot $root/checks-health/06-health.png"
+
+case_name="checks.sh when the ChatGPT sign-in sheet refuses alert dismiss"
+checks_sh FAKE_CHATGPT_SHEET=1 "$root/checks-chatgpt"
+check "checks.sh presses Cancel on the sheet that covers Phone checks" \
+  only_calls "get attrs label" 'get attrs label="Cancel"'
+check "checks.sh still saves the report after cancelling the sheet" \
+  grep -qxF "fake phone check report" "$root/checks-chatgpt/report.txt"
 
 echo "$passed passed"
