@@ -110,9 +110,15 @@ export function keychainOutcome(read: KeychainRead, launchedAt: number): SeenOut
 export interface PendingNotification {
   readonly id: string;
   readonly dueAt: number;
+  /** When iOS handed it to svett in front, kept so a restart still knows it arrived. */
+  readonly deliveredInSvett?: number;
 }
 
-const PendingNotificationSchema = Schema.Struct({ id: Schema.String, dueAt: Schema.Number });
+const PendingNotificationSchema = Schema.Struct({
+  id: Schema.String,
+  dueAt: Schema.Number,
+  deliveredInSvett: Schema.optionalKey(Schema.Number),
+});
 
 export const encodePendingNotification = (pending: PendingNotification): string =>
   JSON.stringify(pending);
@@ -148,9 +154,8 @@ export function findNotification(
   sightings: NotificationSightings,
   now: number,
 ): NotificationObservation {
-  if (sightings.inSvett !== undefined) {
-    return { kind: "arrived", at: sightings.inSvett, whileOpen: true };
-  }
+  const inSvett = sightings.inSvett ?? pending.deliveredInSvett;
+  if (inSvett !== undefined) return { kind: "arrived", at: inSvett, whileOpen: true };
   if (sightings.shown !== undefined)
     return { kind: "arrived", at: sightings.shown, whileOpen: false };
   return now > pending.dueAt + NOTIFICATION_GRACE_MS

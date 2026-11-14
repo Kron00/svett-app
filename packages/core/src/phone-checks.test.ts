@@ -101,6 +101,17 @@ describe("notification check", () => {
     });
   });
 
+  it("still asks for another run after a restart when it arrived while svett was open", () => {
+    const stored = encodePendingNotification({ ...pending, deliveredInSvett: s(10) });
+    const restored = decodePendingNotification(stored);
+    if (restored === undefined) throw new Error("the pending notification did not read back");
+    expect(notificationOutcome(findNotification(restored, {}, s(60)), s(30))).toEqual({
+      status: "waiting",
+      detail:
+        "Arrived at 15:00:10 UTC while svett was open. Run it again and leave svett before it is due.",
+    });
+  });
+
   it("passes for an iOS delivery, whose date Expo gives in seconds", () => {
     const iosDate = s(10) / 1000 + 0.123;
     expect(judge({ shown: notificationDateMs(iosDate) }, s(25)).status).toBe("passed");

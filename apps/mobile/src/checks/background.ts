@@ -4,6 +4,7 @@ import * as Notifications from "expo-notifications";
 import * as TaskManager from "expo-task-manager";
 import { AppState } from "react-native";
 
+import { loadPendingNotification, savePendingNotification } from "./saved";
 import { createStore } from "./store";
 
 // Imported from index.ts, because iOS can start svett in the background for a
@@ -36,9 +37,18 @@ TaskManager.defineTask<{ locations: LocationObject[] }>(LOCATION_TASK, async ({ 
 /** Notifications iOS handed to svett while it was in front, by identifier, with when. */
 export const notificationsInSvett = createStore<ReadonlyMap<string, number>>(new Map());
 
-Notifications.addNotificationReceivedListener((notification) => {
+// The handler below keeps this notification out of Notification Center, so the delivery is
+// saved with the pending check before the check can see it and forget that record. Otherwise
+// a restart would find neither and judge it not delivered.
+Notifications.addNotificationReceivedListener(async (notification) => {
+  const id = notification.request.identifier;
+  const at = notificationDateMs(notification.date);
+  const pending = await loadPendingNotification();
+  if (pending?.id === id) {
+    await savePendingNotification({ ...pending, deliveredInSvett: at }).catch(() => undefined);
+  }
   const delivered = new Map(notificationsInSvett.get());
-  delivered.set(notification.request.identifier, notificationDateMs(notification.date));
+  delivered.set(id, at);
   notificationsInSvett.set(delivered);
 });
 
