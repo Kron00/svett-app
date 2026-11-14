@@ -193,6 +193,8 @@ export const hevyImport = (file: HevyFile, keep: ReadonlySet<string> = new Set()
       numberedHere.set(start, [...(numberedHere.get(start) ?? []), row]);
     }
     const claimed = new Set<string>();
+    const taken = (identity: string) =>
+      claimed.has(identity) || activities.has(importedId(TABLES.activity.name, "hevy", identity));
     /**
      * The identity of the workout numbered `number` among those that share its start: its
      * workout here with the same Hevy content, whatever number it was given, or else the first
@@ -204,8 +206,6 @@ export const hevyImport = (file: HevyFile, keep: ReadonlySet<string> = new Set()
           row["fingerprint"] === workout.fingerprint && !claimed.has(String(row["sourceId"])),
       );
       if (same !== undefined) return String(same["sourceId"]);
-      const taken = (identity: string) =>
-        claimed.has(identity) || activities.has(importedId(TABLES.activity.name, "hevy", identity));
       let free = number;
       while (taken(`${workout.start}#${free}`)) free += 1;
       return `${workout.start}#${free}`;

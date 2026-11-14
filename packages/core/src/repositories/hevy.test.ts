@@ -96,6 +96,16 @@ const workouts = (database: Database) =>
     })),
   }));
 
+/** Every workout, exercise and set row, deleted ones too, keyed by table and ID. */
+const workoutRows = (database: Database) =>
+  new Map(
+    ["activity", "activity_exercise", "activity_set"].flatMap((table) =>
+      query(database, `SELECT * FROM ${table}`).map(
+        (row) => [`${table}/${String(row["id"])}`, row] as const,
+      ),
+    ),
+  );
+
 /** Live sets whose exercise is deleted or missing, which no screen could show. */
 const setsWithoutExercise = (database: Database) =>
   query(
@@ -630,12 +640,6 @@ describe("Hevy import", () => {
     };
   };
 
-  /** Every workout, exercise and set row, deleted ones too. */
-  const workoutRows = (database: Database) =>
-    ["activity", "activity_exercise", "activity_set"].flatMap((table) =>
-      query(database, `SELECT * FROM ${table} ORDER BY id`).map((row) => ({ table, ...row })),
-    );
-
   it("knows a second workout kept under its place in the whole file, as earlier versions did", async () => {
     const database = openTestDatabase();
     await transfers(database, (repository) =>
@@ -702,10 +706,9 @@ describe("Hevy import", () => {
     const keep = new Set(plan.duplicates.map(({ key }) => key));
     const taken = await apply(database, edited, [], keep);
     expect(taken).toMatchObject({ added: 2, replaced: 0 });
-    const ids = new Set(before.map((row) => `${row.table}/${String(row["id"])}`));
-    expect(
-      workoutRows(database).filter((row) => ids.has(`${row.table}/${String(row["id"])}`)),
-    ).toEqual(before);
+    const earlier = (rows: ReturnType<typeof workoutRows>) =>
+      new Map([...rows].filter(([key]) => before.has(key)));
+    expect(earlier(workoutRows(database))).toEqual(before);
     expect(query(database, "SELECT source_id, title FROM activity ORDER BY source_id")).toEqual([
       { source_id: twinStart, title: "Morning" },
       { source_id: `${twinStart}#1`, title: "Again edited" },
@@ -720,11 +723,9 @@ describe("Hevy import", () => {
     await undo(database, taken!.importBatchId);
     expect(workouts(database)).toEqual(workoutsBefore);
     const after = workoutRows(database);
-    expect(after.filter((row) => ids.has(`${row.table}/${String(row["id"])}`))).toEqual(before);
+    expect(earlier(after)).toEqual(before);
     expect(
-      after.filter(
-        (row) => !ids.has(`${row.table}/${String(row["id"])}`) && row["deleted_at"] === null,
-      ),
+      [...after].filter(([key, row]) => !before.has(key) && row["deleted_at"] === null),
     ).toEqual([]);
   });
 
