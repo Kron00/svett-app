@@ -937,10 +937,17 @@ case "\$args" in
   *' get text id="calendar-count" '*) echo "13 workouts in October 2026" ;;
   *' wait id="history-row" '*) exit 1 ;;
   *' is visible id="history-row" '*)
-    # The first row starts below the fold until a scroll brings it up.
+    # The first row starts below the fold until a scroll brings it up, and once rows
+    # show there are two on screen, which makes the selector ambiguous, as on iOS.
     grep -q -- '--until id="history-row"' "$root/bound-calls" || exit 1
+    echo "Error (AMBIGUOUS_MATCH): Selector matched 2 elements" >&2
+    exit 1 ;;
+  *" snapshot "*)
     scrolls=\$(grep -c ' scroll down\$' "$root/bound-calls" || true)
-    [[ -z "\${FAKE_BLANK_AFTER:-}" ]] || ((scrolls < FAKE_BLANK_AFTER)) ;;
+    if [[ -z "\${FAKE_BLANK_AFTER:-}" ]] || ((scrolls < FAKE_BLANK_AFTER)); then
+      echo '@e11 [other] "history-row"'
+      echo '@e13 [other] "history-row"'
+    fi ;;
   *' is visible id="workout-older" '*)
     scrolls=\$(grep -c ' scroll down\$' "$root/bound-calls" || true)
     oldest_after=\${FAKE_OLDEST_AFTER:-120}
@@ -1001,8 +1008,8 @@ check "history.sh shoots at the largest text size, then restores the default" \
   only_calls "settings" "settings text-size accessibility-extra-extra-extra-large" "settings text-size large"
 check "history.sh scrolls the history list until the oldest workout's row is on screen" \
   test "$(grep -cxF -- "$bound_prefix scroll down" "$root/bound-calls")" -eq 120
-check "history.sh looks for rows after each scroll, after scrolling to the first" \
-  test "$(grep -cxF -- "$bound_prefix is visible id=\"history-row\"" "$root/bound-calls")" -eq 121
+check "history.sh looks for rows in a snapshot after each scroll" \
+  test "$(grep -cxF -- "$bound_prefix snapshot" "$root/bound-calls")" -eq 120
 check "history.sh clears the weight and types 222.5 on the keypad" \
   only_calls "get attrs label" \
   'get attrs label="Delete"' 'get attrs label="Delete"' 'get attrs label="Delete"' 'get attrs label="Delete"' \

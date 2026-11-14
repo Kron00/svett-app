@@ -78,6 +78,12 @@ screenshot() {
   echo "Saved $path"
 }
 
+# rows_on_screen succeeds when the snapshot holds at least one history row. A
+# selector check cannot say this, because two rows on screen make it ambiguous.
+rows_on_screen() {
+  agent_device snapshot 2>/dev/null | grep -q '"history-row"'
+}
+
 # Scrolls the screen until the element $1 is on screen.
 reveal() {
   agent_device is visible "$1" >/dev/null 2>&1 ||
@@ -171,7 +177,7 @@ until agent_device is visible "id=\"workout-$oldest\"" >/dev/null 2>&1; do
   }
   agent_device scroll down
   scroll=$((scroll + 1))
-  agent_device is visible 'id="history-row"' >/dev/null 2>&1 ||
+  rows_on_screen ||
     {
       screenshot "blank-after-scroll-$scroll"
       fail "The history list showed no row after scroll $scroll"
