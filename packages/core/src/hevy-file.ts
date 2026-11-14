@@ -168,9 +168,10 @@ export interface ReadTime {
  */
 export const readTime = (raw: string, toInstant: ToInstant): ReadTime | undefined => {
   const value = raw.trim();
-  const hevy = /^(\d{1,2})\s+([A-Za-z]{3})[A-Za-z]*\.?\s+(\d{4}),?\s+(\d{1,2}):(\d{2})(?::(\d{2}))?$/.exec(
-    value,
-  );
+  const hevy =
+    /^(\d{1,2})\s+([A-Za-z]{3})[A-Za-z]*\.?\s+(\d{4}),?\s+(\d{1,2}):(\d{2})(?::(\d{2}))?$/.exec(
+      value,
+    );
   const iso =
     /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2})(?:\.\d+)?)?\s*(Z|[+-]\d{2}:?\d{2})?$/i.exec(
       value,
@@ -203,9 +204,9 @@ export const readTime = (raw: string, toInstant: ToInstant): ReadTime | undefine
   const text = `${pad(time.year, 4)}-${pad(time.month)}-${pad(time.day)}T${pad(time.hour)}:${pad(time.minute)}:${pad(time.second)}`;
   const wall = wallTimeAsUtc(time);
   if (zone === undefined) return { text, instant: toInstant(time), wall, zoned: false };
-  const offset =
-    zone === "Z" ? "+00:00" : `${zone.slice(0, 3)}:${zone.slice(-2)}`;
-  const minutes = (offset.startsWith("-") ? -1 : 1) * (Number(offset.slice(1, 3)) * 60 + Number(offset.slice(4)));
+  const offset = zone === "Z" ? "+00:00" : `${zone.slice(0, 3)}:${zone.slice(-2)}`;
+  const minutes =
+    (offset.startsWith("-") ? -1 : 1) * (Number(offset.slice(1, 3)) * 60 + Number(offset.slice(4)));
   return {
     text: `${text}${offset}`,
     instant: wall - minutes * 60_000,
@@ -251,7 +252,8 @@ export const decodeHevyFile = (
     Result.fail(new HevyFileError({ reason: "invalid", message }));
 
   const rows = parseCsv(text);
-  if (rows === undefined) return invalid("The file ends inside a quoted field, so it looks cut off.");
+  if (rows === undefined)
+    return invalid("The file ends inside a quoted field, so it looks cut off.");
   const [header, ...body] = rows;
   if (header === undefined) return notHevy("The file is empty.");
   const index = new Map(header.map((name, at) => [name.trim().toLowerCase(), at]));
@@ -350,7 +352,14 @@ export const decodeHevyFile = (
 
   return Result.succeed({
     workouts: [...workouts.values()].map((workout, position) => {
-      const exercises = workout.exercises.map(({ lastIndex: _, ...exercise }) => exercise);
+      const exercises = workout.exercises.map(
+        ({ name, supersetGroup, notes, sets: exerciseSets }): HevyExercise => ({
+          name,
+          supersetGroup,
+          notes,
+          sets: exerciseSets,
+        }),
+      );
       const durationS =
         workout.end === undefined
           ? 0

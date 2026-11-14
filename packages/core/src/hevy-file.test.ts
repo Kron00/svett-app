@@ -11,6 +11,9 @@ const sample = (name: string) =>
 const HEADER =
   '"title","start_time","end_time","description","exercise_title","superset_id","exercise_notes","set_index","set_type","weight_kg","reps","distance_km","duration_seconds","rpe"';
 
+const row = (exercise: string, index: number) =>
+  `"Arms","1 Feb 2025, 10:00","1 Feb 2025, 11:00","","${exercise}",,"",${index},"normal",20,10,,,`;
+
 const decode = (text: string) => decodeHevyFile(text, wallTimeAsUtc);
 
 const failureOf = (text: string) => {
@@ -34,7 +37,10 @@ describe("parseCsv", () => {
 
 describe("readTime", () => {
   it("reads Hevy's clock time, with no zone, in the zone it is given", () => {
-    const inStockholmWinter = readTime("15 Jan 2024, 18:30", (time) => wallTimeAsUtc(time) - 3_600_000);
+    const inStockholmWinter = readTime(
+      "15 Jan 2024, 18:30",
+      (time) => wallTimeAsUtc(time) - 3_600_000,
+    );
     expect(inStockholmWinter).toEqual({
       text: "2024-01-15T18:30:00",
       instant: Date.UTC(2024, 0, 15, 17, 30),
@@ -110,7 +116,14 @@ describe("decodeHevyFile", () => {
     expect(pull?.exercises.map((exercise) => exercise.supersetGroup)).toEqual([null, 0, 0]);
     expect(legs?.exercises[0]?.sets.at(-1)?.setType).toBe("drop");
     expect(legs?.exercises[2]?.sets).toEqual([
-      { setType: "normal", weightKg: null, reps: null, durationS: 900, distanceM: 2_000, rpe: null },
+      {
+        setType: "normal",
+        weightKg: null,
+        reps: null,
+        durationS: 900,
+        distanceM: 2_000,
+        rpe: null,
+      },
     ]);
   });
 
@@ -150,8 +163,6 @@ describe("decodeHevyFile", () => {
   });
 
   it("starts a new exercise when the same name comes back after another", () => {
-    const row = (exercise: string, index: number) =>
-      `"Arms","1 Feb 2025, 10:00","1 Feb 2025, 11:00","","${exercise}",,"",${index},"normal",20,10,,,`;
     const text = [
       HEADER,
       row("Bicep Curl (Dumbbell)", 0),
@@ -196,11 +207,17 @@ describe("decodeHevyFile", () => {
   it("refuses a file that is not a Hevy export, or that it cannot read", () => {
     expect(failureOf("")).toMatchObject({ reason: "not_hevy" });
     expect(failureOf('{"format":"svett"}')).toMatchObject({ reason: "not_hevy" });
-    expect(failureOf(`${HEADER}\n"Legs","yesterday","","","Squat",,"",0,"normal",1,1,,,`)).toMatchObject({
+    expect(
+      failureOf(`${HEADER}\n"Legs","yesterday","","","Squat",,"",0,"normal",1,1,,,`),
+    ).toMatchObject({
       reason: "invalid",
       message: 'Row 2 has a start time svett cannot read, "yesterday".',
     });
-    expect(failureOf(`${HEADER}\n"Legs","1 Feb 2025, 10:00","1 Feb 2025, 11:00","","",,"",0,"normal",1,1,,,`)).toMatchObject({
+    expect(
+      failureOf(
+        `${HEADER}\n"Legs","1 Feb 2025, 10:00","1 Feb 2025, 11:00","","",,"",0,"normal",1,1,,,`,
+      ),
+    ).toMatchObject({
       reason: "invalid",
       message: "Row 2 has no exercise.",
     });

@@ -6,13 +6,9 @@ import {
   type LibraryExercise,
   libraryIds,
 } from "../exercise-library.ts";
+import { matchNames } from "../hevy-import.ts";
 import { canonicalJson, Ids, importedId } from "../ids.ts";
-import {
-  type Exercise,
-  ExerciseAliasId,
-  ExerciseId,
-  type ImportSource,
-} from "../schema.ts";
+import { type Exercise, ExerciseAliasId, ExerciseId, type ImportSource } from "../schema.ts";
 import { Sql } from "../sql.ts";
 import {
   countRows,
@@ -23,6 +19,7 @@ import {
   RowNotFoundError,
   selectById,
   selectRows,
+  selectRowsWithDeleted,
   softDeleteRows,
   TABLES,
   updateRow,
@@ -179,6 +176,17 @@ const makeExerciseAliasRepository = Effect.gen(function* () {
       ),
     list: (source: ImportSource) =>
       run(selectRows(TABLES.exerciseAlias, "source = ?", [source], "name, id")),
+    /** Each Hevy exercise name's exercise here, or null for a name you have to match. */
+    matchHevyNames: (names: ReadonlyArray<string>) =>
+      run(
+        Effect.map(
+          Effect.all({
+            exercise: selectRowsWithDeleted(TABLES.exercise),
+            exerciseAlias: selectRows(TABLES.exerciseAlias, "source = 'hevy'"),
+          }),
+          (local) => matchNames(names, local),
+        ),
+      ),
   };
 });
 

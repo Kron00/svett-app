@@ -40,7 +40,10 @@ type Lookup = Pick<Snapshot, "exercise" | "exerciseAlias">;
  * Hevy's names, then the custom exercise an earlier import made for it. A match whose
  * exercise you deleted no longer counts, so the name is asked again.
  */
-export const matchNames = (names: ReadonlyArray<string>, local: Lookup): ReadonlyArray<NameMatch> => {
+export const matchNames = (
+  names: ReadonlyArray<string>,
+  local: Lookup,
+): ReadonlyArray<NameMatch> => {
   const live = new Set(local.exercise.filter((row) => row.deletedAt === null).map((row) => row.id));
   const aliases = new Map(
     local.exerciseAlias
@@ -70,6 +73,9 @@ type Rows = Partial<Record<TableKey, Array<AnyRow>>>;
 
 const add = (rows: Rows, table: TableKey, row: AnyRow) => (rows[table] ??= []).push(row);
 
+const liveOnly = (list: ReadonlyArray<AnyRow> | undefined) =>
+  (list ?? []).filter((row) => row.deletedAt === null);
+
 const byPosition = (a: AnyRow, b: AnyRow) => Number(a["position"]) - Number(b["position"]);
 
 /** The exercises and sets of a workout, without IDs, times or notes. */
@@ -78,20 +84,22 @@ const setsSignature = (
   setsOf: (exerciseRowId: string) => ReadonlyArray<AnyRow>,
 ) =>
   canonicalJson(
-    [...exercises].sort(byPosition).map((exercise) => [
-      exercise["exerciseId"],
-      exercise["supersetGroup"],
-      [...setsOf(exercise.id)]
-        .sort(byPosition)
-        .map((set) => [
-          set["setType"],
-          set["weightKg"],
-          set["reps"],
-          set["durationS"],
-          set["distanceM"],
-          set["rpe"],
-        ]),
-    ]),
+    [...exercises]
+      .sort(byPosition)
+      .map((exercise) => [
+        exercise["exerciseId"],
+        exercise["supersetGroup"],
+        [...setsOf(exercise.id)]
+          .sort(byPosition)
+          .map((set) => [
+            set["setType"],
+            set["weightKg"],
+            set["reps"],
+            set["durationS"],
+            set["distanceM"],
+            set["rpe"],
+          ]),
+      ]),
   );
 
 const summaryOf = (id: string, workout: HevyWorkout): ItemSummary => ({
@@ -114,10 +122,7 @@ const summaryOf = (id: string, workout: HevyWorkout): ItemSummary => ({
  * than a day away, are possible duplicates. Each is imported only when its key is in `keep`.
  * A kept second workout's identity adds its place in the file, so the two get different IDs.
  */
-export const hevyImport = (
-  file: HevyFile,
-  keep: ReadonlySet<string> = new Set(),
-): ImportInput => ({
+export const hevyImport = (file: HevyFile, keep: ReadonlySet<string> = new Set()): ImportInput => ({
   source: "hevy",
   read: (local, at): ImportRows => {
     const rows: Rows = {};
@@ -138,8 +143,6 @@ export const hevyImport = (
       list.push(row);
       setsOf.set(String(row["activityExerciseId"]), list);
     }
-    const liveOnly = (list: ReadonlyArray<AnyRow> | undefined) =>
-      (list ?? []).filter((row) => row.deletedAt === null);
     const signatures = local.activity
       .filter((row) => row.deletedAt === null && row["kind"] === "strength")
       .map((row) => ({
@@ -169,14 +172,17 @@ export const hevyImport = (
         identity = `${workout.start}#${workout.position}`;
         const id = importedId(TABLES.activity.name, "hevy", identity);
         const key = `hevy/${identity}`;
-        duplicates.push({
-          key,
-          summary: summaryOf(id, workout),
-          reason: "same_start",
-          other: summaryOf(first.id, first.workout),
-          kept: keep.has(key),
-        });
-        if (!keep.has(key)) continue;
+        // One kept on an earlier import is a workout here like any other.
+        if (!activities.has(id)) {
+          duplicates.push({
+            key,
+            summary: summaryOf(id, workout),
+            reason: "same_start",
+            other: summaryOf(first.id, first.workout),
+            kept: keep.has(key),
+          });
+          if (!keep.has(key)) continue;
+        }
       }
       const id = importedId(TABLES.activity.name, "hevy", identity);
       if (first === undefined) firstAt.set(workout.start, { id, workout });
@@ -204,8 +210,7 @@ export const hevyImport = (
           "hevy",
           path(`/exercise/${position}`),
         );
-        const cardio =
-          exercise.sets.length > 0 && exercise.sets.every((set) => set.reps === null);
+        const cardio = exercise.sets.length > 0 && exercise.sets.every((set) => set.reps === null);
         add(built, "activityExercise", {
           id: exerciseRowId,
           updatedAt: at,

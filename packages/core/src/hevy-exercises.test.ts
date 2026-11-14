@@ -26,9 +26,9 @@ describe("suggestExercises", () => {
   const library = exerciseLibrary();
 
   it("puts the closest library names first", () => {
-    expect(suggestExercises("Chest Supported Machine Row", library).map(({ name }) => name)).toEqual(
-      expect.arrayContaining([expect.stringMatching(/row/i)]),
-    );
+    expect(
+      suggestExercises("Chest Supported Machine Row", library).map(({ name }) => name),
+    ).toEqual(expect.arrayContaining([expect.stringMatching(/row/i)]));
     expect(suggestExercises("Bench Press (Barbell)", library).map(({ name }) => name)).toContain(
       "Barbell Bench Press - Medium Grip",
     );
