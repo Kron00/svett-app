@@ -109,6 +109,14 @@ export function useNotificationCheck() {
   const run = async () => {
     const { granted } = await Notifications.requestPermissionsAsync();
     if (!granted) return setObservation({ kind: "denied" });
+    // Otherwise the earlier run's notification can show while svett is away and be
+    // taken for this one, which then arrives with svett back in front.
+    const earlier = scheduled.current;
+    scheduled.current = undefined;
+    if (earlier !== undefined) {
+      await Notifications.cancelScheduledNotificationAsync(earlier.id);
+      await Notifications.dismissNotificationAsync(earlier.id);
+    }
     const dueAt = Date.now() + NOTIFICATION_DELAY_S * 1000;
     const id = await Notifications.scheduleNotificationAsync({
       content: { title: "svett", body: "The background notification check worked." },
