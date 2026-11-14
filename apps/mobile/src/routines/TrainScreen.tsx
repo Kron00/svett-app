@@ -244,7 +244,7 @@ export function TrainScreen() {
             symbol="plus"
             onPress={() =>
               void startEmpty().then((started) => {
-                if (started !== null) navigation.navigate("ActiveWorkout");
+                if (started === true) navigation.navigate("ActiveWorkout");
               })
             }
             testID="start-empty-workout"
