@@ -24,7 +24,7 @@ import {
   type SyncedTable,
   type SyncPushResult,
 } from "../sync.ts";
-import { legDay } from "../sync-testing.ts";
+import { legDay, startPushDay, workoutRows } from "../sync-testing.ts";
 import { openTestDatabase, T0 } from "../test-database.ts";
 import { ActivityRepository } from "./activities.ts";
 import { MADE_HERE } from "./origin.ts";
@@ -469,5 +469,80 @@ describe("SyncRepository", () => {
     const server = standIn(() => T0);
     expect(await on.run(syncOnce(server.api))).toEqual({ pushed: 0, held: 7, pulled: 0 });
     expect(await on.run(syncOnce(server.api))).toEqual({ pushed: 0, held: 7, pulled: 0 });
+  });
+});
+
+describe("a workout in progress", () => {
+  type Sent = ReadonlyArray<{ readonly table: SyncedTable; readonly row: unknown }>;
+  /** What `server` got of the workout whose rows are `rows`. */
+  const sentOf = (server: ReturnType<typeof standIn>, rows: Sent) => {
+    const ids = new Set(rows.map(({ row }) => (row as { id: string }).id));
+    return server.sent().filter(({ row }) => ids.has((row as { id: string }).id));
+  };
+  const byRow = (a: Sent[number], b: Sent[number]) =>
+    `${a.table}/${(a.row as { id: string }).id}`.localeCompare(
+      `${b.table}/${(b.row as { id: string }).id}`,
+    );
+
+  it("keeps a workout in progress and every row under it out of what sync sends", async () => {
+    const on = phone();
+    await logLegDay(on);
+    const id = await on.run(startPushDay());
+    const server = standIn(() => T0);
+    expect(await on.run(syncOnce(server.api))).toEqual({ pushed: 7, held: 0, pulled: 0 });
+    const rows = await workoutRows(on.runtime, id);
+    expect(rows.map(({ table }) => table)).toEqual([
+      "activity",
+      "activity_exercise",
+      "activity_exercise",
+      "activity_set",
+      "activity_set",
+      "activity_set",
+      "activity_set",
+    ]);
+    expect(sentOf(server, rows)).toEqual([]);
+    expect(await on.run(Effect.flatMap(sync, (repository) => repository.queuedCount))).toBe(0);
+  });
+
+  it("sends the whole workout once it is finished, rows written while in progress too", async () => {
+    const on = phone();
+    const id = await on.run(startPushDay());
+    const server = standIn(() => T0);
+    await on.run(syncOnce(server.api));
+    await on.run(Effect.flatMap(activities, (repository) => repository.finishWorkout(id)));
+    await on.run(syncOnce(server.api));
+    const rows = await workoutRows(on.runtime, id);
+    const sent = sentOf(server, rows);
+    expect(sent).toHaveLength(7);
+    expect(sent.toSorted(byRow)).toEqual(rows.toSorted(byRow));
+    expect(sent[0]).toMatchObject({
+      table: "activity",
+      row: { id, status: "finished", title: "Push day" },
+    });
+    // Finishing left out the set that was not done, and that deletion goes too.
+    expect(sent.filter(({ row }) => (row as ActivitySet).deletedAt !== null)).toHaveLength(1);
+  });
+
+  it("sends nothing of a workout in progress that is discarded", async () => {
+    const on = phone();
+    const id = await on.run(startPushDay());
+    await on.run(Effect.flatMap(activities, (repository) => repository.remove(id)));
+    const server = standIn(() => T0);
+    expect(await on.run(syncOnce(server.api))).toEqual({ pushed: 0, held: 0, pulled: 0 });
+    expect(server.pushes).toEqual([]);
+  });
+
+  it("takes a finished workout put back in progress out of the queue until it is finished again", async () => {
+    const on = phone();
+    const id = await on.run(startPushDay());
+    await on.run(Effect.flatMap(activities, (repository) => repository.finishWorkout(id)));
+    await on.run(
+      Effect.flatMap(activities, (repository) => repository.update(id, { status: "in_progress" })),
+    );
+    expect(await on.run(Effect.flatMap(sync, (repository) => repository.queuedCount))).toBe(0);
+    await on.run(
+      Effect.flatMap(activities, (repository) => repository.update(id, { status: "finished" })),
+    );
+    expect(await on.run(Effect.flatMap(sync, (repository) => repository.queuedCount))).toBe(7);
   });
 });

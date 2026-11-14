@@ -27,15 +27,20 @@ const parsed = (value: unknown): unknown => {
 const isRecord = (value: unknown): value is Readonly<Record<string, unknown>> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
+/** True when `row` is a workout in progress, a draft that stays on its phone until finished. */
+export const isDraftWorkout = (table: string, row: unknown): boolean =>
+  table === TABLES.activity.name && isRecord(row) && row["status"] === "in_progress";
+
 /**
- * True when a row holds data that stays on the phone. An import journal row does when its
+ * True when a row holds data that stays on the phone. A workout in progress does. An import
+ * journal row does when its
  * record, the rows it wrote or the versions it replaced belong to a coach chat, at any depth,
  * since a journal can keep an older journal it replaced. Such a journal never syncs, and Undo
  * on the phone that made it still works from it. A journal it cannot read counts as holding
  * such data.
  */
 export const staysOnPhone = (table: string, row: unknown): boolean => {
-  if (LOCAL_ONLY.has(table)) return true;
+  if (LOCAL_ONLY.has(table) || isDraftWorkout(table, row)) return true;
   if (table !== TABLES.importChange.name) return false;
   if (!isRecord(row)) return true;
   if (LOCAL_ONLY.has(String(row["itemTable"]))) return true;
@@ -151,6 +156,31 @@ export const deletedAboveOf = <E, R>(
     return earliest;
   });
 
+/**
+ * True when `row` is a workout in progress or sits under one, such as a set of its exercises,
+ * read through `lookup`, which gives a row above it in its encoded form. A row above that is
+ * missing ends the walk.
+ */
+export const inDraftWorkout = <E, R>(
+  table: SyncedTable,
+  row: Readonly<Record<string, unknown>>,
+  lookup: (
+    table: SyncedTable,
+    id: string,
+  ) => Effect.Effect<Readonly<Record<string, unknown>> | undefined, E, R>,
+): Effect.Effect<boolean, E, R> =>
+  Effect.gen(function* () {
+    if (isDraftWorkout(table, row)) return true;
+    let above = parentOf(table, row);
+    for (let depth = 0; above !== undefined && depth < 8; depth++) {
+      const found = yield* lookup(above.table, above.id);
+      if (found === undefined) return false;
+      if (isDraftWorkout(above.table, found)) return true;
+      above = parentOf(above.table, found);
+    }
+    return false;
+  });
+
 /** How far ahead of the server's clock a change may be. */
 export const MAX_CLOCK_AHEAD_MS = 5 * 60 * 1000;
 
@@ -208,9 +238,12 @@ export class InvalidSyncRow extends Data.TaggedError("InvalidSyncRow")<{
   readonly message: string;
 }> {}
 
+export const DRAFT_MESSAGE =
+  "This row is part of a workout in progress, which stays on the phone until it is finished.";
+
 /**
  * Checks a row from outside against its table's schema, as the phone's own database would,
- * and refuses one that holds data that stays on the phone.
+ * and refuses one that holds data that stays on the phone, such as a workout in progress.
  */
 export const checkSyncRow = (
   table: SyncedTable,
@@ -234,10 +267,12 @@ export const checkSyncRow = (
     Effect.mapError((issue) => new InvalidSyncRow({ table, message: issue.message })),
     Effect.filterOrFail(
       (checked) => !staysOnPhone(table, checked.encoded),
-      () =>
+      (checked) =>
         new InvalidSyncRow({
           table,
-          message: "This row keeps part of a coach chat, which stays on the phone.",
+          message: isDraftWorkout(table, checked.encoded)
+            ? DRAFT_MESSAGE
+            : "This row keeps part of a coach chat, which stays on the phone.",
         }),
     ),
   );

@@ -5,6 +5,8 @@ import {
   checkSyncRow,
   deletedAboveOf,
   deletionMatters,
+  DRAFT_MESSAGE,
+  inDraftWorkout,
   isTooFarAhead,
   MAX_SYNC_ROWS,
   mergeChange,
@@ -24,15 +26,36 @@ export class InvalidRow extends Data.TaggedError("InvalidRow")<{
   readonly message: string;
 }> {}
 
-/** Checks each row against its table's schema, as the phone's own database would. */
-export const checkRows = (push: SyncPush) =>
-  Effect.forEach(push.rows, ({ table, row }, index) =>
-    checkSyncRow(table, row).pipe(
-      Effect.mapError((invalid) => new InvalidRow({ table, index, message: invalid.message })),
-    ),
-  );
-
 const key = (table: string, id: string) => `${table}/${id}`;
+
+const isRecord = (value: unknown): value is Readonly<Record<string, unknown>> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
+/**
+ * Checks each row against its table's schema, as the phone's own database would. A workout in
+ * progress stays on its phone, so this refuses one, and every row the push puts under one,
+ * whatever their order. The server never stores a workout in progress, so a row whose
+ * workout it already holds is never under one.
+ */
+export const checkRows = (push: SyncPush) =>
+  Effect.gen(function* () {
+    const pushed = new Map(
+      push.rows.flatMap(({ table, row }) =>
+        isRecord(row) && typeof row["id"] === "string" ? [[key(table, row["id"]), row]] : [],
+      ),
+    );
+    const lookup = (table: SyncedTable, id: string) => Effect.succeed(pushed.get(key(table, id)));
+    for (const [index, { table, row }] of push.rows.entries()) {
+      if (isRecord(row) && (yield* inDraftWorkout(table, row, lookup))) {
+        return yield* new InvalidRow({ table, index, message: DRAFT_MESSAGE });
+      }
+    }
+    return yield* Effect.forEach(push.rows, ({ table, row }, index) =>
+      checkSyncRow(table, row).pipe(
+        Effect.mapError((invalid) => new InvalidRow({ table, index, message: invalid.message })),
+      ),
+    );
+  });
 
 export interface AccountRowsShape {
   /** Records that the account exists. Safe to call on every request. */

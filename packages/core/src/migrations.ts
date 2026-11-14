@@ -139,9 +139,9 @@ const syncedAtVersion8 = [
 // applying rows from the server or the bundled exercise library is being seeded, which every
 // phone does for itself. A row queued again gets a new mark, so a confirmation of the copy
 // sent before leaves the newer change queued.
-const queueTrigger = (table: string, event: "INSERT" | "UPDATE") => `
+const queueTrigger = (table: string, event: "INSERT" | "UPDATE", unless?: string) => `
 CREATE TRIGGER ${table}_queue_${event.toLowerCase()} AFTER ${event} ON ${table}
-WHEN (SELECT quiet FROM sync_state) = 0
+WHEN (SELECT quiet FROM sync_state) = 0${unless === undefined ? "" : ` AND NOT (${unless})`}
 BEGIN
   UPDATE sync_state SET mark = mark + 1;
   -- The outer statement's conflict policy overrides one written here, so no OR REPLACE.
@@ -178,6 +178,70 @@ ${syncedAtVersion8
 ${syncedAtVersion8.flatMap((table) => [queueTrigger(table, "INSERT"), queueTrigger(table, "UPDATE")]).join("\n")}
 `;
 
+// A workout in progress is a draft that stays on the phone until it is finished. These say,
+// for a row of each workout table, frozen as they were at migration 9, whether the workout it
+// belongs to is in progress.
+const inDraft: Readonly<Record<string, (row: string) => string>> = {
+  activity: (target) => `${target}.status = 'in_progress'`,
+  activity_exercise: (target) =>
+    `EXISTS (SELECT 1 FROM activity WHERE id = ${target}.activity_id AND status = 'in_progress')`,
+  activity_track: (target) =>
+    `EXISTS (SELECT 1 FROM activity WHERE id = ${target}.activity_id AND status = 'in_progress')`,
+  activity_set: (target) =>
+    `EXISTS (SELECT 1 FROM activity_exercise e JOIN activity a ON a.id = e.activity_id
+      WHERE e.id = ${target}.activity_exercise_id AND a.status = 'in_progress')`,
+  activity_sample: (target) =>
+    `EXISTS (SELECT 1 FROM activity_track t JOIN activity a ON a.id = t.activity_id
+      WHERE t.id = ${target}.activity_track_id AND a.status = 'in_progress')`,
+};
+
+/** Every row of the workout `id`, deleted ones too, as (table_name, row_id). */
+const workoutRows = (id: string) => `
+  SELECT 'activity' AS table_name, id AS row_id FROM activity WHERE id = ${id}
+  UNION ALL SELECT 'activity_exercise', id FROM activity_exercise WHERE activity_id = ${id}
+  UNION ALL SELECT 'activity_set', id FROM activity_set
+    WHERE activity_exercise_id IN (SELECT id FROM activity_exercise WHERE activity_id = ${id})
+  UNION ALL SELECT 'activity_track', id FROM activity_track WHERE activity_id = ${id}
+  UNION ALL SELECT 'activity_sample', id FROM activity_sample
+    WHERE activity_track_id IN (SELECT id FROM activity_track WHERE activity_id = ${id})`;
+
+// Writes to a workout in progress queue nothing. Finishing it queues every row it has, the
+// ones written while it was in progress too, and a finished workout put back in progress
+// takes its rows out of the queue again. Discarding one sends nothing, since nothing of it
+// was queued. The rows a database already queued for a workout in progress leave the queue.
+const localDrafts = `
+${Object.keys(inDraft)
+  .flatMap((table) => [
+    `DROP TRIGGER ${table}_queue_insert;`,
+    `DROP TRIGGER ${table}_queue_update;`,
+  ])
+  .join("\n")}
+${Object.entries(inDraft)
+  .flatMap(([table, draft]) =>
+    table === "activity"
+      ? [queueTrigger(table, "INSERT", draft("NEW"))]
+      : [queueTrigger(table, "INSERT", draft("NEW")), queueTrigger(table, "UPDATE", draft("NEW"))],
+  )
+  .join("\n")}
+CREATE TRIGGER activity_queue_update AFTER UPDATE ON activity
+WHEN (SELECT quiet FROM sync_state) = 0
+BEGIN
+  UPDATE sync_state SET mark = mark + 1;
+  DELETE FROM sync_outbox WHERE (table_name, row_id) IN (${workoutRows("NEW.id")})
+    AND (OLD.status = 'in_progress' OR NEW.status = 'in_progress');
+  DELETE FROM sync_outbox WHERE table_name = 'activity' AND row_id = NEW.id;
+  INSERT INTO sync_outbox (table_name, row_id, mark)
+    SELECT table_name, row_id, (SELECT mark FROM sync_state) FROM (${workoutRows("NEW.id")})
+    WHERE NEW.status <> 'in_progress' AND (OLD.status = 'in_progress' OR table_name = 'activity');
+END;
+${Object.entries(inDraft)
+  .map(
+    ([table, draft]) =>
+      `DELETE FROM sync_outbox WHERE table_name = '${table}' AND row_id IN (SELECT id FROM ${table} AS queued WHERE ${draft("queued")});`,
+  )
+  .join("\n")}
+`;
+
 /** Applied in order and never edited once released. A change to the schema is a new migration. */
 export const MIGRATIONS: ReadonlyArray<Migration> = [
   { version: 1, name: "initial", sql: initial },
@@ -188,6 +252,7 @@ export const MIGRATIONS: ReadonlyArray<Migration> = [
   { version: 6, name: "rest timer", sql: restTimer },
   { version: 7, name: "plates and bars", sql: gear },
   { version: 8, name: "sync", sql: sync },
+  { version: 9, name: "workout drafts stay on the phone", sql: localDrafts },
 ];
 
 export class DatabaseTooNewError extends Data.TaggedError("DatabaseTooNewError")<{

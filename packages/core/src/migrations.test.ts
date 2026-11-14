@@ -197,4 +197,41 @@ describe("migrate", () => {
       empty: "weight_reps",
     });
   });
+  it.each([7, 8])(
+    "keeps a workout in progress out of the sync queue of a database at version %i that holds one",
+    async (version) => {
+      const { database, run } = open();
+      await run(migrate(MIGRATIONS.slice(0, version)));
+      for (const [id, status] of [
+        ["draft", "in_progress"],
+        ["done", "finished"],
+      ]) {
+        database.exec(
+          `INSERT INTO activity (id, updated_at, kind, started_at, duration_s, title, notes, source, status)
+           VALUES ('${id}', 1, 'strength', 1, 60, 'Push', '', 'svett', '${status}');
+           INSERT INTO activity_exercise (id, updated_at, activity_id, exercise_id, position, notes)
+           VALUES ('${id}-e', 1, '${id}', 'x', 0, '');
+           INSERT INTO activity_set (id, updated_at, activity_exercise_id, position, set_type, reps)
+           VALUES ('${id}-s', 1, '${id}-e', 0, 'normal', 5);
+           INSERT INTO activity_track (id, updated_at, activity_id, hide_start_m, hide_end_m)
+           VALUES ('${id}-t', 1, '${id}', 0, 0);
+           INSERT INTO activity_sample (id, updated_at, activity_track_id, recorded_at, kind)
+           VALUES ('${id}-p', 1, '${id}-t', 1, 'location')`,
+        );
+      }
+      const queued = () =>
+        database
+          .prepare("SELECT row_id FROM sync_outbox ORDER BY row_id")
+          .all()
+          .map((row) => row["row_id"]);
+      const done = ["done", "done-e", "done-p", "done-s", "done-t"];
+      await run(migrate());
+      expect(queued()).toEqual(done);
+
+      database.exec("UPDATE activity_set SET reps = 6 WHERE id = 'draft-s'");
+      expect(queued()).toEqual(done);
+      database.exec("UPDATE activity SET status = 'finished' WHERE id = 'draft'");
+      expect(queued()).toEqual([...done, "draft", "draft-e", "draft-p", "draft-s", "draft-t"]);
+    },
+  );
 });

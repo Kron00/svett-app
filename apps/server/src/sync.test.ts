@@ -28,10 +28,13 @@ import {
   Ids,
   type SqlDriver,
   SyncFailed,
+  DRAFT_MESSAGE,
 } from "@svett/core";
 import {
   legDay,
   manualClock,
+  startPushDay,
+  workoutRows,
   openNodeDatabase,
   openTestDatabase,
   syncedRows,
@@ -588,5 +591,71 @@ describe("sync", { timeout: 120_000 }, () => {
     expect(await syncedRows(again.runtime)).toEqual(await source.rows());
     await again.runtime.dispose();
     again.database.close();
+  });
+  it("refuses a workout in progress and every row under it, whatever their order", async () => {
+    const server = await startServer();
+    const a = openPhone(server, ALICE, 1);
+    const id = await a.run(startPushDay());
+    const rows = await workoutRows(a.runtime, id);
+    const put = async (push: typeof rows) => {
+      const response = await fetch(`${server}/v1/rows`, {
+        method: "PUT",
+        headers: {
+          authorization: `Bearer ${await issuer.sessionToken(ALICE)}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ rows: push }),
+      });
+      return { status: response.status, body: await response.json() };
+    };
+    const answers = await Promise.all(
+      rows.map((row) => put([row, ...rows.filter((other) => other !== row)])),
+    );
+    expect(answers).toEqual(
+      rows.map(({ table }) => ({
+        status: 400,
+        body: { error: "invalid_row", table, index: 0, message: DRAFT_MESSAGE },
+      })),
+    );
+    const other = openPhone(server, ALICE, 2);
+    expect(await other.sync()).toEqual({ pushed: 0, held: 0, pulled: 0 });
+  });
+
+  it("keeps each phone's workout in progress to itself and brings each one whole to the other once finished", async () => {
+    const server = await startServer();
+    const a = openPhone(server, ALICE, 1);
+    const b = openPhone(server, ALICE, 2);
+    const fromA = await a.run(startPushDay("Push"));
+    await b.at(T0 + MINUTE);
+    const fromB = await b.run(startPushDay("Pull"));
+    await syncAll([a, b]);
+    expect(await activityIds(a)).toEqual([fromA]);
+    expect(await activityIds(b)).toEqual([fromB]);
+    const inProgress = (phone: Phone) =>
+      phone.run(
+        Effect.flatMap(activities, (repository) =>
+          Effect.map(
+            repository.inProgress,
+            Option.map(({ activity }) => activity.id),
+          ),
+        ),
+      );
+    expect(await inProgress(a)).toEqual(Option.some(fromA));
+    expect(await inProgress(b)).toEqual(Option.some(fromB));
+
+    await a.at(T0 + 2 * MINUTE);
+    await a.run(Effect.flatMap(activities, (repository) => repository.finishWorkout(fromA)));
+    await syncAll([a, b]);
+    expect(await workoutRows(b.runtime, fromA)).toEqual(await workoutRows(a.runtime, fromA));
+    expect(await workoutRows(a.runtime, fromB)).toEqual([]);
+    expect(await inProgress(b)).toEqual(Option.some(fromB));
+
+    await b.at(T0 + 3 * MINUTE);
+    await b.run(Effect.flatMap(activities, (repository) => repository.finishWorkout(fromB)));
+    await syncAll([a, b]);
+    expect(await workoutRows(a.runtime, fromB)).toEqual(await workoutRows(b.runtime, fromB));
+    expect(await workoutRows(a.runtime, fromB)).toHaveLength(7);
+    expect(await a.rows()).toEqual(await b.rows());
+    expect(await counts(a)).toEqual({ activities: 2, sets: 6 });
   });
 });
