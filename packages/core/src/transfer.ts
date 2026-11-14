@@ -42,6 +42,7 @@ export const PARENT: Readonly<
   importBatch: null,
   importChange: { table: "importBatch", key: "importBatchId" },
   exercise: null,
+  exerciseAlias: null,
   activity: null,
   activityExercise: { table: "activity", key: "activityId" },
   activitySet: { table: "activityExercise", key: "activityExerciseId" },
@@ -58,8 +59,8 @@ export const PARENT: Readonly<
 
 /**
  * Keys that point at a row of another record, such as a workout exercise's exercise. Undo
- * keeps a record that a live row still points at, so no live row is left pointing at a
- * deleted one.
+ * keeps a record that a live row still points at, and an import that brings such a row back
+ * also brings back what it points at, so no live row is left pointing at a deleted one.
  */
 export const REFERENCES: ReadonlyArray<{
   readonly table: TableKey;
@@ -68,6 +69,7 @@ export const REFERENCES: ReadonlyArray<{
 }> = [
   { table: "activityExercise", key: "exerciseId", target: "exercise" },
   { table: "routineExercise", key: "exerciseId", target: "exercise" },
+  { table: "exerciseAlias", key: "exerciseId", target: "exercise" },
   { table: "routine", key: "folderId", target: "folder" },
   { table: "activity", key: "routineId", target: "routine" },
   { table: "proposal", key: "coachMessageId", target: "coachMessage" },
@@ -101,7 +103,7 @@ const fieldsOf = (raw: unknown): Fields | undefined =>
   typeof raw === "object" && raw !== null && !Array.isArray(raw) ? (raw as Fields) : undefined;
 
 /**
- * Each exercise's set fields as migration 4 gave an exercise logged before them, from all its
+ * Each exercise's set fields as migration 5 gave an exercise logged before them, from all its
  * sets, deleted ones too.
  */
 const setFieldsBySets = (sets: ReadonlyArray<unknown>) => {
@@ -221,6 +223,7 @@ const NOUN: Readonly<Record<TableKey, readonly [one: string, other: string]>> = 
   importBatch: ["import", "imports"],
   importChange: ["import record", "import records"],
   exercise: ["exercise", "exercises"],
+  exerciseAlias: ["exercise name match", "exercise name matches"],
   activity: ["workout", "workouts"],
   activityExercise: ["workout exercise", "workout exercises"],
   activitySet: ["workout set", "workout sets"],
@@ -368,6 +371,7 @@ export const summarize = (item: Item): ItemSummary => {
       };
     case "folder":
     case "exercise":
+    case "exerciseAlias":
       return { ...base, title: text(top["name"]) || fallback, at: null };
     case "measurement":
       return {
@@ -400,15 +404,61 @@ interface Writes {
   /** The rows here that `writes` replace, deleted or not. */
   readonly replaced: TableRows;
   readonly summary: ItemSummary;
+  /** The keys of the `restore` records this record names, which come back with it. */
+  readonly requires: ReadonlyArray<string>;
 }
 
+/**
+ * `restore` is a record deleted here that the file holds live and another record in the file
+ * names, such as an exercise an Undo removed with its workouts. It is not listed on its own.
+ * It comes back with any record that names it, so no workout points to a deleted exercise.
+ */
 export type PlannedItem =
   | ({ readonly status: "new" } & Writes)
   | ({ readonly status: "changed" } & Writes)
+  | ({ readonly status: "restore" } & Writes)
   | { readonly status: "unchanged"; readonly summary: ItemSummary }
   | { readonly status: "skipped"; readonly summary: ItemSummary };
 
+/**
+ * A record the file holds that may be one already here or another in the file: a workout with
+ * the same start as another in the file, one with a new start and the same sets as one here,
+ * or one whose time overlaps a workout here from another source. It is imported only when you
+ * choose it.
+ */
+export interface PossibleDuplicate {
+  readonly key: string;
+  readonly summary: ItemSummary;
+  readonly reason: "same_start" | "same_sets" | "overlap";
+  /** The record it may repeat. */
+  readonly other: ItemSummary;
+  readonly kept: boolean;
+}
+
+/** What an import brings: rows by table, and the records held back as possible duplicates. */
+export interface ImportRows {
+  readonly tables: TableRows;
+  readonly duplicates: ReadonlyArray<PossibleDuplicate>;
+}
+
+/**
+ * Something to import from. A svett file's rows carry their own IDs and arrive as they are.
+ * Another app's file gives rows that depend on what is here, such as the exercises its names
+ * match, so it reads them from the rows here, at the time of the import.
+ */
+export interface ImportInput {
+  readonly source: ImportSource;
+  readonly read: (local: Snapshot, at: EpochMillis) => ImportRows;
+}
+
+export const svettFileInput = (file: { readonly tables: TableRows }): ImportInput => ({
+  source: "svett_file",
+  read: () => ({ tables: file.tables, duplicates: [] }),
+});
+
 export interface ImportPlan {
+  /** Records held back as possible duplicates, kept or not. */
+  readonly duplicates: ReadonlyArray<PossibleDuplicate>;
   readonly items: ReadonlyArray<PlannedItem>;
   /** New records per table, in table order, for the tables that have any. */
   readonly added: ReadonlyArray<{ readonly table: TableKey; readonly count: number }>;
@@ -445,16 +495,28 @@ export const isLive = (rows: TableRows) =>
  * import writes only the file's rows. A row the file leaves out stays as it is here, and a
  * deletion travels as a row marked deleted. A record none of whose rows are here is new. One
  * whose rows all match, however long ago each changed, is unchanged and left alone. Any other
- * is changed, and the preview lists it.
+ * is changed, and the preview lists it, unless it is a deleted record another one names, which
+ * comes back with that one.
  */
-export const planImport = (local: TableRows, incoming: TableRows): ImportPlan => {
+export const planImport = (
+  local: TableRows,
+  incoming: TableRows,
+  duplicates: ReadonlyArray<PossibleDuplicate> = [],
+): ImportPlan => {
   const lookup = Object.fromEntries(
     TABLE_KEYS.map((key) => [key, [...(incoming[key] ?? []), ...(local[key] ?? [])]]),
   ) as TableRows;
   const here = new Map(
     TABLE_KEYS.map((key) => [key, new Map((local[key] ?? []).map((row) => [row.id, row]))]),
   );
-  const items: Array<PlannedItem> = [];
+  const planned: Array<
+    | { readonly status: "unchanged"; readonly summary: ItemSummary }
+    | { readonly status: "skipped"; readonly summary: ItemSummary }
+    | ({ readonly status: "new" | "changed"; readonly restorable: boolean } & Omit<
+        Writes,
+        "requires"
+      >)
+  > = [];
   for (const item of groupItems(incoming, lookup).values()) {
     const summary = summarize(item);
     if (
@@ -464,7 +526,7 @@ export const planImport = (local: TableRows, incoming: TableRows): ImportPlan =>
       ) ||
       isDraft(item.table, here.get(item.table)?.get(item.id))
     ) {
-      items.push({ status: "skipped", summary });
+      planned.push({ status: "skipped", summary });
       continue;
     }
     const writes: Partial<Record<TableKey, Array<AnyRow>>> = {};
@@ -479,11 +541,59 @@ export const planImport = (local: TableRows, incoming: TableRows): ImportPlan =>
         if (current !== undefined) (replaced[table] ??= []).push(current);
       }
     }
-    if (Object.keys(writes).length === 0) items.push({ status: "unchanged", summary });
+    if (Object.keys(writes).length === 0) planned.push({ status: "unchanged", summary });
     else {
-      items.push({ status: yours ? "changed" : "new", incoming: item, writes, replaced, summary });
+      const root = here.get(item.table)?.get(item.id);
+      const top = item.rows[item.table]?.find((row) => row.id === item.id);
+      planned.push({
+        status: yours ? "changed" : "new",
+        restorable: root !== undefined && root.deletedAt !== null && top?.deletedAt === null,
+        incoming: item,
+        writes,
+        replaced,
+        summary,
+      });
     }
   }
+  const restorable = new Set(
+    planned.flatMap((item) =>
+      item.status === "changed" && item.restorable ? [item.summary.key] : [],
+    ),
+  );
+  const requiresOf = (item: Item) => {
+    const keys = new Set<string>();
+    for (const table of TABLE_KEYS) {
+      for (const row of item.rows[table] ?? []) {
+        if (row.deletedAt !== null) continue;
+        for (const reference of REFERENCES) {
+          if (reference.table !== table) continue;
+          const key = itemKey(reference.target, String(row[reference.key]));
+          if (key !== item.key && restorable.has(key)) keys.add(key);
+        }
+      }
+    }
+    return [...keys];
+  };
+  const requires = new Map(
+    planned.flatMap((item) =>
+      item.status === "unchanged" || item.status === "skipped"
+        ? []
+        : [[item.summary.key, requiresOf(item.incoming)] as const],
+    ),
+  );
+  const required = new Set([...requires.values()].flat());
+  const items = planned.map((item): PlannedItem => {
+    if (item.status === "unchanged" || item.status === "skipped") return item;
+    const key = item.summary.key;
+    return {
+      status: required.has(key) ? "restore" : item.status,
+      incoming: item.incoming,
+      writes: item.writes,
+      replaced: item.replaced,
+      summary: item.summary,
+      requires: requires.get(key) ?? [],
+    };
+  });
   const added = TABLE_KEYS.map((table) => ({
     table,
     count: items.filter(
@@ -491,6 +601,7 @@ export const planImport = (local: TableRows, incoming: TableRows): ImportPlan =>
     ).length,
   })).filter(({ count }) => count > 0);
   return {
+    duplicates,
     items,
     added,
     deleted: items.filter((item) => item.status === "new" && !isLive(item.writes)).length,
@@ -552,7 +663,10 @@ export const journalProblem = (change: ImportChange): string | undefined => {
 };
 
 export const isNothingToImport = (plan: ImportPlan): boolean =>
-  plan.added.length === 0 && plan.deleted === 0 && plan.changed.length === 0;
+  plan.added.length === 0 &&
+  plan.deleted === 0 &&
+  plan.changed.length === 0 &&
+  plan.duplicates.length === 0;
 
 export const recordsLabel = (count: number): string =>
   `${count.toLocaleString("en-US")} ${count === 1 ? "record" : "records"}`;
@@ -579,6 +693,33 @@ export const importOutcome = ({
   return replaced === 0
     ? `Added ${recordsLabel(added)}.`
     : `Added ${recordsLabel(added)} and took ${took}.`;
+};
+
+/**
+ * The records an import writes for the ones you picked: each picked record, and the `restore`
+ * records it names, with the ones those name in turn, such as the import an exercise came from.
+ */
+export const withRequired = (
+  items: ReadonlyArray<PlannedItem>,
+  picked: ReadonlyArray<PlannedItem>,
+): ReadonlyArray<PlannedItem> => {
+  const restores = new Map(
+    items.flatMap((item) => (item.status === "restore" ? [[item.summary.key, item] as const] : [])),
+  );
+  const required = new Set<string>();
+  const pending = picked.flatMap((item) =>
+    item.status === "unchanged" || item.status === "skipped" ? [] : item.requires,
+  );
+  for (let key = pending.pop(); key !== undefined; key = pending.pop()) {
+    const item = restores.get(key);
+    if (item === undefined || required.has(key)) continue;
+    required.add(key);
+    pending.push(...item.requires);
+  }
+  return [
+    ...items.filter((item) => item.status === "restore" && required.has(item.summary.key)),
+    ...picked,
+  ];
 };
 
 /** One change of an import as Undo sees it. */

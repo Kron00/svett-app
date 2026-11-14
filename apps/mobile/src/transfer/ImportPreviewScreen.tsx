@@ -1,14 +1,22 @@
 import { type RouteProp, useNavigation, useRoute } from "@react-navigation/native";
 import {
   countLabel,
+  decodeHevyFile,
   decodeSvettFile,
+  exerciseNames,
+  type HevyFile,
+  hevyFileLabel,
+  hevyImport,
   type ImportPlan,
   type ImportResult,
   importOutcome,
   isNothingToImport,
+  type PossibleDuplicate,
   recordsLabel,
   skippedLabel,
+  suggestExercises,
   type SvettFile,
+  type ToInstant,
 } from "@svett/core";
 import { Option, Result } from "effect";
 import { useEffect, useState } from "react";
@@ -19,16 +27,43 @@ import { AppText } from "../ui/AppText";
 import { Button } from "../ui/Button";
 import { EmptyState } from "../ui/EmptyState";
 import { ListRow, ListSection } from "../ui/List";
-import { changeTransfers, type ImportFileSource, readImportFile, withTransfers } from "./files";
+import {
+  changeTransfers,
+  type ImportFileSource,
+  readImportFile,
+  withAliases,
+  withExercises,
+  withTransfers,
+} from "./files";
 import { formatDay } from "./format";
+import { HevyMatch, type MatchExercise, type NameChoices, type UnknownName } from "./HevyMatch";
+
+type Loaded =
+  | { readonly kind: "svett"; readonly file: SvettFile }
+  | { readonly kind: "hevy"; readonly file: HevyFile };
 
 type State =
   | { readonly kind: "reading" }
   | { readonly kind: "refused"; readonly message: string }
-  | { readonly kind: "ready"; readonly file: SvettFile; readonly plan: ImportPlan }
+  | {
+      readonly kind: "matching";
+      readonly file: HevyFile;
+      readonly names: ReadonlyArray<UnknownName>;
+      readonly exercises: ReadonlyArray<MatchExercise>;
+    }
+  | {
+      readonly kind: "ready";
+      readonly loaded: Loaded;
+      readonly plan: ImportPlan;
+      readonly keep: ReadonlySet<string>;
+    }
   | { readonly kind: "importing" }
   | { readonly kind: "imported"; readonly result: Option.Option<ImportResult> }
   | { readonly kind: "failed"; readonly message: string };
+
+/** Hevy writes the phone's clock time with no zone, so svett reads it in this phone's zone. */
+const phoneClock: ToInstant = (time) =>
+  new Date(time.year, time.month - 1, time.day, time.hour, time.minute, time.second).getTime();
 
 const sourceOf = (params: RootStackParamList["ImportPreview"]): ImportFileSource | null =>
   params.uri === undefined
@@ -37,50 +72,123 @@ const sourceOf = (params: RootStackParamList["ImportPreview"]): ImportFileSource
       : { file: params.file }
     : { uri: params.uri };
 
-/** Reads the file, then waits for Import. */
-async function preview(source: ImportFileSource | null): Promise<State> {
+const inputOf = (loaded: Loaded, keep: ReadonlySet<string>) =>
+  loaded.kind === "svett" ? loaded.file : hevyImport(loaded.file, keep);
+
+const plan = async (loaded: Loaded, keep: ReadonlySet<string> = new Set()): Promise<State> => ({
+  kind: "ready",
+  loaded,
+  keep,
+  plan: await withTransfers((transfers) => transfers.previewImport(inputOf(loaded, keep))),
+});
+
+/**
+ * The names no earlier choice, bundled match or earlier import accounts for, with every
+ * exercise here to match them to.
+ */
+async function unknownNames(file: HevyFile): Promise<{
+  readonly names: ReadonlyArray<UnknownName>;
+  readonly exercises: ReadonlyArray<MatchExercise>;
+}> {
+  const matches = await withAliases((aliases) => aliases.matchHevyNames(exerciseNames(file)));
+  const unknown = matches.filter((match) => match.exerciseId === null);
+  if (unknown.length === 0) return { names: [], exercises: [] };
+  const exercises = await withExercises((repository) => repository.list);
+  return {
+    names: unknown.map(({ name }) => ({ name, suggestions: suggestExercises(name, exercises) })),
+    exercises,
+  };
+}
+
+/** Reads the file, then asks for unknown exercise names, then waits for Import. */
+async function preview(source: ImportFileSource | null, kind: "svett" | "hevy"): Promise<State> {
   if (source === null) return { kind: "refused", message: "No file was chosen." };
   const text = await readImportFile(source);
-  const decoded = decodeSvettFile(text);
+  if (kind === "svett") {
+    const decoded = decodeSvettFile(text);
+    if (Result.isFailure(decoded)) return { kind: "refused", message: decoded.failure.message };
+    return plan({ kind: "svett", file: decoded.success });
+  }
+  const decoded = decodeHevyFile(text, phoneClock);
   if (Result.isFailure(decoded)) return { kind: "refused", message: decoded.failure.message };
   const file = decoded.success;
-  const plan = await withTransfers((transfers) => transfers.previewImport(file));
-  return { kind: "ready", file, plan };
+  if (file.workouts.length === 0) {
+    return { kind: "refused", message: "This Hevy export has no workouts." };
+  }
+  const { names, exercises } = await unknownNames(file);
+  return names.length > 0
+    ? { kind: "matching", file, names, exercises }
+    : plan({ kind: "hevy", file });
+}
+
+const duplicateReason = ({ reason, other }: PossibleDuplicate) => {
+  const day = other.at === null ? "" : `, ${formatDay(other.at)}`;
+  switch (reason) {
+    case "same_start":
+      return `Same start as ${other.title}`;
+    case "same_sets":
+      return `Same sets as ${other.title}${day}`;
+    case "overlap":
+      return `Overlaps ${other.title}${day}`;
+  }
+};
+
+function FileSummary({ loaded }: { readonly loaded: Loaded }) {
+  if (loaded.kind === "svett") {
+    return (
+      <AppText tone="secondary" className="px-gutter">
+        A svett export from {formatDay(loaded.file.exportedAt)} with{" "}
+        {recordsLabel(loaded.file.rows)}.
+      </AppText>
+    );
+  }
+  return (
+    <View className="gap-2 px-gutter">
+      <AppText tone="secondary" testID="hevy-summary">
+        {hevyFileLabel(loaded.file)}
+      </AppText>
+      {loaded.file.localTimes ? (
+        <AppText variant="subheadline" tone="secondary">
+          Hevy writes start times without a time zone, so svett reads them in this phone's zone.
+        </AppText>
+      ) : null}
+    </View>
+  );
 }
 
 function Plan({
-  file,
-  plan,
+  loaded,
+  plan: current,
+  onToggleDuplicate,
   onImport,
 }: {
-  readonly file: SvettFile;
+  readonly loaded: Loaded;
   readonly plan: ImportPlan;
+  readonly onToggleDuplicate: (key: string) => void;
   readonly onImport: (take: ReadonlyArray<string>) => void;
 }) {
   const [take, setTake] = useState<ReadonlySet<string>>(new Set());
   const toggle = (key: string) =>
-    setTake((current) => {
-      const next = new Set(current);
+    setTake((chosen) => {
+      const next = new Set(chosen);
       if (!next.delete(key)) next.add(key);
       return next;
     });
 
   return (
     <>
-      <AppText tone="secondary" className="px-gutter">
-        A svett export from {formatDay(file.exportedAt)} with {recordsLabel(file.rows)}.
-      </AppText>
-      {plan.skipped === 0 ? null : (
+      <FileSummary loaded={loaded} />
+      {current.skipped === 0 ? null : (
         <AppText
           variant="subheadline"
           tone="secondary"
           className="px-gutter"
           testID="import-skipped"
         >
-          {skippedLabel(plan.skipped)}
+          {skippedLabel(current.skipped)}
         </AppText>
       )}
-      {isNothingToImport(plan) ? (
+      {isNothingToImport(current) ? (
         <View testID="import-nothing-new">
           <EmptyState
             symbol="checkmark.circle"
@@ -90,27 +198,28 @@ function Plan({
         </View>
       ) : (
         <>
-          {plan.added.length === 0 ? null : (
+          {current.added.length === 0 ? null : (
             <View testID="import-new">
               <ListSection header="New">
-                {plan.added.map(({ table, count }) => (
+                {current.added.map(({ table, count }) => (
                   <ListRow key={table} title={countLabel(table, count)} />
                 ))}
               </ListSection>
             </View>
           )}
-          {plan.changed.length === 0 ? null : (
+          {current.changed.length === 0 ? null : (
             <View testID="import-changed">
               <ListSection
                 header="Changed since your copy"
                 footer="svett keeps yours unless you switch on the file's version. Undo puts yours back."
               >
-                {plan.changed.map((item) => (
+                {current.changed.map((item, index) => (
                   <ListRow
                     key={item.key}
                     title={item.title}
                     subtitle={item.at === null ? undefined : formatDay(item.at)}
                     value={take.has(item.key) ? "File's version" : "Yours"}
+                    testID={`import-changed-${index}`}
                     trailing={{
                       type: "switch",
                       value: take.has(item.key),
@@ -121,14 +230,42 @@ function Plan({
               </ListSection>
             </View>
           )}
-          {plan.deleted === 0 ? null : (
+          {current.duplicates.length === 0 ? null : (
+            <View testID="import-duplicates">
+              <ListSection
+                header="Possible duplicates"
+                footer="svett leaves these out unless you switch them on."
+              >
+                {current.duplicates.map((duplicate, index) => (
+                  <ListRow
+                    key={duplicate.key}
+                    title={duplicate.summary.title}
+                    subtitle={`${duplicate.summary.at === null ? "" : `${formatDay(duplicate.summary.at)}. `}${duplicateReason(duplicate)}`}
+                    value={duplicate.kept ? "Import" : "Leave out"}
+                    testID={`import-duplicate-${index}`}
+                    trailing={{
+                      type: "switch",
+                      value: duplicate.kept,
+                      onValueChange: () => onToggleDuplicate(duplicate.key),
+                    }}
+                  />
+                ))}
+              </ListSection>
+            </View>
+          )}
+          {current.deleted === 0 ? null : (
             <AppText variant="subheadline" tone="secondary" className="px-gutter">
-              {recordsLabel(plan.deleted)} deleted before the export stay deleted here.
+              {recordsLabel(current.deleted)} deleted before the export stay deleted here.
             </AppText>
           )}
-          {plan.unchanged === 0 ? null : (
-            <AppText variant="subheadline" tone="secondary" className="px-gutter">
-              {recordsLabel(plan.unchanged)} in the file are already here and stay as they are.
+          {current.unchanged === 0 ? null : (
+            <AppText
+              variant="subheadline"
+              tone="secondary"
+              className="px-gutter"
+              testID="import-unchanged"
+            >
+              {recordsLabel(current.unchanged)} in the file are already here and stay as they are.
             </AppText>
           )}
           <View className="flex-row px-gutter">
@@ -145,31 +282,59 @@ function Plan({
   );
 }
 
-/** What a svett file adds and changes, before anything is saved. */
+/** What a svett file or a Hevy export adds and changes, before anything is saved. */
 export function ImportPreviewScreen() {
   const navigation = useNavigation<RootNavigation>();
   const { params } = useRoute<RouteProp<RootStackParamList, "ImportPreview">>();
-  const [state, setState] = useState<State>({ kind: "reading" });
-  const { uri, file: fileName } = params;
+  // A link to the file already on screen reuses this screen with a new params object. State
+  // read for earlier params is never shown, so each navigation here starts a fresh preview,
+  // also after an import of the same file.
+  const [shown, show] = useState<{ readonly params: typeof params; readonly state: State }>({
+    params,
+    state: { kind: "reading" },
+  });
+  const state: State = shown.params === params ? shown.state : { kind: "reading" };
+  const setState = (next: State) => show({ params, state: next });
 
   useEffect(() => {
     let current = true;
-    preview(sourceOf({ uri, file: fileName })).then(
-      (next) => current && setState(next),
+    preview(sourceOf(params), params.kind ?? "svett").then(
+      (next) => current && show({ params, state: next }),
       (error: unknown) =>
         current &&
-        setState({ kind: "refused", message: `The file did not open. ${String(error)}` }),
+        show({
+          params,
+          state: { kind: "refused", message: `The file did not open. ${String(error)}` },
+        }),
     );
     return () => {
       current = false;
     };
-  }, [uri, fileName]);
+  }, [params]);
 
-  const runImport = (file: SvettFile, take: ReadonlyArray<string>) => {
+  const fail = (error: unknown) => setState({ kind: "failed", message: String(error) });
+
+  const matched = (file: HevyFile, choices: NameChoices) => {
+    setState({ kind: "reading" });
+    const chosen = [...choices].flatMap(([name, choice]) =>
+      choice === "new" ? [] : [{ name, exerciseId: choice }],
+    );
+    withAliases((aliases) => aliases.remember("hevy", chosen))
+      .then(() => plan({ kind: "hevy", file }))
+      .then(setState, fail);
+  };
+
+  const toggleDuplicate = (loaded: Loaded, keep: ReadonlySet<string>, key: string) => {
+    const next = new Set(keep);
+    if (!next.delete(key)) next.add(key);
+    plan(loaded, next).then(setState, fail);
+  };
+
+  const runImport = (loaded: Loaded, keep: ReadonlySet<string>, take: ReadonlyArray<string>) => {
     setState({ kind: "importing" });
-    changeTransfers((transfers) => transfers.applyImport(file, take)).then(
+    changeTransfers((transfers) => transfers.applyImport(inputOf(loaded, keep), take)).then(
       (result) => setState({ kind: "imported", result }),
-      (error: unknown) => setState({ kind: "failed", message: String(error) }),
+      fail,
     );
   };
 
@@ -199,11 +364,19 @@ export function ImportPreviewScreen() {
           />
         </View>
       ) : null}
+      {state.kind === "matching" ? (
+        <HevyMatch
+          names={state.names}
+          exercises={state.exercises}
+          onContinue={(choices) => matched(state.file, choices)}
+        />
+      ) : null}
       {state.kind === "ready" ? (
         <Plan
-          file={state.file}
+          loaded={state.loaded}
           plan={state.plan}
-          onImport={(take) => runImport(state.file, take)}
+          onToggleDuplicate={(key) => toggleDuplicate(state.loaded, state.keep, key)}
+          onImport={(take) => runImport(state.loaded, state.keep, take)}
         />
       ) : null}
       {state.kind === "imported" ? (
@@ -211,11 +384,11 @@ export function ImportPreviewScreen() {
           <AppText variant="title3" accessibilityRole="header">
             Imported
           </AppText>
-          <AppText tone="secondary">
+          <AppText tone="secondary" testID="import-outcome">
             {importOutcome(Option.getOrElse(state.result, () => ({ added: 0, replaced: 0 })))}
           </AppText>
           <View className="flex-row flex-wrap gap-3">
-            <Button label="Done" onPress={done} />
+            <Button label="Done" testID="import-close" onPress={done} />
             {Option.match(state.result, {
               onNone: () => null,
               onSome: ({ importBatchId }) => (

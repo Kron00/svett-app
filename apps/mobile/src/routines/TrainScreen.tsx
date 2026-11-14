@@ -1,8 +1,14 @@
 import { endPosition, type Folder, moveItem, type RoutineSection } from "@svett/core";
 import { useNavigation } from "@react-navigation/native";
-import type { ReactNode } from "react";
+import { type ReactNode, useEffect } from "react";
 import { ActionSheetIOS, Alert, ScrollView, View } from "react-native";
 
+import {
+  markLaunch,
+  markLaunchOnNextFrame,
+  showTiming,
+  useColdStartText,
+} from "../data/launch-timing";
 import { ExerciseLibraryRow } from "../exercises/ExerciseLibraryRow";
 import type { RootNavigation } from "../navigation";
 import { AppText } from "../ui/AppText";
@@ -181,6 +187,7 @@ function Routines({
 }) {
   const navigation = useNavigation<RootNavigation>();
   const empty = overview.sections.every((section) => section.routines.length === 0);
+  useEffect(() => markLaunchOnNextFrame("shown"), []);
   return (
     <View className="gap-6" testID="routine-list">
       {empty && overview.folders.length === 0 ? (
@@ -204,10 +211,22 @@ function Routines({
   );
 }
 
+/** With `-svettTiming 1`, the cold start's breakdown once the routine list has been drawn. */
+function ColdStartTiming() {
+  const text = useColdStartText();
+  if (text === null) return null;
+  return (
+    <AppText variant="footnote" tone="secondary" className="px-gutter" testID="cold-start-timing">
+      {text}
+    </AppText>
+  );
+}
+
 /**
  * The Train tab: the workout in progress, routines by folder, and the exercise library.
  */
 export function TrainScreen() {
+  useEffect(() => markLaunch("train"), []);
   const navigation = useNavigation<RootNavigation>();
   const loaded = useRoutineOverview();
   const newFolder = () =>
@@ -276,6 +295,7 @@ export function TrainScreen() {
       <ListSection header="Library">
         <ExerciseLibraryRow key="exercises" />
       </ListSection>
+      {showTiming() ? <ColdStartTiming /> : null}
     </ScrollView>
   );
 }
