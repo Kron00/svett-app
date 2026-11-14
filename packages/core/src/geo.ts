@@ -51,6 +51,7 @@ const between = (a: RoutePoint, b: RoutePoint, fraction: number): RoutePoint => 
 // A cut this close to a reading falls on the reading, so rounding in the sums does
 // not add a second point a hair away from it.
 const ON_POINT_M = 1e-6;
+const CIRCLE_MARGIN_M = 1e-9;
 
 /**
  * The part of the route from `fromM` to `toM` along it, cut between readings where
@@ -127,7 +128,8 @@ const leavesCircle = (
     if (distanceM(centre, between(inside, outside, middle)) > radiusM) high = middle;
     else low = middle;
   }
-  return high;
+  // A nanometre further, so rounding where the route is cut cannot bring it back inside.
+  return Math.min(1, high + CIRCLE_MARGIN_M / distanceM(inside, outside));
 };
 
 /**

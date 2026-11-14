@@ -435,11 +435,9 @@ describe("TransferRepository", () => {
     const imported = await transfer(wiped, (repository) => repository.applyImport(file, []));
     const batch = Option.getOrThrow(imported).importBatchId;
     expect(everyRow(wiped, batch)).toEqual(allRows(original));
-    expect(
-      await transfer(wiped, (repository) => repository.previewImport(file)).then(
-        (plan) => plan.unchanged,
-      ),
-    ).toBe(1);
+    // The same file again finds nothing new or changed.
+    const again = await transfer(wiped, (repository) => repository.previewImport(file));
+    expect({ added: again.added, changed: again.changed }).toEqual({ added: [], changed: [] });
   });
 
   it("writes version 2 and keeps each location sample's stretch through export and import", async () => {

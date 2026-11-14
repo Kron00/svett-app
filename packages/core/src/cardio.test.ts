@@ -387,7 +387,7 @@ describe("sharedTrack after standing still at each end", () => {
   });
 });
 
-const fixes = (events: ReadonlyArray<RecordingEvent>): Fix[] =>const fixes = (events: ReadonlyArray<RecordingEvent>): Fix[] =>
+const fixes = (events: ReadonlyArray<RecordingEvent>): Fix[] =>
   events.flatMap((event) => (event.type === "fix" ? [event.fix] : []));
 
 describe("summarizeRecording", () => {

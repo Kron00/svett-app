@@ -2,7 +2,12 @@ import { Result } from "effect";
 import { describe, expect, it } from "vite-plus/test";
 
 import { EpochMillis } from "./schema.ts";
-import { decodeSvettFile, encodeSvettFile, exportFileName } from "./svett-file.ts";
+import {
+  decodeSvettFile,
+  encodeSvettFile,
+  exportFileName,
+  SVETT_FILE_VERSION,
+} from "./svett-file.ts";
 import { TABLE_KEYS, type Snapshot } from "./transfer.ts";
 
 const folder = {
@@ -31,7 +36,7 @@ describe("svett file", () => {
     const decoded = decodeSvettFile(text);
     expect(decoded).toEqual(
       Result.succeed({
-        version: 1,
+        version: SVETT_FILE_VERSION,
         exportedAt: 1_000,
         rows: 1,
         tables: { ...Object.fromEntries(TABLE_KEYS.map((key) => [key, []])), folder: [folder] },
@@ -78,7 +83,7 @@ describe("svett file", () => {
   });
 
   it("asks for an update when a newer svett made the file", () => {
-    expect(failure(file({}, 2))).toMatchObject({
+    expect(failure(file({}, SVETT_FILE_VERSION + 1))).toMatchObject({
       reason: "too_new",
       message: "A newer svett made this file. Update svett, then import it again.",
     });
