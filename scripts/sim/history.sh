@@ -186,7 +186,7 @@ fi
 
 agent_device wait "$progress_tab" 120000
 agent_device press "$progress_tab"
-agent_device wait 'id="history-list"' 10000
+agent_device wait 'id="progress"' 10000
 expect_text 'id="workout-counts"' "300 workouts"
 # The progress sections and the streak sit above the rows, so at the largest text
 # size the first row starts below the fold.

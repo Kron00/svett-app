@@ -139,6 +139,28 @@ const sendDisabled = (tree: ReactTestRenderer) =>
   byTestID(tree, "coach-send")[0]!.props.disabled as boolean;
 
 describe("CoachScreen", () => {
+  // The Coach tab sits under a native large title, which collapses and blurs over
+  // the screen's first view only when that view is a scroll view.
+  it.each([
+    ["opening", () => new Promise(() => {}), "coach"],
+    ["unreadable", () => Promise.reject(new Error("module missing")), "coach-status-failed"],
+    ["signed out", () => Promise.resolve({ state: "signedOut", accounts: [] }), "coach-signed-out"],
+    [
+      "without plan usage",
+      () => Promise.resolve({ ...SIGNED_IN, planUsage: false }),
+      "coach-plan-usage-off",
+    ],
+    ["signed in", () => Promise.resolve(SIGNED_IN), "coach"],
+  ])("starts with a scroll view under the large title when %s", async (_, status, testID) => {
+    app.status = status;
+    const tree = await open();
+    const json = tree.toJSON();
+    const first = Array.isArray(json) ? json[0] : json;
+    expect([first?.type, first?.props.testID, first?.props.contentInsetAdjustmentBehavior]).toEqual(
+      ["ScrollView", testID, "automatic"],
+    );
+  });
+
   it("shows that the sign-in could not be read, and opens the coach when Try again works", async () => {
     app.status = () => Promise.reject(new Error("module missing"));
     const tree = await open();

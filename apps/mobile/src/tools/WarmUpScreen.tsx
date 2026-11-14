@@ -17,6 +17,7 @@ import { useWorkoutSettings } from "../settings/store";
 import { AppText } from "../ui/AppText";
 import { Button } from "../ui/Button";
 import { EmptyState } from "../ui/EmptyState";
+import { NoticeScreen } from "../ui/NoticeScreen";
 import { ListRow, ListSection } from "../ui/List";
 import { SegmentedControl } from "../ui/SegmentedControl";
 import { addWarmUpSets } from "../workout/actions";
@@ -39,14 +40,14 @@ export function WarmUpScreen({ route, navigation }: Props) {
   const exercise = log?.exercises.find((entry) => entry.row.id === route.params.exercise);
   if (exercise === undefined) {
     return (
-      <View className="flex-1 justify-center bg-background">
+      <NoticeScreen>
         <EmptyState
           symbol="questionmark.folder"
           title="This exercise is not in the workout"
           message="It may have been removed."
           action={{ label: "Close", onPress: () => navigation.goBack() }}
         />
-      </View>
+      </NoticeScreen>
     );
   }
   const name = exercise.exercise?.name ?? "Deleted exercise";
@@ -59,14 +60,14 @@ export function WarmUpScreen({ route, navigation }: Props) {
   );
   if (workingKg === null) {
     return (
-      <View className="flex-1 justify-center bg-background">
+      <NoticeScreen>
         <EmptyState
           symbol="scalemass"
           title="No working weight yet"
           message={`Type the weight of a working set of ${name} first.`}
           action={{ label: "Close", onPress: () => navigation.goBack() }}
         />
-      </View>
+      </NoticeScreen>
     );
   }
   if (gear.status !== "ready") return <GearNotReady query={gear} />;

@@ -25,6 +25,7 @@ import type { CoachNavigation, CoachStackParamList } from "../navigation";
 import { AppText } from "../ui/AppText";
 import { Button } from "../ui/Button";
 import { EmptyState } from "../ui/EmptyState";
+import { NoticeScreen } from "../ui/NoticeScreen";
 import { Composer } from "./Composer";
 import { swiftTransport } from "./native";
 
@@ -230,47 +231,41 @@ export function CoachScreen() {
 
   if (status === undefined && statusFailed) {
     return (
-      <View
-        testID="coach-status-failed"
-        className="flex-1 justify-center gap-4 bg-background px-gutter"
-      >
+      <NoticeScreen testID="coach-status-failed" className="gap-4 px-gutter">
         <AppText tone="warning" selectable>
           svett could not read your ChatGPT sign-in. Everything else in svett still works.
         </AppText>
         <Button label="Try again" variant="secondary" testID="coach-retry" onPress={checkStatus} />
-      </View>
+      </NoticeScreen>
     );
   }
 
   if (status === undefined || conversationId === undefined) {
     return (
-      <View testID="coach" className="flex-1 items-center justify-center bg-background">
+      <NoticeScreen testID="coach" className="items-center">
         <AppText tone="secondary">Opening the coach…</AppText>
-      </View>
+      </NoticeScreen>
     );
   }
 
   if (status.state === "signedOut") {
     return (
-      <View testID="coach-signed-out" className="flex-1 justify-center bg-background">
+      <NoticeScreen testID="coach-signed-out">
         <EmptyState
           symbol="sparkles"
           title="Coach"
           message="The coach answers from your own training data and runs on your ChatGPT plan. Everything else in svett works without it."
           action={{ label: "Continue with ChatGPT", onPress: openSettings }}
         />
-      </View>
+      </NoticeScreen>
     );
   }
 
   if (!status.planUsage) {
     return (
-      <View
-        testID="coach-plan-usage-off"
-        className="flex-1 justify-center gap-4 bg-background px-gutter"
-      >
+      <NoticeScreen testID="coach-plan-usage-off" className="gap-4 px-gutter">
         <FailureNotice failure={coachFailure("planUsageOff")} openSettings={openSettings} />
-      </View>
+      </NoticeScreen>
     );
   }
 
@@ -279,10 +274,11 @@ export function CoachScreen() {
     -1,
   );
   return (
-    <KeyboardAvoidingView testID="coach" behavior="padding" className="flex-1 bg-background">
+    <>
       <ScrollView
         ref={scroll}
-        className="flex-1"
+        testID="coach"
+        className="flex-1 bg-background"
         contentContainerClassName="gap-3 px-gutter py-4"
         contentInsetAdjustmentBehavior="automatic"
         keyboardShouldPersistTaps="handled"
@@ -336,10 +332,13 @@ export function CoachScreen() {
           <FailureNotice failure={failure} openSettings={openSettings} />
         )}
       </ScrollView>
-      <Composer
-        busy={pending !== undefined || !ready || limited}
-        onSend={(question) => void ask(question)}
-      />
-    </KeyboardAvoidingView>
+      {/* Only the composer avoids the keyboard. Its padding shrinks the scroll view above it. */}
+      <KeyboardAvoidingView behavior="padding" className="bg-background">
+        <Composer
+          busy={pending !== undefined || !ready || limited}
+          onSend={(question) => void ask(question)}
+        />
+      </KeyboardAvoidingView>
+    </>
   );
 }
