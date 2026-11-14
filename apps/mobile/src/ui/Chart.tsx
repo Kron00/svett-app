@@ -150,7 +150,7 @@ export function Chart({
           </View>
         </View>
         <View className="justify-between" style={{ height: height - 2 * PLOT_INSET + labelHeight }}>
-          {[...plot.ticks.values].reverse().map((tick, index) => (
+          {plot.ticks.values.toReversed().map((tick, index) => (
             <AppText
               key={tick}
               variant="caption1"
