@@ -152,7 +152,7 @@ describe("the recorder", () => {
       _tag: "Failure",
       cause: { reasons: [{ error: { _tag: "RecorderError", step: "journal" } }] },
     });
-    expect(recorder.get()!.segments[0]!.fixes).toHaveLength(0);
+    expect(recorder.get()!.segments[0]!.pending).toBeNull();
   });
 
   it("finishes writing readings before a change that follows, and before removing the journal", async () => {

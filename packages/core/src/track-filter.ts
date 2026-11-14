@@ -1,4 +1,4 @@
-import { distanceM, type LatLng } from "./geo.ts";
+import type { LatLng } from "./geo.ts";
 
 /** A GPS reading as the filter needs it. */
 export interface Reading extends LatLng {
@@ -54,11 +54,12 @@ const append = <T>(chain: Chain<T> | null, value: T): Chain<T> => ({
 
 /** The latest `count` values of a chain, oldest first. */
 const latest = <T>(chain: Chain<T> | null, count: number): T[] => {
-  const values: T[] = [];
-  for (let node = chain; node !== null && values.length < count; node = node.before) {
-    values.push(node.value);
+  const values = new Array<T>(Math.min(count, chain?.length ?? 0));
+  let node = chain;
+  for (let index = values.length - 1; index >= 0; index--, node = node!.before) {
+    values[index] = node!.value;
   }
-  return values.reverse();
+  return values;
 };
 
 /** Every value of a chain, oldest first. */
@@ -73,6 +74,12 @@ export interface Point<R extends Reading> {
   readonly against: number;
   /** The filter's estimate where the path ends: at the latest moving point, or the first. */
   readonly end: Estimate;
+  /**
+   * How far the reported speeds say the recording moved up to here, and over how long,
+   * leaving out steps without both speeds.
+   */
+  readonly movedM: number;
+  readonly movedMs: number;
 }
 
 /** A confirmed reading at its smoothed position, and the distance up to it. */
@@ -152,7 +159,9 @@ export const SPEED_SIGMAS = 2;
 
 const EARTH_M_PER_DEGREE = (Math.PI * 6_371_008.8) / 180;
 const radians = (degrees: number) => (degrees * Math.PI) / 180;
-const wrapLongitude = (longitude: number) => ((longitude + 540) % 360) - 180;
+/** A longitude, or a difference of two, within -180 to 180. */
+const wrapLongitude = (longitude: number) =>
+  longitude > 180 ? longitude - 360 : longitude < -180 ? longitude + 360 : longitude;
 
 interface Offset {
   readonly east: number;
@@ -167,6 +176,14 @@ const offsetM = (origin: LatLng, point: LatLng): Offset => ({
     Math.cos(radians(origin.latitude)),
   north: (point.latitude - origin.latitude) * EARTH_M_PER_DEGREE,
 });
+
+/** The distance between two points, flat, which is exact enough over one stretch. */
+const flatM = (a: LatLng, b: LatLng) =>
+  EARTH_M_PER_DEGREE *
+  Math.sqrt(
+    (wrapLongitude(b.longitude - a.longitude) * Math.cos(radians(a.latitude))) ** 2 +
+      (b.latitude - a.latitude) ** 2,
+  );
 
 const moved = (origin: LatLng, { east, north }: Offset): LatLng => ({
   latitude: origin.latitude + north / EARTH_M_PER_DEGREE,
@@ -300,7 +317,7 @@ const saysOther = <R extends Reading>(
   const from = window[0]!;
   const furthestM = Math.max(
     ...window.map(
-      (other) => distanceM(from, other) - SIGMAS * Math.sqrt(from.positionVar + other.positionVar),
+      (other) => flatM(from, other) - SIGMAS * Math.sqrt(from.positionVar + other.positionVar),
     ),
   );
   return furthestM < STILL_SPEED_MPS * ((estimate.at - from.at) / 1000);
@@ -312,12 +329,24 @@ const pointOf = <R extends Reading>(
   fix: R,
   estimate: Estimate,
 ): Point<R> => {
-  if (points === null) return { fix, estimate, moving: false, against: 0, end: estimate };
-  const { moving, against, end } = points.value;
+  if (points === null) {
+    return { fix, estimate, moving: false, against: 0, end: estimate, movedM: 0, movedMs: 0 };
+  }
+  const previous = points.value;
+  const { moving, against, end } = previous;
   const run = saysOther(points, fix, estimate) ? against + 1 : 0;
   const flips = run >= (moving ? PAUSE_READINGS : MOVE_READINGS);
   const now = flips ? !moving : moving;
-  return { fix, estimate, moving: now, against: flips ? 0 : run, end: now ? estimate : end };
+  const stepM = movedM(previous.fix, fix);
+  return {
+    fix,
+    estimate,
+    moving: now,
+    against: flips ? 0 : run,
+    end: now ? estimate : end,
+    movedM: previous.movedM + (stepM ?? 0),
+    movedMs: previous.movedMs + (stepM === null ? 0 : fix.at - previous.fix.at),
+  };
 };
 
 /** Two estimates of one position, combined by how sure each is. */
@@ -394,44 +423,41 @@ const turnEstimate = (
 const turnIn = <R extends Reading>(points: ReadonlyArray<Point<R>>): number | null => {
   const last = points.length - 1;
   const first = points[0]!;
+  const scale = Math.cos(radians(first.fix.latitude));
   let furthest = 0;
-  let furthestM = 0;
+  let furthestSquared = 0;
   for (let index = 1; index < last; index++) {
-    const metres = distanceM(first.fix, points[index]!.fix);
-    if (metres > furthestM) {
+    const { latitude, longitude } = points[index]!.fix;
+    const squared =
+      (wrapLongitude(longitude - first.fix.longitude) * scale) ** 2 +
+      (latitude - first.fix.latitude) ** 2;
+    if (squared > furthestSquared) {
       furthest = index;
-      furthestM = metres;
+      furthestSquared = squared;
     }
   }
+  const furthestM = Math.sqrt(furthestSquared) * EARTH_M_PER_DEGREE;
   // The recording turned at a corner and went on, so as many readings after it as resume
   // a pause must not say otherwise. Drift where it stopped can look like a corner.
-  const goingOn = points
-    .slice(furthest + 1)
-    .filter(({ fix }) => (reportedMps(fix) ?? MOVING_SPEED_MPS) >= MOVING_SPEED_MPS).length;
+  let goingOn = 0;
+  for (let index = furthest + 1; index <= last; index++) {
+    if ((reportedMps(points[index]!.fix) ?? MOVING_SPEED_MPS) >= MOVING_SPEED_MPS) goingOn++;
+  }
   if (furthest === 0 || goingOn < MOVE_READINGS) return null;
   const detour =
     furthestM +
-    distanceM(points[furthest]!.fix, points[last]!.fix) -
-    distanceM(first.fix, points[last]!.fix);
+    flatM(points[furthest]!.fix, points[last]!.fix) -
+    flatM(first.fix, points[last]!.fix);
   if (detour ** 2 > GATE * 2 * varianceOf(points[furthest]!.fix)) return furthest;
   // Steps that report no speed count at the mean speed of those that do.
-  let knownM = 0;
-  let knownMs = 0;
-  for (let index = 1; index <= last; index++) {
-    const before = points[index - 1]!.fix;
-    const after = points[index]!.fix;
-    const stepM = movedM(before, after);
-    if (stepM !== null) {
-      knownM += stepM;
-      knownMs += after.at - before.at;
-    }
-  }
+  const knownM = points[last]!.movedM - first.movedM;
+  const knownMs = points[last]!.movedMs - first.movedMs;
   if (knownMs === 0) return null;
   const ends = { from: first.estimate, to: points[last]!.estimate };
   const speedM = knownM * ((ends.to.at - ends.from.at) / knownMs);
   const seconds = (ends.to.at - ends.from.at) / 1000;
   const spread = SPEED_ERROR_MPS ** 2 * seconds + ends.from.positionVar + ends.to.positionVar;
-  const apartM = distanceM(ends.from, ends.to);
+  const apartM = flatM(ends.from, ends.to);
   return speedM > apartM && (speedM - apartM) ** 2 > SPEED_SIGMAS ** 2 * spread ? furthest : null;
 };
 
@@ -487,7 +513,7 @@ const turned = <R extends Reading>(
  */
 const smoothed = (estimates: ReadonlyArray<Estimate>, motion: Motion): LatLng[] => {
   const count = estimates.length;
-  const positions: LatLng[] = Array.from({ length: count });
+  const positions = new Array<LatLng>(count);
   let afterEastMps = 0;
   let afterNorthMps = 0;
   for (let index = count - 1; index >= 0; index--) {
@@ -587,7 +613,7 @@ const walk = <R extends Reading>(
   const speedM = (point.moving ? speedStepM : movedM)(previous.fix, point.fix);
   const sinceM = walked.sinceM === null || speedM === null ? null : walked.sinceM + speedM;
   if (!point.moving) return { ...walked, point, sinceM };
-  const straightM = distanceM(end.position, position);
+  const straightM = flatM(end.position, position);
   const slackM =
     SPEED_SIGMAS * SPEED_ERROR_MPS * ((point.fix.at - previous.fix.at) / 1000) +
     (previous.moving
@@ -597,36 +623,41 @@ const walk = <R extends Reading>(
   return { point, end: { point, position }, alongM, sinceM: 0 };
 };
 
-/** The points at `positions`, with the distance going on from `walked`. */
+const walkOn = <R extends Reading>(walked: Walked<R> | null, point: Point<R>, position: LatLng) =>
+  walked === null
+    ? { point, end: { point, position }, alongM: 0, sinceM: 0 }
+    : walk(walked, point, position);
+
+/** The points at `positions`, with the distance up to each going on from `walked`. */
 const along = <R extends Reading>(
   walked: Walked<R> | null,
   points: ReadonlyArray<Point<R>>,
   positions: ReadonlyArray<LatLng>,
-): { readonly walked: Walked<R> | null; readonly shown: SmoothedPoint<R>[] } => {
-  const shown = points.map((point, index) => {
+): SmoothedPoint<R>[] =>
+  points.map((point, index) => {
     const position = positions[index]!;
-    walked =
-      walked === null
-        ? { point, end: { point, position }, alongM: 0, sinceM: 0 }
-        : walk(walked, point, position);
+    walked = walkOn(walked, point, position);
     return { fix: point.fix, position, alongM: walked.alongM };
   });
-  return { walked, shown };
-};
 
 const withPoint = <R extends Reading>(track: Track<R>, fix: R, estimate: Estimate): Track<R> => {
   let next: Track<R> = {
     ...track,
     ...turned(track, pointOf(track.points, fix, estimate)),
   };
-  let { points, positions } = unsettled(next);
+  const { points, positions } = unsettled(next);
+  let skip = 0;
   if (points.length > LAG) {
-    const first = along(next.walked, points.slice(0, 1), positions.slice(0, 1));
-    next = { ...next, settled: append(next.settled, first.shown[0]!), walked: first.walked };
-    points = points.slice(1);
-    positions = positions.slice(1);
+    const walked = walkOn(next.walked, points[0]!, positions[0]!);
+    const settled = { fix: points[0]!.fix, position: positions[0]!, alongM: walked.alongM };
+    next = { ...next, settled: append(next.settled, settled), walked };
+    skip = 1;
   }
-  return { ...next, distanceM: along(next.walked, points, positions).walked!.alongM };
+  let walked = next.walked;
+  for (let index = skip; index < points.length; index++) {
+    walked = walkOn(walked, points[index]!, positions[index]!);
+  }
+  return { ...next, distanceM: walked!.alongM };
 };
 
 /**
@@ -668,5 +699,5 @@ export const smoothTrack = <R extends Reading>(
   track: Track<R>,
 ): ReadonlyArray<SmoothedPoint<R>> => {
   const { points, positions } = unsettled(track);
-  return [...chainItems(track.settled), ...along(track.walked, points, positions).shown];
+  return [...chainItems(track.settled), ...along(track.walked, points, positions)];
 };
