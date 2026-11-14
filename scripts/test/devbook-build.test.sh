@@ -908,7 +908,8 @@ node "$root/history-fixture.cjs" "$history_fixture" 2>/dev/null
 # FAKE_UNDO_BROKEN. The set reads its new weight after Save unless FAKE_EDIT_LOST.
 # The history list shows no row after FAKE_BLANK_AFTER scrolls, and shows the
 # oldest workout after FAKE_OLDEST_AFTER scrolls, by default 120, or never when it
-# is "never". Every element has the same frame.
+# is "never". Every element has the same frame, except that with FAKE_ROUTINE_LOW
+# Save as routine sits at the screen's bottom edge until a drag moves it up.
 cat >"$fake/history-device" <<EOF
 #!/usr/bin/env bash
 echo "\$*" >>"$root/bound-calls"
@@ -919,7 +920,12 @@ args=" \$* "
 case "\$args" in
   *" get attrs "*)
     echo "\$*" >"\$state/last-attrs"
-    echo '{"label": "Save", "rect": {"x": 20, "y": 300, "width": 120, "height": 40}}' ;;
+    if [[ -n "\${FAKE_ROUTINE_LOW:-}" && "\$args" == *workout-save-routine* ]] &&
+      ! grep -q ' gesture pan ' "$root/bound-calls"; then
+      echo '{"label": "Save as routine", "rect": {"x": 20, "y": 905, "width": 400, "height": 50}}'
+    else
+      echo '{"label": "Save", "rect": {"x": 20, "y": 300, "width": 120, "height": 40}}'
+    fi ;;
   *" press "*)
     attrs=\$(cat "\$state/last-attrs" 2>/dev/null || true)
     case "\$attrs" in
@@ -1042,6 +1048,13 @@ case_name="history.sh Release with SVETT_DEVICE_CMD"
 history_sh --release "$root/history-release"
 check "history.sh Release relaunches the installed app on the fixture without Metro" \
   only_open "com.kron00.svett --relaunch $history_fixture_args" "${history_links[@]}"
+
+case_name="history.sh when Save as routine sits at the screen's bottom edge"
+history_sh FAKE_ROUTINE_LOW=1 "$root/history-low"
+check "history.sh drags a control up from the bottom edge before pressing it" \
+  only_calls "gesture pan" "gesture pan 20 600 0 -300 400"
+check "history.sh presses Save as routine only once it is clear of the bottom edge" \
+  test "$(grep -cxF -- "$bound_prefix press 220 930" "$root/bound-calls")" -eq 0
 
 case_name="history.sh when the history list goes blank"
 run_history FAKE_BLANK_AFTER=12 "$root/history-blank"

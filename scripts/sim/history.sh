@@ -95,19 +95,36 @@ reveal() {
 # covered by another element. It reads UIKit's touch-transparent floating bar
 # containers as toolbars over the whole screen. A press at coordinates skips that
 # check, so press_centre presses the centre of the element's frame from the snapshot.
-press_centre() {
-  local frame point
+centre_of() {
+  local frame
   frame=$(agent_device get attrs "$1") || return 1
-  point=$(node -e '
+  node -e '
     const { x, y, width, height } = JSON.parse(process.argv[1]).rect;
     console.log(Math.round(x + width / 2), Math.round(y + height / 2));
-  ' "$frame") || return 1
+  ' "$frame"
+}
+
+press_centre() {
+  local point
+  point=$(centre_of "$1") || return 1
   agent_device press "${point% *}" "${point#* }"
 }
 
+# Below this line a press lands on the screen's bottom edge, where iOS 27 keeps the
+# home indicator, so a control merely peeking up from there takes no press.
+safe_bottom=${SVETT_SAFE_BOTTOM:-840}
+
 tap() {
+  local point drags=0
   reveal "$1" || fail "Could not bring $1 on screen"
-  press_centre "$1"
+  point=$(centre_of "$1") || fail "Could not read where $1 is"
+  while ((${point#* } > safe_bottom)); do
+    ((drags < 3)) || fail "$1 stayed at the bottom edge of the screen"
+    agent_device gesture pan 20 600 0 -300 400
+    drags=$((drags + 1))
+    point=$(centre_of "$1") || fail "Could not read where $1 is"
+  done
+  agent_device press "${point% *}" "${point#* }"
 }
 
 # expect_text <selector> <text> fails unless the element's text holds <text>.
