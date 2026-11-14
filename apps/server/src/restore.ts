@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 
 import { restoreScratchName, staleRestoreScratches } from "@svett/core";
-import { Clock, Data, Effect, Redacted } from "effect";
+import { Clock, Data, Duration, Effect, Option, Redacted } from "effect";
 import { SqlClient } from "effect/sql/SqlClient";
 import type { SqlError } from "effect/sql/SqlError";
 
@@ -51,28 +51,100 @@ const countTables = Effect.gen(function* () {
   return rows[0]?.tables ?? 0;
 });
 
+/** The advisory lock class of restore scratch databases. Each one's key is its name's hash. */
+const SCRATCH_LOCK_CLASS = 0x7376;
+
+/** How long a restore check may run before it gives up and drops its scratch database. */
+export const RESTORE_CHECK_TIMEOUT = Duration.hours(6);
+
+/**
+ * Runs `effect` while this session holds the ownership lock of scratch database `name`
+ * on a connection of its own, so the lock ends with that connection even if the
+ * unlock never runs. Gives None without running it when another session holds it.
+ */
+const owningScratch = <A, E, R>(
+  live: Redacted.Redacted,
+  name: string,
+  effect: Effect.Effect<A, E, R>,
+) =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const sql = yield* SqlClient;
+      const connection = yield* sql.reserve;
+      const held = yield* Effect.acquireRelease(
+        Effect.map(
+          connection.executeUnprepared(
+            "select pg_try_advisory_lock($1::int, hashtext($2)) as locked",
+            [SCRATCH_LOCK_CLASS, name],
+            undefined,
+          ),
+          (rows) => rows[0]?.locked === true,
+        ),
+        (locked) =>
+          locked
+            ? Effect.ignore(
+                connection.executeUnprepared(
+                  "select pg_advisory_unlock($1::int, hashtext($2))",
+                  [SCRATCH_LOCK_CLASS, name],
+                  undefined,
+                ),
+              )
+            : Effect.void,
+      );
+      return held ? Option.some(yield* effect) : Option.none<A>();
+    }),
+  ).pipe(Effect.provide(databaseLayer(live)));
+
 /**
  * Proves a backup restores by loading it into a new, empty scratch database on the
  * same server as `live`. Returns how many tables came back. Each check gets its own
- * scratch database, dropped on every way out, so checks on several servers never
- * touch each other's.
+ * scratch database and holds its ownership lock until the database is dropped, on
+ * every way out. A check that runs past `timeout` stops and drops its database.
  */
-export const checkRestore = (file: string, live: Redacted.Redacted) =>
-  Effect.scoped(
-    Effect.gen(function* () {
-      const suffix = yield* Effect.sync(() => randomBytes(6).toString("hex"));
-      const name = restoreScratchName(yield* Clock.currentTimeMillis, suffix);
-      yield* Effect.acquireRelease(
-        onLive(live, (sql) => sql.unsafe(`create database ${name}`)),
-        () => Effect.ignore(dropDatabase(live, name)),
-      );
-      const target = onDatabase(live, name);
-      yield* restoreBackup(file, target);
-      return yield* countTables.pipe(Effect.provide(databaseLayer(target)));
-    }),
-  );
+export const checkRestore = (
+  file: string,
+  live: Redacted.Redacted,
+  timeout: Duration.Duration = RESTORE_CHECK_TIMEOUT,
+) =>
+  Effect.gen(function* () {
+    const suffix = yield* Effect.sync(() => randomBytes(6).toString("hex"));
+    const name = restoreScratchName(yield* Clock.currentTimeMillis, suffix);
+    const restored = yield* owningScratch(
+      live,
+      name,
+      Effect.scoped(
+        Effect.gen(function* () {
+          yield* Effect.acquireRelease(
+            onLive(live, (sql) => sql.unsafe(`create database ${name}`)),
+            () => Effect.ignore(dropDatabase(live, name)),
+          );
+          const target = onDatabase(live, name);
+          yield* restoreBackup(file, target);
+          return yield* countTables.pipe(Effect.provide(databaseLayer(target)));
+        }),
+      ),
+    ).pipe(
+      Effect.timeoutOrElse({
+        duration: timeout,
+        orElse: () =>
+          Effect.fail(
+            new RestoreError({
+              message: `The restore check took longer than ${Duration.format(timeout)}.`,
+            }),
+          ),
+      }),
+    );
+    if (Option.isNone(restored)) {
+      return yield* new RestoreError({ message: `Another session owns ${name}.` });
+    }
+    return restored.value;
+  });
 
-/** Drops the scratch databases that checks which crashed more than a day ago left behind. */
+/**
+ * Drops the scratch databases more than a day old that no running check owns, which
+ * checks that crashed left behind. It holds each one's ownership lock while it drops
+ * it, and skips any whose lock another session holds.
+ */
 export const dropStaleRestoreDatabases = (live: Redacted.Redacted) =>
   Effect.gen(function* () {
     const rows = yield* onLive(
@@ -83,6 +155,8 @@ export const dropStaleRestoreDatabases = (live: Redacted.Redacted) =>
       rows.map(({ datname }) => datname),
       yield* Clock.currentTimeMillis,
     );
-    yield* Effect.forEach(stale, (name) => dropDatabase(live, name), { discard: true });
-    return stale;
+    const dropped = yield* Effect.forEach(stale, (name) =>
+      owningScratch(live, name, dropDatabase(live, name)).pipe(Effect.map(Option.map(() => name))),
+    );
+    return dropped.flatMap(Option.toArray);
   });

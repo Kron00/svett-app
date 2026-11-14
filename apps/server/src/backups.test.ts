@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { backupFileName, restoreScratchName } from "@svett/core";
-import { Clock, Effect, Exit, Fiber, Layer, type Redacted, Schedule } from "effect";
+import { Clock, Duration, Effect, Exit, Fiber, Layer, type Redacted, Schedule } from "effect";
 import { SqlClient } from "effect/sql/SqlClient";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 
@@ -11,7 +11,7 @@ import { Backups, NightlyBackups } from "./backups.ts";
 import { ServerConfig } from "./config.ts";
 import { databaseLayer, migrate } from "./database.ts";
 import { type PgToolCommands, PgTools } from "./pg-tools.ts";
-import { restoreBackup } from "./restore.ts";
+import { checkRestore, dropStaleRestoreDatabases, restoreBackup } from "./restore.ts";
 import { startTestPostgres, type TestPostgres } from "./test-postgres.ts";
 
 let postgres: TestPostgres;
@@ -41,6 +41,28 @@ const scratchDatabases = () =>
       `.pipe(Effect.map((rows) => rows.map(({ datname }) => datname))),
     ),
   );
+
+/** Waits until a restore check has created its scratch database, and gives the names. */
+const untilScratch = Effect.promise(scratchDatabases).pipe(
+  Effect.flatMap((found) =>
+    found.length === 0 ? Effect.fail("not yet" as const) : Effect.succeed(found),
+  ),
+  Effect.retry({ schedule: Schedule.spaced("10 millis"), times: 1000 }),
+);
+
+/** pg_restore that waits for the file `gate` to exist before it starts. */
+const restoreAfter = (gate: string): PgToolCommands => ({
+  ...postgres.tools,
+  pgRestore: [
+    "sh",
+    "-c",
+    'while [ ! -e "$0" ]; do sleep 0.05; done; exec "$@"',
+    gate,
+    ...postgres.tools.pgRestore,
+  ],
+});
+
+const HOUR = 60 * 60 * 1000;
 
 /** Runs `effect` with the wall clock stopped at `millis`. */
 const frozenAt =
@@ -318,12 +340,7 @@ describe("server backups", { timeout: 120_000 }, () => {
         const backups = yield* Effect.service(Backups);
         const backup = yield* backups.takeNow;
         const fiber = yield* Effect.forkChild(backups.checkRestore(backup));
-        const names = yield* Effect.promise(scratchDatabases).pipe(
-          Effect.flatMap((found) =>
-            found.length === 0 ? Effect.fail("not yet" as const) : Effect.succeed(found),
-          ),
-          Effect.retry({ schedule: Schedule.spaced("10 millis"), times: 1000 }),
-        );
+        const names = yield* untilScratch;
         yield* Fiber.interrupt(fiber);
         return names;
       }).pipe(Effect.provide(backupsLayer(source, dir))),
@@ -337,9 +354,8 @@ describe("server backups", { timeout: 120_000 }, () => {
     const source = await newDatabase();
     await seed(source);
     const dir = await tempDir();
-    const hour = 60 * 60 * 1000;
-    const crashed = restoreScratchName(Date.now() - 25 * hour, "aaaaaaaaaaaa");
-    const running = restoreScratchName(Date.now() - hour, "bbbbbbbbbbbb");
+    const crashed = restoreScratchName(Date.now() - 25 * HOUR, "aaaaaaaaaaaa");
+    const running = restoreScratchName(Date.now() - HOUR, "bbbbbbbbbbbb");
     await postgres.createDatabase(crashed);
     await postgres.createDatabase(running);
     const layer = backupsLayer(source, dir);
@@ -356,6 +372,72 @@ describe("server backups", { timeout: 120_000 }, () => {
       postgres.url("postgres"),
       Effect.flatMap(Effect.service(SqlClient), (sql) => sql.unsafe(`drop database ${running}`)),
     );
+  });
+
+  it("keeps an old scratch database that a running restore check still owns", async () => {
+    const source = await newDatabase();
+    await seed(source);
+    const dir = await tempDir();
+    const backup = await Effect.runPromise(takeNow.pipe(Effect.provide(backupsLayer(source, dir))));
+    const gate = join(dir, "gate");
+    const startedAt = Date.now() - 25 * HOUR;
+
+    const seen = await Effect.runPromise(
+      Effect.gen(function* () {
+        const fiber = yield* Effect.forkChild(
+          checkRestore(backup.file, source).pipe(
+            frozenAt(startedAt),
+            Effect.provide(PgTools.layer(restoreAfter(gate))),
+          ),
+        );
+        const owned = yield* untilScratch;
+        const dropped = yield* dropStaleRestoreDatabases(source);
+        const left = yield* Effect.promise(scratchDatabases);
+        yield* Effect.promise(() => writeFile(gate, ""));
+        const tables = yield* Fiber.join(fiber);
+        return { owned, dropped, left, tables };
+      }),
+    );
+
+    expect(seen.owned).toHaveLength(1);
+    expect(seen.owned[0]).toMatch(new RegExp(`^svett_restore_${startedAt}_[0-9a-f]{12}$`));
+    expect(seen.dropped).toEqual([]);
+    expect(seen.left).toEqual(seen.owned);
+    expect(seen.tables).toBe(2);
+    expect(await scratchDatabases()).toEqual([]);
+  });
+
+  it("drops an old scratch database that no restore check owns", async () => {
+    const source = await newDatabase();
+    const crashed = restoreScratchName(Date.now() - 25 * HOUR, "cccccccccccc");
+    await postgres.createDatabase(crashed);
+
+    const dropped = await Effect.runPromise(dropStaleRestoreDatabases(source));
+
+    expect(dropped).toEqual([crashed]);
+    expect(await scratchDatabases()).toEqual([]);
+  });
+
+  it("stops a restore check that runs too long and drops its scratch database", async () => {
+    const source = await newDatabase();
+    await seed(source);
+    const dir = await tempDir();
+    const backup = await Effect.runPromise(takeNow.pipe(Effect.provide(backupsLayer(source, dir))));
+
+    const { seen, exit } = await Effect.runPromise(
+      Effect.gen(function* () {
+        const fiber = yield* Effect.forkChild(
+          checkRestore(backup.file, source, Duration.seconds(2)).pipe(
+            Effect.provide(PgTools.layer(restoreAfter(join(dir, "never")))),
+          ),
+        );
+        return { seen: yield* untilScratch, exit: yield* Fiber.await(fiber) };
+      }),
+    );
+
+    expect(seen).toHaveLength(1);
+    expect(Exit.isFailure(exit) && String(exit.cause)).toContain("took longer than 2s");
+    expect(await scratchDatabases()).toEqual([]);
   });
 
   it("leaves no backup file behind when the dump fails", async () => {
