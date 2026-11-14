@@ -6,6 +6,8 @@ import { StatusBar } from "expo-status-bar";
 
 import { AccountProvider } from "./account/AccountProvider";
 import { AccountScreen } from "./account/AccountScreen";
+import { ActivityScreen } from "./cardio/ActivityScreen";
+import { RecordScreen } from "./cardio/RecordScreen";
 import { ChatGPTScreen } from "./chatgpt/ChatGPTScreen";
 import { ProposalScreen } from "./coach/ProposalScreen";
 import { PhoneChecksScreen } from "./checks/PhoneChecksScreen";
@@ -66,6 +68,16 @@ export default function App() {
             name="Gallery"
             component={GalleryScreen}
             options={{ headerShown: true, title: "Design gallery", headerLargeTitle: true }}
+          />
+          <Stack.Screen
+            name="RecordCardio"
+            component={RecordScreen}
+            options={{ headerShown: true, title: "Record" }}
+          />
+          <Stack.Screen
+            name="Activity"
+            component={ActivityScreen}
+            options={{ headerShown: true, title: "" }}
           />
           <Stack.Screen
             name="ChatGPT"
