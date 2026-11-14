@@ -81,9 +81,8 @@ export const sliceRoute = (lines: RouteLines, fromM: number, toM: number): Route
 
 /**
  * The route cut into the stretch others may see and the stretches hidden at each
- * end, measured along the route. Neighbouring parts share their cut point, so the
- * lines meet. When the hidden stretches cover the whole route, all of it is in
- * `start` and nothing is visible.
+ * end. Neighbouring parts share their cut point, so the lines meet. When the hidden
+ * stretches cover the whole route, all of it is in `start` and nothing is visible.
  */
 export interface RouteParts {
   readonly start: RouteLines;
@@ -91,14 +90,83 @@ export interface RouteParts {
   readonly end: RouteLines;
 }
 
+interface Placed {
+  readonly point: RoutePoint;
+  /** Distance along the route to the reading. */
+  readonly atM: number;
+  /** False for the first reading of a line, which no drawn step reaches. */
+  readonly joined: boolean;
+}
+
+const placed = (lines: RouteLines): ReadonlyArray<Placed> => {
+  const points: Placed[] = [];
+  let travelled = 0;
+  for (const line of lines) {
+    for (const [index, point] of line.entries()) {
+      if (index > 0) travelled += distanceM(line[index - 1]!, point);
+      points.push({ point, atM: travelled, joined: index > 0 });
+    }
+  }
+  return points;
+};
+
+/**
+ * How far from `inside` toward `outside` the step leaves the circle of `radiusM`
+ * around `centre`. The answer is just outside the circle, never on or in it.
+ */
+const leavesCircle = (
+  inside: RoutePoint,
+  outside: RoutePoint,
+  centre: LatLng,
+  radiusM: number,
+): number => {
+  let low = 0;
+  let high = 1;
+  for (let step = 0; step < 60; step++) {
+    const middle = (low + high) / 2;
+    if (distanceM(centre, between(inside, outside, middle)) > radiusM) high = middle;
+    else low = middle;
+  }
+  return high;
+};
+
+/**
+ * Where the hidden start ends, along the route: where it first leaves the circle of
+ * `hideM` around the first reading. A circle and not a distance along the route, so
+ * readings that wander while you stand at the door do not use up the hidden stretch.
+ */
+const startCutM = (points: ReadonlyArray<Placed>, hideM: number): number => {
+  if (hideM <= 0) return 0;
+  const centre = points[0]!.point;
+  const index = points.findIndex(({ point }) => distanceM(centre, point) > hideM);
+  if (index === -1) return Infinity;
+  const { point, atM, joined } = points[index]!;
+  if (!joined) return atM;
+  const previous = points[index - 1]!;
+  return previous.atM + leavesCircle(previous.point, point, centre, hideM) * (atM - previous.atM);
+};
+
+/** Where the hidden end starts, along the route: the same circle around the last reading. */
+const endCutM = (points: ReadonlyArray<Placed>, hideM: number, totalM: number): number => {
+  if (hideM <= 0) return totalM;
+  const centre = points.at(-1)!.point;
+  const index = points.findLastIndex(({ point }) => distanceM(centre, point) > hideM);
+  if (index === -1) return -Infinity;
+  const { point, atM } = points[index]!;
+  const next = points[index + 1]!;
+  if (!next.joined) return atM;
+  return next.atM - leavesCircle(next.point, point, centre, hideM) * (next.atM - atM);
+};
+
 export const hideRouteEnds = (
   lines: RouteLines,
   hideStartM: number,
   hideEndM: number,
 ): RouteParts => {
   const total = routeLengthM(lines);
-  const startCut = Math.max(0, hideStartM);
-  const endCut = total - Math.max(0, hideEndM);
+  const points = placed(lines);
+  const startCut = points.length === 0 ? 0 : startCutM(points, hideStartM);
+  const endCut = points.length === 0 ? total : endCutM(points, hideEndM, total);
   if (total === 0 || startCut >= endCut) {
     return { start: lines.filter((line) => line.length > 1), visible: [], end: [] };
   }

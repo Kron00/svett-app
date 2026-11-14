@@ -9,6 +9,7 @@ import {
   DEFAULT_HIDE_M,
   elevationGainM,
   elevationProfile,
+  nearestHideChoiceM,
   sharedTrack,
   splitsOf,
   summarizeRecording,
@@ -195,6 +196,14 @@ describe("elevationProfile", () => {
   });
 });
 
+describe("nearestHideChoiceM", () => {
+  it("shows a hidden distance outside the choices as the nearest choice", () => {
+    expect([0, 90, 120, 200, 349, 351, 800, 5000].map(nearestHideChoiceM)).toEqual([
+      0, 0, 200, 200, 200, 500, 1000, 1000,
+    ]);
+  });
+});
+
 describe("cardioTitle", () => {
   it("names the time of day and the sport", () => {
     expect(cardioTitle("run", 7)).toBe("Morning run");
@@ -340,7 +349,45 @@ describe("sharedTrack", () => {
   });
 });
 
-const fixes = (events: ReadonlyArray<RecordingEvent>): Fix[] =>
+describe("sharedTrack after standing still at each end", () => {
+  // Five minutes at the door with readings wandering up to 8 m, a 1.2 km run north,
+  // and five more minutes standing at the far end.
+  const random = seededRandom(11);
+  const wobble = () => (random() * 2 - 1) * 8;
+  const reading = (second: number, northM: number, speedMps: number): RecordingEvent => ({
+    type: "fix",
+    fix: {
+      at: at(second),
+      latitude: (northM + wobble()) / DEGREE_M,
+      longitude: wobble() / DEGREE_M,
+      altitudeM: null,
+      altitudeAccuracyM: null,
+      accuracyM: 8,
+      speedMps,
+    },
+  });
+  const events = [
+    start,
+    ...Array.from({ length: 300 }, (_, second) => reading(second, 0, 0.1)),
+    ...Array.from({ length: 400 }, (_, second) => reading(300 + second, second * 3, 3)),
+    ...Array.from({ length: 300 }, (_, second) => reading(700 + second, 1200, 0.1)),
+    { type: "pause" as const, at: at(1000) },
+  ];
+  const recording = replay(events)!;
+
+  it("shows no position within the hidden distance of the first or last reading", async () => {
+    const { track, samples } = await save(summarizeRecording(recording, at(1000)), 200);
+    const { route } = trackParts(samples);
+    const shown = sharedTrack(track, samples).route.flat();
+    expect(shown.length).toBeGreaterThan(10);
+    for (const point of shown) {
+      expect(distanceM(route[0]!, point)).toBeGreaterThan(200);
+      expect(distanceM(route.at(-1)!, point)).toBeGreaterThan(200);
+    }
+  });
+});
+
+const fixes = (events: ReadonlyArray<RecordingEvent>): Fix[] =>const fixes = (events: ReadonlyArray<RecordingEvent>): Fix[] =>
   events.flatMap((event) => (event.type === "fix" ? [event.fix] : []));
 
 describe("summarizeRecording", () => {

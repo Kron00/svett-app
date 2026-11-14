@@ -11,6 +11,7 @@ import {
   formatDuration,
   formatKm,
   formatPace,
+  nearestHideChoiceM,
   paceMeasure,
   type RouteLines,
   trackParts,
@@ -171,7 +172,7 @@ export function ActivityScreen({ route, navigation }: Props) {
   const sport = SPORTS[kind];
   const distanceM = track?.distanceM ?? 0;
   const measure = paceMeasure(kind);
-  const hidden = String(track?.hideStartM ?? 0) as HideOption;
+  const hidden = String(nearestHideChoiceM(track?.hideStartM ?? 0)) as HideOption;
 
   const hide = async (value: HideOption) => {
     if (track === null) return;
@@ -213,7 +214,7 @@ export function ActivityScreen({ route, navigation }: Props) {
           testID="activity-distance"
         />
         <StatTile
-          label="Moving time"
+          label="Time"
           value={formatDuration(activity.durationS)}
           testID="activity-time"
         />
