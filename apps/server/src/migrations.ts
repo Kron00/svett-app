@@ -98,4 +98,52 @@ export const MIGRATIONS: Record<string, Effect.Effect<void, unknown, SqlClient>>
     `;
     yield* sql`create unique index activity_social_id on activity_social (social_id)`;
   }),
+  // Likes and comments key an activity by its owner and its own ID, which others never see.
+  // The inbox is read from likes, comments and follows, and each account keeps only the time
+  // up to which it has read it. The indexes serve a post's sets and route.
+  "5_feed": Effect.gen(function* () {
+    const sql = yield* SqlClient;
+    yield* sql`
+      create table activity_like (
+        owner_id text not null,
+        activity_id text not null,
+        liker_id text not null,
+        created_ms bigint not null,
+        primary key (owner_id, activity_id, liker_id)
+      )
+    `;
+    yield* sql`create index activity_like_owner on activity_like (owner_id, created_ms)`;
+    yield* sql`
+      create table activity_comment (
+        id text primary key,
+        owner_id text not null,
+        activity_id text not null,
+        author_id text not null,
+        body text not null,
+        created_ms bigint not null
+      )
+    `;
+    yield* sql`
+      create index activity_comment_post on activity_comment (owner_id, activity_id, created_ms)
+    `;
+    yield* sql`create index activity_comment_author on activity_comment (author_id)`;
+    yield* sql`
+      create table inbox_read (
+        account_id text primary key,
+        read_until bigint not null
+      )
+    `;
+    yield* sql`
+      create index account_row_activity_child
+      on account_row (account_id, table_name, (data->>'activityId'))
+    `;
+    yield* sql`
+      create index account_row_exercise_child
+      on account_row (account_id, table_name, (data->>'activityExerciseId'))
+    `;
+    yield* sql`
+      create index account_row_track_child
+      on account_row (account_id, table_name, (data->>'activityTrackId'))
+    `;
+  }),
 };

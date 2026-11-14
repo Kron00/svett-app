@@ -5,6 +5,7 @@ import {
   type ActivityView,
   type FollowRequest,
   type FollowState,
+  isPublished,
   type OwnProfile,
   type ProfilePage,
   type ProfileSummary,
@@ -118,6 +119,29 @@ type OwnedRelation = Relation & { readonly owner: AccountId };
 const visibilityOf = (relation: Relation, activity: Activity) =>
   privacy({ ...relation, audience: activity.audience, hiddenFields: activity.hiddenFields });
 
+/**
+ * Mints the social ID of each of `owner`'s activities that has none yet, and gives back every
+ * one, keyed by the activity's own ID.
+ */
+export const socialIdsOf = (
+  sql: PgClient.PgClient,
+  owner: string,
+  activityIds: ReadonlyArray<string>,
+) =>
+  Effect.gen(function* () {
+    const [first, ...rest] = activityIds.map((id) => ({ account_id: owner, activity_id: id }));
+    if (first === undefined) return new Map<string, SocialActivityId>();
+    yield* sql`
+      insert into activity_social ${sql.insert([first, ...rest])}
+      on conflict do nothing
+    `;
+    const rows = yield* sql<{ readonly activity_id: string; readonly social_id: string }>`
+      select activity_id, social_id from activity_social
+      where account_id = ${owner} and activity_id in ${sql.in(activityIds)}
+    `;
+    return new Map(rows.map((row) => [row.activity_id, SocialActivityId.make(row.social_id)]));
+  });
+
 const summary = (row: SummaryRow): ProfileSummary => ({
   username: row.username,
   private: row.private,
@@ -211,26 +235,8 @@ export class SocialRows extends Context.Service<SocialRows, SocialRowsShape>()(
           }),
         );
 
-      // Mints the social ID of each activity that has none yet, and gives back every one.
       const socialIds = (owner: AccountId, activityIds: ReadonlyArray<string>) =>
-        Effect.gen(function* () {
-          const [first, ...rest] = activityIds.map((id) => ({
-            account_id: owner,
-            activity_id: id,
-          }));
-          if (first === undefined) return new Map<string, SocialActivityId>();
-          yield* sql`
-            insert into activity_social ${sql.insert([first, ...rest])}
-            on conflict do nothing
-          `;
-          const rows = yield* sql<{ readonly activity_id: string; readonly social_id: string }>`
-            select activity_id, social_id from activity_social
-            where account_id = ${owner} and activity_id in ${sql.in(activityIds)}
-          `;
-          return new Map(
-            rows.map((row) => [row.activity_id, SocialActivityId.make(row.social_id)]),
-          );
-        });
+        socialIdsOf(sql, owner, activityIds);
 
       const activities = (relation: OwnedRelation) =>
         Effect.gen(function* () {
@@ -244,7 +250,9 @@ export class SocialRows extends Context.Service<SocialRows, SocialRowsShape>()(
             limit ${PAGE}
           `;
           const shown = rows.flatMap(({ data }) => {
-            const activity = Option.getOrUndefined(decodeActivity(data));
+            const activity = isPublished(data)
+              ? Option.getOrUndefined(decodeActivity(data))
+              : undefined;
             if (activity === undefined) return [];
             const visibility = visibilityOf(relation, activity);
             return visibility.visible ? [{ activity, visibility }] : [];
@@ -359,7 +367,9 @@ export class SocialRows extends Context.Service<SocialRows, SocialRowsShape>()(
               where s.social_id = ${socialId} and r.deleted_at is null
             `;
             const owner = Option.getOrUndefined(decodeAccountId(found?.account_id));
-            const activity = Option.getOrUndefined(decodeActivity(found?.data));
+            const activity = isPublished(found?.data)
+              ? Option.getOrUndefined(decodeActivity(found?.data))
+              : undefined;
             if (owner === undefined || activity === undefined) return yield* new NotFound();
             const relation = yield* relationTo(viewer, owner);
             const view = viewActivity(activity, socialId, visibilityOf(relation, activity));

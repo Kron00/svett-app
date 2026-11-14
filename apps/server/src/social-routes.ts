@@ -9,6 +9,7 @@ import { Data, Effect, Layer, Schema } from "effect";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 
 import { SignInUnavailable, signedInAccount, Unauthorized } from "./auth.ts";
+import { InvalidComment, InvalidCursor, PostNotFound } from "./feed-rows.ts";
 import {
   CannotFollowSelf,
   NotFound,
@@ -52,6 +53,9 @@ const refusal = (error: unknown) => {
   if (error instanceof UsernameTaken) return refuse("username_taken", 409);
   if (error instanceof UsernameRequired) return refuse("username_required", 403);
   if (error instanceof CannotFollowSelf) return refuse("cannot_follow_self", 400);
+  if (error instanceof PostNotFound) return refuse("post_not_found", 404);
+  if (error instanceof InvalidComment) return refuse("invalid_comment", 400, error.message);
+  if (error instanceof InvalidCursor) return refuse("invalid_cursor", 400);
   return undefined;
 };
 
@@ -60,7 +64,7 @@ const refusal = (error: unknown) => {
  * from the session alone, so nobody reads or writes as someone else. A database failure is
  * left to the router, which answers 500.
  */
-const route = <A, E, R>(handle: (account: AccountId) => Effect.Effect<A, E, R>) =>
+export const route = <A, E, R>(handle: (account: AccountId) => Effect.Effect<A, E, R>) =>
   signedInAccount.pipe(
     Effect.flatMap(handle),
     Effect.map((body) => HttpServerResponse.jsonUnsafe(body)),
