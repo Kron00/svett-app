@@ -643,4 +643,122 @@ check "checks.sh still saves the report when a check did not pass" \
 check "checks.sh still screenshots the report when a check did not pass" \
   bound_got "$bound_prefix screenshot $root/checks-unpassed/08-report.png"
 
+# Stands in for swift on the Mac. FAKE_SWIFT_FAIL fails the tests.
+cat >"$fake/swift" <<EOF
+#!/usr/bin/env bash
+echo "\$*" >>"$root/swift-calls"
+echo "fake swift test output"
+[[ -z "\${FAKE_SWIFT_FAIL:-}" ]]
+EOF
+
+# Stands in for the bound command on the ChatGPT settings. Every element has the same
+# frame, every wait succeeds except one for text containing FAKE_MISSING, the signed-in
+# state is always on screen, and no system alert shows.
+cat >"$fake/chatgpt-device" <<EOF
+#!/usr/bin/env bash
+echo "\$*" >>"$root/bound-calls"
+args=" \$* "
+case "\$args" in
+  *" get attrs "*) echo '{"rect": {"x": 20, "y": 300, "width": 120, "height": 40}}' ;;
+  *" is visible "*) [[ "\$args" == *chatgpt-state-signedIn* ]] ;;
+  *" alert wait "*) exit 1 ;;
+  *" wait "*) [[ -z "\${FAKE_MISSING:-}" || "\$args" != *"\$FAKE_MISSING"* ]] ;;
+esac
+EOF
+chmod +x "$fake/swift" "$fake/chatgpt-device"
+
+# run_chatgpt [VAR=value...] [chatgpt.sh args...] leaves the exit status in chatgpt_status.
+run_chatgpt() {
+  local -a vars=()
+  while [[ "${1:-}" == *=* ]]; do
+    vars+=("$1")
+    shift
+  done
+  rm -f "$root/simctl-calls" "$root/bound-calls" "$root/swift-calls"
+  chatgpt_status=0
+  env PATH="$fake:$PATH" HOME="$root/home" \
+    SVETT_DEVICE_CMD="chatgpt-device --session 't3-test session' --device FAKE-UDID" \
+    "${vars[@]}" "$repo/scripts/sim/chatgpt.sh" "$@" >"$output" 2>&1 || chatgpt_status=$?
+}
+
+chatgpt_sh() {
+  run_chatgpt "$@"
+  [[ "$chatgpt_status" == 0 ]] || fail "chatgpt.sh $* failed"
+}
+
+stub() { echo "--launch-args=-svettChatGPTStub --launch-args=$1"; }
+chatgpt_link="com.kron00.svett svett://chatgpt"
+scenarios=(signedOut noPlanUsage renews lapsed badSignature wrongAudience expiredToken revokeFails signedOut)
+
+# stand_in_opens <relaunch> <front> lists the opens of a run through every scenario.
+stand_in_opens() {
+  local scenario
+  for scenario in "${scenarios[@]}"; do
+    echo "$1 $(stub "$scenario")"
+    echo "$chatgpt_link"
+  done
+  echo "$2"
+}
+
+case_name="chatgpt.sh Debug with SVETT_DEVICE_CMD"
+chatgpt_sh "$root/chatgpt"
+check "chatgpt.sh runs the Swift tests with their build outside the repo, and saves their output" \
+  grep -qxF "test --package-path $repo/apps/mobile/modules/svett-native/ios/ChatGPTCore --scratch-path $root/home/svett-app-build/chatgpt-core" "$root/swift-calls"
+check "chatgpt.sh saves the Swift test output" grep -qxF "fake swift test output" "$root/chatgpt/swift-test.txt"
+mapfile -t expected_opens < <(stand_in_opens "$debug_open" "$debug_front")
+check "chatgpt.sh relaunches into the dev client once per stand-in scenario and opens the ChatGPT settings by link" \
+  only_open "${expected_opens[@]}"
+check "chatgpt.sh shoots at the largest text size, then restores the default" \
+  only_calls "settings text-size" \
+  "settings text-size accessibility-extra-extra-extra-large" "settings text-size large"
+check "chatgpt.sh presses screen content only at an element's centre, which agent-device does not refuse on iOS 27" \
+  test "$(grep -E -- "^$bound_prefix press " "$root/bound-calls" | grep -cvxF -- "$bound_prefix press 80 320")" -eq 0
+check "chatgpt.sh signs in, signs out, allows plan usage, signs out unconfirmed and signs in with Safari, in that order" \
+  only_calls "get attrs" \
+  'get attrs id="chatgpt-continue"' 'get attrs id="chatgpt-sign-out"' 'get attrs id="chatgpt-allow"' \
+  'get attrs id="chatgpt-continue"' 'get attrs id="chatgpt-continue"' 'get attrs id="chatgpt-continue"' \
+  'get attrs id="chatgpt-sign-out"' 'get attrs id="chatgpt-safari"'
+check "chatgpt.sh checks each refusal names its reason" \
+  only_calls "wait text .*(match|another app|expired)" \
+  "wait text does not match OpenAI's published keys 15000" "wait text was made for another app 15000" \
+  "wait text has expired 15000"
+check "chatgpt.sh screenshots each state" \
+  only_calls "screenshot" \
+  "screenshot $root/chatgpt/01-signed-out.png" "screenshot $root/chatgpt/02-signed-in.png" \
+  "screenshot $root/chatgpt/03-signed-out-keeps-account.png" "screenshot $root/chatgpt/04-no-plan-usage.png" \
+  "screenshot $root/chatgpt/05-plan-usage-allowed.png" "screenshot $root/chatgpt/06-renewed.png" \
+  "screenshot $root/chatgpt/07-lapsed.png" "screenshot $root/chatgpt/08-refused-badSignature.png" \
+  "screenshot $root/chatgpt/09-refused-wrongAudience.png" "screenshot $root/chatgpt/10-refused-expiredToken.png" \
+  "screenshot $root/chatgpt/11-revocation-unconfirmed.png" "screenshot $root/chatgpt/12-safari.png" \
+  "screenshot $root/chatgpt/13-safari-signed-in.png"
+check "chatgpt.sh with SVETT_DEVICE_CMD never calls simctl" test ! -e "$root/simctl-calls"
+
+case_name="chatgpt.sh Release with SVETT_DEVICE_CMD"
+chatgpt_sh --release "$root/chatgpt-release"
+mapfile -t expected_opens < <(stand_in_opens "com.kron00.svett --relaunch" com.kron00.svett)
+check "chatgpt.sh Release relaunches the installed app without Metro" only_open "${expected_opens[@]}"
+
+case_name="chatgpt.sh when an expected message does not show"
+run_chatgpt FAKE_MISSING="has expired" "$root/chatgpt-missing"
+check "chatgpt.sh fails when a refusal does not show" test "$chatgpt_status" -ne 0
+check "chatgpt.sh names what did not show" grep -qF "Expected the expiredToken refusal, which did not show" "$output"
+check "chatgpt.sh restores the default text size after a failure" \
+  only_calls "settings text-size" \
+  "settings text-size accessibility-extra-extra-extra-large" "settings text-size large"
+
+case_name="chatgpt.sh when the Swift tests fail"
+run_chatgpt FAKE_SWIFT_FAIL=1 "$root/chatgpt-swift"
+check "chatgpt.sh fails when the Swift tests fail" test "$chatgpt_status" -ne 0
+check "chatgpt.sh opens nothing when the Swift tests fail" test ! -e "$root/bound-calls"
+
+case_name="chatgpt.sh --live"
+chatgpt_sh --release --live "$root/chatgpt-live"
+check "chatgpt.sh --live skips the Swift tests" test ! -e "$root/swift-calls"
+check "chatgpt.sh --live opens the real sign-in, with no stand-in" \
+  only_open "com.kron00.svett --relaunch" "$chatgpt_link"
+check "chatgpt.sh --live signs out an earlier sign-in, then waits 10 minutes for a person to sign in" \
+  only_calls "get attrs|wait id=\"chatgpt-state-signedIn\"" \
+  'get attrs id="chatgpt-sign-out"' 'get attrs id="chatgpt-continue"' \
+  'wait id="chatgpt-state-signedIn" 600000' 'get attrs id="chatgpt-sign-out"'
+
 echo "$passed passed"

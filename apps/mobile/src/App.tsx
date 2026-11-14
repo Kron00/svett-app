@@ -7,6 +7,8 @@ import { StatusBar } from "expo-status-bar";
 import { SymbolView } from "expo-symbols";
 import { View } from "react-native";
 
+import { ChatGPTRow } from "./chatgpt/ChatGPTRow";
+import { ChatGPTScreen } from "./chatgpt/ChatGPTScreen";
 import { WorkoutCounts } from "./data/WorkoutCounts";
 import { PhoneChecksScreen } from "./checks/PhoneChecksScreen";
 import { useNavigationTheme } from "./design/hooks";
@@ -22,13 +24,13 @@ const Stack = createNativeStackNavigator<RootStackParamList>();
 const Tabs = createBottomTabNavigator();
 
 // scripts/sim/gallery.sh opens svett://gallery, and svett://gallery?sheet=open
-// for the sheet, because agent-device refuses taps in screen content on iOS 27.
+// for the sheet, and scripts/sim/chatgpt.sh opens svett://chatgpt, because agent-device refuses taps in screen content on iOS 27.
 // It reads UIKit's touch-transparent floating bar containers as toolbars that
 // cover the whole screen.
 const linking: LinkingOptions<RootStackParamList> = {
   prefixes: ["svett://"],
   filter: (url) => !url.includes("expo-development-client"),
-  config: { initialRouteName: "Tabs", screens: { Gallery: "gallery" } },
+  config: { initialRouteName: "Tabs", screens: { Gallery: "gallery", ChatGPT: "chatgpt" } },
 };
 
 function TabNavigator() {
@@ -50,6 +52,7 @@ function TabNavigator() {
               {tab.name === "You" ? (
                 <View className="mt-6 self-stretch">
                   <ListSection>
+                    <ChatGPTRow />
                     <PhoneChecksRow />
                     <DesignGalleryRow />
                   </ListSection>
@@ -73,6 +76,11 @@ export default function App() {
           name="Gallery"
           component={GalleryScreen}
           options={{ headerShown: true, title: "Design gallery", headerLargeTitle: true }}
+        />
+        <Stack.Screen
+          name="ChatGPT"
+          component={ChatGPTScreen}
+          options={{ headerShown: true, title: "ChatGPT" }}
         />
         <Stack.Screen
           name="PhoneChecks"
