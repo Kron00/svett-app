@@ -1,5 +1,6 @@
-import type { AwayWindow } from "@svett/core";
+import { type AwayWindow, notificationDateMs } from "@svett/core";
 import type { LocationObject } from "expo-location";
+import * as Notifications from "expo-notifications";
 import * as TaskManager from "expo-task-manager";
 import { AppState } from "react-native";
 
@@ -30,4 +31,25 @@ export const locationPoints = createStore<ReadonlyArray<number>>([]);
 TaskManager.defineTask<{ locations: LocationObject[] }>(LOCATION_TASK, async ({ data, error }) => {
   if (error !== null) return;
   locationPoints.set([...locationPoints.get(), ...data.locations.map((l) => l.timestamp)]);
+});
+
+/** Notifications iOS handed to svett while it was in front, by identifier, with when. */
+export const notificationsInSvett = createStore<ReadonlyMap<string, number>>(new Map());
+
+Notifications.addNotificationReceivedListener((notification) => {
+  const delivered = new Map(notificationsInSvett.get());
+  delivered.set(notification.request.identifier, notificationDateMs(notification.date));
+  notificationsInSvett.set(delivered);
+});
+
+// Without a handler Expo shows a notification that arrives while svett is in front, and it
+// lands in Notification Center. Hiding it keeps that list to notifications iOS showed while
+// svett was away, which is what the notification check reads.
+Notifications.setNotificationHandler({
+  handleNotification: async () => ({
+    shouldShowBanner: false,
+    shouldShowList: false,
+    shouldPlaySound: false,
+    shouldSetBadge: false,
+  }),
 });

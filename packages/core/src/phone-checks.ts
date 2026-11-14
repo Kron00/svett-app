@@ -78,9 +78,6 @@ const seconds = (ms: number): number => Math.round(ms / 1000);
 const finishedAwayWindows = (away: ReadonlyArray<AwayWindow>, after: number) =>
   away.flatMap((w) => (w.to !== undefined && w.from >= after ? [{ from: w.from, to: w.to }] : []));
 
-const wasAway = (away: ReadonlyArray<AwayWindow>, time: number): boolean =>
-  away.some((w) => w.from <= time && (w.to === undefined || time <= w.to));
-
 // The Keychain check stores the launch that wrote it, so the next launch can tell
 // its own value from one that survived a restart.
 const KeychainMark = Schema.Struct({ launchedAt: Schema.Number });
@@ -128,17 +125,42 @@ export const decodePendingNotification = (text: string | null): PendingNotificat
 export type NotificationObservation =
   | { readonly kind: "denied" }
   | { readonly kind: "scheduled"; readonly dueAt: number }
-  | { readonly kind: "arrived"; readonly at: number }
+  | { readonly kind: "arrived"; readonly at: number; readonly whileOpen: boolean }
   | { readonly kind: "missing"; readonly dueAt: number };
 
 // Expo's `Notification.date` is seconds on iOS (UNNotification.date.timeIntervalSince1970) and
 // milliseconds on Android. Below 1e11 it can only be seconds: as milliseconds it would be 1973.
 export const notificationDateMs = (date: number): number => (date < 1e11 ? date * 1000 : date);
 
+/** When iOS delivered the check's notification, by where svett found it. */
+export interface NotificationSightings {
+  /** iOS handed it to svett because svett was in front. */
+  readonly inSvett?: number;
+  /** iOS showed it while svett was away: it is in Notification Center, or it was tapped. */
+  readonly shown?: number;
+}
+
+/** A notification this late and still not found was not delivered, or was swiped away. */
+const NOTIFICATION_GRACE_MS = 2000;
+
+export function findNotification(
+  pending: PendingNotification,
+  sightings: NotificationSightings,
+  now: number,
+): NotificationObservation {
+  if (sightings.inSvett !== undefined) {
+    return { kind: "arrived", at: sightings.inSvett, whileOpen: true };
+  }
+  if (sightings.shown !== undefined)
+    return { kind: "arrived", at: sightings.shown, whileOpen: false };
+  return now > pending.dueAt + NOTIFICATION_GRACE_MS
+    ? { kind: "missing", dueAt: pending.dueAt }
+    : { kind: "scheduled", dueAt: pending.dueAt };
+}
+
 /** `launchedAt` is when this launch began: svett was closed before it. */
 export function notificationOutcome(
   observation: NotificationObservation,
-  away: ReadonlyArray<AwayWindow>,
   launchedAt: number,
 ): SeenOutcome {
   switch (observation.kind) {
@@ -149,14 +171,16 @@ export function notificationOutcome(
         `Due at ${clock(observation.dueAt)}. Lock the phone or go to the home screen now.`,
       );
     case "arrived":
-      if (observation.at < launchedAt) {
-        return passed(`Arrived at ${clock(observation.at)} while svett was closed.`);
+      if (observation.whileOpen) {
+        return waiting(
+          `Arrived at ${clock(observation.at)} while svett was open. Run it again and leave svett before it is due.`,
+        );
       }
-      return wasAway(away, observation.at)
-        ? passed(`Arrived at ${clock(observation.at)} while svett was in the background.`)
-        : waiting(
-            `Arrived at ${clock(observation.at)} while svett was open. Run it again and leave svett before it is due.`,
-          );
+      return passed(
+        observation.at < launchedAt
+          ? `Arrived at ${clock(observation.at)} while svett was closed.`
+          : `Arrived at ${clock(observation.at)} while svett was in the background.`,
+      );
     case "missing":
       return failed(
         `Due at ${clock(observation.dueAt)} and not delivered. If you swiped it away, run it again.`,

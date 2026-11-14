@@ -4,6 +4,7 @@ import {
   type CheckName,
   type CheckOutcome,
   NOT_RUN,
+  type NotificationSightings,
   type StoredOutcome,
   cancelSignIn,
   chatGPTOutcome,
@@ -12,6 +13,7 @@ import {
   encodeKeychainMark,
   encodePendingNotification,
   encodeStoredOutcome,
+  findNotification,
   formatReport,
   healthOutcome,
   keychainOutcome,
@@ -58,45 +60,53 @@ describe("keychainOutcome", () => {
   });
 });
 
-describe("notificationOutcome", () => {
-  const away = [{ from: s(3), to: s(40) }];
+describe("notification check", () => {
+  const pending = { id: "abc", dueAt: s(10) };
+  const launchedAt = s(0);
+  const judge = (sightings: NotificationSightings, now: number, launch = launchedAt) =>
+    notificationOutcome(findNotification(pending, sightings, now), launch);
 
-  it("passes when the notification arrived while svett was away", () => {
-    expect(notificationOutcome({ kind: "arrived", at: s(10) }, away, s(0))).toEqual({
+  it("passes when iOS showed it while svett was in the background", () => {
+    expect(judge({ shown: s(10) }, s(25))).toEqual({
       status: "passed",
       detail: "Arrived at 15:00:10 UTC while svett was in the background.",
     });
-  });
-
-  it("counts an away stretch that has not ended yet", () => {
-    expect(notificationOutcome({ kind: "arrived", at: s(10) }, [{ from: s(3) }], s(0)).status).toBe(
-      "passed",
-    );
   });
 
   it("asks for another run when it arrived while svett was open", () => {
-    expect(notificationOutcome({ kind: "arrived", at: s(50) }, away, s(0)).status).toBe("waiting");
-  });
-
-  it("passes for an iOS delivery, whose date Expo gives in seconds", () => {
-    const iosDate = s(10) / 1000 + 0.123;
-    expect(
-      notificationOutcome({ kind: "arrived", at: notificationDateMs(iosDate) }, away, s(0)),
-    ).toEqual({
-      status: "passed",
-      detail: "Arrived at 15:00:10 UTC while svett was in the background.",
+    expect(judge({ inSvett: s(10) }, s(10))).toEqual({
+      status: "waiting",
+      detail:
+        "Arrived at 15:00:10 UTC while svett was open. Run it again and leave svett before it is due.",
     });
   });
 
-  it("passes when it arrived before this launch, while svett was closed", () => {
-    expect(notificationOutcome({ kind: "arrived", at: s(10) }, [], s(30))).toEqual({
+  it("waits while the notification is not delivered yet", () => {
+    expect(judge({}, s(5))).toEqual({
+      status: "waiting",
+      detail: "Due at 15:00:10 UTC. Lock the phone or go to the home screen now.",
+    });
+    expect(judge({}, s(11)).status).toBe("waiting");
+  });
+
+  it("passes when it is found after a restart, having arrived while svett was closed", () => {
+    const restarted = s(30);
+    const stored = {
+      outcome: judge({ shown: s(10) }, s(31), restarted),
+      launchedAt: restarted,
+    };
+    expect(mergeOutcome(NOT_RUN, decodeStoredOutcome(encodeStoredOutcome(stored)), s(90))).toEqual({
       status: "passed",
       detail: "Arrived at 15:00:10 UTC while svett was closed.",
     });
   });
 
+  it("passes for an iOS delivery, whose date Expo gives in seconds", () => {
+    const iosDate = s(10) / 1000 + 0.123;
+    expect(judge({ shown: notificationDateMs(iosDate) }, s(25)).status).toBe("passed");
+  });
+
   it("reads back the pending notification saved before a restart", () => {
-    const pending = { id: "abc", dueAt: s(10) };
     expect(decodePendingNotification(encodePendingNotification(pending))).toEqual(pending);
     expect(decodePendingNotification(null)).toBeUndefined();
     expect(decodePendingNotification('{"id":1}')).toBeUndefined();
@@ -107,10 +117,11 @@ describe("notificationOutcome", () => {
   });
 
   it("fails when notifications are off or it never showed", () => {
-    expect(notificationOutcome({ kind: "denied" }, [], s(0)).status).toBe("failed");
-    expect(notificationOutcome({ kind: "missing", dueAt: s(10) }, away, s(0)).status).toBe(
-      "failed",
-    );
+    expect(notificationOutcome({ kind: "denied" }, launchedAt).status).toBe("failed");
+    expect(judge({}, s(13))).toEqual({
+      status: "failed",
+      detail: "Due at 15:00:10 UTC and not delivered. If you swiped it away, run it again.",
+    });
   });
 });
 
@@ -380,7 +391,7 @@ describe("saved outcomes across a restart", () => {
     const stored = {
       keychain: saved(keychainOutcome({ kind: "read", stored: null }, launchA), launchA),
       notification: saved(
-        notificationOutcome({ kind: "arrived", at: s(20) }, [{ from: s(5), to: s(60) }], launchA),
+        notificationOutcome({ kind: "arrived", at: s(20), whileOpen: false }, launchA),
         launchA,
       ),
     };

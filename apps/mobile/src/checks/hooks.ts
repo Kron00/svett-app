@@ -10,6 +10,7 @@ import {
   cancelSignIn,
   chatGPTOutcome,
   encodeKeychainMark,
+  findNotification,
   healthOutcome,
   keychainOutcome,
   locationOutcome,
@@ -20,10 +21,9 @@ import * as Location from "expo-location";
 import * as Notifications from "expo-notifications";
 import * as SecureStore from "expo-secure-store";
 import { useEffect, useRef, useState } from "react";
-import { AppState } from "react-native";
 
 import SvettNative from "../../modules/svett-native";
-import { LOCATION_TASK, awayWindows, locationPoints } from "./background";
+import { LOCATION_TASK, awayWindows, locationPoints, notificationsInSvett } from "./background";
 import {
   KEYCHAIN_KEY,
   SECURE_OPTIONS,
@@ -63,37 +63,32 @@ export function useKeychainCheck(): CheckOutcome {
 
 const NOTIFICATION_DELAY_S = 10;
 
+/** When iOS showed the notification while svett was away, if it is still shown or was tapped. */
+const shownAt = async (id: string): Promise<number | undefined> => {
+  const presented = await Notifications.getPresentedNotificationsAsync();
+  const tapped = Notifications.getLastNotificationResponse()?.notification;
+  const shown = [...presented, ...(tapped === undefined ? [] : [tapped])].find(
+    (n) => n.request.identifier === id,
+  );
+  return shown === undefined ? undefined : notificationDateMs(shown.date);
+};
+
 export function useNotificationCheck() {
   const [observation, setObservation] = useState<NotificationObservation>();
   const scheduled = useRef<PendingNotification>(undefined);
-  const away = useStore(awayWindows);
 
   useEffect(() => {
-    const settle = (next: NotificationObservation) => {
-      scheduled.current = undefined;
-      void forgetPendingNotification();
-      setObservation(next);
-    };
-    const arrived = (notification: Notifications.Notification) => {
-      if (notification.request.identifier !== scheduled.current?.id) return;
-      settle({ kind: "arrived", at: notificationDateMs(notification.date) });
-      void Notifications.dismissNotificationAsync(notification.request.identifier);
-    };
-    // Finds the notification if it showed while svett was away or closed. Tapping it
-    // removes it from the shown ones, so the response that opened svett counts too.
     const look = async () => {
       const pending = scheduled.current;
       if (pending === undefined) return;
-      const presented = await Notifications.getPresentedNotificationsAsync();
-      const tapped = (await Notifications.getLastNotificationResponseAsync())?.notification;
-      const shown = [...presented, ...(tapped === undefined ? [] : [tapped])].find(
-        (n) => n.request.identifier === pending.id,
-      );
-      if (shown !== undefined) {
-        arrived(shown);
-      } else if (Date.now() > pending.dueAt + 2000 && scheduled.current === pending) {
-        settle({ kind: "missing", dueAt: pending.dueAt });
-      }
+      const shown = await shownAt(pending.id);
+      const inSvett = notificationsInSvett.get().get(pending.id);
+      const next = findNotification(pending, { inSvett, shown }, Date.now());
+      if (next.kind === "scheduled" || scheduled.current !== pending) return;
+      scheduled.current = undefined;
+      void forgetPendingNotification();
+      void Notifications.dismissNotificationAsync(pending.id);
+      setObservation(next);
     };
     void loadPendingNotification().then((pending) => {
       if (pending === undefined || scheduled.current !== undefined) return;
@@ -101,17 +96,13 @@ export function useNotificationCheck() {
       setObservation({ kind: "scheduled", dueAt: pending.dueAt });
       void look();
     });
-    const subscriptions = [
-      Notifications.addNotificationReceivedListener(arrived),
-      Notifications.addNotificationResponseReceivedListener((response) =>
-        arrived(response.notification),
-      ),
-      AppState.addEventListener("change", (state) => {
-        if (state === "active") void look();
-      }),
-    ];
+    // Polls instead of waiting for AppState, because in a Release run on the simulator the
+    // check had not found the notification after svett came back to the front.
+    const timer = setInterval(() => void look(), 1000);
+    const unsubscribe = notificationsInSvett.subscribe(() => void look());
     return () => {
-      for (const subscription of subscriptions) subscription.remove();
+      clearInterval(timer);
+      unsubscribe();
     };
   }, []);
 
@@ -132,9 +123,7 @@ export function useNotificationCheck() {
   };
 
   const outcome =
-    observation === undefined
-      ? NOT_RUN
-      : notificationOutcome(observation, away, SvettNative.launchedAt);
+    observation === undefined ? NOT_RUN : notificationOutcome(observation, SvettNative.launchedAt);
   return { outcome, run };
 }
 
