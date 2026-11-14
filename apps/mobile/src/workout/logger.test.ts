@@ -12,6 +12,7 @@ import {
   type SetColumn,
   type SqlDriver,
   startEmptyWorkout,
+  type WeightUnit,
 } from "@svett/core";
 import { openNodeDatabase } from "@svett/core/node";
 import { Effect, ManagedRuntime } from "effect";
@@ -111,6 +112,7 @@ const typeKeys = (
   set: ActivitySet,
   column: SetColumn,
   keys: ReadonlyArray<KeypadKey>,
+  unit: WeightUnit = "kg",
 ) => {
   const { store, actions, focus } = running;
   let field = focus.focusField(
@@ -118,6 +120,7 @@ const typeKeys = (
     set,
     column,
     failures(running),
+    unit,
   );
   for (const key of keys) {
     const typed = focus.pressKey(store.currentWorkout()!, field, key, failures(running))!;
@@ -214,7 +217,7 @@ describe("the workout store", () => {
     const running = await launch(opened.runtime);
     const { store, actions, focus } = running;
     const exercise = store.currentWorkout()!.exercises[0]!;
-    let field = focus.focusField(exercise, exercise.sets[0]!, "weight", 0);
+    let field = focus.focusField(exercise, exercise.sets[0]!, "weight", 0, "kg");
     for (const key of ["1", "0"] as const) {
       const typed = focus.pressKey(store.currentWorkout()!, field, key, 0)!;
       field = typed.focus;
@@ -273,6 +276,23 @@ describe("the workout store", () => {
     );
     expect(shownSet(running).reps).toBe(5);
     expect(shownText(running, field)).toBe("5");
+  });
+
+  it("types a weight in pounds, stores kilograms, and keeps them when retyped as shown", async () => {
+    const opened = openApp(":memory:");
+    await startSquats(opened.runtime);
+    const running = await launch(opened.runtime);
+    const field = typeKeys(running, shownSet(running), "weight", ["2", "2", "5"], "lb");
+    expect(shownText(running, field)).toBe("225");
+    await running.store.reloadWorkout();
+    expect(shownSet(running).weightKg).toBe(225 * 0.45359237);
+
+    running.actions.typeValue(shownSet(running), "weight", 102.5);
+    await running.store.reloadWorkout();
+    const retyped = typeKeys(running, shownSet(running), "weight", ["delete", "7"], "lb");
+    expect(retyped.text).toBe("225.97");
+    await running.store.reloadWorkout();
+    expect(shownSet(running).weightKg).toBe(102.5);
   });
 });
 

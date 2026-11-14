@@ -205,6 +205,8 @@ describe("the plate calculator", () => {
   it("refuses a plate size that is empty, zero, or one you have", () => {
     expect(plateSizeProblem(null, KG)).toBe("Enter the plate's weight.");
     expect(plateSizeProblem(0, KG)).toBe("Enter the plate's weight.");
+    expect(plateSizeProblem(0.001, KG)).toBe("Enter the plate's weight.");
+    expect(plateSizeProblem(1001, KG)).toBe("Enter the plate's weight.");
     expect(plateSizeProblem(2.5, KG)).toBe("You already have that plate size.");
     expect(plateSizeProblem(0.5, KG)).toBeUndefined();
   });

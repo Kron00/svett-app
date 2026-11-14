@@ -6,14 +6,18 @@ import {
   type ExerciseId,
   fieldPatch,
   type LoggedExercise,
+  leaveSuperset,
   moveItem,
   nextSet,
+  type PlannedSet,
   replaceWorkoutExercise,
   type SetColumn,
   type SetFields,
   type SetType,
   startEmptyWorkout,
+  supersetWithNext,
   toggleDone,
+  type DurationSeconds,
 } from "@svett/core";
 import { Effect } from "effect";
 
@@ -109,6 +113,54 @@ export const typeValue = (set: ActivitySet, column: SetColumn, value: number | n
     withActivities((activities) => activities.changeSetValue(set.id, column, value)),
   );
 };
+
+/** Changes how long the rest timer runs after each set of an exercise. 0 turns it off. */
+export const setRestTime = (row: ActivityExerciseId, restS: DurationSeconds) =>
+  changeWorkout(
+    (log) => ({
+      ...log,
+      exercises: log.exercises.map((exercise) =>
+        exercise.row.id === row ? { ...exercise, row: { ...exercise.row, restS } } : exercise,
+      ),
+    }),
+    withActivities((activities) => activities.updateExercise(row, { restS })),
+  );
+
+/** Sets or clears a set's RPE. */
+export const setSetRpe = (set: ActivitySet, rpe: number | null) =>
+  changeSet(
+    set.id,
+    { rpe },
+    withActivities((activities) => activities.updateWorkoutSet(set.id, { rpe })),
+  );
+
+/**
+ * Joins the exercise at `index` with the next one in a superset, or takes it out of the
+ * superset it is in.
+ */
+export const toggleSuperset = (index: number) => {
+  const log = currentWorkout();
+  if (log === null) return;
+  const rows = log.exercises.map((exercise) => exercise.row);
+  const inOne =
+    rows[index]?.supersetGroup !== null &&
+    [rows[index - 1], rows[index + 1]].some(
+      (other) => other !== undefined && other.supersetGroup === rows[index]?.supersetGroup,
+    );
+  const changes = inOne ? leaveSuperset(rows, index) : supersetWithNext(rows, index);
+  if (changes.length === 0) return;
+  void saveWorkout(
+    withActivities((activities) =>
+      activities.groupExercises(
+        changes.map(({ index: at, supersetGroup }) => ({ id: rows[at]!.id, supersetGroup })),
+      ),
+    ),
+  );
+};
+
+/** Puts warm-up sets before an exercise's first set. */
+export const addWarmUpSets = (row: ActivityExerciseId, sets: ReadonlyArray<PlannedSet>) =>
+  saveWorkout(withActivities((activities) => activities.addSetsFirst(row, sets)));
 
 export const renameWorkout = (title: string) => {
   const id = inProgress();

@@ -41,6 +41,7 @@ vi.mock("react-native", () => ({
   },
   Pressable: "Pressable",
   ScrollView: "ScrollView",
+  Settings: { get: () => undefined, set: () => undefined },
   StyleSheet: { hairlineWidth: 0.5 },
   Switch: "Switch",
   Text: "Text",

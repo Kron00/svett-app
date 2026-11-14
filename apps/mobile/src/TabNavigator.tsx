@@ -11,6 +11,7 @@ import { PlaceholderScreen } from "./PlaceholderScreen";
 import { ProgressScreen } from "./progress/ProgressScreen";
 import { TrainScreen } from "./routines/TrainScreen";
 import { type Tab, TABS } from "./tabs";
+import { WorkoutSettingsRow } from "./tools/WorkoutSettingsRow";
 import { DataRow } from "./transfer/DataRow";
 import { ListSection } from "./ui/List";
 import { WorkoutTabBar } from "./workout/WorkoutTabBar";
@@ -28,6 +29,7 @@ function TabContent({ tab }: { readonly tab: Tab }) {
           <ListSection>
             <ChatGPTRow />
             <DataRow />
+            <WorkoutSettingsRow />
             <PhoneChecksRow />
             <DesignGalleryRow />
           </ListSection>

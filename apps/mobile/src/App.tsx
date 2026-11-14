@@ -31,6 +31,9 @@ import { DataScreen } from "./transfer/DataScreen";
 import { ImportPreviewScreen } from "./transfer/ImportPreviewScreen";
 import { UndoImportScreen } from "./transfer/UndoImportScreen";
 import { reloadWorkout } from "./workout/store";
+import { PlatesScreen } from "./tools/PlatesScreen";
+import { WarmUpScreen } from "./tools/WarmUpScreen";
+import { WorkoutSettingsScreen } from "./tools/WorkoutSettingsScreen";
 import { WorkoutScreen as ActiveWorkoutScreen } from "./workout/WorkoutScreen";
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
@@ -42,7 +45,8 @@ const Stack = createNativeStackNavigator<RootStackParamList>();
 // content on iOS 27. It reads UIKit's touch-transparent floating bar containers as
 // toolbars that cover the whole screen. scripts/sim/data.sh reaches export and import
 // the same way, through svett://data, svett://import?file=<name> and
-// svett://imports/<id>/undo.
+// svett://imports/<id>/undo. scripts/sim/tools.sh opens svett://settings/workout and
+// svett://tools/plates?kg=100.
 const linking: LinkingOptions<RootStackParamList> = {
   prefixes: ["svett://"],
   filter: (url) => !url.includes("expo-development-client"),
@@ -73,6 +77,9 @@ const linking: LinkingOptions<RootStackParamList> = {
       ActiveWorkout: "train/workout",
       AddWorkoutExercise: "train/workout/exercises",
       ReplaceWorkoutExercise: "train/workout/exercise/:exercise/replace",
+      WarmUp: "train/workout/exercise/:exercise/warm-up",
+      Plates: "tools/plates",
+      WorkoutSettings: "settings/workout",
     },
   },
 };
@@ -171,6 +178,21 @@ export default function App() {
           name="ReplaceWorkoutExercise"
           component={ExerciseLibraryScreen}
           options={{ headerShown: true, title: "Replace exercise", headerLargeTitle: true }}
+        />
+        <Stack.Screen
+          name="WarmUp"
+          component={WarmUpScreen}
+          options={{ headerShown: true, title: "Warm-up sets", headerLargeTitle: true }}
+        />
+        <Stack.Screen
+          name="Plates"
+          component={PlatesScreen}
+          options={{ headerShown: true, title: "Plate calculator", headerLargeTitle: true }}
+        />
+        <Stack.Screen
+          name="WorkoutSettings"
+          component={WorkoutSettingsScreen}
+          options={{ headerShown: true, title: "Units and plates", headerLargeTitle: true }}
         />
         <Stack.Screen
           name="PhoneChecks"

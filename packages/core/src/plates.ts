@@ -193,12 +193,12 @@ export const plateLabel = (load: PlateLoad, unit: WeightUnit): string =>
         )
         .join(", ");
 
-/** A plate size you can add: more than zero, and not one you already have. */
+/** A plate size you can add: 0.01 to 1000, and not one you already have. */
 export const plateSizeProblem = (
   weight: number | null,
   plates: ReadonlyArray<Plate>,
 ): string | undefined => {
-  if (weight === null || !(weight > 0)) return "Enter the plate's weight.";
+  if (weight === null || !(weight >= 0.01 && weight <= 1000)) return "Enter the plate's weight.";
   if (plates.some((plate) => hundredths(plate.weight) === hundredths(weight))) {
     return "You already have that plate size.";
   }
