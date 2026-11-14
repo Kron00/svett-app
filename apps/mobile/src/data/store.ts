@@ -26,6 +26,16 @@ const subscribe = (listener: () => void) => {
   };
 };
 
+const writeListeners = new Set<() => void>();
+
+/** Calls `listener` after each write, as sync does to upload it soon. */
+export const subscribeWrites = (listener: () => void) => {
+  writeListeners.add(listener);
+  return () => {
+    writeListeners.delete(listener);
+  };
+};
+
 export const SWITCHED_BEFORE_WRITE =
   "Someone signed in or out before it was saved, so svett saved nothing to either account.";
 
@@ -47,6 +57,7 @@ export const writeTo = async <A, E>(
     return await database.handle.runtime.runPromise(effect);
   } finally {
     changed();
+    for (const listener of writeListeners) listener();
   }
 };
 
