@@ -1036,7 +1036,8 @@ check "data.sh fails when export writes no file" \
 # workouts switched on the changed sample's, and Undo writes the sample's back.
 # FAKE_HEVY_TWICE records another import when the sample opens again,
 # FAKE_HEVY_NEW shows new records for the changed sample, and FAKE_HEVY_UNDO
-# leaves the changed workouts after Undo.
+# leaves the changed workouts after Undo. Import and Undo start below the fold,
+# as at the largest text size, so only a scroll finds them.
 cat >"$data_fake/hevy-device" <<EOF
 #!/usr/bin/env bash
 echo "\$*" >>"$root/bound-calls"
@@ -1069,7 +1070,9 @@ case "\$args" in
     if [[ -n "\${FAKE_HEVY_TWICE:-}" && -e "\$database" ]]; then
       sql "INSERT INTO import_batch VALUES ('b9', NULL, 9, 'applied')"
     fi ;;
-  *" is visible id=\"import-new\" "*) [[ -n "\${FAKE_HEVY_NEW:-}" ]] || exit 1 ;;
+  *'id="import-new"'*) [[ -n "\${FAKE_HEVY_NEW:-}" ]] || exit 1 ;;
+  *' wait id="import-apply"'* | *' wait id="undo-apply"'* | *' is visible id="import-apply"'* | *' is visible id="undo-apply"'*)
+    exit 1 ;;
   *" get attrs "*)
     echo "\$*" >"$root/last-attrs"
     echo '{"rect": {"x": 20, "y": 300, "width": 120, "height": 40}}' ;;

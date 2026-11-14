@@ -191,7 +191,9 @@ screenshot match
 tap 'id="match-1-0"'
 screenshot match-chosen
 tap 'id="match-continue"'
-agent_device wait 'id="import-apply"' 60000
+# At the largest text size the buttons and lists start below the fold, so the script
+# waits for the summary at the top of the preview, and tap and reveal scroll to the rest.
+agent_device wait 'id="hevy-summary"' 60000
 screenshot preview
 said=$(text_of 'id="hevy-summary"')
 [[ "$said" == *"3 workouts and 25 sets"* ]] || fail "The preview does not count the sample: $said"
@@ -208,19 +210,21 @@ matched=$(sql "SELECT e.name FROM exercise_alias x JOIN exercise e ON e.id = x.e
 [[ -n "$matched" ]] || fail "The match screen remembered no exercise for Chest Supported Machine Row"
 note "First import: $now. Chest Supported Machine Row matched to $matched, and remembered."
 
-open_link "svett://import?file=$sample&kind=hevy" 'id="import-nothing-new"'
+open_link "svett://import?file=$sample&kind=hevy" 'id="hevy-summary"'
+reveal 'id="import-nothing-new"' || fail "Importing the sample again does not say nothing is new"
 screenshot import-again
 [[ "$(state)" == "$imported_state" ]] || fail "Importing the sample again changed the workouts: $(state)"
 [[ "$(batches)" == applied ]] || fail "Importing the sample again recorded another import: $(batches)"
 note "Same file again: nothing new, no name asked again, one import on record."
 
-open_link "svett://import?file=$changed&kind=hevy" 'id="import-changed"'
+open_link "svett://import?file=$changed&kind=hevy" 'id="hevy-summary"'
+reveal 'id="import-changed"' || fail "The changed sample lists no changed workout"
 screenshot changed-preview
 first=$(text_of 'id="import-changed-0"')
 second=$(text_of 'id="import-changed-1"')
 [[ "$first" == *"Back Day"* && "$second" == *"Push Day"* ]] ||
   fail "The preview does not list the renamed and the changed workout as changed: $first / $second"
-if agent_device is visible 'id="import-new"' >/dev/null 2>&1; then
+if reveal 'id="import-new"' >/dev/null 2>&1; then
   fail "The changed sample shows new records, so a changed workout would be a duplicate"
 fi
 note "Changed sample: Back Day and Push Day listed as changed, nothing new."
@@ -235,7 +239,7 @@ now=$(state)
 note "Took both: $now."
 
 tap 'id="import-undo"'
-agent_device wait 'id="undo-apply"' 60000
+agent_device wait 'id="undo-import"' 60000
 screenshot undo-preview
 tap 'id="undo-apply"'
 agent_device wait 'id="undo-done"' 300000
