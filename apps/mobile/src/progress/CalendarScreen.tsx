@@ -14,6 +14,7 @@ import {
 import { Effect } from "effect";
 import { Pressable, ScrollView, View } from "react-native";
 
+import { openActivity } from "../cardio/open-activity";
 import { useQuery } from "../data/store";
 import { useIsAccessibilityTextSize } from "../design/hooks";
 import { SPORTS } from "../design/tokens";
@@ -139,7 +140,7 @@ function Calendar({ route, navigation, now }: Props & { readonly now: number }) 
     .flatMap((cell) => cell?.workouts ?? [])
     .sort((a, b) => a.startedAt - b.startedAt);
   const atThisMonth = monthKey(month) >= monthKey(thisMonth);
-  const open = (workout: WorkoutStart) => navigation.navigate("Workout", { id: workout.id });
+  const open = (workout: WorkoutStart) => openActivity(navigation, workout);
   const go = (by: number) => navigation.setParams({ month: monthKey(shiftMonth(month, by)) });
 
   return (
