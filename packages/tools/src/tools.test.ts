@@ -464,3 +464,230 @@ describe("more routines than one answer", () => {
     );
   });
 });
+
+interface Cursors {
+  readonly outer: string;
+  readonly inner: string;
+  readonly groups: string;
+  readonly items: string;
+  readonly nextOuter: string;
+  readonly nextInner: string;
+}
+
+/**
+ * Follows a paged tool's cursors from its first answer, the way the model is told to, and returns
+ * every `group/item` index it read. Every answer must be within MAX_TOOL_OUTPUT and keep its cursors.
+ */
+const followCursors = async (
+  read: (input: Record<string, number>) => Promise<{ json: Record<string, any>; output: string }>,
+  names: Cursors,
+) => {
+  const seen: string[] = [];
+  let answers = 0;
+  const visit = async (input: Record<string, number>) => {
+    answers += 1;
+    expect(answers).toBeLessThan(1_000);
+    const { json, output } = await read(input);
+    expect(json["error"]).toBeUndefined();
+    expect(output.length).toBeLessThanOrEqual(MAX_TOOL_OUTPUT);
+    expect(json).toHaveProperty(names.nextOuter);
+    return json;
+  };
+  const take = (group: Record<string, any>) => {
+    for (const item of group[names.items]) seen.push(`${group["index"]}/${item.index}`);
+  };
+  let input: Record<string, number> | null = {};
+  while (input !== null) {
+    const json = await visit(input);
+    for (const group of json[names.groups]) {
+      take(group);
+      let next = group[names.nextInner] as number | null;
+      while (next !== null) {
+        const page = await visit({ [names.outer]: group.index, [names.inner]: next });
+        expect(page[names.groups]).toHaveLength(1);
+        const [same] = page[names.groups];
+        expect(same.index).toBe(group.index);
+        take(same);
+        next = same[names.nextInner];
+      }
+    }
+    const nextOuter = json[names.nextOuter] as number | null;
+    input = nextOuter === null ? null : { [names.outer]: nextOuter };
+  }
+  return seen;
+};
+
+const everyIndex = (groups: number, items: number) =>
+  Array.from({ length: groups * items }, (_, at) => `${Math.floor(at / items)}/${at % items}`);
+
+describe("routines too dense for one answer", () => {
+  let dense: ReturnType<typeof openEmptyDatabase>;
+  const ROUTINES = 30;
+  const EXERCISES = 20;
+
+  beforeAll(async () => {
+    dense = openEmptyDatabase(NOW);
+    await dense.runtime.runPromise(
+      Effect.gen(function* () {
+        const library = (yield* (yield* ExerciseRepository).list).slice(0, EXERCISES);
+        const routines = yield* RoutineRepository;
+        for (let position = 0; position < ROUTINES; position++) {
+          yield* routines.createRoutine({
+            folderId: null,
+            title: `Day ${position + 1}`,
+            notes: "",
+            position,
+            exercises: library.map((exercise) => ({
+              exerciseId: exercise.id,
+              supersetGroup: null,
+              restS: null,
+              notes: "",
+              sets: [
+                {
+                  setType: "normal",
+                  weightKg: null,
+                  repsMin: 5,
+                  repsMax: 5,
+                  durationS: null,
+                  distanceM: null,
+                },
+              ],
+            })),
+          });
+        }
+      }),
+    );
+  });
+  afterAll(() => dense.runtime.dispose());
+
+  const list = (input: Record<string, number>) => callOn(dense.runtime, "list_routines", input);
+
+  it("fills the first answer within the limit and keeps the totals and cursors", async () => {
+    for (const input of [{}, { routineStart: 0 }]) {
+      const { json, output } = await list(input);
+      expect(json["error"]).toBeUndefined();
+      expect(output.length).toBeLessThanOrEqual(MAX_TOOL_OUTPUT);
+      expect(json).toMatchObject({ totalRoutines: ROUTINES, truncated: true });
+      expect(json["routines"].length).toBeGreaterThan(0);
+      expect(json["nextRoutineStart"]).toEqual(expect.any(Number));
+    }
+  });
+
+  it("reaches every exercise of every routine by following the cursors", async () => {
+    const seen = await followCursors(list, {
+      outer: "routineStart",
+      inner: "exerciseStart",
+      groups: "routines",
+      items: "exercises",
+      nextOuter: "nextRoutineStart",
+      nextInner: "nextExerciseStart",
+    });
+    expect(seen).toEqual(everyIndex(ROUTINES, EXERCISES));
+  });
+
+  it("returns only the chosen routine when exerciseStart is given, 0 included", async () => {
+    const fromZero = await list({ routineStart: 4, exerciseStart: 0 });
+    expect(fromZero.output.length).toBeLessThanOrEqual(MAX_TOOL_OUTPUT);
+    expect(fromZero.json).toMatchObject({ totalRoutines: ROUTINES, nextRoutineStart: 5 });
+    expect(fromZero.json["routines"]).toHaveLength(1);
+    expect(fromZero.json["routines"][0]).toMatchObject({ index: 4, totalExercises: EXERCISES });
+    expect(fromZero.json["routines"][0].exercises[0].index).toBe(0);
+
+    const fromOne = await list({ routineStart: 4, exerciseStart: 1 });
+    expect(fromOne.json["routines"]).toHaveLength(1);
+    expect(fromOne.json["routines"][0].index).toBe(4);
+    expect(fromOne.json["routines"][0].exercises[0].index).toBe(1);
+  });
+});
+
+describe("a workout too dense for one answer", () => {
+  let dense: ReturnType<typeof openEmptyDatabase>;
+  let workoutId: string;
+  const EXERCISES = 10;
+  const SETS = 14;
+
+  beforeAll(async () => {
+    dense = openEmptyDatabase(NOW);
+    workoutId = await dense.runtime.runPromise(
+      Effect.gen(function* () {
+        const exercises = yield* ExerciseRepository;
+        const custom = yield* Effect.forEach(Array.from({ length: EXERCISES }), (_, at) =>
+          exercises.create({
+            name: `${at} ${"long name ".repeat(300)}`,
+            category: "strength",
+            equipment: "barbell",
+            primaryMuscles: ["quadriceps"],
+            secondaryMuscles: [],
+            origin: MADE_HERE,
+          }),
+        );
+        return yield* (yield* ActivityRepository).create({
+          kind: "strength",
+          startedAt: EpochMillis.make(NOW - 7_200_000),
+          durationS: DurationSeconds.make(7_000),
+          title: "t".repeat(5_000),
+          notes: "n".repeat(5_000),
+          energyKcal: null,
+          audience: "only_you",
+          hiddenFields: [],
+          origin: MADE_HERE,
+          exercises: custom.map((exerciseId) => ({
+            exerciseId,
+            supersetGroup: null,
+            notes: "",
+            sets: Array.from({ length: SETS }, () => ({
+              setType: "failure" as const,
+              weightKg: 102.25,
+              reps: 10,
+              durationS: 3_600,
+              distanceM: 12_345.6,
+              rpe: 9.5,
+            })),
+          })),
+          track: null,
+        });
+      }),
+    );
+  });
+  afterAll(() => dense.runtime.dispose());
+
+  const read = (input: Record<string, number>) =>
+    callOn(dense.runtime, "get_workout", { workoutId, ...input });
+
+  it("fills the first answer within the limit and keeps the totals and cursors", async () => {
+    const { json, output } = await read({});
+    expect(json["error"]).toBeUndefined();
+    expect(output.length).toBeLessThanOrEqual(MAX_TOOL_OUTPUT);
+    expect(json).toMatchObject({
+      totalExercises: EXERCISES,
+      truncated: true,
+      notesTruncated: true,
+    });
+    expect(json["nextExerciseStart"]).toEqual(expect.any(Number));
+    expect(json["exercises"][0].name.userWritten.length).toBeLessThan(200);
+  });
+
+  it("reaches every set of every exercise by following the cursors", async () => {
+    const seen = await followCursors(read, {
+      outer: "exerciseStart",
+      inner: "setStart",
+      groups: "exercises",
+      items: "sets",
+      nextOuter: "nextExerciseStart",
+      nextInner: "nextSetStart",
+    });
+    expect(seen).toEqual(everyIndex(EXERCISES, SETS));
+  });
+
+  it("returns only the chosen exercise when setStart is given, 0 included", async () => {
+    const fromZero = await read({ exerciseStart: 2, setStart: 0 });
+    expect(fromZero.json["exercises"]).toHaveLength(1);
+    expect(fromZero.json["exercises"][0]).toMatchObject({ index: 2, totalSets: SETS });
+    expect(fromZero.json["exercises"][0].sets[0].index).toBe(0);
+
+    const fromOne = await read({ exerciseStart: 2, setStart: 1 });
+    expect(fromOne.json["exercises"]).toHaveLength(1);
+    expect(fromOne.json["exercises"][0].index).toBe(2);
+    expect(fromOne.json["exercises"][0].sets[0].index).toBe(1);
+  });
+});

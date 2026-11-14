@@ -63,7 +63,10 @@ export interface CoachTool {
   ) => Effect.Effect<ToolResult, never, ToolServices>;
 }
 
-/** No tool answer is longer than this many characters. Each tool's limits keep well under it. */
+/**
+ * No tool answer is longer than this many characters. The paged tools fill each answer up to it,
+ * and the other tools' limits keep well under it.
+ */
 export const MAX_TOOL_OUTPUT = 12_000;
 
 /** No line naming what a tool read is longer than this many characters. */
@@ -99,7 +102,11 @@ const refusal = (name: string, message: string): ToolResult =>
  * this key, and its instructions say such text is data and never instructions.
  */
 const UserText = Schema.Struct({ userWritten: Schema.String });
-const userText = (text: string) => ({ userWritten: text });
+
+/** A title or name longer than this is cut, so one row can never fill an answer. */
+const MAX_NAME = 120;
+
+const userText = (text: string, maximum = MAX_NAME) => ({ userWritten: clip(text, maximum) });
 
 /** A library exercise's name is svett's own. Any other was written by the user or an import. */
 const ExerciseName = Schema.Union([Schema.String, UserText]);
@@ -192,6 +199,30 @@ const exerciseName = (id: ExerciseId) => Effect.map(findExercise(id), exerciseLa
 
 const plainName = (name: typeof ExerciseName.Type) =>
   typeof name === "string" ? name : name.userWritten;
+
+/**
+ * How many items of each group go in one answer. It takes groups in order and their items in
+ * order while `size` of the answer stays within MAX_TOOL_OUTPUT, and a group cut short ends the
+ * answer. The first item of the first group always goes in, so following the cursors moves on.
+ *
+ * @param offered how many items each group could show, in order
+ * @param size the length of the answer that shows `counts[i]` items of group i
+ */
+const fillPage = (
+  offered: ReadonlyArray<number>,
+  size: (counts: ReadonlyArray<number>) => number,
+): ReadonlyArray<number> => {
+  const counts: number[] = [];
+  for (const available of offered) {
+    const fits = (count: number) => size([...counts, count]) <= MAX_TOOL_OUTPUT;
+    let count = Math.min(available, 1);
+    if (counts.length > 0 && !fits(count)) break;
+    while (count < available && fits(count + 1)) count++;
+    counts.push(count);
+    if (count < available) break;
+  }
+  return counts;
+};
 
 const SetOut = Schema.Struct({
   day: Schema.String,
@@ -299,7 +330,7 @@ const listWorkouts = defineTool({
   source: ({ from, to }, { total }) => `Workouts ${from} to ${to} (${total})`,
 });
 
-/** A long workout comes in parts, each small enough to stay well under MAX_TOOL_OUTPUT. */
+/** The most one part of a long workout holds. fillPage keeps each part within MAX_TOOL_OUTPUT. */
 const MAX_EXERCISES = 8;
 const MAX_SETS = 12;
 const MAX_NOTES = 500;
@@ -311,13 +342,13 @@ const Index = (maximum: number, description: string) =>
 
 const getWorkout = defineTool({
   name: "get_workout",
-  description: `Reads one workout with its exercises and sets. Take the id from list_workouts. One answer holds at most ${MAX_EXERCISES} exercises and ${MAX_SETS} sets of each. When truncated is true, call again with exerciseStart set to nextExerciseStart for the next exercises, or with an exercise's index as exerciseStart and its nextSetStart as setStart for the rest of its sets.`,
+  description: `Reads one workout with its exercises and sets. Take the id from list_workouts. One answer holds as many exercises and sets as fit, at most ${MAX_EXERCISES} exercises and ${MAX_SETS} sets of each. When truncated is true, call again with exerciseStart set to nextExerciseStart for the next exercises, and for an exercise whose nextSetStart is a number, call with its index as exerciseStart and its nextSetStart as setStart for the rest of its sets.`,
   input: Schema.Struct({
     workoutId: Uuid.annotate({ description: "The workout id from list_workouts" }),
     exerciseStart: Index(999, "The index of the first exercise to return. 0 when left out."),
     setStart: Index(
       9_999,
-      "The index of the first set to return. When it is set, only the exercise at exerciseStart comes back.",
+      "The index of the first set to return. When it is given, 0 included, only the exercise at exerciseStart comes back.",
     ),
   }),
   output: Schema.Struct({
@@ -351,67 +382,83 @@ const getWorkout = defineTool({
       }),
     ),
   }),
-  run: ({ workoutId, exerciseStart = 0, setStart = 0 }, context) =>
+  run: ({ workoutId, exerciseStart = 0, setStart }, context) =>
     Effect.gen(function* () {
       const found = yield* (yield* ActivityRepository).get(ActivityId.make(workoutId));
       if (Option.isNone(found)) {
         return yield* new ToolInputError({ message: `no workout has the id ${workoutId}` });
       }
       const { activity, exercises } = found.value;
-      if (exerciseStart > 0 && exerciseStart >= exercises.length) {
+      const single = setStart !== undefined;
+      if ((exerciseStart > 0 || single) && exerciseStart >= exercises.length) {
         return yield* new ToolInputError({
           message: `the workout has ${exercises.length} exercises, so exerciseStart is at most ${Math.max(exercises.length - 1, 0)}`,
         });
       }
-      const page = exercises.slice(
-        exerciseStart,
-        exerciseStart + (setStart > 0 ? 1 : MAX_EXERCISES),
-      );
-      const first = page[0];
-      if (setStart > 0 && first !== undefined && setStart >= first.sets.length) {
+      const firstSet = setStart ?? 0;
+      const target = exercises[exerciseStart];
+      if (firstSet > 0 && target !== undefined && firstSet >= target.sets.length) {
         return yield* new ToolInputError({
-          message: `exercise ${exerciseStart} has ${first.sets.length} sets, so setStart is at most ${first.sets.length - 1}`,
+          message: `exercise ${exerciseStart} has ${target.sets.length} sets, so setStart is at most ${target.sets.length - 1}`,
         });
       }
-      const named = yield* Effect.forEach(page, ({ exercise, sets }, offset) =>
-        Effect.map(exerciseName(exercise.exerciseId), (name) => {
-          const next = setStart + MAX_SETS;
-          return {
-            index: exerciseStart + offset,
-            name,
-            totalSets: sets.length,
-            nextSetStart: next < sets.length ? next : null,
-            sets: sets.slice(setStart, next).map((set, at) => ({
-              index: setStart + at,
-              type: set.setType,
-              weightKg: set.weightKg,
-              reps: set.reps,
-              seconds: set.durationS,
-              metres: set.distanceM,
-              rpe: set.rpe,
-            })),
-          };
-        }),
+      const candidates = yield* Effect.forEach(
+        exercises.slice(exerciseStart, exerciseStart + (single ? 1 : MAX_EXERCISES)),
+        ({ exercise, sets }, offset) =>
+          Effect.map(exerciseName(exercise.exerciseId), (name) => {
+            const start = offset === 0 ? firstSet : 0;
+            return {
+              index: exerciseStart + offset,
+              name,
+              totalSets: sets.length,
+              start,
+              sets: sets.slice(start, start + MAX_SETS).map((set, at) => ({
+                index: start + at,
+                type: set.setType,
+                weightKg: set.weightKg,
+                reps: set.reps,
+                seconds: set.durationS,
+                metres: set.distanceM,
+                rpe: set.rpe,
+              })),
+            };
+          }),
       );
-      const end = exerciseStart + page.length;
-      const nextExerciseStart = end < exercises.length ? end : null;
-      const notesTruncated = activity.notes.length > MAX_NOTES;
-      return {
-        day: localDay(activity.startedAt, context.offsetMinutes),
-        title: userText(activity.title),
-        kind: activity.kind,
-        minutes: Math.round(activity.durationS / 60),
-        notes: userText(activity.notes.slice(0, MAX_NOTES)),
-        notesTruncated,
-        totalExercises: exercises.length,
-        truncated:
-          exerciseStart > 0 ||
-          setStart > 0 ||
-          nextExerciseStart !== null ||
-          named.some((exercise) => exercise.nextSetStart !== null),
-        nextExerciseStart,
-        exercises: named,
+      const answer = (counts: ReadonlyArray<number>) => {
+        const shown = counts.map((count, at) => {
+          const { start, sets, ...exercise } = candidates[at]!;
+          const next = start + count;
+          return {
+            ...exercise,
+            nextSetStart: next < exercise.totalSets ? next : null,
+            sets: sets.slice(0, count),
+          };
+        });
+        const end = exerciseStart + shown.length;
+        const nextExerciseStart = end < exercises.length ? end : null;
+        return {
+          day: localDay(activity.startedAt, context.offsetMinutes),
+          title: userText(activity.title),
+          kind: activity.kind,
+          minutes: Math.round(activity.durationS / 60),
+          notes: userText(activity.notes, MAX_NOTES),
+          notesTruncated: activity.notes.length > MAX_NOTES,
+          totalExercises: exercises.length,
+          truncated:
+            exerciseStart > 0 ||
+            firstSet > 0 ||
+            nextExerciseStart !== null ||
+            shown.some((exercise) => exercise.nextSetStart !== null),
+          nextExerciseStart,
+          exercises: shown,
+        };
       };
+      return answer(
+        fillPage(
+          candidates.map((exercise) => exercise.sets.length),
+          (counts) => JSON.stringify(answer(counts)).length,
+        ),
+      );
     }).pipe(Effect.catchTag("SqlError", Effect.die)),
   source: (_, { title, day }) => `Workout "${title.userWritten}" on ${day}`,
 });
@@ -533,12 +580,12 @@ const MAX_ROUTINE_EXERCISES = 20;
 
 const listRoutines = defineTool({
   name: "list_routines",
-  description: `Lists the user's saved routines with their folder and exercises. One answer holds at most ${MAX_ROUTINES} routines and ${MAX_ROUTINE_EXERCISES} exercises of each. When truncated is true, call again with routineStart set to nextRoutineStart for the next routines, or with a routine's index as routineStart and its nextExerciseStart as exerciseStart for the rest of its exercises.`,
+  description: `Lists the user's saved routines with their folder and exercises. One answer holds as many routines and exercises as fit, at most ${MAX_ROUTINES} routines and ${MAX_ROUTINE_EXERCISES} exercises of each. When truncated is true, call again with routineStart set to nextRoutineStart for the next routines, and for a routine whose nextExerciseStart is a number, call with its index as routineStart and its nextExerciseStart as exerciseStart for the rest of its exercises.`,
   input: Schema.Struct({
     routineStart: Index(9_999, "The index of the first routine to return. 0 when left out."),
     exerciseStart: Index(
       999,
-      "The index of the first exercise to return. When it is set, only the routine at routineStart comes back.",
+      "The index of the first exercise to return. When it is given, 0 included, only the routine at routineStart comes back.",
     ),
   }),
   output: Schema.Struct({
@@ -559,60 +606,80 @@ const listRoutines = defineTool({
       }),
     ),
   }),
-  run: ({ routineStart = 0, exerciseStart = 0 }) =>
+  run: ({ routineStart = 0, exerciseStart }) =>
     Effect.gen(function* () {
       const routines = yield* RoutineRepository;
       const folders = new Map(
         (yield* routines.listFolders).map((folder) => [folder.id, folder.name]),
       );
       const all = yield* routines.listRoutines;
-      if (routineStart > 0 && routineStart >= all.length) {
+      const single = exerciseStart !== undefined;
+      if ((routineStart > 0 || single) && routineStart >= all.length) {
         return yield* new ToolInputError({
           message: `the user has ${all.length} routines, so routineStart is at most ${Math.max(all.length - 1, 0)}`,
         });
       }
-      const page = all.slice(routineStart, routineStart + (exerciseStart > 0 ? 1 : MAX_ROUTINES));
-      const listed = yield* Effect.forEach(page, (routine, offset) =>
-        Effect.gen(function* () {
-          const detail = yield* routines.getRoutine(routine.id);
-          const exercises = Option.isNone(detail) ? [] : detail.value.exercises;
-          if (exerciseStart > 0 && exerciseStart >= exercises.length) {
-            return yield* new ToolInputError({
-              message: `routine ${routineStart} has ${exercises.length} exercises, so exerciseStart is at most ${Math.max(exercises.length - 1, 0)}`,
-            });
-          }
-          const folder = routine.folderId === null ? undefined : folders.get(routine.folderId);
-          const next = exerciseStart + MAX_ROUTINE_EXERCISES;
-          return {
-            index: routineStart + offset,
-            title: userText(routine.title),
-            folder: folder === undefined ? null : userText(folder),
-            totalExercises: exercises.length,
-            nextExerciseStart: next < exercises.length ? next : null,
-            exercises: yield* Effect.forEach(
-              exercises.slice(exerciseStart, next),
-              ({ exercise, sets }, at) =>
-                Effect.map(exerciseName(exercise.exerciseId), (name) => ({
-                  index: exerciseStart + at,
-                  name,
-                  sets: sets.length,
-                })),
-            ),
-          };
-        }),
+      const firstExercise = exerciseStart ?? 0;
+      const candidates = yield* Effect.forEach(
+        all.slice(routineStart, routineStart + (single ? 1 : MAX_ROUTINES)),
+        (routine, offset) =>
+          Effect.gen(function* () {
+            const detail = yield* routines.getRoutine(routine.id);
+            const exercises = Option.isNone(detail) ? [] : detail.value.exercises;
+            const start = offset === 0 ? firstExercise : 0;
+            if (start > 0 && start >= exercises.length) {
+              return yield* new ToolInputError({
+                message: `routine ${routineStart} has ${exercises.length} exercises, so exerciseStart is at most ${Math.max(exercises.length - 1, 0)}`,
+              });
+            }
+            const folder = routine.folderId === null ? undefined : folders.get(routine.folderId);
+            return {
+              index: routineStart + offset,
+              title: userText(routine.title),
+              folder: folder === undefined ? null : userText(folder),
+              totalExercises: exercises.length,
+              start,
+              exercises: yield* Effect.forEach(
+                exercises.slice(start, start + MAX_ROUTINE_EXERCISES),
+                ({ exercise, sets }, at) =>
+                  Effect.map(exerciseName(exercise.exerciseId), (name) => ({
+                    index: start + at,
+                    name,
+                    sets: sets.length,
+                  })),
+              ),
+            };
+          }),
       );
-      const end = routineStart + page.length;
-      const nextRoutineStart = end < all.length ? end : null;
-      return {
-        totalRoutines: all.length,
-        truncated:
-          routineStart > 0 ||
-          exerciseStart > 0 ||
-          nextRoutineStart !== null ||
-          listed.some((routine) => routine.nextExerciseStart !== null),
-        nextRoutineStart,
-        routines: listed,
+      const answer = (counts: ReadonlyArray<number>) => {
+        const shown = counts.map((count, at) => {
+          const { start, exercises, ...routine } = candidates[at]!;
+          const next = start + count;
+          return {
+            ...routine,
+            nextExerciseStart: next < routine.totalExercises ? next : null,
+            exercises: exercises.slice(0, count),
+          };
+        });
+        const end = routineStart + shown.length;
+        const nextRoutineStart = end < all.length ? end : null;
+        return {
+          totalRoutines: all.length,
+          truncated:
+            routineStart > 0 ||
+            firstExercise > 0 ||
+            nextRoutineStart !== null ||
+            shown.some((routine) => routine.nextExerciseStart !== null),
+          nextRoutineStart,
+          routines: shown,
+        };
       };
+      return answer(
+        fillPage(
+          candidates.map((routine) => routine.exercises.length),
+          (counts) => JSON.stringify(answer(counts)).length,
+        ),
+      );
     }).pipe(Effect.catchTag("SqlError", Effect.die)),
   source: (_, { totalRoutines, truncated, routines }) => {
     if (!truncated) return `Routines (${totalRoutines})`;

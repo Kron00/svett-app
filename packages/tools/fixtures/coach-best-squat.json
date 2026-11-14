@@ -79,7 +79,7 @@
               {
                 "type": "function",
                 "name": "get_workout",
-                "description": "Reads one workout with its exercises and sets. Take the id from list_workouts. One answer holds at most 8 exercises and 12 sets of each. When truncated is true, call again with exerciseStart set to nextExerciseStart for the next exercises, or with an exercise's index as exerciseStart and its nextSetStart as setStart for the rest of its sets.",
+                "description": "Reads one workout with its exercises and sets. Take the id from list_workouts. One answer holds as many exercises and sets as fit, at most 8 exercises and 12 sets of each. When truncated is true, call again with exerciseStart set to nextExerciseStart for the next exercises, and for an exercise whose nextSetStart is a number, call with its index as exerciseStart and its nextSetStart as setStart for the rest of its sets.",
                 "parameters": {
                   "type": "object",
                   "properties": {
@@ -99,7 +99,7 @@
                       "type": "integer",
                       "minimum": 0,
                       "maximum": 9999,
-                      "description": "The index of the first set to return. When it is set, only the exercise at exerciseStart comes back."
+                      "description": "The index of the first set to return. When it is given, 0 included, only the exercise at exerciseStart comes back."
                     }
                   },
                   "required": ["workoutId"],
@@ -227,7 +227,7 @@
               {
                 "type": "function",
                 "name": "list_routines",
-                "description": "Lists the user's saved routines with their folder and exercises. One answer holds at most 30 routines and 20 exercises of each. When truncated is true, call again with routineStart set to nextRoutineStart for the next routines, or with a routine's index as routineStart and its nextExerciseStart as exerciseStart for the rest of its exercises.",
+                "description": "Lists the user's saved routines with their folder and exercises. One answer holds as many routines and exercises as fit, at most 30 routines and 20 exercises of each. When truncated is true, call again with routineStart set to nextRoutineStart for the next routines, and for a routine whose nextExerciseStart is a number, call with its index as routineStart and its nextExerciseStart as exerciseStart for the rest of its exercises.",
                 "parameters": {
                   "type": "object",
                   "properties": {
@@ -241,7 +241,7 @@
                       "type": "integer",
                       "minimum": 0,
                       "maximum": 999,
-                      "description": "The index of the first exercise to return. When it is set, only the routine at routineStart comes back."
+                      "description": "The index of the first exercise to return. When it is given, 0 included, only the routine at routineStart comes back."
                     }
                   },
                   "additionalProperties": false
@@ -360,7 +360,7 @@
               {
                 "type": "function",
                 "name": "get_workout",
-                "description": "Reads one workout with its exercises and sets. Take the id from list_workouts. One answer holds at most 8 exercises and 12 sets of each. When truncated is true, call again with exerciseStart set to nextExerciseStart for the next exercises, or with an exercise's index as exerciseStart and its nextSetStart as setStart for the rest of its sets.",
+                "description": "Reads one workout with its exercises and sets. Take the id from list_workouts. One answer holds as many exercises and sets as fit, at most 8 exercises and 12 sets of each. When truncated is true, call again with exerciseStart set to nextExerciseStart for the next exercises, and for an exercise whose nextSetStart is a number, call with its index as exerciseStart and its nextSetStart as setStart for the rest of its sets.",
                 "parameters": {
                   "type": "object",
                   "properties": {
@@ -380,7 +380,7 @@
                       "type": "integer",
                       "minimum": 0,
                       "maximum": 9999,
-                      "description": "The index of the first set to return. When it is set, only the exercise at exerciseStart comes back."
+                      "description": "The index of the first set to return. When it is given, 0 included, only the exercise at exerciseStart comes back."
                     }
                   },
                   "required": ["workoutId"],
@@ -508,7 +508,7 @@
               {
                 "type": "function",
                 "name": "list_routines",
-                "description": "Lists the user's saved routines with their folder and exercises. One answer holds at most 30 routines and 20 exercises of each. When truncated is true, call again with routineStart set to nextRoutineStart for the next routines, or with a routine's index as routineStart and its nextExerciseStart as exerciseStart for the rest of its exercises.",
+                "description": "Lists the user's saved routines with their folder and exercises. One answer holds as many routines and exercises as fit, at most 30 routines and 20 exercises of each. When truncated is true, call again with routineStart set to nextRoutineStart for the next routines, and for a routine whose nextExerciseStart is a number, call with its index as routineStart and its nextExerciseStart as exerciseStart for the rest of its exercises.",
                 "parameters": {
                   "type": "object",
                   "properties": {
@@ -522,7 +522,7 @@
                       "type": "integer",
                       "minimum": 0,
                       "maximum": 999,
-                      "description": "The index of the first exercise to return. When it is set, only the routine at routineStart comes back."
+                      "description": "The index of the first exercise to return. When it is given, 0 included, only the routine at routineStart comes back."
                     }
                   },
                   "additionalProperties": false
@@ -653,7 +653,7 @@
               {
                 "type": "function",
                 "name": "get_workout",
-                "description": "Reads one workout with its exercises and sets. Take the id from list_workouts. One answer holds at most 8 exercises and 12 sets of each. When truncated is true, call again with exerciseStart set to nextExerciseStart for the next exercises, or with an exercise's index as exerciseStart and its nextSetStart as setStart for the rest of its sets.",
+                "description": "Reads one workout with its exercises and sets. Take the id from list_workouts. One answer holds as many exercises and sets as fit, at most 8 exercises and 12 sets of each. When truncated is true, call again with exerciseStart set to nextExerciseStart for the next exercises, and for an exercise whose nextSetStart is a number, call with its index as exerciseStart and its nextSetStart as setStart for the rest of its sets.",
                 "parameters": {
                   "type": "object",
                   "properties": {
@@ -673,7 +673,7 @@
                       "type": "integer",
                       "minimum": 0,
                       "maximum": 9999,
-                      "description": "The index of the first set to return. When it is set, only the exercise at exerciseStart comes back."
+                      "description": "The index of the first set to return. When it is given, 0 included, only the exercise at exerciseStart comes back."
                     }
                   },
                   "required": ["workoutId"],
@@ -801,7 +801,7 @@
               {
                 "type": "function",
                 "name": "list_routines",
-                "description": "Lists the user's saved routines with their folder and exercises. One answer holds at most 30 routines and 20 exercises of each. When truncated is true, call again with routineStart set to nextRoutineStart for the next routines, or with a routine's index as routineStart and its nextExerciseStart as exerciseStart for the rest of its exercises.",
+                "description": "Lists the user's saved routines with their folder and exercises. One answer holds as many routines and exercises as fit, at most 30 routines and 20 exercises of each. When truncated is true, call again with routineStart set to nextRoutineStart for the next routines, and for a routine whose nextExerciseStart is a number, call with its index as routineStart and its nextExerciseStart as exerciseStart for the rest of its exercises.",
                 "parameters": {
                   "type": "object",
                   "properties": {
@@ -815,7 +815,7 @@
                       "type": "integer",
                       "minimum": 0,
                       "maximum": 999,
-                      "description": "The index of the first exercise to return. When it is set, only the routine at routineStart comes back."
+                      "description": "The index of the first exercise to return. When it is given, 0 included, only the routine at routineStart comes back."
                     }
                   },
                   "additionalProperties": false
