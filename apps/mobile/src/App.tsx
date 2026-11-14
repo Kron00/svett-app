@@ -10,6 +10,7 @@ import { StatusBar } from "expo-status-bar";
 
 import { ChatGPTScreen } from "./chatgpt/ChatGPTScreen";
 import { PhoneChecksScreen } from "./checks/PhoneChecksScreen";
+import { markLaunchOnNextFrame } from "./data/launch-timing";
 import { useNavigationTheme } from "./design/hooks";
 import { ExerciseDetailScreen } from "./exercises/ExerciseDetailScreen";
 import { EditExerciseScreen, NewExerciseScreen } from "./exercises/ExerciseFormScreen";
@@ -75,7 +76,11 @@ const linking: LinkingOptions<RootStackParamList> = {
 
 export default function App() {
   return (
-    <NavigationContainer theme={useNavigationTheme()} linking={linking}>
+    <NavigationContainer
+      theme={useNavigationTheme()}
+      linking={linking}
+      onReady={() => markLaunchOnNextFrame("screen")}
+    >
       <StatusBar style="auto" />
       <Stack.Navigator screenOptions={{ headerShown: false }}>
         <Stack.Screen

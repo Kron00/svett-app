@@ -44,20 +44,30 @@ export const Repositories = Layer.mergeAll(
   TransferRepository.layer,
 );
 
-const prepared = Layer.effectDiscard(
-  Effect.gen(function* () {
-    yield* migrate();
-    const exercises = yield* ExerciseRepository;
-    yield* exercises.seedLibrary();
-  }),
-);
+/** The steps of opening a database that the app times at launch. */
+export type OpenStep = "migrated" | "seeded";
+
+const prepared = (onStep: (step: OpenStep) => void) =>
+  Layer.effectDiscard(
+    Effect.gen(function* () {
+      yield* migrate();
+      yield* Effect.sync(() => onStep("migrated"));
+      const exercises = yield* ExerciseRepository;
+      yield* exercises.seedLibrary();
+      yield* Effect.sync(() => onStep("seeded"));
+    }),
+  );
 
 /**
  * An open, migrated database with the exercise library seeded, and every repository over it.
- * Opening the same file again finds nothing left to do.
+ * Opening the same file again finds nothing left to do. `onStep` hears when each step is done.
  */
-export const databaseLayer = (driver: SqlDriver, ids: Layer.Layer<Ids>) => {
+export const databaseLayer = (
+  driver: SqlDriver,
+  ids: Layer.Layer<Ids>,
+  onStep: (step: OpenStep) => void = () => {},
+) => {
   const base = Layer.merge(Sql.layer(driver), ids);
   const repositories = Repositories.pipe(Layer.provideMerge(base));
-  return Layer.provideMerge(prepared, repositories);
+  return Layer.provideMerge(prepared(onStep), repositories);
 };

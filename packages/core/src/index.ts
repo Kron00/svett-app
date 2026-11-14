@@ -22,6 +22,8 @@ export * from "./repositories/transfer.ts";
 export * from "./transfer.ts";
 export * from "./svett-file.ts";
 export * from "./database.ts";
+export * from "./cold-start.ts";
+export * from "./train-overview.ts";
 export * from "./set-format.ts";
 export * from "./number-entry.ts";
 export * from "./chart-scale.ts";

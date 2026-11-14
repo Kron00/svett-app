@@ -1392,7 +1392,9 @@ check "chatgpt.sh --live signs out an earlier sign-in, then waits 10 minutes for
 # routine unless FAKE_FORGETS is set. FAKE_NO_TARGETS starts a workout whose sets
 # are empty, and FAKE_LIBRARY names the picker's first result. It keeps the
 # screens a link opened in front of each other in stack, and writes the screen
-# under each new routine editor to editor-over.
+# under each new routine editor to editor-over. The Train tab shows svett's own
+# cold start time when the app was launched with -svettTiming 1, unless
+# FAKE_NO_TIMING is set. FAKE_TIMING_LABEL replaces its text.
 cat >"$fake/routines-device" <<'EOF'
 #!/usr/bin/env bash
 echo "$*" >>"$FAKE_ROOT/bound-calls"
@@ -1423,6 +1425,7 @@ holds() {
   case "$1" in
     'label="Train, tab, 2 of 5"') [[ "$screen" != home ]] ;;
     'id="routine-list"') [[ "$screen" == train ]] ;;
+    'id="cold-start-timing"') [[ "$screen" == train && -f "$s/timing" && -z "${FAKE_NO_TIMING:-}" ]] ;;
     'id="workout-in-progress-row"') [[ "$screen" == train && -s "$s/workout" ]] ;;
     'id="routine-row" label='*)
       [[ "$screen" == train && "$1" == "id=\"routine-row\" label=\"$(get saved_name), $(get saved_exercise)\"" ]] ;;
@@ -1502,6 +1505,7 @@ case "$1" in
       --relaunch)
         put screen tabs
         put stack tabs
+        if [[ "$*" == *"--launch-args=-svettTiming --launch-args=1"* ]]; then touch "$s/timing"; else rm -f "$s/timing"; fi
         [[ -z "${FAKE_FORGETS:-}" ]] || rm -f "$s/saved_name" "$s/saved_exercise" "$s/saved_sets" ;;
       # A link to a tab pops every screen above the tabs.
       svett://train)
@@ -1527,6 +1531,10 @@ case "$1" in
     if [[ "$3" == 'id="exercise-result-0"' ]]; then
       printf '{"label": "%s, Quadriceps · Barbell", "rect": {"x": 0, "y": 200, "width": 440, "height": 80}}\n' \
         "${FAKE_LIBRARY:-Barbell Squat}"
+    elif [[ "$3" == 'id="cold-start-timing"' ]]; then
+      label="svett's own cold start: 640 ms. Routine list drawn 1540 ms after launch, less 900 ms waiting for the Train tab."
+      node -e 'console.log(JSON.stringify({ label: process.argv[1], rect: { x: 16, y: 800, width: 408, height: 120 } }))' \
+        "${FAKE_TIMING_LABEL:-$label}"
     else
       echo '{"label": "", "rect": {"x": 16, "y": 600, "width": 408, "height": 50}}'
     fi ;;
@@ -1563,20 +1571,24 @@ routine_links=("com.kron00.svett svett://train" "com.kron00.svett svett://train/
   "com.kron00.svett svett://routines/new?title=Proof%20routine%201"
   "com.kron00.svett svett://routines/new/exercises?q=barbell%20squat")
 routine_target="60 kg, 8 to 12 reps"
-fixture_args="--launch-args=-svettFixture --launch-args=$container_fixture"
+timing_args="--launch-args=-svettTiming --launch-args=1"
+fixture_args="--launch-args=-svettFixture --launch-args=$container_fixture $timing_args"
 debug_fixture_open="$debug_open $fixture_args"
 cold_start_lines=(
   "^agent-device's calls alone, against the running app: [0-9]+ ms$"
   "^svett's own start-up, the difference: about -?[0-9]+ ms$"
 )
+fake_in_app="svett's own cold start: 640 ms. Routine list drawn 1540 ms after launch, less 900 ms waiting for the Train tab."
 
 # cold_start_says <file> <build>: the cold start's upper bound, the automation's
-# share and the difference, in that order.
+# share, the difference, and the time the app measured itself, word for word as
+# the Train tab shows it, in that order.
 cold_start_says() {
-  [[ "$(wc -l <"$1")" -eq 3 ]] &&
+  [[ "$(wc -l <"$1")" -eq 4 ]] &&
     sed -n 1p "$1" | grep -qE "^Cold start to the Train tab's routine list: [0-9]+ ms \($2, on the 300-workout fixture, an upper bound that includes agent-device's calls\)$" &&
     sed -n 2p "$1" | grep -qE "${cold_start_lines[0]}" &&
-    sed -n 3p "$1" | grep -qE "${cold_start_lines[1]}"
+    sed -n 3p "$1" | grep -qE "${cold_start_lines[1]}" &&
+    [[ "$(sed -n 4p "$1")" == "Measured in the app: $fake_in_app" ]]
 }
 
 case_name="routines.sh Debug with SVETT_DEVICE_CMD"
@@ -1611,7 +1623,7 @@ check "routines.sh screenshots each step" \
   "screenshot $root/routines/05-routine-editor.png" "screenshot $root/routines/06-routine-detail.png" \
   "screenshot $root/routines/07-workout.png" \
   "screenshot $root/routines/08-train-workout-in-progress.png"
-check "routines.sh saves a Debug build's cold start, agent-device's share of it and the difference" \
+check "routines.sh saves a Debug build's cold start, agent-device's share, the difference and svett's own time" \
   cold_start_says "$root/routines/cold-start.txt" "Debug, loaded from Metro"
 check "routines.sh with SVETT_DEVICE_CMD calls neither simctl launch nor openurl" no_simctl_launch_or_openurl
 
@@ -1639,7 +1651,7 @@ rm -rf "$root/routines-state"
 rm -f "$container_fixture"
 run_routines SVETT_FIXTURE=/data/Documents/svett-fixture.db --release "$root/routines-fixture"
 [[ "$routines_status" == 0 ]] || fail "routines.sh on SVETT_FIXTURE failed"
-given_fixture_args="--launch-args=-svettFixture --launch-args=/data/Documents/svett-fixture.db"
+given_fixture_args="--launch-args=-svettFixture --launch-args=/data/Documents/svett-fixture.db $timing_args"
 check "routines.sh relaunches on SVETT_FIXTURE every time" \
   only_open "com.kron00.svett --relaunch $given_fixture_args" "com.kron00.svett svett://train" \
   "${routine_links[@]}" "com.kron00.svett --relaunch $given_fixture_args" \
@@ -1661,6 +1673,22 @@ check "routines.sh says the routine was not on the Train tab" \
   grep -qxF '"Proof routine 1" was not on the Train tab after the relaunch' "$output"
 check "routines.sh restores the default text size after a failure" \
   only_calls "settings" "settings text-size accessibility-extra-extra-extra-large" "settings text-size large"
+
+case_name="routines.sh when the Train tab shows no cold start time"
+rm -rf "$root/routines-state"
+run_routines FAKE_NO_TIMING=1 "$root/routines-no-timing"
+check "routines.sh fails when svett shows no cold start time" test "$routines_status" -ne 0
+check "routines.sh says svett's own time is missing" \
+  grep -qxF "The Train tab did not show svett's own cold start time" "$output"
+check "routines.sh saves no cold start without svett's own time" \
+  test ! -e "$root/routines-no-timing/cold-start.txt"
+
+case_name="routines.sh when the cold start time is not svett's"
+rm -rf "$root/routines-state"
+run_routines FAKE_TIMING_LABEL="Loading" "$root/routines-bad-timing"
+check "routines.sh fails on a cold start label it cannot read" test "$routines_status" -ne 0
+check "routines.sh quotes the label it found" \
+  grep -qxF 'The cold start time on the Train tab reads "Loading"' "$output"
 
 case_name="routines.sh when the started workout leaves the targets out"
 rm -rf "$root/routines-state"
