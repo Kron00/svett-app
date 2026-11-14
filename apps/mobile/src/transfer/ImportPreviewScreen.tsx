@@ -275,18 +275,26 @@ function Plan({
 export function ImportPreviewScreen() {
   const navigation = useNavigation<RootNavigation>();
   const { params } = useRoute<RouteProp<RootStackParamList, "ImportPreview">>();
-  const [state, setState] = useState<State>({ kind: "reading" });
+  // A link to the file already on screen reuses this screen with a new params object. State
+  // read for earlier params is never shown, so each navigation here starts a fresh preview,
+  // also after an import of the same file.
+  const [shown, show] = useState<{ readonly params: typeof params; readonly state: State }>({
+    params,
+    state: { kind: "reading" },
+  });
+  const state: State = shown.params === params ? shown.state : { kind: "reading" };
+  const setState = (next: State) => show({ params, state: next });
 
-  // A link to the file already on screen reuses this screen with a new params object, so each
-  // navigation here starts a fresh preview, also after an import of the same file.
   useEffect(() => {
     let current = true;
-    setState({ kind: "reading" });
     preview(sourceOf(params), params.kind ?? "svett").then(
-      (next) => current && setState(next),
+      (next) => current && show({ params, state: next }),
       (error: unknown) =>
         current &&
-        setState({ kind: "refused", message: `The file did not open. ${String(error)}` }),
+        show({
+          params,
+          state: { kind: "refused", message: `The file did not open. ${String(error)}` },
+        }),
     );
     return () => {
       current = false;

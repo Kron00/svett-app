@@ -89,7 +89,7 @@ function TopScreenStack(props: {
   );
 }
 const Home = () => null;
-const Stack = createNavigatorFactory(TopScreenStack)<RootStackParamList>();
+const Stack = createNavigatorFactory(TopScreenStack)();
 
 const settle = () => act(() => new Promise<void>((resolve) => setTimeout(resolve, 0)));
 
