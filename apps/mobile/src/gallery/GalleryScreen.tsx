@@ -26,6 +26,7 @@ import { AppText } from "../ui/AppText";
 import { Button } from "../ui/Button";
 import { Chart, ChartBars, ChartGrid, ChartLine } from "../ui/Chart";
 import { EmptyState } from "../ui/EmptyState";
+import { IconButton } from "../ui/IconButton";
 import { ListRow, ListSection, SectionHeader } from "../ui/List";
 import { EntryField, Keypad, Stepper } from "../ui/NumberEntry";
 import { OptionSheet } from "../ui/OptionSheet";
@@ -273,6 +274,12 @@ export function GalleryScreen() {
           <Button label="Discard workout" symbol="trash" variant="destructive" onPress={noop} />
           <Button label="Add set" variant="plain" onPress={noop} />
           <Button label="Finish" disabled onPress={noop} />
+          <View className="flex-row gap-2">
+            <IconButton symbol="arrow.up" label="Move up" onPress={noop} />
+            <IconButton symbol="arrow.down" label="Move down" disabled onPress={noop} />
+            <IconButton symbol="trash" label="Remove" destructive onPress={noop} />
+            <IconButton symbol="ellipsis.circle" label="Options" variant="plain" onPress={noop} />
+          </View>
         </View>
       </Section>
 

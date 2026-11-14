@@ -14,57 +14,21 @@ import {
 } from "@svett/core";
 import { type RouteProp, useNavigation, useRoute } from "@react-navigation/native";
 import { type ReactNode, useEffect, useMemo, useState } from "react";
-import { Pressable, ScrollView, View } from "react-native";
+import { ScrollView, View } from "react-native";
 
 import { useOnFocus } from "../data/loaded";
-import type { SymbolName } from "../design/tokens";
+import { useIsAccessibilityTextSize } from "../design/hooks";
 import { useExerciseList } from "../exercises/data";
 import type { RootNavigation, RootStackParamList } from "../navigation";
 import { AppText } from "../ui/AppText";
 import { Button } from "../ui/Button";
 import { EmptyState } from "../ui/EmptyState";
-import { Icon } from "../ui/Icon";
+import { IconButton } from "../ui/IconButton";
 import { ListRow, ListSection } from "../ui/List";
 import { OptionSheet } from "../ui/OptionSheet";
 import { TextField } from "../ui/TextField";
 import { exerciseName, saveRoutine, useRoutine, withRoutines } from "./data";
 import { changeDraft, closeDraft, openDraft, type RoutineDraft, useDraft } from "./draft";
-
-function IconButton({
-  symbol,
-  label,
-  onPress,
-  disabled = false,
-  destructive = false,
-  testID,
-}: {
-  readonly symbol: SymbolName;
-  readonly label: string;
-  readonly onPress: () => void;
-  readonly disabled?: boolean;
-  readonly destructive?: boolean;
-  readonly testID?: string;
-}) {
-  return (
-    <Pressable
-      accessibilityRole="button"
-      accessibilityLabel={label}
-      accessibilityState={{ disabled }}
-      disabled={disabled}
-      onPress={onPress}
-      testID={testID}
-      className="min-h-target min-w-target items-center justify-center rounded-full bg-control"
-      style={({ pressed }) => ({ opacity: disabled ? 0.4 : pressed ? 0.6 : 1 })}
-    >
-      <Icon
-        name={symbol}
-        color={destructive ? "destructive" : "accent"}
-        size={18}
-        weight="semibold"
-      />
-    </Pressable>
-  );
-}
 
 function ExerciseCard({
   exercise,
@@ -79,10 +43,15 @@ function ExerciseCard({
 }) {
   const navigation = useNavigation<RootNavigation>();
   const badges = setBadges(exercise.sets.map((set) => set.setType));
+  const stacked = useIsAccessibilityTextSize();
   return (
     <View className="gap-2" testID={`routine-exercise-${index}`}>
-      <View className="flex-row flex-wrap items-center gap-2 px-gutter">
-        <AppText variant="headline" accessibilityRole="header" className="min-w-0 flex-1">
+      <View className={`gap-2 px-gutter ${stacked ? "" : "flex-row items-center"}`}>
+        <AppText
+          variant="headline"
+          accessibilityRole="header"
+          className={stacked ? "" : "min-w-0 flex-1"}
+        >
           {name}
         </AppText>
         <View className="flex-row gap-2">

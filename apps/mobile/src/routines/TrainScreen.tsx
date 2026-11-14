@@ -1,14 +1,14 @@
 import { endPosition, type Folder, moveItem, type RoutineSection } from "@svett/core";
 import { useNavigation } from "@react-navigation/native";
 import type { ReactNode } from "react";
-import { ActionSheetIOS, Alert, Pressable, ScrollView, View } from "react-native";
+import { ActionSheetIOS, Alert, ScrollView, View } from "react-native";
 
 import { ExerciseLibraryRow } from "../exercises/ExerciseLibraryRow";
 import type { RootNavigation } from "../navigation";
 import { AppText } from "../ui/AppText";
 import { Button } from "../ui/Button";
 import { EmptyState } from "../ui/EmptyState";
-import { Icon } from "../ui/Icon";
+import { IconButton } from "../ui/IconButton";
 import { ListRow, ListSection, SectionHeader } from "../ui/List";
 import { type RoutineOverview, useRoutineOverview, withRoutines } from "./data";
 
@@ -114,15 +114,13 @@ function FolderHeader({
       >
         {folder.name}
       </AppText>
-      <Pressable
-        accessibilityRole="button"
-        accessibilityLabel={`${folder.name} folder options`}
+      <IconButton
+        symbol="ellipsis.circle"
+        label={`${folder.name} folder options`}
+        variant="plain"
         onPress={openActions}
-        className="min-h-target min-w-target items-center justify-center"
         testID="folder-options"
-      >
-        <Icon name="ellipsis.circle" color="accent" size={22} />
-      </Pressable>
+      />
     </View>
   );
 }
