@@ -653,8 +653,10 @@ EOF
 
 # Stands in for the bound command on the ChatGPT settings. Every element has the same
 # frame, every wait succeeds except one for text containing FAKE_MISSING, the signed-in
-# state is always on screen, and no system alert shows. Pressing Sign out scrolls the
-# signed-out state above the screen until a scroll up brings it back.
+# state is always on screen, and no system alert shows. Pressing Sign out, or scrolling
+# down to an element below the fold, scrolls the signed-out state above the screen until a
+# scroll up or a relaunch brings it back. Only the signed-in state counts as visible, so
+# every other element is reached by a scroll.
 cat >"$fake/chatgpt-device" <<EOF
 #!/usr/bin/env bash
 echo "\$*" >>"$root/bound-calls"
@@ -665,7 +667,8 @@ case "\$args" in
     echo '{"rect": {"x": 20, "y": 300, "width": 120, "height": 40}}' ;;
   *" press "[0-9]*)
     [[ "\$(cat "$root/chatgpt-last-attrs" 2>/dev/null)" != *chatgpt-sign-out* ]] || touch "$root/chatgpt-scrolled" ;;
-  *' scroll up --until id="chatgpt-state-signedOut"'*) rm -f "$root/chatgpt-scrolled" ;;
+  *' scroll up --until id="chatgpt-state-signedOut"'*|*" open "*" --relaunch "*) rm -f "$root/chatgpt-scrolled" ;;
+  *" scroll down 0.3 --until "*) touch "$root/chatgpt-scrolled" ;;
   *' wait id="chatgpt-state-signedOut"'*)
     [[ ! -e "$root/chatgpt-scrolled" ]] && [[ -z "\${FAKE_MISSING:-}" || "\$args" != *"\$FAKE_MISSING"* ]] ;;
   *" is visible "*) [[ "\$args" == *chatgpt-state-signedIn* ]] ;;
@@ -740,6 +743,29 @@ check "chatgpt.sh screenshots each state" \
   "screenshot $root/chatgpt/11-revocation-unconfirmed.png" "screenshot $root/chatgpt/12-two-accounts.png" \
   "screenshot $root/chatgpt/13-returned-to-earlier-account.png" "screenshot $root/chatgpt/14-safari.png" \
   "screenshot $root/chatgpt/15-safari-signed-in.png"
+# shot_after <call> <screenshot>: the bound command got <call> right before <screenshot>.
+shot_after() {
+  local before
+  before=$(grep -B1 -xF -- "$bound_prefix screenshot $2" "$root/bound-calls" | head -1)
+  [[ "$before" == "$bound_prefix $1" ]] || {
+    echo "before $2: $before" >>"$output"
+    fail "$2 was not shot right after: $1"
+  }
+}
+check "chatgpt.sh shoots the renewed sign-in after scrolling to the notice below its Sign-in row" \
+  shot_after 'scroll down 0.3 --until id="chatgpt-notice"' "$root/chatgpt/06-renewed.png"
+for shot in 07-lapsed 08-refused-badSignature 09-refused-wrongAudience 10-refused-expiredToken; do
+  check "chatgpt.sh shoots $shot after scrolling to Continue with ChatGPT, below the text it proves" \
+    shot_after 'scroll down 0.3 --until id="chatgpt-continue"' "$root/chatgpt/$shot.png"
+done
+check "chatgpt.sh checks the state before the refusal, so no scroll back up hides the refusal" \
+  only_calls "wait (id=\"chatgpt-state-signedOut\"|text (does not match|was made|has expired))" \
+  'wait id="chatgpt-state-signedOut" 15000' 'wait id="chatgpt-state-signedOut" 15000' \
+  'wait id="chatgpt-state-signedOut" 15000' 'wait id="chatgpt-state-signedOut" 15000' \
+  "wait text does not match OpenAI's published keys 15000" \
+  'wait id="chatgpt-state-signedOut" 15000' "wait text was made for another app 15000" \
+  'wait id="chatgpt-state-signedOut" 15000' "wait text has expired 15000" \
+  'wait id="chatgpt-state-signedOut" 15000'
 check "chatgpt.sh with SVETT_DEVICE_CMD never calls simctl" test ! -e "$root/simctl-calls"
 
 case_name="chatgpt.sh Release with SVETT_DEVICE_CMD"
