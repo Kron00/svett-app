@@ -1,7 +1,7 @@
 import { databaseLayer, Ids, libraryExerciseId } from "@svett/core";
 import { buildFixture, manualClock, openNodeDatabase } from "@svett/core/node";
 import { Layer, ManagedRuntime } from "effect";
-import type { ReactElement } from "react";
+import type { ReactElement, ReactNode } from "react";
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vite-plus/test";
 
@@ -13,11 +13,13 @@ import { ProgressScreen } from "./ProgressScreen";
 
 const app = vi.hoisted(() => ({
   runtime: undefined as unknown,
+  onEndReached: undefined as (() => void) | undefined,
   route: { params: {} as Record<string, unknown> | undefined },
   fontScale: 1,
 }));
 
 vi.mock("react-native", () => ({
+  AppState: { addEventListener: () => ({ remove: () => {} }) },
   Pressable: "Pressable",
   ScrollView: "ScrollView",
   Switch: "Switch",
@@ -33,6 +35,33 @@ vi.mock("react-native-svg", () => ({
   Path: "Path",
   Rect: "Rect",
 }));
+// Renders the rows it is given and keeps onEndReached, which a scroll near the end calls.
+vi.mock("@legendapp/list/react-native", async () => {
+  const { createElement } = await import("react");
+  type Props = {
+    readonly testID: string;
+    readonly data: ReadonlyArray<never>;
+    readonly keyExtractor: (item: never) => string;
+    readonly renderItem: (info: { readonly item: never }) => ReactNode;
+    readonly onEndReached: () => void;
+    readonly ListHeaderComponent: ReactNode;
+    readonly ListFooterComponent: ReactNode;
+  };
+  return {
+    LegendList: (props: Props) => {
+      app.onEndReached = props.onEndReached;
+      return createElement(
+        "LegendList",
+        { testID: props.testID },
+        props.ListHeaderComponent,
+        ...props.data.map((item) =>
+          createElement("Item", { key: props.keyExtractor(item) }, props.renderItem({ item })),
+        ),
+        props.ListFooterComponent,
+      );
+    },
+  };
+});
 vi.mock("@expo/ui/community/segmented-control", () => ({
   SegmentedControl: "NativeSegmentedControl",
 }));
@@ -124,6 +153,28 @@ describe("Progress screens with the 300-workout fixture", () => {
     await until(() => counts() !== "Opening the database", "counting workouts");
     expect(counts()).toMatch(/^300 workouts, \d+ sets$/);
     expect(root.findAll(byTestID("recent-record"))).toHaveLength(5);
+  });
+
+  it("loads all 300 workouts as the history list scrolls to its end", async () => {
+    const root = await show(<ProgressScreen />, "history-row");
+    const workouts = () =>
+      root
+        .findAll(byTestIDPrefix("workout-"))
+        .map((node) => String(node.props.testID))
+        .filter((id) => id !== "workout-counts");
+    expect(workouts()).toHaveLength(60);
+    const scrollToEnd = async (): Promise<void> => {
+      const shown = workouts().length;
+      if (shown >= 300) return;
+      await act(async () => app.onEndReached?.());
+      await until(() => workouts().length > shown, `loading more than ${shown} workouts`);
+      return scrollToEnd();
+    };
+    await scrollToEnd();
+    expect(new Set(workouts()).size).toBe(300);
+    await act(async () => app.onEndReached?.());
+    await settle();
+    expect(workouts()).toHaveLength(300);
   });
 
   it("charts every bench press workout with its three lifting metrics and lists its records", async () => {

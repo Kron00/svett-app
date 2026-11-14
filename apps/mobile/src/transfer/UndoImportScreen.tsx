@@ -17,7 +17,7 @@ import { AppText } from "../ui/AppText";
 import { Button } from "../ui/Button";
 import { EmptyState } from "../ui/EmptyState";
 import { ListRow, ListSection } from "../ui/List";
-import { withTransfers } from "./files";
+import { changeTransfers, withTransfers } from "./files";
 import { formatDay } from "./format";
 
 type State =
@@ -149,7 +149,7 @@ export function UndoImportScreen() {
           preview={state.preview}
           onUndo={(alsoEdited) => {
             setState({ kind: "undoing" });
-            withTransfers((transfers) =>
+            changeTransfers((transfers) =>
               transfers.undoImport(state.preview.batch.id, alsoEdited),
             ).then(
               (result) => setState({ kind: "undone", result }),

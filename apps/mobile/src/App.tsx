@@ -20,6 +20,9 @@ import { ExerciseProgressScreen } from "./progress/ExerciseProgressScreen";
 import { ExercisesScreen } from "./progress/ExercisesScreen";
 import { MeasurementsScreen } from "./progress/MeasurementsScreen";
 import { MuscleSetsScreen } from "./progress/MuscleSetsScreen";
+import { CalendarScreen } from "./progress/CalendarScreen";
+import { SetEditScreen } from "./progress/SetEditScreen";
+import { WorkoutScreen } from "./progress/WorkoutScreen";
 import { TabNavigator } from "./TabNavigator";
 import { DataScreen } from "./transfer/DataScreen";
 import { ImportPreviewScreen } from "./transfer/ImportPreviewScreen";
@@ -51,6 +54,9 @@ const linking: LinkingOptions<RootStackParamList> = {
       ExerciseProgress: "progress/exercise/:exerciseId",
       MuscleSets: "progress/muscles",
       Measurements: "progress/measurements",
+      Workout: "workout/:id",
+      SetEdit: "workout/:activityId/set/:setId",
+      Calendar: "calendar",
       Data: "data",
       ImportPreview: "import",
       UndoImport: "imports/:importBatchId/undo",
@@ -130,6 +136,21 @@ export default function App() {
           name="Measurements"
           component={MeasurementsScreen}
           options={{ headerShown: true, title: "Body measurements" }}
+        />
+        <Stack.Screen
+          name="Workout"
+          component={WorkoutScreen}
+          options={{ headerShown: true, title: "Workout", headerBackTitle: "History" }}
+        />
+        <Stack.Screen
+          name="SetEdit"
+          component={SetEditScreen}
+          options={{ headerShown: true, title: "Edit set", presentation: "modal" }}
+        />
+        <Stack.Screen
+          name="Calendar"
+          component={CalendarScreen}
+          options={{ headerShown: true, title: "Calendar" }}
         />
         <Stack.Screen
           name="Data"

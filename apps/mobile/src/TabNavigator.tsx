@@ -6,6 +6,7 @@ import { View } from "react-native";
 import { ChatGPTRow } from "./chatgpt/ChatGPTRow";
 import { ExerciseLibraryRow } from "./exercises/ExerciseLibraryRow";
 import { DesignGalleryRow } from "./gallery/DesignGalleryRow";
+import type { TabParamList } from "./navigation";
 import { PhoneChecksRow } from "./PhoneChecksRow";
 import { PlaceholderScreen } from "./PlaceholderScreen";
 import { ProgressScreen } from "./progress/ProgressScreen";
@@ -13,7 +14,7 @@ import { type Tab, TABS } from "./tabs";
 import { DataRow } from "./transfer/DataRow";
 import { ListSection } from "./ui/List";
 
-const Tabs = createBottomTabNavigator();
+const Tabs = createBottomTabNavigator<TabParamList>();
 const TabStack = createNativeStackNavigator();
 
 function TabContent({ tab }: { readonly tab: Tab }) {

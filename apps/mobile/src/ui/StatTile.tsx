@@ -12,18 +12,21 @@ export function StatTile({
   unit,
   symbol,
   color = "accent",
+  testID,
 }: {
   readonly label: string;
   readonly value: string;
   readonly unit?: string;
   readonly symbol?: SymbolName;
   readonly color?: ColorToken;
+  readonly testID?: string;
 }) {
   const fullWidth = useIsAccessibilityTextSize();
   return (
     <View
       accessible
       accessibilityLabel={`${label}, ${value}${unit ? ` ${unit}` : ""}`}
+      testID={testID}
       className={`gap-1 rounded-card bg-surface p-4 ${fullWidth ? "w-full" : "min-w-36 grow basis-36"}`}
     >
       <View className="flex-row items-center gap-1.5">

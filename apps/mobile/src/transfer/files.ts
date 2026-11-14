@@ -5,11 +5,17 @@ import { File, Paths } from "expo-file-system";
 import * as Sharing from "expo-sharing";
 
 import { appDatabase } from "../data/database";
+import { write } from "../data/store";
 
 /** Runs `body` with the transfer repository of the database this launch opened. */
 export const withTransfers = <A, E>(
   body: (transfers: typeof TransferRepository.Service) => Effect.Effect<A, E>,
 ) => appDatabase().runPromise(Effect.flatMap(Effect.service(TransferRepository), body));
+
+/** Like `withTransfers`, for an import or an undo, so history and every other screen read again. */
+export const changeTransfers = <A, E>(
+  body: (transfers: typeof TransferRepository.Service) => Effect.Effect<A, E>,
+) => write(Effect.flatMap(Effect.service(TransferRepository), body));
 
 /**
  * Writes the export to the cache folder and opens the share sheet on it. The copy stays in

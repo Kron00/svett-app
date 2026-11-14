@@ -5,6 +5,7 @@ import { migrate } from "./migrations.ts";
 import { ActivityRepository } from "./repositories/activities.ts";
 import { ExerciseRepository } from "./repositories/exercises.ts";
 import { ProgressRepository } from "./repositories/progress.ts";
+import { HistoryRepository } from "./repositories/history.ts";
 import {
   CoachMessageRepository,
   ImportRepository,
@@ -39,6 +40,7 @@ export const Repositories = Layer.mergeAll(
   ProposalRepository.layer,
   CoachMessageRepository.layer,
   ProgressRepository.layer,
+  HistoryRepository.layer,
   TransferRepository.layer,
 );
 

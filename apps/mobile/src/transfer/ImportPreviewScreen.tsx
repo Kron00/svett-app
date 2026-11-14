@@ -18,7 +18,7 @@ import { AppText } from "../ui/AppText";
 import { Button } from "../ui/Button";
 import { EmptyState } from "../ui/EmptyState";
 import { ListRow, ListSection } from "../ui/List";
-import { type ImportFileSource, readImportFile, withTransfers } from "./files";
+import { changeTransfers, type ImportFileSource, readImportFile, withTransfers } from "./files";
 import { formatDay } from "./format";
 
 type State =
@@ -156,7 +156,7 @@ export function ImportPreviewScreen() {
 
   const runImport = (file: SvettFile, take: ReadonlyArray<string>) => {
     setState({ kind: "importing" });
-    withTransfers((transfers) => transfers.applyImport(file, take)).then(
+    changeTransfers((transfers) => transfers.applyImport(file, take)).then(
       (result) => setState({ kind: "imported", result }),
       (error: unknown) => setState({ kind: "failed", message: String(error) }),
     );
