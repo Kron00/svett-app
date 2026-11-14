@@ -2,14 +2,28 @@ import { Context, Data, Effect, Layer, Option, Schema } from "effect";
 
 import { Ids } from "../ids.ts";
 import {
+  type ActivityId,
+  type ActivitySource,
+  type ActivityTrack,
   type EpochMillis,
   type ImportBatch,
   type ImportBatchId,
   type ImportChange,
   ImportChangeId,
+  type ImportedSource,
   type RowIdsByTable,
   type RowsByTable,
 } from "../schema.ts";
+import {
+  linkContribution,
+  linkRows,
+  type SourceChoices,
+  type SourceImportResult,
+  type SourcePlan,
+  planSourceImport,
+  sourceActivityRows,
+  type SourceWorkout,
+} from "../source-import.ts";
 import { Sql, type SqlError } from "../sql.ts";
 import { encodeSvettFile, exportFileName, type SvettFile } from "../svett-file.ts";
 import {
@@ -30,6 +44,7 @@ import {
   type ImportInput,
   type ImportPlan,
   isLive,
+  type Item,
   PARENT,
   planImport,
   REFERENCES,
@@ -42,6 +57,7 @@ import {
   type UndoEntry,
   undoSelection,
   withRequired,
+  summarize,
   writtenOf,
 } from "../transfer.ts";
 import { MADE_HERE, rowId } from "./origin.ts";
@@ -356,6 +372,83 @@ const undoSteps = (importBatchId: ImportBatchId) =>
       }),
     );
   });
+/** Rows of the same tables, together. */
+const mergeRows = (...parts: ReadonlyArray<TableRows>): TableRows =>
+  Object.fromEntries(
+    TABLE_KEYS.flatMap((key) => {
+      const rows = parts.flatMap((part) => part[key] ?? []);
+      return rows.length === 0 ? [] : [[key, rows]];
+    }),
+  );
+
+/** The rows of `rows` that are not in `without`, matched by table and ID. */
+const withoutRows = (rows: TableRows, without: TableRows): TableRows => {
+  const drop = new Set(
+    TABLE_KEYS.flatMap((key) => (without[key] ?? []).map((row) => `${key}/${row.id}`)),
+  );
+  return Object.fromEntries(
+    TABLE_KEYS.flatMap((key) => {
+      const kept = (rows[key] ?? []).filter((row) => !drop.has(`${key}/${row.id}`));
+      return kept.length === 0 ? [] : [[key, kept]];
+    }),
+  ) as TableRows;
+};
+
+/** The rows of every part, one per table and ID, the last part's version first. */
+const unionRows = (...parts: ReadonlyArray<TableRows>): TableRows =>
+  Object.fromEntries(
+    TABLE_KEYS.flatMap((key) => {
+      const byId = new Map<string, AnyRow>();
+      for (const part of parts) for (const row of part[key] ?? []) byId.set(row.id, row);
+      return byId.size === 0 ? [] : [[key, [...byId.values()]]];
+    }),
+  ) as TableRows;
+
+/** The rows of `rows` that `among` also has, matched by table and ID, as `rows` has them. */
+const rowsIn = (rows: TableRows, among: TableRows): TableRows =>
+  withoutRows(rows, withoutRows(rows, among));
+
+/** One workout's write to an activity in a Health or GPX import. */
+interface ActivityWrite {
+  /** A new link, a new version of a link, or a new version of the activity's own source. */
+  readonly kind: "link" | "relink" | "replace";
+  readonly workout: SourceWorkout;
+}
+
+/**
+ * What the other sources linked to an activity added to it, with any track their heart
+ * rate is on, so a new version from the activity's own source leaves them in place.
+ */
+const linkedContributions = (rows: TableRows): TableRows => {
+  const links = (rows.activitySource ?? []) as ReadonlyArray<ActivitySource>;
+  const contributions = mergeRows(
+    ...links
+      .filter((link) => link.deletedAt === null)
+      .map((link) => linkContribution(rows, { source: link.source, identity: link.sourceId })),
+  );
+  const tracks = new Set(
+    (contributions.activitySample ?? []).map((row) => row["activityTrackId"] as string),
+  );
+  return mergeRows(contributions, {
+    activityTrack: ((rows.activityTrack ?? []) as ReadonlyArray<ActivityTrack>).filter((track) =>
+      tracks.has(track.id),
+    ),
+  });
+};
+
+const activityItem = (id: string, rows: TableRows): Item => ({
+  key: `${TABLES.activity.name}/${id}`,
+  table: "activity",
+  id,
+  rows,
+});
+
+/** What the duplicate check needs of every activity here, and the sources already linked. */
+const localActivities = Effect.gen(function* () {
+  const activities = yield* selectRows(TABLES.activity);
+  const links = yield* selectRows(TABLES.activitySource);
+  return { activities, links };
+}).pipe(Effect.orDie);
 
 const makeTransferRepository = Effect.gen(function* () {
   const sql = yield* Sql;
@@ -421,6 +514,109 @@ const makeTransferRepository = Effect.gen(function* () {
             }
           }
           return Option.some<ImportResult>({ importBatchId, added, replaced });
+        }),
+      ),
+    );
+
+  /**
+   * Saves workouts from Apple Health or a GPX file. New ones become activities. A
+   * possible duplicate links to the activity it overlaps, unless its key is in
+   * `keepBoth`. A changed one replaces yours only when its key is in `take`. Each is
+   * recorded as an import change, so Undo takes the whole import back.
+   */
+  const applySourceImport = (
+    source: ImportedSource,
+    workouts: ReadonlyArray<SourceWorkout>,
+    choices: SourceChoices,
+  ) =>
+    run(
+      sql.transaction(
+        Effect.gen(function* () {
+          const plan = planSourceImport(yield* localActivities, workouts);
+          const fresh = plan.items.filter(
+            (item) =>
+              item.status === "new" ||
+              (item.status === "duplicate" && choices.keepBoth.includes(item.key)),
+          );
+          const links = plan.duplicates.filter((item) => !choices.keepBoth.includes(item.key));
+          const taken = plan.changed.filter((item) => choices.take.includes(item.key));
+          if (fresh.length + links.length + taken.length === 0) {
+            return Option.none<SourceImportResult>();
+          }
+          const importBatchId = yield* imports.create(source);
+          yield* imports.setStatus(importBatchId, "applied");
+          const at = yield* currentTime;
+
+          for (const { workout } of fresh) {
+            const rows = sourceActivityRows(workout, importBatchId, at);
+            yield* putAll(rows);
+            const item = activityItem(String(rows.activity![0]!.id), rows);
+            yield* recordChange(importBatchId, "added", item, summarize(item), rows, {});
+          }
+
+          // Every write to one activity is one change, holding what the activity had
+          // before the first and how the last left it. So a second write does not make the
+          // first look edited, and Undo puts back all of them.
+          const byActivity = new Map<ActivityId, Array<ActivityWrite>>();
+          const addWrite = (activityId: ActivityId, write: ActivityWrite) =>
+            byActivity.set(activityId, [...(byActivity.get(activityId) ?? []), write]);
+          for (const { match, workout } of links) addWrite(match.id, { kind: "link", workout });
+          for (const { workout, local, linked } of taken) {
+            addWrite(local, { kind: linked ? "relink" : "replace", workout });
+          }
+          for (const [activityId, writes] of byActivity) {
+            const root = { table: TABLES.activity.name, id: activityId };
+            const before = yield* journalRows({}, root);
+            let after = before;
+            let written: TableRows = {};
+            let replaced: TableRows = {};
+            for (const { kind, workout } of writes) {
+              if (kind === "link") {
+                // Linking only adds rows, so Undo removes them and the activity is as it was.
+                const added = linkRows(workout, { id: activityId, rows: after }, importBatchId, at);
+                yield* putAll(added);
+                written = unionRows(written, added);
+              } else if (kind === "relink") {
+                // A new version of a linked workout replaces only what its link added.
+                const old = linkContribution(after, workout);
+                const added = linkRows(
+                  workout,
+                  { id: activityId, rows: withoutRows(after, old) },
+                  importBatchId,
+                  at,
+                );
+                yield* putAll(added);
+                yield* deleteWithChildren(withoutRows(old, added), at);
+                written = unionRows(written, added);
+                replaced = unionRows(replaced, rowsIn(before, old));
+              } else {
+                const added = sourceActivityRows(workout, importBatchId, at);
+                yield* putAll(added);
+                yield* deleteWithChildren(
+                  withoutRows(after, unionRows(added, linkedContributions(after))),
+                  at,
+                );
+                written = unionRows(written, added);
+                replaced = unionRows(replaced, before);
+              }
+              after = yield* journalRows({}, root);
+            }
+            const item = activityItem(activityId, after);
+            yield* recordChange(
+              importBatchId,
+              "replaced",
+              item,
+              summarize(item),
+              written,
+              replaced,
+            );
+          }
+          return Option.some<SourceImportResult>({
+            importBatchId,
+            added: fresh.length,
+            linked: links.length,
+            replaced: taken.length,
+          });
         }),
       ),
     );
@@ -494,6 +690,10 @@ const makeTransferRepository = Effect.gen(function* () {
         }),
       ),
     applyImport,
+    /** What importing workouts from Apple Health or a GPX file would add, link and change. */
+    previewSourceImport: (workouts: ReadonlyArray<SourceWorkout>): Effect.Effect<SourcePlan> =>
+      run(Effect.map(localActivities, (local) => planSourceImport(local, workouts))),
+    applySourceImport,
     previewUndo,
     undoImport,
     /** Imports that changed something, newest first. */

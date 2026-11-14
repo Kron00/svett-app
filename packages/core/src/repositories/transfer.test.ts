@@ -17,6 +17,7 @@ import {
   SourceIdentity,
 } from "../schema.ts";
 import { MIGRATIONS, migrate } from "../migrations.ts";
+import { NO_CHOICES } from "../source-import.ts";
 import { Sql } from "../sql.ts";
 import { decodeSvettFile, type SvettFile } from "../svett-file.ts";
 import { TABLES } from "../table.ts";
@@ -209,6 +210,7 @@ const fillEveryTable = async (database: Database) => {
             {
               kind: "location",
               recordedAt: EpochMillis.make(T0 - 86_000_000),
+              segment: 0,
               latitude: 59.33,
               longitude: 18.06,
               altitudeM: 12,
@@ -275,6 +277,27 @@ const fillEveryTable = async (database: Database) => {
           fingerprint: Fingerprint.make(contentFingerprint({ title: "Hevy legs" })),
           importBatchId: hevy,
         }),
+      );
+      // A watch's copy of a workout here links to it, which fills activity_source.
+      yield* transfers.applySourceImport(
+        "gpx",
+        [
+          {
+            source: "gpx",
+            identity: SourceIdentity.make("2025-12-30T08:01:00.000Z"),
+            fingerprint: Fingerprint.make(contentFingerprint({ title: "Watch copy" })),
+            kind: "strength",
+            title: "Watch copy",
+            startedAt: EpochMillis.make(T0 - 86_400_000 + 60_000),
+            endedAt: EpochMillis.make(T0 - 86_400_000 + 600_000),
+            durationS: DurationSeconds.make(540),
+            distanceM: null,
+            energyKcal: null,
+            route: [],
+            heartRate: [],
+          },
+        ],
+        NO_CHOICES,
       );
       yield* transfers.applyImport(fromOtherPhone, []);
 

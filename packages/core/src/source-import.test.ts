@@ -1,0 +1,382 @@
+import { describe, expect, it } from "vite-plus/test";
+
+import { Result } from "effect";
+
+import { DurationSeconds } from "./duration.ts";
+import type { GpxPoint, GpxTrack } from "./gpx.ts";
+import { seededRandom } from "./ids.ts";
+import { ActivityId, EpochMillis, Fingerprint, ImportBatchId, SourceIdentity } from "./schema.ts";
+import {
+  fromGpx,
+  healthActivityName,
+  heartRateSummary,
+  isNothingFromSource,
+  type LocalActivity,
+  planSourceImport,
+  sourceActivityId,
+  sourceActivityRows,
+  sourceImportOutcome,
+  type SourcePlan,
+  type SourceWorkout,
+} from "./source-import.ts";
+
+const HOUR = 3_600_000;
+const T = Date.UTC(2026, 10, 3, 17);
+
+const workout = (identity: string, start: number, minutes: number): SourceWorkout => ({
+  source: "apple_health",
+  identity: SourceIdentity.make(identity),
+  fingerprint: Fingerprint.make("a".repeat(64)),
+  kind: "strength",
+  title: "Evening workout",
+  startedAt: EpochMillis.make(start),
+  endedAt: EpochMillis.make(start + minutes * 60_000),
+  durationS: DurationSeconds.make(minutes * 60),
+  distanceM: null,
+  energyKcal: null,
+  route: [],
+  heartRate: [],
+});
+
+const local = (
+  id: string,
+  start: number,
+  source: LocalActivity["source"],
+  overrides: Partial<LocalActivity> = {},
+): LocalActivity => ({
+  id: ActivityId.make(id),
+  kind: "strength",
+  title: id,
+  startedAt: EpochMillis.make(start),
+  durationS: DurationSeconds.make(3600),
+  source,
+  sourceId: source === "svett" ? null : SourceIdentity.make(id),
+  fingerprint: source === "svett" ? null : Fingerprint.make("b".repeat(64)),
+  ...overrides,
+});
+
+const identities = (items: SourcePlan["items"]) =>
+  items.map((item) => [item.workout.durationS, item.workout.identity]);
+
+const UUID = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
+
+const sameStart = (minutes: number, digit: string) => ({
+  ...workout("same", T, minutes),
+  fingerprint: Fingerprint.make(digit.repeat(64)),
+});
+
+/** The activities an import of every new workout in the plan leaves here. */
+const savedFrom = (plan: SourcePlan): Array<LocalActivity> =>
+  plan.items.map((item) =>
+    local(sourceActivityId(item.workout), item.workout.startedAt, "apple_health", {
+      sourceId: item.workout.identity,
+      fingerprint: item.workout.fingerprint,
+      durationS: item.workout.durationS,
+    }),
+  );
+
+const imported = (workouts: ReadonlyArray<SourceWorkout>) =>
+  savedFrom(planSourceImport({ activities: [], links: [] }, workouts));
+
+describe("planSourceImport", () => {
+  it("matches a workout to the activity from another source it overlaps most", () => {
+    const plan = planSourceImport(
+      {
+        activities: [
+          local(UUID(1), T - HOUR + 5 * 60_000, "svett"),
+          local(UUID(2), T, "hevy"),
+          local(UUID(3), T, "apple_health"),
+        ],
+        links: [],
+      },
+      [workout("a", T + 5 * 60_000, 50), workout("b", T + 2 * HOUR, 30)],
+    );
+    expect(plan.duplicates.map((item) => [item.workout.identity, item.match.id])).toEqual([
+      ["a", UUID(2)],
+    ]);
+    expect(plan.added).toBe(1);
+  });
+
+  it("counts a workout already linked, or already here, as unchanged, and one repeated in the file once", () => {
+    const here = workout("here", T - 3 * HOUR, 30);
+    const plan = planSourceImport(
+      {
+        activities: [
+          local(sourceActivityId(here), here.startedAt, "apple_health", {
+            fingerprint: here.fingerprint,
+          }),
+          local(UUID(2), T, "hevy"),
+        ],
+        links: [
+          {
+            activityId: ActivityId.make(UUID(2)),
+            source: "apple_health",
+            sourceId: SourceIdentity.make("linked"),
+            fingerprint: Fingerprint.make("a".repeat(64)),
+          },
+        ],
+      },
+      [here, workout("linked", T, 60), workout("linked", T, 60)],
+    );
+    expect(plan.unchanged).toBe(2);
+    expect(plan.items).toHaveLength(2);
+    expect(plan.collisions).toEqual([]);
+  });
+
+  it("lists a linked workout whose content changed since it was linked", () => {
+    const plan = planSourceImport(
+      {
+        activities: [local(UUID(2), T, "hevy")],
+        links: [
+          {
+            activityId: ActivityId.make(UUID(2)),
+            source: "apple_health",
+            sourceId: SourceIdentity.make("linked"),
+            fingerprint: Fingerprint.make("0".repeat(64)),
+          },
+        ],
+      },
+      [workout("linked", T, 60)],
+    );
+    expect(plan.changed).toMatchObject([
+      { key: "apple_health:linked", local: UUID(2), linked: true },
+    ]);
+    expect(plan.unchanged).toBe(0);
+  });
+
+  it("keeps workouts that share an identity but not their content, with the same IDs in any order", () => {
+    const first = workout("same", T, 30);
+    const second = { ...workout("same", T, 45), fingerprint: Fingerprint.make("c".repeat(64)) };
+    const plan = planSourceImport({ activities: [], links: [] }, [second, first, second]);
+    expect(plan.added).toBe(2);
+    expect(plan.collisions.map((item) => item.workout.identity).toSorted()).toEqual([
+      "same",
+      "same #2",
+    ]);
+    const again = planSourceImport({ activities: [], links: [] }, [first, second]);
+    expect(identities(again.items)).toEqual(identities(plan.items));
+    expect(identities(plan.items)).toEqual([
+      [1800, "same"],
+      [2700, "same #2"],
+    ]);
+  });
+
+  describe("workouts that share an identity, against the ones saved before", () => {
+    // Fingerprint order is a, b, c, so b lands between the other two.
+    const [a, b, c] = [sameStart(20, "1"), sameStart(25, "2"), sameStart(30, "3")] as const;
+    it("keeps each saved workout's identity when another with the same start joins the file", () => {
+      const plan = planSourceImport({ activities: imported([a, c]), links: [] }, [a, b, c]);
+      expect(plan.unchanged).toBe(2);
+      expect(plan.changed).toEqual([]);
+      expect(plan.items.filter((item) => item.status === "new").map((item) => item.key)).toEqual([
+        "apple_health:same #3",
+      ]);
+      expect(identities(plan.items).toSorted()).toEqual([
+        [1200, "same"],
+        [1500, "same #3"],
+        [1800, "same #2"],
+      ]);
+    });
+
+    it("keeps each saved workout's identity when one with the same start leaves the file", () => {
+      const plan = planSourceImport({ activities: imported([a, b, c]), links: [] }, [a, c]);
+      expect(isNothingFromSource(plan)).toBe(true);
+      expect(plan.unchanged).toBe(2);
+    });
+
+    it("lists a changed workout among ones with the same start as changed, not new", () => {
+      const here = imported([a, b, c]);
+      const changedB = sameStart(26, "4");
+      const plan = planSourceImport({ activities: here, links: [] }, [a, changedB, c]);
+      expect(plan.added).toBe(0);
+      expect(plan.unchanged).toBe(2);
+      expect(plan.changed).toMatchObject([
+        {
+          key: "apple_health:same #2",
+          local: sourceActivityId({
+            source: "apple_health",
+            identity: SourceIdentity.make("same #2"),
+          }),
+          linked: false,
+        },
+      ]);
+    });
+
+    it("matches a linked workout among ones with the same start by its content", () => {
+      const plan = planSourceImport(
+        {
+          activities: [local(UUID(2), T, "hevy")],
+          links: [
+            {
+              activityId: ActivityId.make(UUID(2)),
+              source: "apple_health",
+              sourceId: SourceIdentity.make("same #2"),
+              fingerprint: c.fingerprint,
+            },
+          ],
+        },
+        [c],
+      );
+      expect(plan.unchanged).toBe(1);
+      expect(plan.duplicates).toEqual([]);
+    });
+  });
+
+  it("does not match activities that only touch end to start", () => {
+    const plan = planSourceImport({ activities: [local(UUID(2), T - HOUR, "hevy")], links: [] }, [
+      workout("next", T, 30),
+    ]);
+    expect(plan.added).toBe(1);
+  });
+});
+
+const MINUTE = 60_000;
+/** About 100 metres of latitude. */
+const STEP = 0.0009;
+
+/** Points a minute apart heading north by `step` degrees, from `lat`, starting `start`. */
+const northward = (start: number, lat: number, count: number, step = STEP): Array<GpxPoint> =>
+  Array.from({ length: count }, (_, index) => ({
+    recordedAt: start + index * MINUTE,
+    latitude: lat + index * step,
+    longitude: 18,
+    altitudeM: null,
+    heartRate: null,
+  }));
+
+const ride = (segments: GpxTrack["segments"], name: string | null = "Ride"): SourceWorkout =>
+  Result.getOrThrow(fromGpx({ name, type: "cycling", segments }, () => 9));
+
+describe("fromGpx", () => {
+  it("counts no distance, time or splits across the gap between two segments", () => {
+    // Two kilometres ridden, with a 5 km jump and half an hour between the segments.
+    const gapped = ride([northward(T, 59, 11), northward(T + 40 * MINUTE, 59.05, 11)]);
+    expect(gapped.distanceM).toBeCloseTo(2 * 10 * STEP * 111_195, -1);
+    expect(gapped.durationS).toBe(20 * 60);
+    expect(gapped.endedAt).toBe(T + 50 * MINUTE);
+
+    const rows = sourceActivityRows(gapped, ImportBatchId.make(UUID(9)), EpochMillis.make(T));
+    const samples = rows.activitySample ?? [];
+    const locations = samples.filter((sample) => sample["kind"] === "location");
+    expect(locations.map((sample) => sample["segment"])).toEqual([
+      ...Array<number>(11).fill(0),
+      ...Array<number>(11).fill(1),
+    ]);
+    const splits = samples.filter((sample) => sample["kind"] === "split");
+    const total = (key: string) => splits.reduce((sum, split) => sum + (split[key] as number), 0);
+    expect(total("distanceM")).toBeCloseTo(gapped.distanceM!, 6);
+    expect(total("durationS")).toBeCloseTo(gapped.durationS, 6);
+    expect(splits).toHaveLength(3);
+  });
+
+  it("reads a track too long to spread into Math.max", () => {
+    const long = ride([northward(T, 0, 300_000, 0)]);
+    expect(long.endedAt).toBe(T + 299_999 * MINUTE);
+  });
+
+  it("counts a renamed track as other content", () => {
+    const points = [northward(T, 59, 3)];
+    expect(ride(points, "Ride").fingerprint).toBe(ride(points, "Ride").fingerprint);
+    expect(ride(points, "Ride to work").fingerprint).not.toBe(ride(points, "Ride").fingerprint);
+  });
+});
+
+const DEGREE_M = (Math.PI * 6_371_008.8) / 180;
+
+/**
+ * A 600 m run north at 3 m/s with no speeds, a reading a second, and a stop of `seconds`
+ * at 300 m where the readings drift within 10 m, each place held one to six seconds.
+ */
+const runWithStop = (seconds: number, seed: number): Array<GpxPoint> => {
+  const points: Array<GpxPoint> = [];
+  const add = (north: number, east = 0) =>
+    points.push({
+      recordedAt: T + points.length * 1000,
+      latitude: 59 + north / DEGREE_M,
+      longitude: 18 + east / (DEGREE_M * Math.cos((59 * Math.PI) / 180)),
+      altitudeM: null,
+      heartRate: null,
+    });
+  for (let north = 0; north <= 300; north += 3) add(north);
+  const next = seededRandom(seed);
+  for (let held = 0; held < seconds;) {
+    const angle = next() * 2 * Math.PI;
+    const radius = 10 * Math.sqrt(next());
+    for (let hold = 1 + Math.floor(next() * 6); hold > 0 && held < seconds; hold--, held++) {
+      add(300 + radius * Math.cos(angle), radius * Math.sin(angle));
+    }
+  }
+  for (let north = 303; north <= 600; north += 3) add(north);
+  return points;
+};
+
+const run = (points: ReadonlyArray<GpxPoint>) =>
+  Result.getOrThrow(fromGpx({ name: "Run", type: "running", segments: [points] }, () => 9));
+
+describe("an imported route without speeds", () => {
+  // Sol's K1 round 6 probe saved 759 m for seed 45 when a drifting stop counted as moving.
+  it("saves a 600 m run with a two-minute stop within 3%", () => {
+    for (const seed of [...Array.from({ length: 25 }, (_, index) => index + 1), 36, 45]) {
+      expect(run(runWithStop(120, seed)).distanceM, `seed ${seed}`).toBeGreaterThan(582);
+      expect(run(runWithStop(120, seed)).distanceM, `seed ${seed}`).toBeLessThan(618);
+    }
+  });
+
+  it("saves a run without stops at its length", () => {
+    expect(run(runWithStop(0, 1)).distanceM).toBeCloseTo(600, -1);
+  });
+
+  it("splits a route to add up to the distance its source measured", () => {
+    const measured = {
+      ...run(runWithStop(120, 45)),
+      source: "apple_health" as const,
+      distanceM: 640,
+    };
+    const rows = sourceActivityRows(measured, ImportBatchId.make(UUID(9)), EpochMillis.make(T));
+    const splits = (rows.activitySample ?? []).filter((sample) => sample["kind"] === "split");
+    expect(rows.activityTrack?.[0]?.["distanceM"]).toBe(640);
+    expect(splits.reduce((sum, split) => sum + (split["distanceM"] as number), 0)).toBeCloseTo(
+      640,
+      6,
+    );
+  });
+});
+
+describe("heartRateSummary", () => {
+  it("gives the rounded mean and the highest reading", () => {
+    expect(
+      heartRateSummary([
+        { kind: "heart_rate", bpm: 120 },
+        { kind: "location" },
+        { kind: "heart_rate", bpm: 141 },
+      ]),
+    ).toEqual({ averageBpm: 131, maxBpm: 141 });
+    expect(heartRateSummary([{ kind: "location" }])).toBeNull();
+    const long = Array.from({ length: 300_000 }, (_, index) => ({
+      kind: "heart_rate",
+      bpm: 100 + (index % 50),
+    }));
+    expect(heartRateSummary(long)?.maxBpm).toBe(149);
+  });
+});
+
+describe("sourceImportOutcome", () => {
+  it("says what the import did", () => {
+    expect(sourceImportOutcome({ added: 3, linked: 1, replaced: 0 })).toBe(
+      "Added 3 workouts and linked 1 workout to one already here.",
+    );
+    expect(sourceImportOutcome({ added: 1, linked: 2, replaced: 1 })).toBe(
+      "Added 1 workout, linked 2 workouts to ones already here and took the new version of 1 workout.",
+    );
+    expect(sourceImportOutcome({ added: 0, linked: 0, replaced: 0 })).toBe("Nothing changed.");
+  });
+});
+
+describe("healthActivityName", () => {
+  it("reads Health's activity type as words", () => {
+    expect(healthActivityName("HKWorkoutActivityTypeHighIntensityIntervalTraining")).toBe(
+      "High intensity interval training",
+    );
+    expect(healthActivityName("HKWorkoutActivityTypeYoga")).toBe("Yoga");
+  });
+});

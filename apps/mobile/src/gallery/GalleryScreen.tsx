@@ -61,6 +61,34 @@ function Section({
   );
 }
 
+function TextFields() {
+  const [duration, setDuration] = useState("");
+  const [distance, setDistance] = useState("5.2");
+  const [notes, setNotes] = useState("far");
+  return (
+    <Card>
+      <TextField
+        label="Duration"
+        value={duration}
+        onChangeText={setDuration}
+        placeholder="45 or 1:05:00"
+      />
+      <TextField
+        label="Distance in km"
+        value={distance}
+        onChangeText={setDistance}
+        keyboardType="decimal-pad"
+      />
+      <TextField
+        label="Distance in km"
+        value={notes}
+        onChangeText={setNotes}
+        problem="Enter the distance in kilometres, such as 5.2, or leave it empty."
+      />
+    </Card>
+  );
+}
+
 function Card({ children }: { readonly children: ReactNode }) {
   return <View className="mx-gutter gap-4 rounded-card bg-surface p-4">{children}</View>;
 }
@@ -386,6 +414,10 @@ export function GalleryScreen() {
         <Card>
           <NumberEntryDemo />
         </Card>
+      </Section>
+
+      <Section id="text-fields" title="Text fields">
+        <TextFields />
       </Section>
 
       <Section id="sets" title="Set rows">

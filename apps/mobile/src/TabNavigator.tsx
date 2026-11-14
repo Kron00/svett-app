@@ -3,6 +3,8 @@ import { createNativeStackNavigator } from "@react-navigation/native-stack";
 import { SymbolView } from "expo-symbols";
 import { View } from "react-native";
 
+import { ManualCardioRow } from "./cardio/ManualCardioRow";
+import { RecordCardioRow } from "./cardio/RecordCardioRow";
 import { ChatGPTRow } from "./chatgpt/ChatGPTRow";
 import { ExerciseLibraryRow } from "./exercises/ExerciseLibraryRow";
 import { DesignGalleryRow } from "./gallery/DesignGalleryRow";
@@ -24,6 +26,8 @@ function TabContent({ tab }: { readonly tab: Tab }) {
       {tab.name === "Train" ? (
         <View className="mt-6 self-stretch">
           <ListSection>
+            <RecordCardioRow />
+            <ManualCardioRow />
             <ExerciseLibraryRow />
           </ListSection>
         </View>

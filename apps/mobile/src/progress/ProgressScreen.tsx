@@ -16,6 +16,7 @@ import { Effect } from "effect";
 import { useState } from "react";
 import { Pressable, View } from "react-native";
 
+import { openActivity } from "../cardio/open-activity";
 import { useQuery } from "../data/store";
 import { useIsAccessibilityTextSize } from "../design/hooks";
 import { SPORTS } from "../design/tokens";
@@ -273,10 +274,7 @@ export function ProgressScreen() {
         data={rows}
         keyExtractor={(row) => row.activity.id}
         renderItem={({ item }) => (
-          <HistoryRow
-            row={item}
-            onPress={() => navigation.navigate("Workout", { id: item.activity.id })}
-          />
+          <HistoryRow row={item} onPress={() => openActivity(navigation, item.activity)} />
         )}
         recycleItems
         estimatedItemSize={132}

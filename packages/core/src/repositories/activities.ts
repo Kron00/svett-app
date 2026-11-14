@@ -46,6 +46,12 @@ export interface ActivityDraft extends Omit<
   Draft<Activity>,
   "source" | "sourceId" | "fingerprint" | "importBatchId"
 > {
+  /**
+   * The ID to save the activity under, chosen before it is saved, such as when a
+   * recording starts. Creating a draft whose ID is already saved returns that ID and
+   * writes nothing, so a save repeated after a crash saves once.
+   */
+  readonly id?: ActivityId;
   readonly origin: Origin;
   readonly exercises: ReadonlyArray<
     Draft<ActivityExercise, "activityId"> & { readonly sets: ReadonlyArray<SetDraft> }
@@ -71,6 +77,7 @@ const childrenOf = {
   sets: "activity_exercise_id IN (SELECT id FROM activity_exercise WHERE activity_id = ?)",
   tracks: "activity_id = ?",
   samples: "activity_track_id IN (SELECT id FROM activity_track WHERE activity_id = ?)",
+  sources: "activity_id = ?",
 };
 
 const makeActivityRepository = Effect.gen(function* () {
@@ -84,8 +91,12 @@ const makeActivityRepository = Effect.gen(function* () {
       sql.transaction(
         Effect.gen(function* () {
           const updatedAt = yield* currentTime;
-          const { origin, exercises, track, ...fields } = draft;
-          const id = ActivityId.make(yield* rowId(TABLES.activity, origin));
+          const { id: chosen, origin, exercises, track, ...fields } = draft;
+          if (chosen !== undefined) {
+            const saved = yield* sql.all("SELECT id FROM activity WHERE id = ?", [chosen]);
+            if (saved.length > 0) return chosen;
+          }
+          const id = chosen ?? ActivityId.make(yield* rowId(TABLES.activity, origin));
           yield* insertRows(TABLES.activity, [
             { ...fields, ...provenance(origin), id, updatedAt, deletedAt: null },
           ]);
@@ -192,6 +203,7 @@ const makeActivityRepository = Effect.gen(function* () {
           yield* softDeleteRows(TABLES.activityExercise, childrenOf.exercises, [id], at);
           yield* softDeleteRows(TABLES.activitySample, childrenOf.samples, [id], at);
           yield* softDeleteRows(TABLES.activityTrack, childrenOf.tracks, [id], at);
+          yield* softDeleteRows(TABLES.activitySource, childrenOf.sources, [id], at);
         }),
       ),
     );
@@ -213,6 +225,7 @@ const makeActivityRepository = Effect.gen(function* () {
           yield* restoreRows(TABLES.activitySet, childrenOf.sets, [id], deletedAt, at);
           yield* restoreRows(TABLES.activityTrack, childrenOf.tracks, [id], deletedAt, at);
           yield* restoreRows(TABLES.activitySample, childrenOf.samples, [id], deletedAt, at);
+          yield* restoreRows(TABLES.activitySource, childrenOf.sources, [id], deletedAt, at);
         }),
       ),
     );
@@ -229,8 +242,16 @@ const makeActivityRepository = Effect.gen(function* () {
     ) => run(updateRow(TABLES.activity, id, patch)),
     updateSet: (id: ActivitySetId, patch: Omit<Patch<ActivitySet>, "activityExerciseId">) =>
       run(updateRow(TABLES.activitySet, id, patch)),
+    /** Changes how much of each end of the route is hidden from others. */
+    updateTrack: (
+      id: ActivityTrackId,
+      patch: Pick<Patch<ActivityTrack>, "hideStartM" | "hideEndM">,
+    ) => run(updateRow(TABLES.activityTrack, id, patch)),
     samples: (trackId: ActivityTrackId) =>
       run(selectRows(TABLES.activitySample, "activity_track_id = ?", [trackId], "recorded_at, id")),
+    /** The other sources linked to this activity, beyond the one it came from. */
+    sources: (id: ActivityId) =>
+      run(selectRows(TABLES.activitySource, childrenOf.sources, [id], "source, source_id")),
     counts: run(
       Effect.all({
         activities: countRows(TABLES.activity),
@@ -240,7 +261,10 @@ const makeActivityRepository = Effect.gen(function* () {
   };
 });
 
-/** The only writer of activity, activity_exercise, activity_set, activity_track and activity_sample. */
+/**
+ * The only writer of activity, activity_exercise, activity_set, activity_track,
+ * activity_sample and activity_source, apart from TransferRepository's whole-row imports.
+ */
 export class ActivityRepository extends Context.Service<
   ActivityRepository,
   Effect.Success<typeof makeActivityRepository>

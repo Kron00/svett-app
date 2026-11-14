@@ -1572,4 +1572,320 @@ check "chatgpt.sh --live signs out an earlier sign-in, then waits 10 minutes for
   'wait id="chatgpt-state-signedIn" 600000' 'get attrs id="chatgpt-sign-out"'
 
 
+# Stands in for the bound command on Record and the saved activity. It tracks what
+# is in front: the Home Screen, the tab root, Record before a recording, while
+# recording, paused, or the activity. Like checks-device, a Debug open by bundle id
+# alone leaves the Home Screen in front, and otherwise svett comes back where it
+# was, or on its tab root with FAKE_RELOAD, or not at all with FAKE_STAYS_HOME.
+# Pressing Finish saves a run recorded along the proof route into the app's
+# database, 100 m short with FAKE_SHORT. With FAKE_NO_START, Start does nothing.
+# The activity's hide setting shows after FAKE_ACTIVITY_SCROLLS scrolls, default 2.
+# Every button has the same frame, except that with FAKE_START_LOW Start sits at the
+# screen's bottom edge until a drag moves it up, or for good when it is "stuck".
+cat >"$fake/cardio-device" <<EOF
+#!/usr/bin/env bash
+echo "\$*" >>"$root/bound-calls"
+screen=\$(cat "$root/screen" 2>/dev/null || echo home)
+left=\$(cat "$root/svett-screen" 2>/dev/null || echo tabs)
+recording=\$(cat "$root/recording" 2>/dev/null || echo none)
+show() {
+  echo "\$1" >"$root/screen"
+  [[ "\$1" == home ]] || echo "\$1" >"$root/svett-screen"
+}
+record_screen() {
+  if [[ "\$recording" == none ]]; then show setup; else show "\$recording"; fi
+}
+refuse_on_home() {
+  [[ "\$screen" == home ]] || return 0
+  echo "\$*" >>"$root/home-screen-actions"
+  echo "fake device: \$* while the Home Screen is in front" >&2
+  exit 1
+}
+scrolls() { awk '/ press / { n = 0 } / scroll down 0[.]6\$/ { n++ } END { print n + 0 }' "$root/bound-calls"; }
+args=" \$* "
+case "\$args" in
+  *" home "*) show home ;;
+  *" open com.kron00.svett --relaunch "*) show tabs ;;
+  *" open com.kron00.svett svett://record "*) record_screen ;;
+  *" open com.kron00.svett "*)
+    if [[ -n "\${FAKE_STAYS_HOME:-}" ]] || [[ -z "\${FAKE_RELEASE:-}" && "\$args" != *" --launch-url "* ]]; then
+      :
+    elif [[ -n "\${FAKE_RELOAD:-}" ]]; then
+      show tabs
+    else
+      show "\$left"
+    fi ;;
+  *" scroll "*) refuse_on_home scroll ;;
+  *" gesture "*) refuse_on_home gesture ;;
+  *" press "*)
+    refuse_on_home press
+    attrs=\$(cat "$root/last-attrs")
+    # A press on the bottom edge lands on the home indicator, as on iOS 27.
+    [[ "\$attrs" != *low* ]] || exit 0
+    case "\$screen:\$attrs" in
+      setup:*record-start*)
+        [[ -n "\${FAKE_NO_START:-}" ]] || { echo recording >"$root/recording"; show recording; } ;;
+      recording:*record-pause*) echo paused >"$root/recording"; show paused ;;
+      paused:*record-resume*) echo recording >"$root/recording"; show recording ;;
+      paused:*record-finish*)
+        node "$repo/scripts/test/cardio-recording.ts" "$repo/scripts/sim/cardio-route.json" \
+          "$root/data container/Documents/SQLite/svett-anonymous.db" \${FAKE_SHORT:+--short}
+        echo none >"$root/recording"
+        show activity ;;
+    esac ;;
+  *" get attrs "*)
+    if [[ -n "\${FAKE_START_LOW:-}" && "\$args" == *record-start* ]] &&
+      { [[ "\$FAKE_START_LOW" == stuck ]] || ! grep -q ' gesture pan ' "$root/bound-calls"; }; then
+      echo "\$* low" >"$root/last-attrs"
+      echo '{"label": "Start run", "rect": {"x": 20, "y": 905, "width": 300, "height": 50}}'
+    else
+      echo "\$*" >"$root/last-attrs"
+      echo '{"label": "Button", "rect": {"x": 20, "y": 600, "width": 300, "height": 50}}'
+    fi ;;
+  *' label="Train, tab, 2 of 5" '*) [[ "\$screen" != home ]] ;;
+  *' id="record-cardio" '*) [[ "\$screen" =~ ^(setup|recording|paused)\$ ]] ;;
+  *' id="record-start" '*) [[ "\$screen" == setup ]] ;;
+  *' id="record-pause" '*) [[ "\$screen" == recording ]] ;;
+  *' id="record-resume" '* | *' id="record-finish" '*) [[ "\$screen" == paused ]] ;;
+  *' id="activity" '* | *' id="activity-distance" '*) [[ "\$screen" == activity ]] ;;
+  *' id="activity-hide" '*) [[ "\$screen" == activity ]] && ((\$(scrolls) >= \${FAKE_ACTIVITY_SCROLLS:-2})) ;;
+  *" alert wait "*) exit 1 ;;
+esac
+EOF
+chmod +x "$fake/cardio-device"
+
+# run_cardio [VAR=value...] [cardio.sh args...] leaves the exit status in cardio_status.
+run_cardio() {
+  local -a vars=()
+  while [[ "${1:-}" == *=* ]]; do
+    vars+=("$1")
+    shift
+  done
+  rm -rf "$root/simctl-calls" "$root/bound-calls" "$root/screen" "$root/svett-screen" \
+    "$root/recording" "$root/home-screen-actions" "$root/data container/Documents"
+  cardio_status=0
+  env PATH="$fake:$PATH" SVETT_DEVICE_CMD="cardio-device --session 't3-test session' --device FAKE-UDID" \
+    "${vars[@]}" "$repo/scripts/sim/cardio.sh" "$@" >"$output" 2>&1 || cardio_status=$?
+}
+
+# cardio_sh [VAR=value...] [cardio.sh args...]
+cardio_sh() {
+  run_cardio "$@"
+  [[ "$cardio_status" == 0 ]] || fail "cardio.sh $* failed"
+}
+
+# simctl_location <expected location call>... checks the simctl location calls, in order.
+simctl_location() {
+  local calls expected
+  calls=$(grep -E '^simctl location ' "$root/simctl-calls" || true)
+  expected=$(printf '%s\n' "$@")
+  [[ "$calls" == "$expected" ]] || {
+    { echo "simctl location calls:"; echo "$calls"; } >>"$output"
+    fail "simctl did not get exactly these location calls: $expected"
+  }
+}
+
+# goes_home_after_start checks svett goes to the Home Screen right after the
+# recording screenshot, so the first leg plays as if the screen were locked.
+goes_home_after_start() {
+  local after
+  after=$(sed "s/^$bound_prefix //" "$root/bound-calls" |
+    grep -A1 -xF "screenshot $1/02-recording.png" | sed -n 2p)
+  [[ "$after" == home ]] || fail "after the recording screenshot came \"$after\", not home"
+}
+
+leg_one="37.33,-122.03 37.335314,-122.028822 37.339447,-122.024459"
+leg_two="37.339447,-122.024459 37.344761,-122.02328 37.348895,-122.018917"
+cardio_press="press 170 625"
+
+case_name="cardio.sh Debug with SVETT_DEVICE_CMD"
+cardio_sh "$root/cardio"
+check "cardio.sh never scrolls or presses while the Home Screen is in front" never_acts_on_home_screen
+check "cardio.sh relaunches into the dev client, opens Record by link, and comes back without a relaunch" \
+  only_open "$debug_open" "com.kron00.svett svett://record" "$debug_front"
+check "cardio.sh presses Start, Pause, Resume, Pause and Finish at their centres, in that order" \
+  only_calls "get attrs|press" \
+  'get attrs id="record-start"' "$cardio_press" 'get attrs id="record-pause"' "$cardio_press" \
+  'get attrs id="record-resume"' "$cardio_press" 'get attrs id="record-pause"' "$cardio_press" \
+  'get attrs id="record-finish"' "$cardio_press"
+check "cardio.sh starts at the route's first waypoint, plays each leg at its speed, then clears the route" \
+  simctl_location "simctl location FAKE-UDID set 37.33,-122.03" \
+  "simctl location FAKE-UDID start --speed=6 --interval=1 $leg_one" \
+  "simctl location FAKE-UDID start --speed=6 --interval=1 $leg_two" \
+  "simctl location FAKE-UDID clear"
+check "cardio.sh plays the first leg with svett on the Home Screen" goes_home_after_start "$root/cardio"
+check "cardio.sh waits out each leg and the pause" only_calls "wait [0-9]+$" \
+  "wait 210000" "wait 5000" "wait 211000" "wait 3000"
+check "cardio.sh grants location ahead, so no prompt stops the start" \
+  bound_got "$bound_prefix settings permission grant location-always"
+check "cardio.sh shoots at the largest text size, then restores the default" \
+  only_calls "settings text-size" \
+  "settings text-size accessibility-extra-extra-extra-large" "settings text-size large"
+check "cardio.sh screenshots each step and pages through the activity" \
+  only_calls "screenshot" \
+  "screenshot $root/cardio/01-start.png" "screenshot $root/cardio/02-recording.png" \
+  "screenshot $root/cardio/03-after-home-screen.png" "screenshot $root/cardio/04-paused.png" \
+  "screenshot $root/cardio/05-second-leg.png" "screenshot $root/cardio/06-activity-01.png" \
+  "screenshot $root/cardio/07-activity-02.png" "screenshot $root/cardio/08-activity-03.png"
+check "cardio.sh saves a proof that the distance is within 1%" \
+  grep -qF "PASSED: Distance" "$root/cardio/proof.txt"
+check "cardio.sh saves a proof that the splits add up" \
+  grep -qF "PASSED: 3 splits add up to" "$root/cardio/proof.txt"
+check "cardio.sh with SVETT_DEVICE_CMD calls neither simctl launch nor openurl" no_simctl_launch_or_openurl
+
+case_name="cardio.sh Release with SVETT_DEVICE_CMD"
+cardio_sh FAKE_RELEASE=1 --release "$root/cardio-release"
+check "cardio.sh Release relaunches the installed app without Metro and comes back by bundle id" \
+  only_open "com.kron00.svett --relaunch" "com.kron00.svett svett://record" com.kron00.svett
+
+case_name="cardio.sh when the dev client reloads on its way back"
+cardio_sh FAKE_RELOAD=1 "$root/cardio-reload"
+check "cardio.sh opens Record by link again after svett comes back on its tab root" \
+  only_open "$debug_open" "com.kron00.svett svett://record" "$debug_front" "com.kron00.svett svett://record"
+check "cardio.sh still proves the recording after a reload" \
+  grep -qF "PASSED: Distance" "$root/cardio-reload/proof.txt"
+
+case_name="cardio.sh when svett stays in the background"
+run_cardio FAKE_STAYS_HOME=1 "$root/cardio-home"
+check "cardio.sh fails when svett does not come back" test "$cardio_status" -ne 0
+check "cardio.sh says svett did not come back" grep -qF "svett did not come back to the foreground" "$output"
+check "cardio.sh does not scroll or press on the Home Screen when svett stays away" never_acts_on_home_screen
+
+case_name="cardio.sh when the recording does not start"
+run_cardio FAKE_NO_START=1 "$root/cardio-no-start"
+check "cardio.sh fails when Start does not start a recording" test "$cardio_status" -ne 0
+check "cardio.sh says the recording did not start" grep -qF "The recording did not start" "$output"
+check "cardio.sh clears the simulated location after a failure" simctl_got "simctl location FAKE-UDID clear"
+
+case_name="cardio.sh when Start sits at the screen's bottom edge"
+cardio_sh FAKE_RELEASE=1 FAKE_START_LOW=1 --release "$root/cardio-low"
+check "cardio.sh drags Start up from the bottom edge before pressing it" \
+  only_calls "gesture pan" "gesture pan 20 600 0 -300 400"
+check "cardio.sh presses Start only once it is clear of the bottom edge" \
+  only_calls "get attrs|press" \
+  'get attrs id="record-start"' 'get attrs id="record-start"' "$cardio_press" \
+  'get attrs id="record-pause"' "$cardio_press" 'get attrs id="record-resume"' "$cardio_press" \
+  'get attrs id="record-pause"' "$cardio_press" 'get attrs id="record-finish"' "$cardio_press"
+
+case_name="cardio.sh when Start stays at the screen's bottom edge"
+run_cardio FAKE_RELEASE=1 FAKE_START_LOW=stuck --release "$root/cardio-stuck"
+check "cardio.sh fails when Start never clears the bottom edge" test "$cardio_status" -ne 0
+check "cardio.sh says Start stayed at the bottom edge" \
+  grep -qF 'id="record-start" stayed at the bottom edge of the screen' "$output"
+check "cardio.sh never presses Start on the bottom edge" \
+  test "$(grep -c -- " press " "$root/bound-calls")" -eq 0
+
+case_name="cardio.sh when the saved run is short of the route"
+run_cardio FAKE_RELEASE=1 FAKE_SHORT=1 --release "$root/cardio-short"
+check "cardio.sh fails when the distance is more than 1% off" test "$cardio_status" -ne 0
+check "cardio.sh still saves the proof that failed" grep -qF "FAILED: Distance" "$root/cardio-short/proof.txt"
+
+case_name="cardio.sh when the activity never reaches its hide setting"
+run_cardio FAKE_RELEASE=1 FAKE_ACTIVITY_SCROLLS=99 --release "$root/cardio-endless"
+check "cardio.sh fails when the activity's last section never shows" test "$cardio_status" -ne 0
+check "cardio.sh stops paging after 15 pages" \
+  grep -qF "The activity's hide setting was not on screen after 15 pages" "$output"
+
+# health.sh runs against the real proof files, the real seed and checks, and a fake
+# device that stands in for svett. Pressing Import imports the file the last link
+# opened into the database svett launched on, as svett does, and pressing Save
+# saves the manual ride. FAKE_DECLINE_SAVES makes Don't import import anyway,
+# FAKE_KEEP_BOTH imports the duplicate as its own workout instead of linking it,
+# and FAKE_NO_SOURCES never shows the linked workout's sources.
+cat >"$data_fake/health-device" <<EOF
+#!/usr/bin/env bash
+echo "\$*" >>"$root/bound-calls"
+documents="$root/data container/Documents"
+app() { node "$repo/scripts/test/health-app.ts" "\$@"; }
+args=" \$* "
+case "\$args" in
+  *" open com.kron00.svett svett://health-import?file="*)
+    echo "\${args##*file=}" | sed 's/ *$//' >"$root/health-file" ;;
+  *" get attrs "*)
+    echo "\$*" >"$root/last-attrs"
+    echo '{"rect": {"x": 20, "y": 300, "width": 120, "height": 40}}' ;;
+  *" press "[0-9]*)
+    file="\$documents/\$(cat "$root/health-file" 2>/dev/null)"
+    case "\$(cat "$root/last-attrs")" in
+      *health-apply*) app import "\$documents/svett-health.db" "\$file" \${FAKE_KEEP_BOTH:+--keep-both} ;;
+      *health-decline*) [[ -z "\${FAKE_DECLINE_SAVES:-}" ]] || app import "\$documents/svett-health.db" "\$file" ;;
+      *manual-save*) app manual "\$documents/svett-health.db" ;;
+    esac ;;
+  *' id="activity-sources"'*) [[ -z "\${FAKE_NO_SOURCES:-}" ]] ;;
+esac
+EOF
+chmod +x "$data_fake/health-device"
+
+# run_health [VAR=value...] [health.sh args...] leaves the exit status in health_status.
+run_health() {
+  local -a vars=()
+  while [[ "${1:-}" == *=* ]]; do
+    vars+=("$1")
+    shift
+  done
+  rm -rf "$root/simctl-calls" "$root/bound-calls" "$root/health-file" "$root/data container"
+  health_status=0
+  env PATH="$data_fake:$fake:$PATH" SVETT_DEVICE_CMD="health-device --session 't3-test session' --device FAKE-UDID" \
+    "${vars[@]}" "$repo/scripts/sim/health.sh" "$@" >"$output" 2>&1 || health_status=$?
+}
+
+health_args="--launch-args=-svettFixture --launch-args=$documents/svett-health.db"
+health_link="com.kron00.svett svett://health-import?file=svett-health-export.zip"
+gpx_link="com.kron00.svett svett://health-import?file=svett-ride.gpx"
+manual_link="com.kron00.svett $(node "$repo/scripts/health-proof.ts" manual-link)"
+
+case_name="health.sh Debug with SVETT_DEVICE_CMD"
+run_health "$root/health proof"
+[[ "$health_status" == 0 ]] || fail "health.sh failed"
+hevy_link=$(grep -oE 'svett://activity/[0-9a-f-]+' "$root/bound-calls" | head -1)
+check "health.sh previews and declines, imports, imports again, imports the GPX ride, opens the linked workout and enters a ride" \
+  only_open "$debug_open $health_args" "$health_link" "$health_link" "$health_link" "$gpx_link" \
+  "com.kron00.svett $hevy_link" "$manual_link"
+check "health.sh presses Don't import, Import, Done and Save at their centres" \
+  only_calls "get attrs" 'get attrs id="health-decline"' 'get attrs id="health-apply"' \
+  'get attrs label="Done"' 'get attrs label="Done"' 'get attrs id="health-apply"' \
+  'get attrs label="Done"' 'get attrs id="manual-save"'
+check "health.sh passes every database check, the duplicate link and the manual ride included" \
+  bash -c '! grep -q FAILED "$1" && grep -qF "PASSED: imported, the Hevy workout gained the Health heart rate" "$1" &&
+    grep -qF "PASSED: manual, the manual ride saved" "$1"' _ "$root/health proof/proof.txt"
+check "health.sh shoots at the largest text size, then restores the default" \
+  only_calls "settings text-size" \
+  "settings text-size accessibility-extra-extra-extra-large" "settings text-size large"
+check "health.sh screenshots every step" only_calls "screenshot" \
+  "screenshot $root/health proof/01-preview-01.png" "screenshot $root/health proof/02-declined.png" \
+  "screenshot $root/health proof/03-duplicate.png" "screenshot $root/health proof/04-imported.png" \
+  "screenshot $root/health proof/05-import-again.png" "screenshot $root/health proof/06-gpx-preview.png" \
+  "screenshot $root/health proof/07-gpx-imported.png" "screenshot $root/health proof/08-linked-workout-01.png" \
+  "screenshot $root/health proof/09-manual-01.png" "screenshot $root/health proof/10-manual-ride-01.png"
+check "health.sh puts the sample export and GPX ride in svett's Documents" \
+  test -s "$documents/svett-health-export.zip" -a -s "$documents/svett-ride.gpx"
+check "health.sh with SVETT_DEVICE_CMD calls neither simctl launch nor openurl" no_simctl_launch_or_openurl
+
+case_name="health.sh Release with SVETT_DEVICE_CMD"
+run_health --release "$root/health-release"
+[[ "$health_status" == 0 ]] || fail "health.sh --release failed"
+check "health.sh Release relaunches the installed app without Metro" \
+  bound_got "$bound_prefix open com.kron00.svett --relaunch $health_args"
+
+case_name="health.sh when Don't import saves the workouts"
+run_health FAKE_DECLINE_SAVES=1 "$root/health-decline"
+check "health.sh fails when declining imports anything" test "$health_status" -ne 0
+check "health.sh names the declined step" \
+  grep -qF "The database is not as the declined step leaves it" "$output"
+check "health.sh shows which check failed" grep -qF "FAILED: declined, 1 workout and 9 sets" "$output"
+check "health.sh restores the default text size after a failure" \
+  only_calls "settings text-size" \
+  "settings text-size accessibility-extra-extra-extra-large" "settings text-size large"
+
+case_name="health.sh when the duplicate is not linked"
+run_health FAKE_KEEP_BOTH=1 "$root/health-keep-both"
+check "health.sh fails when the Health copy of the Hevy workout is not linked" \
+  grep -qF "FAILED: imported, the Hevy workout records Apple Health as a linked source" "$output"
+
+case_name="health.sh when the linked workout never shows its sources"
+run_health FAKE_NO_SOURCES=1 "$root/health-no-sources"
+check "health.sh fails when the linked workout's sources never show" test "$health_status" -ne 0
+check "health.sh stops paging after 15 pages" \
+  grep -qF 'id="activity-sources" was not on screen after 15 pages' "$output"
+
 echo "$passed passed"

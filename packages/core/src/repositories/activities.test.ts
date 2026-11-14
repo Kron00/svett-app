@@ -4,7 +4,13 @@ import { describe, expect, it } from "vite-plus/test";
 import { DurationSeconds } from "../duration.ts";
 import { contentFingerprint } from "../ids.ts";
 import { libraryExerciseId } from "../exercise-library.ts";
-import { EpochMillis, Fingerprint, type ImportBatchId, SourceIdentity } from "../schema.ts";
+import {
+  ActivityId,
+  EpochMillis,
+  Fingerprint,
+  type ImportBatchId,
+  SourceIdentity,
+} from "../schema.ts";
 import { openTestDatabase, T0 } from "../test-database.ts";
 import { ImportRepository } from "./records.ts";
 import { type ActivityDraft, ActivityRepository, type SetDraft } from "./activities.ts";
@@ -79,6 +85,24 @@ const importOn = async (seed: number) => {
 };
 
 describe("ActivityRepository", () => {
+  it("creates a draft with its own ID once, however often it is created", async () => {
+    const database = openTestDatabase();
+    const chosen = ActivityId.make("0190a000-0000-7000-8000-0000000000aa");
+    const ids = await run(database, (activities) =>
+      Effect.all([
+        activities.create({ ...workout(), id: chosen }),
+        activities.create({ ...workout(), id: chosen, title: "Legs again" }),
+      ]),
+    );
+    expect(ids).toEqual([chosen, chosen]);
+    const detail = await run(database, (activities) => activities.get(chosen));
+    expect(Option.getOrThrow(detail).activity.title).toBe("Legs");
+    expect(await run(database, (activities) => activities.counts)).toEqual({
+      activities: 1,
+      sets: 4,
+    });
+  });
+
   it("creates an activity and reads it back with its exercises and sets in order", async () => {
     const database = openTestDatabase();
     const detail = await run(database, (activities) =>
@@ -231,6 +255,7 @@ describe("ActivityRepository", () => {
             {
               kind: "location",
               recordedAt: EpochMillis.make(T0),
+              segment: 0,
               latitude: 59.33,
               longitude: 18.07,
               altitudeM: null,

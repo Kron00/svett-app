@@ -4,6 +4,9 @@ import { getFocusedRouteNameFromRoute, NavigationContainer } from "@react-naviga
 import { createNativeStackNavigator } from "@react-navigation/native-stack";
 import { StatusBar } from "expo-status-bar";
 
+import { ActivityScreen } from "./cardio/ActivityScreen";
+import { ManualCardioScreen } from "./cardio/ManualCardioScreen";
+import { RecordScreen } from "./cardio/RecordScreen";
 import { ChatGPTScreen } from "./chatgpt/ChatGPTScreen";
 import { PhoneChecksScreen } from "./checks/PhoneChecksScreen";
 import { useNavigationTheme } from "./design/hooks";
@@ -11,6 +14,7 @@ import { ExerciseDetailScreen } from "./exercises/ExerciseDetailScreen";
 import { EditExerciseScreen, NewExerciseScreen } from "./exercises/ExerciseFormScreen";
 import { ExerciseLibraryScreen, NewExerciseButton } from "./exercises/ExerciseLibraryScreen";
 import { GalleryScreen } from "./gallery/GalleryScreen";
+import { HealthImportScreen } from "./health/HealthImportScreen";
 import { linking } from "./linking";
 import type { RootStackParamList } from "./navigation";
 import { ExerciseProgressScreen } from "./progress/ExerciseProgressScreen";
@@ -42,6 +46,16 @@ export default function App() {
           name="Gallery"
           component={GalleryScreen}
           options={{ headerShown: true, title: "Design gallery", headerLargeTitle: true }}
+        />
+        <Stack.Screen
+          name="RecordCardio"
+          component={RecordScreen}
+          options={{ headerShown: true, title: "Record" }}
+        />
+        <Stack.Screen
+          name="Activity"
+          component={ActivityScreen}
+          options={{ headerShown: true, title: "" }}
         />
         <Stack.Screen
           name="ChatGPT"
@@ -124,6 +138,16 @@ export default function App() {
           name="ImportPreview"
           component={ImportPreviewScreen}
           options={{ headerShown: true, title: "Import" }}
+        />
+        <Stack.Screen
+          name="HealthImport"
+          component={HealthImportScreen}
+          options={{ headerShown: true, title: "Import workouts" }}
+        />
+        <Stack.Screen
+          name="ManualCardio"
+          component={ManualCardioScreen}
+          options={{ headerShown: true, title: "Add cardio" }}
         />
         <Stack.Screen
           name="UndoImport"

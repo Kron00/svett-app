@@ -7,6 +7,7 @@ import type { RootNavigation } from "../navigation";
 import { AppText } from "../ui/AppText";
 import { Button } from "../ui/Button";
 import { ListRow, ListSection, SectionHeader } from "../ui/List";
+import { pickSourceFile } from "../health/files";
 import { exportAndShare, type ImportKind, pickImportFile, withTransfers } from "./files";
 import { formatDay } from "./format";
 
@@ -40,6 +41,14 @@ export function DataScreen() {
     exportAndShare().then(
       ({ name, rows }) => setExported({ kind: "done", name, rows }),
       (error: unknown) => setExported({ kind: "failed", message: String(error) }),
+    );
+  };
+
+  const runHealthImport = () => {
+    setPickProblem(undefined);
+    pickSourceFile().then(
+      (source) => source && navigation.navigate("HealthImport", source),
+      (error: unknown) => setPickProblem(String(error)),
     );
   };
 
@@ -124,6 +133,24 @@ export function DataScreen() {
             The file did not open. {pickProblem}
           </AppText>
         )}
+      </View>
+
+      <View className="gap-3">
+        <SectionHeader title="Apple Health and GPX" />
+        <AppText tone="secondary" className="px-gutter">
+          In the Health app, tap your picture, then Export All Health Data, and pick the export.zip
+          it makes. A GPX file from another app works too. You see every workout before it is saved,
+          and a workout already here from Hevy or svett is linked, not added twice.
+        </AppText>
+        <View className="flex-row px-gutter">
+          <Button
+            label="Import workouts"
+            symbol="heart.text.square"
+            variant="secondary"
+            testID="health-import-button"
+            onPress={runHealthImport}
+          />
+        </View>
       </View>
 
       {imports.length === 0 ? null : (

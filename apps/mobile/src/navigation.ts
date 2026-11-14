@@ -10,6 +10,8 @@ export type RootStackParamList = {
   Tabs: NavigatorScreenParams<TabParamList> | undefined;
   Gallery: { sheet?: "open" } | undefined;
   PhoneChecks: undefined;
+  RecordCardio: undefined;
+  Activity: { id: string };
   ChatGPT: undefined;
   Exercises: { q?: string; muscle?: string; equipment?: string } | undefined;
   Exercise: { id: string };
@@ -34,6 +36,12 @@ export type RootStackParamList = {
    */
   ImportPreview: { uri?: string; file?: string; kind?: "svett" | "hevy" };
   UndoImport: { importBatchId: string };
+  /** `uri` is a picked file. `file` names a file in svett's documents, for svett://health-import links. */
+  HealthImport: { uri?: string; file?: string };
+  /** Each field can come from a svett://manual link, for the simulator proof. */
+  ManualCardio:
+    | { kind?: string; start?: string; duration?: string; distance?: string; notes?: string }
+    | undefined;
 };
 
 export type RootNavigation = NativeStackNavigationProp<RootStackParamList>;
