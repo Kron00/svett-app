@@ -40,3 +40,4 @@ export * from "./body-measurements.ts";
 export * from "./backup-files.ts";
 export * from "./sign-in.ts";
 export { copyDatabase, ownRowCount } from "./database-move.ts";
+export * from "./move-journal.ts";

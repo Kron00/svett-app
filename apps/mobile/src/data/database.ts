@@ -21,10 +21,13 @@ const expoSqliteDriver = (database: Promise<SQLiteDatabase>): SqlDriver => ({
 
 export type DatabaseTarget =
   | { readonly kind: "owner"; readonly owner: DatabaseOwner }
-  | { readonly kind: "file"; readonly path: string };
+  | { readonly kind: "file"; readonly path: string }
+  /** An empty database in memory, for when no file on the phone may be shown. */
+  | { readonly kind: "empty" };
 
 const open = (target: DatabaseTarget) => {
   if (target.kind === "owner") return openDatabaseAsync(databaseFileName(target.owner));
+  if (target.kind === "empty") return openDatabaseAsync(":memory:");
   const slash = target.path.lastIndexOf("/");
   return openDatabaseAsync(
     target.path.slice(slash + 1),

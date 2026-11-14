@@ -4,6 +4,7 @@ import { type ReactNode, useEffect } from "react";
 
 import { ownerOf, switchOwner } from "../data/current";
 import { CLERK_PUBLISHABLE_KEY } from "./config";
+import { resumeMove } from "./move";
 
 /** Opens the signed-in account's database, and the anonymous one when nobody is signed in. */
 function OwnerFromSession() {
@@ -20,6 +21,11 @@ function OwnerFromSession() {
  * is signed in. Without a publishable key the app has no accounts and stays anonymous.
  */
 export function AccountProvider({ children }: { readonly children: ReactNode }) {
+  useEffect(() => {
+    // A move that fails again stays in the journal, and the Account screen or the next launch
+    // tries once more.
+    resumeMove().catch(() => undefined);
+  }, []);
   if (CLERK_PUBLISHABLE_KEY === undefined) return children;
   return (
     <ClerkProvider publishableKey={CLERK_PUBLISHABLE_KEY} tokenCache={tokenCache}>

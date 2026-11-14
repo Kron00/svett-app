@@ -13,7 +13,7 @@ import {
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { ScrollView, View } from "react-native";
 
-import { currentDatabase, ownerOf, switchOwner } from "../data/current";
+import { ownerOf, switchOwner } from "../data/current";
 import { AppText } from "../ui/AppText";
 import { Button } from "../ui/Button";
 import { EmptyState } from "../ui/EmptyState";
@@ -21,7 +21,7 @@ import { TextField } from "../ui/TextField";
 import { chatGPTEmail } from "./chatgpt-email";
 import { CLERK_PUBLISHABLE_KEY } from "./config";
 import { useEmailCode } from "./email-code";
-import { declineMove, moveIntoAccount, pendingMoveOffer } from "./move";
+import { declineMove, moveIntoAccount, pendingMoveOffer, resumeMove } from "./move";
 
 function Card({ testID, children }: { readonly testID: string; readonly children: ReactNode }) {
   return (
@@ -237,25 +237,30 @@ function SignedIn({ accountId }: { readonly accountId: string }) {
 
   useEffect(() => {
     let live = true;
-    pendingMoveOffer().then(
-      (counts) =>
-        live &&
-        setOffer(
-          counts === undefined ? { kind: "answered" } : { kind: "offer", counts, moving: false },
-        ),
-      () => live && setOffer({ kind: "answered" }),
-    );
+    resumeMove()
+      .then(pendingMoveOffer)
+      .then(
+        (counts) =>
+          live &&
+          setOffer(
+            counts === undefined ? { kind: "answered" } : { kind: "offer", counts, moving: false },
+          ),
+        (error: unknown) =>
+          live &&
+          setOffer({ kind: "answered", problem: `The move did not finish. ${String(error)}` }),
+      );
     return () => {
       live = false;
     };
   }, []);
 
   const move = (counts: MoveCounts) => {
+    const owner = ownerOf(accountId);
+    if (owner.kind !== "account") return;
     // The session's database may not be open yet when the offer is answered at once.
-    switchOwner(ownerOf(accountId));
-    const current = currentDatabase();
+    switchOwner(owner);
     setOffer({ kind: "offer", counts, moving: true });
-    moveIntoAccount(current.handle).then(
+    moveIntoAccount(owner.accountId).then(
       () => setOffer({ kind: "answered" }),
       (error: unknown) =>
         setOffer({ kind: "answered", problem: `The move did not finish. ${String(error)}` }),

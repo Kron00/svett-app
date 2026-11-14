@@ -1,11 +1,17 @@
-import { AccountId, ANONYMOUS, type DatabaseOwner } from "@svett/core";
+import { AccountId, ANONYMOUS, anonymousDataLocked, type DatabaseOwner } from "@svett/core";
 import { Option, Schema } from "effect";
 import Storage from "expo-sqlite/kv-store";
 import { useSyncExternalStore } from "react";
 
 import { CLERK_PUBLISHABLE_KEY } from "../account/config";
+import { storedMoveJournal } from "../account/journal";
 
-import { type DatabaseHandle, launchFixture, openDatabaseHandle } from "./database";
+import {
+  type DatabaseHandle,
+  type DatabaseTarget,
+  launchFixture,
+  openDatabaseHandle,
+} from "./database";
 
 export interface CurrentDatabase {
   readonly owner: DatabaseOwner;
@@ -18,6 +24,7 @@ export interface CurrentDatabase {
 const fixture = launchFixture();
 const listeners = new Set<() => void>();
 let current: CurrentDatabase | undefined;
+const closing = new Set<Promise<void>>();
 
 const notify = () => {
   for (const listener of listeners) listener();
@@ -32,10 +39,40 @@ export const ownerOf = (userId: string | null | undefined): DatabaseOwner =>
     onSome: (accountId) => ({ kind: "account", accountId }),
   });
 
-const sameOwner = (a: DatabaseOwner, b: DatabaseOwner) =>
+export const sameOwner = (a: DatabaseOwner, b: DatabaseOwner) =>
   a.kind === "anonymous"
     ? b.kind === "anonymous"
     : b.kind === "account" && a.accountId === b.accountId;
+
+const sameTarget = (a: DatabaseTarget, b: DatabaseTarget) => {
+  if (a.kind === "owner") return b.kind === "owner" && sameOwner(a.owner, b.owner);
+  if (a.kind === "file") return b.kind === "file" && a.path === b.path;
+  return b.kind === a.kind;
+};
+
+/**
+ * The file to open for `owner`. While a move into an account is unfinished, the anonymous
+ * rows already belong to that account, so someone signed out sees an empty database instead.
+ */
+const targetOf = (owner: DatabaseOwner): DatabaseTarget =>
+  fixture ??
+  (owner.kind === "anonymous" && anonymousDataLocked(storedMoveJournal())
+    ? { kind: "empty" }
+    : { kind: "owner", owner });
+
+const closeLater = (handle: DatabaseHandle) => {
+  const closed = handle.close().then(
+    () => undefined,
+    () => undefined,
+  );
+  closing.add(closed);
+  void closed.then(() => closing.delete(closed));
+};
+
+/** Waits until every database this module let go of is closed. */
+export const databasesClosed = async () => {
+  await Promise.all(closing);
+};
 
 // Whose database was open last. The app opens it at launch, before Clerk has read the session,
 // so a signed-in launch never shows the phone's own data first, and an offline one still opens.
@@ -48,11 +85,7 @@ const lastOwner = (): DatabaseOwner =>
 export const currentDatabase = (): CurrentDatabase => {
   if (current === undefined) {
     const owner = lastOwner();
-    current = {
-      owner,
-      handle: openDatabaseHandle(fixture ?? { kind: "owner", owner }),
-      version: 0,
-    };
+    current = { owner, handle: openDatabaseHandle(targetOf(owner)), version: 0 };
   }
   return current;
 };
@@ -63,17 +96,22 @@ export const currentDatabase = (): CurrentDatabase => {
  */
 export const switchOwner = (owner: DatabaseOwner) => {
   const previous = currentDatabase();
-  if (sameOwner(previous.owner, owner)) return;
+  const target = targetOf(owner);
+  const sameFile = sameTarget(previous.handle.target, target);
+  if (sameOwner(previous.owner, owner) && sameFile) return;
   if (owner.kind === "account") Storage.setItemSync(OWNER_KEY, owner.accountId);
   else Storage.removeItemSync(OWNER_KEY);
   current = {
     owner,
-    handle: fixture === undefined ? openDatabaseHandle({ kind: "owner", owner }) : previous.handle,
+    handle: sameFile ? previous.handle : openDatabaseHandle(target),
     version: previous.version + 1,
   };
   notify();
-  if (current.handle !== previous.handle) void previous.handle.close();
+  if (current.handle !== previous.handle) closeLater(previous.handle);
 };
+
+/** Opens the right file again for whoever is signed in, after a move changed which one it is. */
+export const reopenDatabase = () => switchOwner(currentDatabase().owner);
 
 /** Tells every screen to read again, after something replaced the data as a whole. */
 export const dataChanged = () => {
