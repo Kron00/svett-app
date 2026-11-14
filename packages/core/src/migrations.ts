@@ -76,6 +76,11 @@ CREATE TABLE import_change (${row}, import_batch_id TEXT NOT NULL, change TEXT N
 CREATE INDEX import_change_batch ON import_change (import_batch_id);
 `;
 
+const exerciseAliases = `
+CREATE TABLE exercise_alias (${row}, source TEXT NOT NULL, name TEXT NOT NULL, exercise_id TEXT NOT NULL) STRICT;
+CREATE INDEX exercise_alias_name ON exercise_alias (source, name);
+`;
+
 // Every activity before this one was finished, and every set in it done.
 const workoutInProgress = `
 ALTER TABLE activity ADD COLUMN status TEXT NOT NULL DEFAULT 'finished';
@@ -90,7 +95,8 @@ ALTER TABLE activity_set ADD COLUMN target_reps_max INTEGER;
 export const MIGRATIONS: ReadonlyArray<Migration> = [
   { version: 1, name: "initial", sql: initial },
   { version: 2, name: "import changes", sql: importChanges },
-  { version: 3, name: "workout in progress", sql: workoutInProgress },
+  { version: 3, name: "exercise aliases", sql: exerciseAliases },
+  { version: 4, name: "workout in progress", sql: workoutInProgress },
 ];
 
 export class DatabaseTooNewError extends Data.TaggedError("DatabaseTooNewError")<{

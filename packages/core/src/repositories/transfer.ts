@@ -27,12 +27,14 @@ import {
 import {
   type AnyRow,
   CHILDREN,
+  type ImportInput,
   type ImportPlan,
   isLive,
   PARENT,
   planImport,
   REFERENCES,
   type Snapshot,
+  svettFileInput,
   TABLE_KEYS,
   type TableKey,
   type TableRows,
@@ -41,6 +43,7 @@ import {
   undoSelection,
   withAddedFields,
   withoutDrafts,
+  withRequired,
   writtenOf,
 } from "../transfer.ts";
 import { MADE_HERE, rowId } from "./origin.ts";
@@ -202,6 +205,33 @@ const deleteWithChildren = (rows: TableRows, at: EpochMillis): Effect.Effect<voi
     { discard: true },
   );
 
+/**
+ * Marks the rows another app's import brings as written by this import. A svett file's rows
+ * keep the batch they name, so an export and import give back the same rows.
+ */
+const fromBatch = (rows: TableRows, input: ImportInput, importBatchId: ImportBatchId): TableRows =>
+  input.source === "svett_file"
+    ? rows
+    : (Object.fromEntries(
+        TABLE_KEYS.flatMap((key) =>
+          rows[key]
+            ? [
+                [
+                  key,
+                  rows[key].map((row) =>
+                    "importBatchId" in row && row["source"] === input.source
+                      ? { ...row, importBatchId }
+                      : row,
+                  ),
+                ],
+              ]
+            : [],
+        ),
+      ) as TableRows);
+
+const inputOf = (input: SvettFile | ImportInput): ImportInput =>
+  "read" in input ? input : svettFileInput(input);
+
 const restamped = (rows: TableRows, at: EpochMillis): TableRows =>
   Object.fromEntries(
     TABLE_KEYS.flatMap((key) =>
@@ -347,21 +377,25 @@ const makeTransferRepository = Effect.gen(function* () {
 
   /**
    * Adds the file's new records and, for each changed record named in `take`, replaces
-   * yours with the file's. Nothing is written when there is nothing to add or take.
+   * yours with the file's. Each brings back the deleted records it names, such as its
+   * exercises. Nothing is written when there is nothing to add or take.
    * The plan is made again inside the transaction, so it matches what is here.
    */
-  const applyImport = (file: SvettFile, take: ReadonlyArray<string>) =>
+  const applyImport = (file: SvettFile | ImportInput, take: ReadonlyArray<string>) =>
     run(
       sql.transaction(
         Effect.gen(function* () {
-          const plan = planImport(yield* snapshot, file.tables);
-          const chosen = plan.items.filter(
+          const input = inputOf(file);
+          const local = yield* snapshot;
+          const plan = planImport(local, input.read(local, yield* currentTime).tables);
+          const picked = plan.items.filter(
             (item) =>
               item.status === "new" ||
               (item.status === "changed" && take.includes(item.summary.key)),
           );
-          if (chosen.length === 0) return Option.none<ImportResult>();
-          const importBatchId = yield* imports.create("svett_file");
+          if (picked.length === 0) return Option.none<ImportResult>();
+          const chosen = withRequired(plan.items, picked);
+          const importBatchId = yield* imports.create(input.source);
           yield* imports.setStatus(importBatchId, "applied");
           const at = yield* currentTime;
           let added = 0;
@@ -369,7 +403,8 @@ const makeTransferRepository = Effect.gen(function* () {
           for (const item of chosen) {
             if (item.status === "new") {
               // New rows keep their own times, so export and import give back the same rows.
-              yield* putAll(item.writes);
+              const written = fromBatch(item.writes, input, importBatchId);
+              yield* putAll(written);
               // A record that arrives deleted and replaces nothing leaves Undo nothing to do.
               if (!isLive(item.writes) && rowCount(item.replaced) === 0) continue;
               yield* recordChange(
@@ -377,13 +412,13 @@ const makeTransferRepository = Effect.gen(function* () {
                 "added",
                 item.incoming,
                 item.summary,
-                item.writes,
+                written,
                 item.replaced,
               );
               if (isLive(item.writes)) added++;
-            } else if (item.status === "changed") {
+            } else if (item.status === "changed" || item.status === "restore") {
               // A version taken from the file is the newest change to the record, also for sync.
-              const written = restamped(item.writes, at);
+              const written = fromBatch(restamped(item.writes, at), input, importBatchId);
               yield* putAll(written);
               yield* recordChange(
                 importBatchId,
@@ -393,7 +428,7 @@ const makeTransferRepository = Effect.gen(function* () {
                 written,
                 item.replaced,
               );
-              replaced++;
+              if (item.status === "changed") replaced++;
             }
           }
           return Option.some<ImportResult>({ importBatchId, added, replaced });
@@ -471,8 +506,14 @@ const makeTransferRepository = Effect.gen(function* () {
         return { name: exportFileName(at), text: encodeSvettFile(rows, at), rows: rowCount(rows) };
       }),
     ),
-    previewImport: (file: SvettFile): Effect.Effect<ImportPlan, never> =>
-      run(Effect.map(snapshot, (local) => planImport(local, file.tables))),
+    previewImport: (file: SvettFile | ImportInput): Effect.Effect<ImportPlan, never> =>
+      run(
+        Effect.gen(function* () {
+          const local = yield* snapshot;
+          const { tables, duplicates } = inputOf(file).read(local, yield* currentTime);
+          return planImport(local, tables, duplicates);
+        }),
+      ),
     applyImport,
     previewUndo,
     undoImport,

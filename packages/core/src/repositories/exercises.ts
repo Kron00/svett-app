@@ -6,17 +6,20 @@ import {
   type LibraryExercise,
   libraryIds,
 } from "../exercise-library.ts";
-import { canonicalJson, Ids } from "../ids.ts";
-import { type Exercise, ExerciseId } from "../schema.ts";
+import { matchNames } from "../hevy-import.ts";
+import { canonicalJson, Ids, importedId } from "../ids.ts";
+import { type Exercise, ExerciseAliasId, ExerciseId, type ImportSource } from "../schema.ts";
 import { Sql } from "../sql.ts";
 import {
   countRows,
   currentTime,
   insertRows,
   type Patch,
+  putRows,
   RowNotFoundError,
   selectById,
   selectRows,
+  selectRowsWithDeleted,
   softDeleteRows,
   TABLES,
   updateRow,
@@ -144,4 +147,63 @@ export class ExerciseRepository extends Context.Service<
   Effect.Success<typeof makeExerciseRepository>
 >()("svett/ExerciseRepository") {
   static readonly layer = Layer.effect(ExerciseRepository, makeExerciseRepository);
+}
+
+/**
+ * An alias is keyed by its source and name, not a random ID, so the same choice made on two
+ * devices is one row that sync can merge.
+ */
+export const exerciseAliasId = (source: ImportSource, name: string): ExerciseAliasId =>
+  ExerciseAliasId.make(importedId(TABLES.exerciseAlias.name, source, name));
+
+const makeExerciseAliasRepository = Effect.gen(function* () {
+  const sql = yield* Sql;
+  const run = <A, E>(effect: Effect.Effect<A, E, Sql>) =>
+    effect.pipe(Effect.provideService(Sql, sql));
+  return {
+    /** Remembers each name's exercise, replacing an earlier choice for the same name. */
+    remember: (
+      source: ImportSource,
+      matches: ReadonlyArray<{ readonly name: string; readonly exerciseId: ExerciseId }>,
+    ) =>
+      run(
+        sql.transaction(
+          Effect.gen(function* () {
+            const now = yield* currentTime;
+            yield* putRows(
+              TABLES.exerciseAlias,
+              matches.map(({ name, exerciseId }) => ({
+                id: exerciseAliasId(source, name),
+                updatedAt: now,
+                deletedAt: null,
+                source,
+                name,
+                exerciseId,
+              })),
+            );
+          }),
+        ),
+      ),
+    list: (source: ImportSource) =>
+      run(selectRows(TABLES.exerciseAlias, "source = ?", [source], "name, id")),
+    /** Each Hevy exercise name's exercise here, or null for a name you have to match. */
+    matchHevyNames: (names: ReadonlyArray<string>) =>
+      run(
+        Effect.map(
+          Effect.all({
+            exercise: selectRowsWithDeleted(TABLES.exercise),
+            exerciseAlias: selectRows(TABLES.exerciseAlias, "source = 'hevy'"),
+          }),
+          (local) => matchNames(names, local),
+        ),
+      ),
+  };
+});
+
+/** The only writer of exercise_alias: the names from other apps you matched to an exercise. */
+export class ExerciseAliasRepository extends Context.Service<
+  ExerciseAliasRepository,
+  Effect.Success<typeof makeExerciseAliasRepository>
+>()("svett/ExerciseAliasRepository") {
+  static readonly layer = Layer.effect(ExerciseAliasRepository, makeExerciseAliasRepository);
 }
