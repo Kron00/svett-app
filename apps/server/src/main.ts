@@ -31,8 +31,8 @@ const Migrated = Layer.effectDiscard(
 const Services = Layer.mergeAll(Backups.layer, AccountRows.layer, Sessions.layer).pipe(
   Layer.provideMerge(Database),
   Layer.provide(PgTools.layer()),
-  // Without a valid Clerk setup the server refuses to start.
-  Layer.provide(ClerkConfig.fromEnv),
+  // Without a valid Clerk setup the server still starts, with sign-in off.
+  Layer.provideMerge(ClerkConfig.fromEnv),
   Layer.provideMerge(ServerConfig.fromEnv),
 );
 

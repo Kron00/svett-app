@@ -6,32 +6,53 @@ export class ClerkConfigError extends Data.TaggedError("ClerkConfigError")<{
   readonly message: string;
 }> {}
 
-export interface ClerkConfigShape {
+export interface ClerkSettings {
   /** The `iss` every session token must carry: Clerk's Frontend API address. */
   readonly issuer: string;
   /** Where Clerk publishes the keys that sign session tokens. */
   readonly jwksUrl: string;
+  /** The origins a browser's session token may name in `azp`. */
+  readonly authorizedParties: ReadonlyArray<string>;
+  /** The `aud` every session token must carry, when the instance's tokens name this API. */
+  readonly audience: string | undefined;
 }
+
+/**
+ * Whether the server can check sessions. Without a valid Clerk setup it still runs, with
+ * sign-in off, so a deploy that lacks the keys keeps the health check and backups going.
+ */
+export type ClerkConfigShape =
+  | ({ readonly signIn: "configured" } & ClerkSettings)
+  | { readonly signIn: "unconfigured"; readonly reason: string };
 
 export class ClerkConfig extends Context.Service<ClerkConfig, ClerkConfigShape>()(
   "svett/server/ClerkConfig",
 ) {
-  static readonly fromEnv: Layer.Layer<ClerkConfig, ClerkConfigError | Config.ConfigError> =
-    Layer.effect(
-      ClerkConfig,
-      Effect.gen(function* () {
-        const input: ClerkEnv = {
-          production: (yield* optional("NODE_ENV")).pipe(Option.contains("production")),
-          publishableKey: Option.getOrUndefined(yield* optional("CLERK_PUBLISHABLE_KEY")),
-          secretKey: Option.getOrUndefined(
-            yield* Config.option(Config.Redacted("CLERK_SECRET_KEY")),
+  static readonly fromEnv: Layer.Layer<ClerkConfig, Config.ConfigError> = Layer.effect(
+    ClerkConfig,
+    Effect.gen(function* () {
+      const input: ClerkEnv = {
+        production: (yield* optional("NODE_ENV")).pipe(Option.contains("production")),
+        publishableKey: Option.getOrUndefined(yield* optional("CLERK_PUBLISHABLE_KEY")),
+        secretKey: Option.getOrUndefined(yield* Config.option(Config.Redacted("CLERK_SECRET_KEY"))),
+        issuer: Option.getOrUndefined(yield* optional("CLERK_ISSUER")),
+        jwksUrl: Option.getOrUndefined(yield* optional("CLERK_JWKS_URL")),
+        authorizedParties: Option.getOrUndefined(yield* optional("CLERK_AUTHORIZED_PARTIES")),
+        audience: Option.getOrUndefined(yield* optional("CLERK_AUDIENCE")),
+      };
+      return ClerkConfig.of(
+        yield* clerkConfig(input).pipe(
+          Effect.map((settings) => ({ signIn: "configured" as const, ...settings })),
+          Effect.catchTag("ClerkConfigError", ({ message }) =>
+            Effect.as(Effect.logWarning(`Sign-in is off. ${message}`), {
+              signIn: "unconfigured" as const,
+              reason: message,
+            }),
           ),
-          issuer: Option.getOrUndefined(yield* optional("CLERK_ISSUER")),
-          jwksUrl: Option.getOrUndefined(yield* optional("CLERK_JWKS_URL")),
-        };
-        return ClerkConfig.of(yield* clerkConfig(input));
-      }),
-    );
+        ),
+      );
+    }),
+  );
 }
 
 export interface ClerkEnv {
@@ -40,6 +61,9 @@ export interface ClerkEnv {
   readonly secretKey: Redacted.Redacted | undefined;
   readonly issuer: string | undefined;
   readonly jwksUrl: string | undefined;
+  /** Comma-separated origins, such as `https://svett.app`. */
+  readonly authorizedParties: string | undefined;
+  readonly audience: string | undefined;
 }
 
 const optional = (name: string) => Config.option(Config.String(name));
@@ -71,15 +95,40 @@ const parseUrl = (value: string) => {
   }
 };
 
+const authorizedPartiesOf = (env: ClerkEnv) => {
+  const parties = (env.authorizedParties ?? "")
+    .split(",")
+    .map((party) => party.trim())
+    .filter((party) => party !== "");
+  const wrong = parties.find((party) => {
+    const url = parseUrl(party);
+    return (
+      url === undefined ||
+      url.origin !== party ||
+      (env.production && (url.protocol !== "https:" || isLocal(url.hostname)))
+    );
+  });
+  return { parties, wrong };
+};
+
 /**
  * Checks the Clerk settings. In production the issuer and key set come from the publishable key,
  * over HTTPS, from a host that is not this machine, so a stand-in issuer can never be trusted
  * there. Elsewhere `CLERK_ISSUER` and `CLERK_JWKS_URL` may name a local stand-in.
  */
-export const clerkConfig = (env: ClerkEnv): Effect.Effect<ClerkConfigShape, ClerkConfigError> => {
+export const clerkConfig = (env: ClerkEnv): Effect.Effect<ClerkSettings, ClerkConfigError> => {
+  const authorized = authorizedPartiesOf(env);
+  if (authorized.wrong !== undefined) {
+    return fail(
+      `CLERK_AUTHORIZED_PARTIES lists ${authorized.wrong}, which is not an origin${env.production ? " served over HTTPS from another machine" : ""}.`,
+    );
+  }
+  const audience = env.audience?.trim() || undefined;
+  const settings = (issuer: string, jwksUrl: string) =>
+    Effect.succeed({ issuer, jwksUrl, authorizedParties: authorized.parties, audience });
   if (!env.production) {
     if (env.issuer !== undefined && env.jwksUrl !== undefined) {
-      return Effect.succeed({ issuer: env.issuer, jwksUrl: env.jwksUrl });
+      return settings(env.issuer, env.jwksUrl);
     }
   }
   if (env.publishableKey === undefined) {
@@ -116,5 +165,5 @@ export const clerkConfig = (env: ClerkEnv): Effect.Effect<ClerkConfigShape, Cler
   if (env.jwksUrl !== undefined && env.jwksUrl !== jwksUrl) {
     return fail(`CLERK_JWKS_URL must be ${jwksUrl}, the key set CLERK_PUBLISHABLE_KEY names.`);
   }
-  return Effect.succeed({ issuer, jwksUrl });
+  return settings(issuer, jwksUrl);
 };

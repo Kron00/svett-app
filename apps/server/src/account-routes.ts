@@ -7,18 +7,31 @@ import { signedInAccount } from "./auth.ts";
 const unauthorized = () =>
   Effect.succeed(HttpServerResponse.jsonUnsafe({ error: "unauthorized" }, { status: 401 }));
 
+// Clients tell this apart from a refused session, which signing in again would fix.
+const signInUnavailable = () =>
+  Effect.succeed(
+    HttpServerResponse.jsonUnsafe(
+      {
+        error: "sign_in_unavailable",
+        message:
+          "Sign-in is not set up on this server yet, so accounts and their data are unavailable.",
+      },
+      { status: 503 },
+    ),
+  );
+
 const me = Effect.gen(function* () {
   const account = yield* signedInAccount;
   const rows = yield* AccountRows;
   yield* rows.ensureAccount(account);
   return HttpServerResponse.jsonUnsafe({ accountId: account });
-}).pipe(Effect.catchTag("Unauthorized", unauthorized));
+}).pipe(Effect.catchTags({ Unauthorized: unauthorized, SignInUnavailable: signInUnavailable }));
 
 const listRows = Effect.gen(function* () {
   const account = yield* signedInAccount;
   const rows = yield* AccountRows;
   return HttpServerResponse.jsonUnsafe({ rows: yield* rows.list(account) });
-}).pipe(Effect.catchTag("Unauthorized", unauthorized));
+}).pipe(Effect.catchTags({ Unauthorized: unauthorized, SignInUnavailable: signInUnavailable }));
 
 const writeRows = Effect.gen(function* () {
   const account = yield* signedInAccount;
@@ -30,6 +43,7 @@ const writeRows = Effect.gen(function* () {
 }).pipe(
   Effect.catchTags({
     Unauthorized: unauthorized,
+    SignInUnavailable: signInUnavailable,
     InvalidRow: (invalid) =>
       Effect.succeed(
         HttpServerResponse.jsonUnsafe(

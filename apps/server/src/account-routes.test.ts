@@ -6,7 +6,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import { AccountRoutes } from "./account-routes.ts";
 import { AccountRows } from "./account-rows.ts";
 import { Sessions } from "./auth.ts";
-import { ClerkConfig } from "./clerk-config.ts";
+import { ClerkConfig, type ClerkConfigShape } from "./clerk-config.ts";
 import { databaseLayer, migrate } from "./database.ts";
 import { type StandInIssuer, startStandInIssuer } from "./test-issuer.ts";
 import { startTestPostgres, type TestPostgres } from "./test-postgres.ts";
@@ -53,12 +53,23 @@ const call = (request: HttpClientRequest.HttpClientRequest) =>
   });
 
 /** Runs `steps` against a server on a fresh, migrated database. */
-const withServer = async <A>(steps: Effect.Effect<A, unknown, HttpClient.HttpClient>) => {
+const withServer = async <A>(
+  steps: Effect.Effect<A, unknown, HttpClient.HttpClient>,
+  config?: ClerkConfigShape,
+) => {
   const url = await postgres.createDatabase(`rows_${++databases}`);
   await Effect.runPromise(migrate.pipe(Effect.provide(databaseLayer(url))));
   const clerk = Layer.succeed(
     ClerkConfig,
-    ClerkConfig.of({ issuer: issuer.issuer, jwksUrl: issuer.jwksUrl }),
+    ClerkConfig.of(
+      config ?? {
+        signIn: "configured",
+        issuer: issuer.issuer,
+        jwksUrl: issuer.jwksUrl,
+        authorizedParties: [],
+        audience: undefined,
+      },
+    ),
   );
   const services = Layer.mergeAll(AccountRows.layer, Sessions.layer).pipe(
     Layer.provide(databaseLayer(url)),
@@ -184,6 +195,47 @@ describe("account ownership", { timeout: 60_000 }, () => {
     for (const answer of answers) {
       expect(answer).toEqual({ status: 401, body: { error: "unauthorized" } });
     }
+  });
+
+  it("refuses a session token from an origin the server does not trust", async () => {
+    const answer = await withServer(
+      Effect.gen(function* () {
+        const token = yield* Effect.promise(() =>
+          issuer.sessionToken(ALICE, { claims: { azp: "https://evil.example" } }),
+        );
+        return yield* call(HttpClientRequest.bearerToken(HttpClientRequest.get("/v1/me"), token));
+      }),
+    );
+    expect(answer).toEqual({ status: 401, body: { error: "unauthorized" } });
+  });
+
+  it("answers that sign-in is unavailable on every account route while it is off", async () => {
+    const answers = await withServer(
+      Effect.gen(function* () {
+        const token = yield* Effect.promise(() => issuer.sessionToken(ALICE));
+        const signed = (request: HttpClientRequest.HttpClientRequest) =>
+          call(HttpClientRequest.bearerToken(request, token));
+        return [
+          yield* call(HttpClientRequest.get("/v1/me")),
+          yield* signed(HttpClientRequest.get("/v1/me")),
+          yield* signed(HttpClientRequest.get("/v1/rows")),
+          yield* signed(
+            HttpClientRequest.put("/v1/rows").pipe(
+              HttpClientRequest.bodyJsonUnsafe({
+                rows: [{ table: "activity", row: workout("x", 1) }],
+              }),
+            ),
+          ),
+        ];
+      }),
+      { signIn: "unconfigured", reason: "CLERK_PUBLISHABLE_KEY is not set." },
+    );
+    expect(answers).toEqual(
+      answers.map(() => ({
+        status: 503,
+        body: { error: "sign_in_unavailable", message: expect.stringContaining("not set up") },
+      })),
+    );
   });
 
   it("refuses rows that break their table's schema, and stores none of the request", async () => {
