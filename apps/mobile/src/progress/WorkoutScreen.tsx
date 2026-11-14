@@ -13,6 +13,7 @@ import {
   saveWorkoutAsRoutine,
   type WorkoutExercise,
   type WorkoutSet,
+  type WorkoutView,
 } from "@svett/core";
 import { Effect, Option, Schema } from "effect";
 import { useLayoutEffect, useState } from "react";
@@ -151,7 +152,9 @@ export function WorkoutScreen({ route, navigation }: Props) {
       : Effect.flatMap(Effect.service(HistoryRepository), (history) => history.workout(id)),
   );
   const [saving, setSaving] = useState<Saving>({ status: "idle" });
-  const view = query.status === "ready" ? Option.getOrNull(query.value) : null;
+  // A deleted workout stays on screen while the screen slides away, instead of reading as missing.
+  const [leaving, setLeaving] = useState<WorkoutView | null>(null);
+  const view = leaving ?? (query.status === "ready" ? Option.getOrNull(query.value) : null);
   const title = view ? view.activity.title || SPORTS[view.activity.kind].label : "Workout";
 
   useLayoutEffect(() => {
@@ -261,6 +264,7 @@ export function WorkoutScreen({ route, navigation }: Props) {
           testID="workout-delete"
           accessibilityHint="Deletes it. History offers Undo."
           onPress={() => {
+            setLeaving(view);
             void deleteWorkout({ id, title }).then(() =>
               navigation.navigate("Tabs", { screen: "Progress" }),
             );

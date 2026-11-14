@@ -251,6 +251,8 @@ describe("history", () => {
     const detail = await render(<WorkoutScreen {...screenProps("Workout", { id: newest })} />);
     await press(byTestId(detail, "workout-delete"));
     expect(navigation.navigate).toHaveBeenCalledWith("Tabs", { screen: "Progress" });
+    // The screen keeps showing the workout while it slides away.
+    expect(lines(detail)).toContain("105 kg × 5");
     expect(textOf(byTestId(history, "workout-counts"))).toBe("1 workouts, 2 sets");
     expect(() => byTestId(history, `workout-${newest}`)).toThrow();
     expect(textOf(byTestId(history, "undo-delete-banner"))).toContain("Deleted Heavy legs.");
