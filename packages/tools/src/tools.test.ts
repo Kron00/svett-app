@@ -5,6 +5,7 @@ import {
   ExerciseRepository,
   libraryExerciseId,
   MADE_HERE,
+  RoutineRepository,
 } from "@svett/core";
 import { Effect } from "effect";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
@@ -162,12 +163,14 @@ describe("the read tools", () => {
   });
 
   it("lists the saved routines with their folder", async () => {
-    const { json } = await call("list_routines", {});
+    const { json, source } = await call("list_routines", {});
+    expect(json).toMatchObject({ totalRoutines: 3, truncated: false, nextRoutineStart: null });
+    expect(source).toBe("Routines (3)");
     expect(
       json["routines"].map((routine: { title: { userWritten: string } }) => routine.title),
     ).toEqual([{ userWritten: "Push" }, { userWritten: "Pull" }, { userWritten: "Legs" }]);
     expect(json["routines"][2]).toMatchObject({ folder: { userWritten: "Push pull legs" } });
-    expect(json["routines"][2].exercises[0]).toEqual({ name: "Barbell Squat", sets: 3 });
+    expect(json["routines"][2].exercises[0]).toEqual({ index: 0, name: "Barbell Squat", sets: 3 });
   });
 
   it("keeps every answer short, even over two years at each limit", async () => {
@@ -363,6 +366,101 @@ describe("a workout longer than one answer", () => {
     );
     expect((await read({ exerciseStart: 0, setStart: FIRST_SETS })).json["error"]).toBe(
       `exercise 0 has ${FIRST_SETS} sets, so setStart is at most ${FIRST_SETS - 1}`,
+    );
+  });
+});
+
+describe("more routines than one answer", () => {
+  let small: ReturnType<typeof openEmptyDatabase>;
+  const ROUTINES = 31;
+  const LONG_EXERCISES = 21;
+
+  beforeAll(async () => {
+    small = openEmptyDatabase(NOW);
+    await small.runtime.runPromise(
+      Effect.gen(function* () {
+        const library = (yield* (yield* ExerciseRepository).list).slice(0, LONG_EXERCISES);
+        const routines = yield* RoutineRepository;
+        for (let position = 0; position < ROUTINES; position++) {
+          yield* routines.createRoutine({
+            folderId: null,
+            title: `Day ${position + 1}`,
+            notes: "",
+            position,
+            exercises: library.slice(0, position === 0 ? LONG_EXERCISES : 1).map((exercise) => ({
+              exerciseId: exercise.id,
+              supersetGroup: null,
+              restS: null,
+              notes: "",
+              sets: [
+                {
+                  setType: "normal",
+                  weightKg: null,
+                  repsMin: 5,
+                  repsMax: 5,
+                  durationS: null,
+                  distanceM: null,
+                },
+              ],
+            })),
+          });
+        }
+      }),
+    );
+  });
+  afterAll(() => small.runtime.dispose());
+
+  const list = (input: Record<string, number>) => callOn(small.runtime, "list_routines", input);
+
+  it("says what it left out instead of looking complete", async () => {
+    const { json, output, source } = await list({});
+    expect(output.length).toBeLessThan(MAX_TOOL_OUTPUT / 2);
+    expect(json).toMatchObject({ totalRoutines: ROUTINES, truncated: true, nextRoutineStart: 30 });
+    expect(json["routines"]).toHaveLength(30);
+    expect(json["routines"][0]).toMatchObject({
+      index: 0,
+      totalExercises: LONG_EXERCISES,
+      nextExerciseStart: 20,
+    });
+    expect(json["routines"][0].exercises).toHaveLength(20);
+    expect(json["routines"][1]).toMatchObject({
+      index: 1,
+      totalExercises: 1,
+      nextExerciseStart: null,
+    });
+    expect(source).toBe("Routines 1 to 30 of 31, some of their exercises left out");
+  });
+
+  it("reads every routine and every exercise through its paging arguments", async () => {
+    const titles = await allPages(0, async (start) => {
+      const { json } = await list({ routineStart: start });
+      return {
+        items: json["routines"].map(
+          (routine: { title: { userWritten: string } }) => routine.title.userWritten,
+        ) as string[],
+        next: json["nextRoutineStart"] ?? null,
+      };
+    });
+    expect(titles).toEqual(Array.from({ length: ROUTINES }, (_, index) => `Day ${index + 1}`));
+
+    const indexes = await allPages(0, async (exerciseStart) => {
+      const { json } = await list(exerciseStart === 0 ? {} : { routineStart: 0, exerciseStart });
+      if (exerciseStart > 0) expect(json["routines"]).toHaveLength(1);
+      const [first] = json["routines"];
+      return {
+        items: first.exercises.map((exercise: { index: number }) => exercise.index) as number[],
+        next: first.nextExerciseStart ?? null,
+      };
+    });
+    expect(indexes).toEqual(Array.from({ length: LONG_EXERCISES }, (_, index) => index));
+  });
+
+  it("refuses a start past the end", async () => {
+    expect((await list({ routineStart: ROUTINES })).json["error"]).toBe(
+      `the user has ${ROUTINES} routines, so routineStart is at most ${ROUTINES - 1}`,
+    );
+    expect((await list({ routineStart: 0, exerciseStart: LONG_EXERCISES })).json["error"]).toBe(
+      `routine 0 has ${LONG_EXERCISES} exercises, so exerciseStart is at most ${LONG_EXERCISES - 1}`,
     );
   });
 });

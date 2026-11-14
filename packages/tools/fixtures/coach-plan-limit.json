@@ -227,10 +227,23 @@
               {
                 "type": "function",
                 "name": "list_routines",
-                "description": "Lists the user's saved routines with their folder and exercises.",
+                "description": "Lists the user's saved routines with their folder and exercises. One answer holds at most 30 routines and 20 exercises of each. When truncated is true, call again with routineStart set to nextRoutineStart for the next routines, or with a routine's index as routineStart and its nextExerciseStart as exerciseStart for the rest of its exercises.",
                 "parameters": {
                   "type": "object",
-                  "properties": {},
+                  "properties": {
+                    "routineStart": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9999,
+                      "description": "The index of the first routine to return. 0 when left out."
+                    },
+                    "exerciseStart": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 999,
+                      "description": "The index of the first exercise to return. When it is set, only the routine at routineStart comes back."
+                    }
+                  },
                   "additionalProperties": false
                 }
               }
