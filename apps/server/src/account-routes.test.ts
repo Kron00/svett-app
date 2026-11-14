@@ -32,6 +32,8 @@ const workout = (title: string, updatedAt: number) => ({
   updatedAt,
   deletedAt: null,
   kind: "strength",
+  status: "finished",
+  routineId: null,
   startedAt: 1_700_000_000_000,
   durationS: 3600,
   title,
