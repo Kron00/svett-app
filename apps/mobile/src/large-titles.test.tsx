@@ -112,14 +112,43 @@ vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 vi.mock("expo-notifications", () => ({}));
 vi.mock("uniwind", () => ({ useCSSVariable: () => "#000000" }));
 vi.mock("./data/store", () => ({ useQuery: () => ({ status: "loading" }) }));
-vi.mock("./data/database", () => ({
-  appDatabase: () => ({ runPromise: () => new Promise(() => {}) }),
-}));
+vi.mock("./data/database", () => ({}));
+// The database never opens, so every screen stays on its loading state.
+vi.mock("./data/current", () => {
+  const database = {
+    owner: { kind: "anonymous" },
+    handle: {
+      target: { kind: "owner", owner: { kind: "anonymous" } },
+      runtime: { runPromise: () => new Promise(() => {}) },
+    },
+  };
+  return {
+    appDatabase: () => database.handle.runtime,
+    currentDatabase: () => database,
+    dataChanged: () => {},
+    followSession: () => {},
+    movePending: () => false,
+    sameDatabase: (a: unknown, b: unknown) => a === b,
+    stillOpen: () => true,
+    subscribeDatabase: () => () => {},
+    useCurrentDatabase: () => database,
+  };
+});
 vi.mock("./transfer/files", () => ({
   exportAndShare: () => Promise.resolve(),
   pickImportFile: () => Promise.resolve(undefined),
   withTransfers: () => Promise.resolve([]),
 }));
+vi.mock("expo-sqlite", () => ({}));
+vi.mock("expo-sqlite/kv-store", () => ({
+  default: { getItemSync: () => null, setItemSync: () => {}, removeItemSync: () => {} },
+}));
+vi.mock("@clerk/expo", () => ({
+  ClerkProvider: ({ children }: { readonly children: ReactNode }) => children,
+  useAuth: () => ({ isLoaded: false, userId: null }),
+  useUser: () => ({ user: null }),
+}));
+vi.mock("@clerk/expo/token-cache", () => ({ tokenCache: {} }));
 vi.mock("./ui/OptionSheet", () => ({ OptionSheet: "OptionSheet" }));
 vi.mock("./ui/Sheet", () => ({ Sheet: "Sheet" }));
 vi.mock("./ui/SegmentedControl", () => ({ SegmentedControl: "SegmentedControl" }));
@@ -133,6 +162,8 @@ vi.mock("./ui/WorkoutBar", () => ({ WorkoutBar: "WorkoutBar" }));
 // Screens without a large title are not drawn.
 vi.mock("./chatgpt/ChatGPTScreen", () => ({ ChatGPTScreen: () => null }));
 vi.mock("./chatgpt/ChatGPTRow", () => ({ ChatGPTRow: () => null }));
+vi.mock("./account/AccountScreen", () => ({ AccountScreen: () => null }));
+vi.mock("./account/AccountRow", () => ({ AccountRow: () => null }));
 vi.mock("./checks/PhoneChecksScreen", () => ({ PhoneChecksScreen: () => null }));
 vi.mock("./PhoneChecksRow", () => ({ PhoneChecksRow: () => null }));
 vi.mock("./exercises/ExerciseDetailScreen", () => ({ ExerciseDetailScreen: () => null }));
