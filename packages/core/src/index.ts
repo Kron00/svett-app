@@ -28,3 +28,4 @@ export * from "./series.ts";
 export * from "./exercise-progress.ts";
 export * from "./muscle-volume.ts";
 export * from "./body-measurements.ts";
+export * from "./backup-files.ts";
