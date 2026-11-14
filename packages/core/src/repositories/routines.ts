@@ -21,6 +21,7 @@ import {
   RowNotFoundError,
   selectById,
   selectRows,
+  selectRowsWithDeleted,
   softDeleteRows,
   type Table,
   TABLES,
@@ -47,6 +48,16 @@ export interface RoutineDetail {
     readonly sets: ReadonlyArray<RoutineSet>;
   }>;
 }
+
+/** Rows of routines and folders, deleted ones too, by table. */
+export interface AppliedRows {
+  readonly folder: ReadonlyArray<Folder>;
+  readonly routine: ReadonlyArray<Routine>;
+  readonly routineExercise: ReadonlyArray<RoutineExercise>;
+  readonly routineSet: ReadonlyArray<RoutineSet>;
+}
+
+const inList = (column: string) => `${column} IN (SELECT value FROM json_each(?))`;
 
 const routinesIn = (column: "id" | "folder_id") => ({
   routines: `${column} = ?`,
@@ -262,7 +273,42 @@ const makeRoutineRepository = Effect.gen(function* () {
       ),
     );
 
+  /**
+   * The folder and routines given, every routine in that folder, and every exercise and set
+   * below them, deleted ones too. A change to any of them, a delete, or a routine moved in or
+   * out of the folder changes what this reads.
+   */
+  const appliedRows = (folderId: FolderId | null, routineIds: ReadonlyArray<RoutineId>) =>
+    run(
+      Effect.gen(function* () {
+        const ids = JSON.stringify(routineIds);
+        const routine = yield* folderId === null
+          ? selectRowsWithDeleted(TABLES.routine, inList("id"), [ids])
+          : selectRowsWithDeleted(TABLES.routine, `${inList("id")} OR folder_id = ?`, [
+              ids,
+              folderId,
+            ]);
+        const routineExercise = yield* selectRowsWithDeleted(
+          TABLES.routineExercise,
+          inList("routine_id"),
+          [JSON.stringify(routine.map((row) => row.id))],
+        );
+        return {
+          folder:
+            folderId === null
+              ? []
+              : yield* selectRowsWithDeleted(TABLES.folder, "id = ?", [folderId]),
+          routine,
+          routineExercise,
+          routineSet: yield* selectRowsWithDeleted(TABLES.routineSet, inList("routine_exercise_id"), [
+            JSON.stringify(routineExercise.map((row) => row.id)),
+          ]),
+        } satisfies AppliedRows;
+      }),
+    );
+
   return {
+    appliedRows,
     createRoutine,
     saveRoutine,
     duplicateRoutine,
