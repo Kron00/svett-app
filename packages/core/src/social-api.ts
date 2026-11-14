@@ -2,6 +2,7 @@ import { Data, Effect, Option, Schema } from "effect";
 
 import { FeedPage, InboxPage, Likes, PostComment, PostThread } from "./feed.ts";
 import { ActivityView, FollowState, type SocialActivityId } from "./privacy.ts";
+import { rateLimitedMessage, retryAfterSeconds } from "./rate-limit.ts";
 import { usernamePrefix } from "./username.ts";
 
 /** The signed-in account's own profile. `username` is null until they choose one. */
@@ -81,6 +82,20 @@ export type ActivityPage = typeof ActivityPage.Type;
 export const FollowResult = Schema.Struct({ follow: FollowState });
 export type FollowResult = typeof FollowResult.Type;
 
+/**
+ * An account the signed-in account blocked. Unblock names the block by `id`, never by
+ * username, so it never reaches whoever holds the username now.
+ */
+export const Block = Schema.Struct({ id: Schema.String, username: Schema.String });
+export type Block = typeof Block.Type;
+
+export const BlockList = Schema.Struct({ blocks: Schema.Array(Block) });
+export type BlockList = typeof BlockList.Type;
+
+/** The server deleted the account and ended its sessions. */
+export const AccountDeleted = Schema.Struct({ deleted: Schema.Literal(true) });
+export type AccountDeleted = typeof AccountDeleted.Type;
+
 const Done = Schema.Struct({});
 
 /** The error codes the server answers social requests with, beside sign-in's. */
@@ -94,6 +109,11 @@ const SERVER_PROBLEMS = [
   "post_not_found",
   "invalid_comment",
   "invalid_cursor",
+  "cannot_block_self",
+  "block_not_found",
+  "rate_limited",
+  "account_deleted",
+  "session_end_failed",
 ] as const;
 
 export type SocialProblem =
@@ -134,6 +154,16 @@ export const socialProblemMessage = (failed: SocialFailed): string => {
       return failed.message;
     case "invalid_cursor":
       return "The feed changed while you scrolled. Pull to refresh.";
+    case "cannot_block_self":
+      return "You cannot block yourself.";
+    case "block_not_found":
+      return "That account is no longer blocked.";
+    case "rate_limited":
+      return failed.message;
+    case "account_deleted":
+      return "This svett account was deleted.";
+    case "session_end_failed":
+      return "Your data is gone from svett, but signing you out everywhere did not finish. Try again.";
     case "server":
       return "The svett server had a problem. Try again soon.";
   }
@@ -199,6 +229,13 @@ export const httpSocialApi = (options: HttpSocialOptions) => {
       if (response.status === 503) {
         return yield* failed("sign_in_unavailable", "Sign-in is not set up on the server yet.");
       }
+      if (response.status === 429) {
+        return yield* failed(
+          "rate_limited",
+          rateLimitedMessage(retryAfterSeconds(response.headers.get("retry-after"))),
+        );
+      }
+      if (response.status === 410) return yield* failed("account_deleted", "Account deleted.");
       const answer: unknown = yield* Effect.tryPromise({
         try: () => response.json(),
         catch: () => failed("server", `The server answered ${response.status} without JSON.`),
@@ -277,6 +314,19 @@ export const httpSocialApi = (options: HttpSocialOptions) => {
       ),
     /** Marks every inbox item up to `until` read. */
     markInboxRead: (until: number) => call(Done, "PUT", "/v1/inbox/read", { until }),
+    /**
+     * Blocks the account with this username. Neither sees the other any more, and any follow
+     * between them, either way, ends.
+     */
+    block: (username: string) => call(Done, "PUT", `${at(username)}/block`),
+    blocks: () => call(BlockList, "GET", "/v1/blocks"),
+    /** Ends the block with this `Block.id`. */
+    unblock: (block: string) => call(Done, "DELETE", `/v1/blocks/${encodeURIComponent(block)}`),
+    /** Ends this account's follow of the signed-in account, without blocking it. */
+    removeFollower: (username: string) =>
+      call(Done, "DELETE", `/v1/followers/${encodeURIComponent(username)}`),
+    /** Deletes the signed-in account, every row it has on the server, and every session. */
+    deleteAccount: () => call(AccountDeleted, "DELETE", "/v1/me"),
   };
 };
 

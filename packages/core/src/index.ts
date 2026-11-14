@@ -53,3 +53,5 @@ export * from "./social-api.ts";
 export * from "./social-format.ts";
 export * from "./feed.ts";
 export * from "./feed-format.ts";
+export * from "./rate-limit.ts";
+
