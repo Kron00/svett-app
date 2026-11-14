@@ -46,3 +46,25 @@ export const scaleLinear =
     domain[1] === domain[0]
       ? range[0]
       : range[0] + ((value - domain[0]) / (domain[1] - domain[0])) * (range[1] - range[0]);
+
+/**
+ * Maps a time to a position along an axis by elapsed time, `times`' earliest
+ * at `range[0]` and latest at `range[1]`, so a gap of six months is wider
+ * than a gap of one day. When every time is the same, it maps to the middle.
+ * Points and month labels share it, so they line up.
+ */
+export const timeScale = (
+  times: ReadonlyArray<number>,
+  range: readonly [number, number],
+): ((time: number) => number) => {
+  const first = Math.min(...times);
+  const last = Math.max(...times);
+  if (!(last > first)) return () => (range[0] + range[1]) / 2;
+  return scaleLinear([first, last], range);
+};
+
+/** Places points along an axis by elapsed time, with `timeScale`. */
+export const timePositions = (
+  times: ReadonlyArray<number>,
+  range: readonly [number, number],
+): ReadonlyArray<number> => times.map(timeScale(times, range));

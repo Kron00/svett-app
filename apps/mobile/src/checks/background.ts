@@ -4,7 +4,7 @@ import * as Notifications from "expo-notifications";
 import * as TaskManager from "expo-task-manager";
 import { AppState } from "react-native";
 
-import { markPendingDelivered } from "./saved";
+import { loadPendingNotification, savePendingNotification } from "./saved";
 import { createStore } from "./store";
 
 // Imported from index.ts, because iOS can start svett in the background for a
@@ -44,7 +44,10 @@ Notifications.addNotificationReceivedListener(async (notification) => {
   const at = deliveredInFront(AppState.currentState, notification.date);
   if (at === undefined) return;
   const id = notification.request.identifier;
-  await markPendingDelivered(id, at).catch(() => undefined);
+  const pending = await loadPendingNotification();
+  if (pending?.id === id) {
+    await savePendingNotification({ ...pending, deliveredInSvett: at }).catch(() => undefined);
+  }
   const delivered = new Map(notificationsInSvett.get());
   delivered.set(id, at);
   notificationsInSvett.set(delivered);

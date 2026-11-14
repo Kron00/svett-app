@@ -333,6 +333,51 @@ struct SignOutTests {
         #expect(harness.requests(to: .revoke).count == 1)
     }
 
+    @Test func allowingPlanUsageRevokesTheReplacedRefreshToken() async throws {
+        let harness = Harness()
+        _ = await harness.signIn()
+        #expect(await harness.signIn(.allowPlanUsage) == nil)
+        await eventually { !harness.requests(to: .revoke).isEmpty }
+        let request = try #require(harness.requests(to: .revoke).first)
+        #expect(fields(request) == [
+            "token": "stub-refresh-1", "token_type_hint": "refresh_token", "client_id": StubOpenAI.issuedClientID,
+        ])
+        #expect(harness.store.saved?.session?.refreshToken == "stub-refresh-2")
+        #expect(await harness.account.bearer() == .success("stub-access-2"))
+    }
+
+    @Test func aSignInWhileSignedInDoesNotWaitForTheRevocation() async {
+        let gate = Gate()
+        let harness = Harness(gate: gate, holding: .revoke)
+        _ = await harness.signIn()
+        #expect(await harness.signIn() == nil)
+        await eventually { gate.waiters == 1 }
+        #expect(gate.waiters == 1)
+        #expect(await harness.account.bearer() == .success("stub-access-2"))
+        #expect(harness.store.saved?.session?.refreshToken == "stub-refresh-2")
+        gate.release()
+    }
+
+    @Test func aReplacedRefreshTokenIsRevokedWithTheSameRetries() async {
+        let harness = Harness()
+        _ = await harness.signIn()
+        harness.stub.script(.revoke, .reply(503, ""), .offline)
+        #expect(await harness.signIn(.allowPlanUsage) == nil)
+        await eventually { harness.requests(to: .revoke).count == 3 }
+        #expect(harness.requests(to: .revoke).map { fields($0)["token"] } == Array(repeating: "stub-refresh-1", count: 3))
+        #expect(harness.store.saved?.session?.refreshToken == "stub-refresh-2")
+    }
+
+    @Test func aRefusedSignInWhileSignedInKeepsTheSessionWorking() async {
+        let harness = Harness()
+        _ = await harness.signIn()
+        harness.stub.identity.audience = "another-app"
+        #expect(await harness.signIn(.allowPlanUsage) == .identity(.wrongAudience))
+        for _ in 0..<100 { await Task.yield() }
+        #expect(harness.requests(to: .revoke).isEmpty)
+        #expect(await harness.account.bearer() == .success("stub-access-1"))
+    }
+
     @Test func signingOutWhenSignedOutDoesNothing() async throws {
         let harness = Harness()
         #expect(await harness.account.signOut().revoked)

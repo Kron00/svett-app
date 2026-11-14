@@ -44,45 +44,23 @@ export const saveOutcome = (name: CheckName, encoded: string) =>
 export const loadPendingNotification = async (): Promise<PendingNotification | undefined> =>
   decodePendingNotification(await read(PENDING_NOTIFICATION_KEY));
 
-// Every write of the pending notification waits for the one before, so a delivery that reads
-// the pending notification and saves it back cannot land after a new run has replaced it.
-let pendingWrites: Promise<unknown> = Promise.resolve();
-const afterPendingWrites = <T>(write: () => Promise<T>): Promise<T> => {
-  const next = pendingWrites.then(write, write);
-  pendingWrites = next.catch(() => undefined);
-  return next;
-};
-
 export const savePendingNotification = (pending: PendingNotification) =>
-  afterPendingWrites(() =>
-    SecureStore.setItemAsync(
-      PENDING_NOTIFICATION_KEY,
-      encodePendingNotification(pending),
-      SECURE_OPTIONS,
-    ),
+  SecureStore.setItemAsync(
+    PENDING_NOTIFICATION_KEY,
+    encodePendingNotification(pending),
+    SECURE_OPTIONS,
   );
 
-/** Records that notification `id` arrived with svett in front, if it is still the pending one. */
-export const markPendingDelivered = (id: string, at: number) =>
-  afterPendingWrites(async () => {
-    const pending = await loadPendingNotification();
-    if (pending?.id !== id) return;
-    await SecureStore.setItemAsync(
-      PENDING_NOTIFICATION_KEY,
-      encodePendingNotification({ ...pending, deliveredInSvett: at }),
-      SECURE_OPTIONS,
-    );
-  });
-
 export const forgetPendingNotification = () =>
-  afterPendingWrites(() => SecureStore.deleteItemAsync(PENDING_NOTIFICATION_KEY, SECURE_OPTIONS));
+  SecureStore.deleteItemAsync(PENDING_NOTIFICATION_KEY, SECURE_OPTIONS);
 
 /** Forgets every result and the Keychain value, so each check starts over. */
 export async function forgetChecks(): Promise<void> {
-  await Promise.all([
-    forgetPendingNotification(),
-    ...[KEYCHAIN_KEY, ...PHONE_CHECKS.map(({ name }) => outcomeKey(name))].map((key) =>
-      SecureStore.deleteItemAsync(key, SECURE_OPTIONS),
-    ),
-  ]);
+  await Promise.all(
+    [
+      KEYCHAIN_KEY,
+      PENDING_NOTIFICATION_KEY,
+      ...PHONE_CHECKS.map(({ name }) => outcomeKey(name)),
+    ].map((key) => SecureStore.deleteItemAsync(key, SECURE_OPTIONS)),
+  );
 }

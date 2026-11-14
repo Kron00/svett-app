@@ -22,13 +22,13 @@ import {
 import { chatGPTStatus } from "../chatgpt/native";
 import { appDatabase } from "../data/database";
 import { useColor, useIsAccessibilityTextSize } from "../design/hooks";
-import type { CoachNavigation, TabParamList } from "../navigation";
+import type { CoachNavigation, CoachStackParamList } from "../navigation";
 import { AppText } from "../ui/AppText";
 import { Button } from "../ui/Button";
 import { EmptyState } from "../ui/EmptyState";
 import { swiftTransport } from "./native";
 
-type CoachRoute = RouteProp<TabParamList, "Coach">;
+type CoachRoute = RouteProp<CoachStackParamList, "CoachRoot">;
 
 /** The question being answered: what the coach has read so far and the answer as it arrives. */
 type Pending = {

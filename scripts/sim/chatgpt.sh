@@ -126,6 +126,15 @@ tap() {
   press_centre "$1"
 }
 
+# show <selector>: scrolls down a little at a time until the element $1 is on screen. A
+# screenshot that proves a text passes the element just below that text, because `wait text`
+# also finds text that is off screen, and short scrolls that stop once the next element shows
+# leave the whole text above it on screen.
+show() {
+  agent_device is visible "$1" >/dev/null 2>&1 ||
+    agent_device scroll down 0.3 --until "$1" >/dev/null
+}
+
 # Relaunches svett with the stand-in scenario $1, or none, and opens the ChatGPT settings.
 open_chatgpt() {
   local flags=(--relaunch ${front_flags[@]+"${front_flags[@]}"})
@@ -192,23 +201,28 @@ allow_sheet
 expect "plan usage allowed" 'id="chatgpt-manage"'
 screenshot plan-usage-allowed
 
+# The Sign-in row is the last row above the notice.
 open_chatgpt renews
 expect "a renewed sign-in" text "Renewed at"
+show 'id="chatgpt-notice"'
 screenshot renewed
 
 open_chatgpt lapsed
 expect "the signed-out state" 'id="chatgpt-state-signedOut"'
 expect "the lapsed notice" text "lapsed"
+show 'id="chatgpt-continue"'
 screenshot lapsed
 
+# The refusal is the message just above Continue with ChatGPT.
 for refusal in "badSignature:does not match OpenAI's published keys" \
   "wrongAudience:was made for another app" "expiredToken:has expired"; do
   scenario=${refusal%%:*}
   open_chatgpt "$scenario"
   tap 'id="chatgpt-continue"'
   allow_sheet
-  expect "the $scenario refusal" text "${refusal#*:}"
   expect "nothing saved after $scenario" 'id="chatgpt-state-signedOut"'
+  expect "the $scenario refusal" text "${refusal#*:}"
+  show 'id="chatgpt-continue"'
   screenshot "refused-$scenario"
 done
 
