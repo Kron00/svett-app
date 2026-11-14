@@ -171,6 +171,64 @@ const DEPTH: Readonly<Record<string, number>> = {
   [TABLES.activitySample.name]: 2,
 };
 
+/** The rows under a workout, parents before children, each with the rows of the workout `?`. */
+const UNDER_WORKOUT: ReadonlyArray<readonly [SyncedTable, string]> = [
+  [TABLES.activityExercise.name, "activity_id = ?"],
+  [TABLES.activityTrack.name, "activity_id = ?"],
+  [
+    TABLES.activitySet.name,
+    "activity_exercise_id IN (SELECT id FROM activity_exercise WHERE activity_id = ?)",
+  ],
+  [
+    TABLES.activitySample.name,
+    "activity_track_id IN (SELECT id FROM activity_track WHERE activity_id = ?)",
+  ],
+];
+
+/**
+ * Drops what this phone wrote under the finished workout `workoutId` at or after a delete of
+ * a row above it, as the merge drops such an edit from another phone, so Undo brings back
+ * only what the workout had. A row another phone has goes back to its copy kept aside and is
+ * queued again. A row only this phone has, such as a set it added, is removed, since no other
+ * phone has it to delete.
+ */
+const dropWrittenAfterDelete = (workoutId: string, kept: ReadonlyArray<CheckedRow>) =>
+  Effect.gen(function* () {
+    const sql = yield* Sql;
+    const aside = new Map(kept.map((row) => [`${row.table}/${row.id}`, row]));
+    const dropped: Array<{ readonly table: SyncedTable; readonly id: string }> = [];
+    for (const [table, where] of UNDER_WORKOUT) {
+      const live = yield* sql.all(`SELECT id FROM ${table} WHERE deleted_at IS NULL AND ${where}`, [
+        workoutId,
+      ]);
+      if (live.length === 0) continue;
+      const rows = yield* storedRows(
+        table,
+        live.map((row) => String(row["id"])),
+      );
+      for (const row of rows.values()) {
+        const deletedAbove = yield* deletedAboveOf(
+          table,
+          row.encoded as Readonly<Record<string, unknown>>,
+          lookup,
+        );
+        if (deletedAbove === null || row.updatedAt < deletedAbove) continue;
+        if (aside.get(`${table}/${row.id}`)?.changeId === row.changeId) continue;
+        dropped.push({ table, id: row.id });
+      }
+    }
+    for (const { table, id } of dropped) {
+      const other = aside.get(`${table}/${id}`);
+      if (other === undefined) {
+        yield* sql.run(`DELETE FROM ${table} WHERE id = ?`, [id]);
+        yield* forget(table, id);
+      } else {
+        yield* save(other, other.encoded as Readonly<Record<string, unknown>>);
+        yield* requeue(table, id);
+      }
+    }
+  });
+
 /**
  * How a workout in progress ended. A finished one merges with its version from before the
  * finish, since finishing ends the draft and is not an edit that beats another phone's.
@@ -180,10 +238,10 @@ export type DraftEnd = { readonly finished: RowVersion } | "discarded";
 /**
  * Applies what was kept aside for the workout `workoutId` once it is no longer in progress.
  * Finished, each copy merges with this phone's row by the sync merge rule with deletes: a row
- * this phone lacks is added, the later change to a row wins, and a delete of the workout
- * drops later edits under it. Discarded, the workout goes back to the copies kept aside,
- * which hold it as it was before it was put back in progress here and every change other
- * phones made since, and they are queued again. Rows written only here while it was in
+ * this phone lacks is added, the later change to a row wins, and a delete of the workout or
+ * an exercise drops every later edit under it, this phone's own too. Discarded, the workout
+ * goes back to the copies kept aside, which hold it as it was before it was put back in
+ * progress here and every change other phones made since, and they are queued again. Rows written only here while it was in
  * progress stay deleted and unsent.
  */
 export const settleKeptAside = (workoutId: string, end: DraftEnd) =>
@@ -218,5 +276,6 @@ export const settleKeptAside = (workoutId: string, end: DraftEnd) =>
         : null;
       if (mergeChange(local, row, deletedAbove) === "take") yield* save(row, encoded);
     }
+    if (end !== "discarded") yield* dropWrittenAfterDelete(workoutId, kept);
     yield* sql.run("UPDATE sync_state SET quiet = ? WHERE id = 1", [Number(state?.["quiet"] ?? 0)]);
   });

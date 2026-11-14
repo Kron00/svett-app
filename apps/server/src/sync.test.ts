@@ -812,6 +812,96 @@ describe("sync", { timeout: 120_000 }, () => {
     expect((await firstSet(a, id)).reps).toBe(5);
   });
 
+  it.each(["a", "b"] as const)(
+    "drops a set added and an edit made here after another phone deleted the workout in progress here, and Undo on %s brings back only what it had",
+    async (undoOn) => {
+      const server = await startServer();
+      const a = openPhone(server, ALICE, 1);
+      const b = openPhone(server, ALICE, 2);
+      const id = await sharedLegDay(a, [b]);
+      const before = await setsOf(a, id);
+      const edited = before[1];
+      if (edited === undefined) throw new Error("The workout has one set");
+
+      await b.at(T0 + MINUTE);
+      await reopen(b, id);
+      await a.at(T0 + 2 * MINUTE);
+      await a.run(Effect.flatMap(activities, (repository) => repository.remove(id)));
+      await syncAll([a, b]);
+
+      await b.at(T0 + 3 * MINUTE);
+      const added = await addDoneSet(b, id, 77);
+      await b.run(
+        Effect.flatMap(activities, (repository) =>
+          repository.updateWorkoutSet(edited.setId, { reps: 66 }),
+        ),
+      );
+      await finish(b, id);
+      await syncAll([a, b]);
+      expect(await a.rows()).toEqual(await b.rows());
+      expect(await detail(a, id)).toEqual(Option.none());
+      expect(await detail(b, id)).toEqual(Option.none());
+      expect(await counts(b)).toEqual({ activities: 0, sets: 0 });
+
+      await (undoOn === "a" ? a : b).at(T0 + 4 * MINUTE);
+      await (undoOn === "a" ? a : b).run(
+        Effect.flatMap(activities, (repository) => repository.restore(id)),
+      );
+      await syncAll([a, b]);
+      expect(await a.rows()).toEqual(await b.rows());
+      expect(await setsOf(a, id)).toEqual(before);
+      expect(await setsOf(b, id)).toEqual(before);
+      expect((await setsOf(b, id)).some(({ setId }) => setId === added)).toBe(false);
+      expect(await counts(a)).toEqual({ activities: 1, sets: before.length });
+    },
+  );
+
+  it("drops a set added and an edit made here under an exercise another phone deleted while the workout was in progress here", async () => {
+    const server = await startServer();
+    const a = openPhone(server, ALICE, 1);
+    const b = openPhone(server, ALICE, 2);
+    const id = await sharedLegDay(a, [b]);
+    const workout = Option.getOrThrow(await detail(a, id));
+    const [removed, rest] = workout.exercises;
+    const edited = removed?.sets[1];
+    if (removed === undefined || rest === undefined || edited === undefined) {
+      throw new Error("The workout needs two exercises and two sets in the first");
+    }
+
+    await b.at(T0 + MINUTE);
+    await reopen(b, id);
+    await a.at(T0 + 2 * MINUTE);
+    await reopen(a, id);
+    await a.run(
+      Effect.flatMap(activities, (repository) => repository.removeExercise(removed.exercise.id)),
+    );
+    await finish(a, id);
+    await syncAll([a, b]);
+
+    await b.at(T0 + 3 * MINUTE);
+    const added = await addDoneSet(b, id, 77);
+    await b.run(
+      Effect.flatMap(activities, (repository) =>
+        repository.updateWorkoutSet(edited.id, { reps: 66 }),
+      ),
+    );
+    await finish(b, id);
+    await syncAll([a, b]);
+
+    expect(await a.rows()).toEqual(await b.rows());
+    const underRemoved = (
+      (await b.rows())["activity_set"] as ReadonlyArray<Record<string, unknown>>
+    ).filter((set) => set["activity_exercise_id"] === removed.exercise.id);
+    expect(underRemoved.map((set) => set["id"])).not.toContain(added);
+    expect(underRemoved.every((set) => set["deleted_at"] !== null)).toBe(true);
+    expect(underRemoved.map((set) => set["reps"])).toEqual(removed.sets.map(() => 5));
+    const [onA, onB] = await Promise.all([detail(a, id), detail(b, id)]);
+    expect(onA).toEqual(onB);
+    expect(Option.getOrThrow(onB).exercises.map(({ exercise }) => exercise.id)).toEqual([
+      rest.exercise.id,
+    ]);
+  });
+
   it("puts a workout discarded here back as the other phone has it, with that phone's changes", async () => {
     const server = await startServer();
     const a = openPhone(server, ALICE, 1);
