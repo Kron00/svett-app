@@ -1,9 +1,11 @@
-import type { NavigatorScreenParams } from "@react-navigation/native";
+import type { CompositeNavigationProp, NavigatorScreenParams } from "@react-navigation/native";
 import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
 
 import type { Tab } from "./tabs";
 
-export type TabParamList = { readonly [name in Tab["name"]]: undefined };
+export type TabParamList = { readonly [name in Exclude<Tab["name"], "Coach">]: undefined } & {
+  readonly Coach: NavigatorScreenParams<CoachStackParamList> | undefined;
+};
 
 /** Link params are strings from outside. Each screen parses them with @svett/core. */
 export type RootStackParamList = {
@@ -50,3 +52,14 @@ export type RootStackParamList = {
 };
 
 export type RootNavigation = NativeStackNavigationProp<RootStackParamList>;
+
+/** The Coach tab's own stack. */
+export type CoachStackParamList = {
+  /** `ask` is a question svett://coach?ask=... sends as soon as the coach is ready. */
+  CoachRoot: { ask?: string | undefined } | undefined;
+};
+
+export type CoachNavigation = CompositeNavigationProp<
+  NativeStackNavigationProp<CoachStackParamList, "CoachRoot">,
+  RootNavigation
+>;
