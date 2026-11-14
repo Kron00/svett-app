@@ -1,4 +1,5 @@
 import {
+  addExercises,
   EQUIPMENT_LABEL,
   EQUIPMENT_OPTIONS,
   type Exercise,
@@ -23,6 +24,7 @@ import { Icon } from "../ui/Icon";
 import { ListRow } from "../ui/List";
 import { OptionSheet } from "../ui/OptionSheet";
 import { SearchField } from "../ui/SearchField";
+import { changeDraft, currentDraft } from "../routines/draft";
 import { useExerciseList } from "./data";
 
 function Separator() {
@@ -60,8 +62,18 @@ const countText = (count: number) => `${count} ${count === 1 ? "exercise" : "exe
  */
 export function ExerciseLibraryScreen() {
   const navigation = useNavigation<RootNavigation>();
-  const params = useRoute<RouteProp<RootStackParamList, "Exercises">>().params;
-  const filter = exerciseFilterFromParams(params);
+  const route = useRoute<RouteProp<RootStackParamList, "Exercises" | "PickExercise">>();
+  const filter = exerciseFilterFromParams(route.params);
+  // Opened from the routine editor, a row adds its exercise to the routine and goes back.
+  const picking = route.name === "PickExercise" && currentDraft() !== null;
+  const choose = (exercise: Exercise) => {
+    if (picking) {
+      changeDraft((form) => addExercises(form, [exercise.id]));
+      navigation.goBack();
+    } else {
+      navigation.navigate("Exercise", { id: exercise.id });
+    }
+  };
   const loaded = useExerciseList();
   const [picker, setPicker] = useState<"muscle" | "equipment" | null>(null);
 
@@ -178,10 +190,7 @@ export function ExerciseLibraryScreen() {
             title={item.name}
             subtitle={exerciseSummary(item)}
             value={item.source === "svett" ? "Custom" : undefined}
-            trailing={{
-              type: "chevron",
-              onPress: () => navigation.navigate("Exercise", { id: item.id }),
-            }}
+            trailing={{ type: "chevron", onPress: () => choose(item) }}
             testID={`exercise-result-${index}`}
           />
         )}

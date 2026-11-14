@@ -28,3 +28,12 @@ export const setBadge = (type: SetType, normalSetNumber: number): SetBadge =>
   type === "normal"
     ? { text: String(normalSetNumber), label: `Set ${normalSetNumber}` }
     : OTHER_SET_BADGES[type];
+
+/** The badge of each set in order, numbering the normal sets among themselves. */
+export const setBadges = (types: ReadonlyArray<SetType>): ReadonlyArray<SetBadge> => {
+  let normal = 0;
+  return types.map((type) => {
+    if (type === "normal") normal += 1;
+    return setBadge(type, normal);
+  });
+};

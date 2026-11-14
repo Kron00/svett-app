@@ -23,16 +23,20 @@ import { MuscleSetsScreen } from "./progress/MuscleSetsScreen";
 import { CalendarScreen } from "./progress/CalendarScreen";
 import { SetEditScreen } from "./progress/SetEditScreen";
 import { WorkoutScreen } from "./progress/WorkoutScreen";
+import { RoutineDetailScreen } from "./routines/RoutineDetailScreen";
+import { EditRoutineScreen, NewRoutineScreen } from "./routines/RoutineEditorScreen";
+import { SetTargetScreen } from "./routines/SetTargetScreen";
 import { TabNavigator } from "./TabNavigator";
 import { DataScreen } from "./transfer/DataScreen";
 import { ImportPreviewScreen } from "./transfer/ImportPreviewScreen";
 import { UndoImportScreen } from "./transfer/UndoImportScreen";
+import { WorkoutScreen as ActiveWorkoutScreen } from "./workout/WorkoutScreen";
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
 
 // The scripts in scripts/sim/ open screens through these links, such as
 // svett://gallery?sheet=open, svett://exercises?q=bench, svett://progress/muscles and
-// svett://chatgpt,
+// svett://chatgpt, svett://train, svett://routine/<id> and svett://train/workout,
 // because agent-device refuses taps in screen content on iOS 27. It reads UIKit's
 // touch-transparent floating bar containers as toolbars that cover the whole screen.
 // scripts/sim/data.sh reaches export and import the same way, through svett://data,
@@ -43,7 +47,7 @@ const linking: LinkingOptions<RootStackParamList> = {
   config: {
     initialRouteName: "Tabs",
     screens: {
-      Tabs: { screens: { Progress: "progress" } },
+      Tabs: { screens: { Progress: "progress", Train: "train" } },
       Gallery: "gallery",
       ChatGPT: "chatgpt",
       NewExercise: "exercises/new",
@@ -60,6 +64,11 @@ const linking: LinkingOptions<RootStackParamList> = {
       Data: "data",
       ImportPreview: "import",
       UndoImport: "imports/:importBatchId/undo",
+      NewRoutine: "routines/new",
+      PickExercise: "routines/new/exercises",
+      EditRoutine: "routine/:id/edit",
+      Routine: "routine/:id",
+      ActiveWorkout: "train/workout",
     },
   },
 };
@@ -111,6 +120,40 @@ export default function App() {
           name="EditExercise"
           component={EditExerciseScreen}
           options={{ headerShown: true, title: "Edit exercise" }}
+        />
+        <Stack.Screen
+          name="PickExercise"
+          component={ExerciseLibraryScreen}
+          options={{ headerShown: true, title: "Add exercise", headerLargeTitle: true }}
+        />
+        <Stack.Screen
+          name="Routine"
+          component={RoutineDetailScreen}
+          options={{ headerShown: true, title: "" }}
+        />
+        <Stack.Screen
+          name="NewRoutine"
+          component={NewRoutineScreen}
+          options={{ headerShown: true, title: "New routine" }}
+        />
+        <Stack.Screen
+          name="EditRoutine"
+          component={EditRoutineScreen}
+          options={{ headerShown: true, title: "Edit routine" }}
+        />
+        <Stack.Screen
+          name="SetTarget"
+          component={SetTargetScreen}
+          options={({ route }) => ({
+            headerShown: true,
+            presentation: "modal",
+            title: `Set ${Number(route.params.set) + 1}`,
+          })}
+        />
+        <Stack.Screen
+          name="ActiveWorkout"
+          component={ActiveWorkoutScreen}
+          options={{ headerShown: true, title: "Workout" }}
         />
         <Stack.Screen
           name="PhoneChecks"

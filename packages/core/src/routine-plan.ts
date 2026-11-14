@@ -1,7 +1,18 @@
+import { Schema } from "effect";
+
 import { type DurationSeconds, formatDuration } from "./duration.ts";
+import { linkParam, linkParams } from "./link-params.ts";
 import type { PlannedSet, WorkoutStart } from "./repositories/activities.ts";
 import type { RoutineDetail, RoutineDraft, RoutineSetDraft } from "./repositories/routines.ts";
-import type { ExerciseId, Folder, FolderId, Routine, SetType } from "./schema.ts";
+import {
+  type ActivitySet,
+  type ExerciseId,
+  type Folder,
+  FolderId,
+  type Routine,
+  type RoutineId,
+  type SetType,
+} from "./schema.ts";
 import { formatWeightKg } from "./set-format.ts";
 
 /** The position after the last of `rows`, so a new row goes to the end. */
@@ -124,6 +135,40 @@ export const setTargetText = (set: TargetValues): TargetText => {
       };
 };
 
+/**
+ * What a set of a workout in progress shows: the values filled in, and the routine's rep
+ * range while the reps are still empty.
+ */
+export const plannedSetText = (
+  set: Pick<
+    ActivitySet,
+    "weightKg" | "reps" | "durationS" | "distanceM" | "targetRepsMin" | "targetRepsMax"
+  >,
+): TargetText =>
+  setTargetText({
+    weightKg: set.weightKg,
+    repsMin: set.reps ?? set.targetRepsMin,
+    repsMax: set.reps ?? set.targetRepsMax,
+    durationS: set.durationS,
+    distanceM: set.distanceM,
+  });
+
+/**
+ * Where a saved routine goes: it keeps its place while it stays in its folder, and goes to
+ * the end of the folder it is new to.
+ */
+export const routinePosition = (
+  routines: ReadonlyArray<Routine>,
+  id: RoutineId | null,
+  folderId: FolderId | null,
+): number => {
+  const current = routines.find((routine) => routine.id === id);
+  if (current !== undefined && current.folderId === folderId) return current.position;
+  return endPosition(
+    routines.filter((routine) => routine.folderId === folderId && routine.id !== id),
+  );
+};
+
 /** A set still to do in a workout started from a routine. */
 const plannedSet = ({
   setType,
@@ -192,6 +237,18 @@ export const newRoutineForm = (title = "", folderId: FolderId | null = null): Ro
   exercises: [],
   nextKey: 0,
 });
+
+/**
+ * A new routine form filled from a link such as svett://routines/new?title=Push&folder=<id>.
+ * A folder that is not a folder ID is left out.
+ */
+export const routineFormFromParams = (params: unknown): RoutineForm => {
+  const record = linkParams(params);
+  return newRoutineForm(
+    (linkParam(Schema.String, record["title"]) ?? "").slice(0, ROUTINE_TITLE_MAX_LENGTH),
+    linkParam(FolderId, record["folder"]),
+  );
+};
 
 export const routineForm = ({ routine, exercises }: RoutineDetail): RoutineForm => ({
   title: routine.title,

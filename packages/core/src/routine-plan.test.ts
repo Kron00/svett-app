@@ -13,11 +13,14 @@ import {
   moveExercise,
   moveItem,
   newRoutineForm,
+  plannedSetText,
   removeExercise,
   removeSet,
   replaceSet,
   routineForm,
+  routineFormFromParams,
   routineFromForm,
+  routinePosition,
   routineSections,
   setTargetEntry,
   setTargetFromEntry,
@@ -75,6 +78,19 @@ describe("routine order", () => {
     expect(moveItem(["a", "b", "c", "d"], 3, 1)).toEqual(["a", "d", "b", "c"]);
     expect(moveItem(["a", "b"], 1, 2)).toEqual(["a", "b"]);
     expect(moveItem(["a", "b"], -1, 0)).toEqual(["a", "b"]);
+  });
+
+  it("keeps a saved routine's place in its folder and puts a moved or new one at the end", () => {
+    const program = FolderId.make(uuid(1));
+    const routines = [
+      routine(10, "Push", 0, program),
+      routine(11, "Pull", 1, program),
+      routine(12, "Stretch", 0, null),
+    ];
+    expect(routinePosition(routines, RoutineId.make(uuid(10)), program)).toBe(0);
+    expect(routinePosition(routines, RoutineId.make(uuid(12)), program)).toBe(2);
+    expect(routinePosition(routines, RoutineId.make(uuid(10)), null)).toBe(1);
+    expect(routinePosition(routines, null, program)).toBe(2);
   });
 
   it("names a copy after the routine and skips names already taken", () => {
@@ -145,6 +161,22 @@ describe("routine text", () => {
       label: "45 seconds",
     });
     expect(setTargetText(EMPTY_TARGET)).toEqual({ text: "No target", label: "No target" });
+  });
+});
+
+describe("plannedSetText", () => {
+  const planned = {
+    weightKg: 80,
+    reps: null,
+    durationS: null,
+    distanceM: null,
+    targetRepsMin: 5,
+    targetRepsMax: 8,
+  };
+
+  it("shows the rep range while the reps are empty, and the reps once filled in", () => {
+    expect(plannedSetText(planned).text).toBe("80 kg × 5-8 reps");
+    expect(plannedSetText({ ...planned, reps: 6 }).text).toBe("80 kg × 6 reps");
   });
 });
 
@@ -278,6 +310,14 @@ describe("routine form", () => {
     );
     const changed = replaceSet(form, 0, 1, { ...EMPTY_TARGET, repsMin: 3, repsMax: 3 });
     expect(removeSet(changed, 0, 0).exercises[0]?.sets.map((set) => set.repsMin)).toEqual([3]);
+  });
+
+  it("starts a new routine from a link's name and folder, and drops what it cannot use", () => {
+    expect(routineFormFromParams({ title: "Push", folder: uuid(4) })).toEqual(
+      newRoutineForm("Push", FolderId.make(uuid(4))),
+    );
+    expect(routineFormFromParams({ title: 3, folder: "gym" })).toEqual(newRoutineForm());
+    expect(routineFormFromParams(undefined)).toEqual(newRoutineForm());
   });
 
   it("asks for a name and at least one exercise", () => {
