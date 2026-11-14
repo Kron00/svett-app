@@ -34,6 +34,15 @@ export type RootStackParamList = {
    */
   ImportPreview: { uri?: string; file?: string; kind?: "svett" | "hevy" };
   UndoImport: { importBatchId: string };
+  Account: undefined;
+  OwnProfile: undefined;
+  /** `username` fills in the field, for links such as svett://profile/edit?username=anna. */
+  EditProfile: { username?: string } | undefined;
+  FollowRequests: undefined;
+  People: { q?: string } | undefined;
+  Profile: { username: string };
+  /** `list` is followers or following, parsed by the screen. */
+  Connections: { username: string; list: string };
 };
 
 export type RootNavigation = NativeStackNavigationProp<RootStackParamList>;

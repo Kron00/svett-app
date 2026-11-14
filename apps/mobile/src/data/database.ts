@@ -21,10 +21,13 @@ const expoSqliteDriver = (database: Promise<SQLiteDatabase>): SqlDriver => ({
 
 export type DatabaseTarget =
   | { readonly kind: "owner"; readonly owner: DatabaseOwner }
-  | { readonly kind: "file"; readonly path: string };
+  | { readonly kind: "file"; readonly path: string }
+  /** An empty database in memory, for when no file on the phone may be shown. */
+  | { readonly kind: "empty" };
 
 const open = (target: DatabaseTarget) => {
   if (target.kind === "owner") return openDatabaseAsync(databaseFileName(target.owner));
+  if (target.kind === "empty") return openDatabaseAsync(":memory:");
   const slash = target.path.lastIndexOf("/");
   return openDatabaseAsync(
     target.path.slice(slash + 1),
@@ -33,30 +36,54 @@ const open = (target: DatabaseTarget) => {
   );
 };
 
-/** The database for `target`, migrated and seeded, with every repository over it. */
-export const openDatabase = (target: DatabaseTarget) =>
+const makeRuntime = (database: Promise<SQLiteDatabase>) =>
   ManagedRuntime.make(
     databaseLayer(
-      expoSqliteDriver(open(target)),
+      expoSqliteDriver(database),
       Ids.layer((bytes) => getRandomValues(bytes)),
     ),
   );
 
+export type DatabaseRuntime = ReturnType<typeof makeRuntime>;
+
+/** The database for `target`, migrated and seeded, with every repository over it. */
+export const openDatabase = (target: DatabaseTarget): DatabaseRuntime => makeRuntime(open(target));
+
+export interface DatabaseHandle {
+  readonly target: DatabaseTarget;
+  readonly runtime: DatabaseRuntime;
+  /** Stops the runtime and closes the SQLite file. The file stays on the phone. */
+  readonly close: () => Promise<void>;
+}
+
+/** Like openDatabase, with a way to close the file again, as switching accounts needs. */
+export const openDatabaseHandle = (target: DatabaseTarget): DatabaseHandle => {
+  const database = open(target);
+  const runtime = makeRuntime(database);
+  return {
+    target,
+    runtime,
+    close: async () => {
+      await runtime.dispose();
+      await (await database).closeAsync();
+    },
+  };
+};
+
 /**
- * Launching with `-svettFixture /absolute/path.db` opens that file instead of the anonymous
- * database. iOS puts `-key value` launch arguments into NSUserDefaults, which React Native's
- * Settings module reads, so this needs no native code.
+ * The file launched with `-svettFixture /absolute/path.db`, if any. iOS puts `-key value`
+ * launch arguments into NSUserDefaults, which React Native's Settings module reads, so this
+ * needs no native code.
  */
-export const launchTarget = (): DatabaseTarget => {
+export const launchFixture = (): DatabaseTarget | undefined => {
   const fixture: unknown = Settings.get("svettFixture");
   return typeof fixture === "string" && fixture.startsWith("/")
     ? { kind: "file", path: fixture }
-    : { kind: "owner", owner: ANONYMOUS };
+    : undefined;
 };
 
-let shared: ReturnType<typeof openDatabase> | undefined;
+/** The fixture when the app was launched with one, or the anonymous database. */
+export const launchTarget = (): DatabaseTarget =>
+  launchFixture() ?? { kind: "owner", owner: ANONYMOUS };
 
-/** The one database every screen reads and writes, opened on first use for this launch's target. */
-export const appDatabase = () => (shared ??= openDatabase(launchTarget()));
-
-export type AppServices = ManagedRuntime.ManagedRuntime.Services<ReturnType<typeof openDatabase>>;
+export type AppServices = ManagedRuntime.ManagedRuntime.Services<DatabaseRuntime>;

@@ -4,26 +4,62 @@ import * as DocumentPicker from "expo-document-picker";
 import { File, Paths } from "expo-file-system";
 import * as Sharing from "expo-sharing";
 
-import { appDatabase } from "../data/database";
+import { currentDatabase, type OpenDatabase, stillOpen } from "../data/current";
 import { write } from "../data/store";
+import { transferInTurn } from "../data/turns";
 
-/** Runs `body` with the transfer repository of the database this launch opened. */
+/** Runs `body` with the transfer repository of `database`, by default the open one. */
 export const withTransfers = <A, E>(
   body: (transfers: typeof TransferRepository.Service) => Effect.Effect<A, E>,
-) => appDatabase().runPromise(Effect.flatMap(Effect.service(TransferRepository), body));
+  database: OpenDatabase = currentDatabase(),
+) => database.handle.runtime.runPromise(Effect.flatMap(Effect.service(TransferRepository), body));
 
-/** Like `withTransfers`, for an import or an undo, so history and every other screen read again. */
+export const DATABASE_SWITCHED =
+  "Someone signed in or out before it ran, so svett saved nothing to either account. Open it again to see what it does to the data open now.";
+
+/**
+ * Applies an import or an undo to `database`, the one its preview was made for, so history and
+ * every other screen read again. It takes its turn with a move into an account, so a move never
+ * copies the phone's data while an import is being applied to it. When its turn comes after
+ * someone signed in or out, it refuses, because its choices were made for the other data.
+ */
 export const changeTransfers = <A, E>(
+  database: OpenDatabase,
   body: (transfers: typeof TransferRepository.Service) => Effect.Effect<A, E>,
-) => write(Effect.flatMap(Effect.service(TransferRepository), body));
+) =>
+  transferInTurn(() =>
+    stillOpen(database)
+      ? write(Effect.flatMap(Effect.service(TransferRepository), body))
+      : Promise.reject(new Error(DATABASE_SWITCHED)),
+  );
 
+/** Runs `body` with the exercise name matches of `database`, by default the open one. */
 export const withAliases = <A, E>(
   body: (aliases: typeof ExerciseAliasRepository.Service) => Effect.Effect<A, E>,
-) => appDatabase().runPromise(Effect.flatMap(Effect.service(ExerciseAliasRepository), body));
+  database: OpenDatabase = currentDatabase(),
+) =>
+  database.handle.runtime.runPromise(Effect.flatMap(Effect.service(ExerciseAliasRepository), body));
 
+/**
+ * Saves exercise name matches to `database`, the one the match screen read its names from. It
+ * takes its turn like an import and refuses after someone signed in or out, because the
+ * exercises it names belong to the other data.
+ */
+export const changeAliases = <A, E>(
+  database: OpenDatabase,
+  body: (aliases: typeof ExerciseAliasRepository.Service) => Effect.Effect<A, E>,
+) =>
+  transferInTurn(() =>
+    stillOpen(database)
+      ? write(Effect.flatMap(Effect.service(ExerciseAliasRepository), body))
+      : Promise.reject(new Error(DATABASE_SWITCHED)),
+  );
+
+/** Runs `body` with the exercises of `database`, by default the open one. */
 export const withExercises = <A, E>(
   body: (exercises: typeof ExerciseRepository.Service) => Effect.Effect<A, E>,
-) => appDatabase().runPromise(Effect.flatMap(Effect.service(ExerciseRepository), body));
+  database: OpenDatabase = currentDatabase(),
+) => database.handle.runtime.runPromise(Effect.flatMap(Effect.service(ExerciseRepository), body));
 
 /**
  * Writes the export to the cache folder and opens the share sheet on it. The copy stays in

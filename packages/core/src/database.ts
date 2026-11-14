@@ -13,6 +13,7 @@ import {
   ProposalRepository,
 } from "./repositories/records.ts";
 import { RoutineRepository } from "./repositories/routines.ts";
+import { SyncRepository } from "./repositories/sync.ts";
 import { TransferRepository } from "./repositories/transfer.ts";
 import { Sql, type SqlDriver } from "./sql.ts";
 
@@ -43,13 +44,15 @@ export const Repositories = Layer.mergeAll(
   ProgressRepository.layer,
   HistoryRepository.layer,
   TransferRepository.layer,
+  SyncRepository.layer,
 );
 
 const prepared = Layer.effectDiscard(
   Effect.gen(function* () {
     yield* migrate();
     const exercises = yield* ExerciseRepository;
-    yield* exercises.seedLibrary();
+    const sync = yield* SyncRepository;
+    yield* sync.quietly(exercises.seedLibrary());
   }),
 );
 

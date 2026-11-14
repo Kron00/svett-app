@@ -13,6 +13,9 @@ const NEXT: Migration = {
   sql: "ALTER TABLE activity ADD COLUMN place TEXT; CREATE TABLE gym (id TEXT PRIMARY KEY NOT NULL) STRICT;",
 };
 
+// Tables only this phone uses, which never sync or export.
+const SYNC_BOOKKEEPING = ["schema_version", "sync_outbox", "sync_state"];
+
 const open = () => {
   const { database, driver } = openNodeDatabase();
   const layer = Layer.merge(Sql.layer(driver), manualClock(0).layer);
@@ -32,7 +35,7 @@ describe("migrate", () => {
     const { database, run } = open();
     expect(await run(migrate())).toEqual(Exit.succeed({ from: 0, to: MIGRATIONS.length }));
     expect(tableNames(database)).toEqual(
-      [...Object.values(TABLES).map((table) => table.name), "schema_version"].toSorted(),
+      [...Object.values(TABLES).map((table) => table.name), ...SYNC_BOOKKEEPING].toSorted(),
     );
   });
 
@@ -70,9 +73,13 @@ describe("migrate", () => {
     );
     expect(await run(migrate())).toEqual(Exit.succeed({ from: 1, to: MIGRATIONS.length }));
     expect(tableNames(database)).toEqual(
-      [...Object.values(TABLES).map((table) => table.name), "schema_version"].toSorted(),
+      [...Object.values(TABLES).map((table) => table.name), ...SYNC_BOOKKEEPING].toSorted(),
     );
     expect(database.prepare("SELECT name FROM folder").all()).toEqual([{ name: "Push" }]);
+    // Rows made before sync existed upload at the first sync.
+    expect(database.prepare("SELECT table_name, row_id FROM sync_outbox").all()).toEqual([
+      { table_name: "folder", row_id: "f" },
+    ]);
   });
 
   it("does nothing when the database is already current", async () => {

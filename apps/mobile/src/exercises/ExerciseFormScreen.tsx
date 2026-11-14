@@ -25,7 +25,7 @@ import { EmptyState } from "../ui/EmptyState";
 import { ListRow, ListSection } from "../ui/List";
 import { OptionSheet } from "../ui/OptionSheet";
 import { TextField } from "../ui/TextField";
-import { useExercise, withExercises } from "./data";
+import { changeExercises, useExercise } from "./data";
 
 type Picker = "primary" | "secondary" | "equipment" | "category";
 
@@ -170,7 +170,7 @@ export function NewExerciseScreen() {
       key={JSON.stringify(params ?? {})}
       initial={exerciseFormFromParams(params)}
       onSave={async (fields) => {
-        const id = await withExercises((exercises) =>
+        const id = await changeExercises((exercises) =>
           exercises.create({ ...fields, origin: MADE_HERE }),
         );
         navigation.replace("Exercise", { id });
@@ -217,7 +217,7 @@ export function EditExerciseScreen() {
       key={exerciseId}
       initial={exerciseForm(loaded.value)}
       onSave={async (fields) => {
-        await withExercises((exercises) => exercises.update(exerciseId, fields));
+        await changeExercises((exercises) => exercises.update(exerciseId, fields));
         navigation.goBack();
       }}
     />

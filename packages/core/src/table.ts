@@ -64,9 +64,32 @@ export class RowNotFoundError extends Data.TaggedError("RowNotFoundError")<{
   readonly id: string;
 }> {}
 
-export const currentTime = Effect.map(Clock.currentTimeMillis, (millis) =>
-  Model.EpochMillis.make(millis),
+/**
+ * The time a change written here takes, from the database's hybrid logical clock: the wall
+ * clock, or one past the last time the database handed out or took from sync, whichever is
+ * later. Two writes in the same millisecond, or after the wall clock moved back, still come
+ * in order, and an edit always comes after the copy it edited. The clock is kept in the
+ * database, so it survives a restart.
+ */
+export const currentTime: Effect.Effect<Model.EpochMillis, SqlError, Sql> = Effect.gen(
+  function* () {
+    const millis = yield* Clock.currentTimeMillis;
+    const sql = yield* Sql;
+    const [row] = yield* sql.all(
+      "UPDATE sync_state SET clock = max(clock + 1, ?) WHERE id = 1 RETURNING clock",
+      [millis],
+    );
+    return Model.EpochMillis.make(Number(row?.["clock"] ?? millis));
+  },
 );
+
+/** The time the next write would take, without taking it, as a preview of one needs. */
+export const nextTime: Effect.Effect<Model.EpochMillis, SqlError, Sql> = Effect.gen(function* () {
+  const millis = yield* Clock.currentTimeMillis;
+  const sql = yield* Sql;
+  const [row] = yield* sql.all("SELECT clock FROM sync_state WHERE id = 1");
+  return Model.EpochMillis.make(Math.max(millis, Number(row?.["clock"] ?? millis - 1) + 1));
+});
 
 const encode = <A extends RowBase>(target: Table<A>, row: A) =>
   Schema.encodeEffect(target.schema)(row).pipe(
