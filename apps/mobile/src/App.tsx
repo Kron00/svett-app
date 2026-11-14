@@ -1,10 +1,6 @@
 import "../global.css";
 
-import {
-  getFocusedRouteNameFromRoute,
-  type LinkingOptions,
-  NavigationContainer,
-} from "@react-navigation/native";
+import { getFocusedRouteNameFromRoute, NavigationContainer } from "@react-navigation/native";
 import { createNativeStackNavigator } from "@react-navigation/native-stack";
 import { StatusBar } from "expo-status-bar";
 
@@ -15,6 +11,7 @@ import { ExerciseDetailScreen } from "./exercises/ExerciseDetailScreen";
 import { EditExerciseScreen, NewExerciseScreen } from "./exercises/ExerciseFormScreen";
 import { ExerciseLibraryScreen, NewExerciseButton } from "./exercises/ExerciseLibraryScreen";
 import { GalleryScreen } from "./gallery/GalleryScreen";
+import { linking } from "./linking";
 import type { RootStackParamList } from "./navigation";
 import { ExerciseProgressScreen } from "./progress/ExerciseProgressScreen";
 import { ExercisesScreen } from "./progress/ExercisesScreen";
@@ -29,40 +26,6 @@ import { ImportPreviewScreen } from "./transfer/ImportPreviewScreen";
 import { UndoImportScreen } from "./transfer/UndoImportScreen";
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
-
-// The scripts in scripts/sim/ open screens through these links, such as
-// svett://gallery?sheet=open, svett://exercises?q=bench, svett://progress/muscles and
-// svett://chatgpt,
-// because agent-device refuses taps in screen content on iOS 27. It reads UIKit's
-// touch-transparent floating bar containers as toolbars that cover the whole screen.
-// scripts/sim/data.sh reaches export and import the same way, through svett://data,
-// svett://import?file=<name> and svett://imports/<id>/undo.
-const linking: LinkingOptions<RootStackParamList> = {
-  prefixes: ["svett://"],
-  filter: (url) => !url.includes("expo-development-client"),
-  config: {
-    initialRouteName: "Tabs",
-    screens: {
-      Tabs: { screens: { Progress: "progress" } },
-      Gallery: "gallery",
-      ChatGPT: "chatgpt",
-      NewExercise: "exercises/new",
-      Exercises: "exercises",
-      EditExercise: "exercise/:id/edit",
-      Exercise: "exercise/:id",
-      ProgressExercises: "progress/exercises",
-      ExerciseProgress: "progress/exercise/:exerciseId",
-      MuscleSets: "progress/muscles",
-      Measurements: "progress/measurements",
-      Workout: "workout/:id",
-      SetEdit: "workout/:activityId/set/:setId",
-      Calendar: "calendar",
-      Data: "data",
-      ImportPreview: "import",
-      UndoImport: "imports/:importBatchId/undo",
-    },
-  },
-};
 
 export default function App() {
   return (

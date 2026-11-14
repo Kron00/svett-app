@@ -19,11 +19,11 @@ import {
 import { MIGRATIONS, migrate } from "../migrations.ts";
 import { Sql } from "../sql.ts";
 import { decodeSvettFile, type SvettFile } from "../svett-file.ts";
-import { columnOf, TABLES } from "../table.ts";
-import { openTestDatabase, T0 } from "../test-database.ts";
+import { TABLES } from "../table.ts";
+import { openTestDatabase, pointersToDeleted, T0 } from "../test-database.ts";
 import { PARENT, REFERENCES, TABLE_KEYS, undoSelection } from "../transfer.ts";
 import { type ActivityDraft, ActivityRepository } from "./activities.ts";
-import { ExerciseRepository } from "./exercises.ts";
+import { ExerciseAliasRepository, ExerciseRepository } from "./exercises.ts";
 import { MADE_HERE, type Origin } from "./origin.ts";
 import {
   CoachMessageRepository,
@@ -128,23 +128,6 @@ const workoutNow = (database: Database) => {
   };
 };
 
-/** Live rows that point at a deleted row, through a parent key or a reference. */
-const pointersToDeleted = (database: Database) =>
-  [
-    ...REFERENCES,
-    ...TABLE_KEYS.flatMap((table) => {
-      const parent = PARENT[table];
-      return parent === null ? [] : [{ table, key: parent.key, target: parent.table }];
-    }),
-  ].flatMap(({ table, key, target }) =>
-    database.database
-      .prepare(
-        `SELECT r.id FROM ${TABLES[table].name} r JOIN ${TABLES[target].name} t ON t.id = r.${columnOf(key)} WHERE r.deleted_at IS NULL AND t.deleted_at IS NOT NULL`,
-      )
-      .all()
-      .map((row) => `${TABLES[table].name}/${String(row["id"])}`),
-  );
-
 const liveExercise = (database: Database, name: string) =>
   database.database
     .prepare("SELECT deleted_at FROM exercise WHERE name = ?")
@@ -210,6 +193,9 @@ const fillEveryTable = async (database: Database) => {
         origin: MADE_HERE,
       });
       yield* activities.create(workout("Legs", sled));
+      yield* (yield* ExerciseAliasRepository).remember("hevy", [
+        { name: "Sled Push (Heavy)", exerciseId: sled },
+      ]);
       yield* activities.create({
         ...workout("Easy run"),
         kind: "run",
@@ -867,10 +853,8 @@ describe("TransferRepository", () => {
       transfers.undoImport(Option.getOrThrow(first).importBatchId, []),
     );
     const plan = await transfer(phone, (transfers) => transfers.previewImport(file));
-    expect(plan.changed.map((item) => item.title).toSorted()).toEqual([
-      "Landmine press",
-      "Push Day",
-    ]);
+    // The exercise comes back with the workout that uses it, so it is not listed on its own.
+    expect(plan.changed.map((item) => item.title)).toEqual(["Push Day"]);
     const second = await transfer(phone, (transfers) =>
       transfers.applyImport(
         file,
@@ -888,6 +872,46 @@ describe("TransferRepository", () => {
     });
     expect(liveTitles(phone)).toEqual(["Push Day"]);
     expect(liveRows(phone)["activity_set"]).toHaveLength(2);
+    expect(liveExercise(phone, "Landmine press")).toEqual([null]);
+    expect(pointersToDeleted(phone)).toEqual([]);
+  });
+
+  it("brings back the import a restored exercise came from when one workout is taken again", async () => {
+    const other = openTestDatabase(2);
+    await other.runtime.runPromise(
+      Effect.gen(function* () {
+        const imports = yield* ImportRepository;
+        const hevy = yield* imports.create("hevy");
+        yield* imports.setStatus(hevy, "applied");
+        const landmine = yield* (yield* ExerciseRepository).create({
+          name: "Landmine press",
+          category: "strength",
+          equipment: "barbell",
+          primaryMuscles: ["shoulders"],
+          secondaryMuscles: ["triceps"],
+          origin: {
+            source: "hevy",
+            sourceId: SourceIdentity.make("Landmine Press"),
+            fingerprint: Fingerprint.make(contentFingerprint({ name: "Landmine Press" })),
+            importBatchId: hevy,
+          },
+        });
+        const activities = yield* ActivityRepository;
+        yield* activities.create(workout("Push Day", landmine));
+        yield* activities.create(workout("Pull Day"));
+      }),
+    );
+    const file = await exportFile(other);
+    const phone = openTestDatabase(1);
+    const first = await transfer(phone, (transfers) => transfers.applyImport(file, []));
+    await transfer(phone, (transfers) =>
+      transfers.undoImport(Option.getOrThrow(first).importBatchId, []),
+    );
+
+    const plan = await transfer(phone, (transfers) => transfers.previewImport(file));
+    const push = plan.changed.find((item) => item.title === "Push Day")!;
+    await transfer(phone, (transfers) => transfers.applyImport(file, [push.key]));
+    expect(liveTitles(phone)).toEqual(["Push Day"]);
     expect(liveExercise(phone, "Landmine press")).toEqual([null]);
     expect(pointersToDeleted(phone)).toEqual([]);
   });
