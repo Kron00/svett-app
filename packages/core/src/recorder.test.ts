@@ -204,6 +204,24 @@ describe("the recorder", () => {
     expect(parseJournal(phone.journal).at(-1)?.type).toBe("pause");
   });
 
+  it("keeps a pause made after a crash cut the journal's last line short", async () => {
+    const first = setup();
+    await first.run(first.recorder.start("run"));
+    await first.run(first.recorder.addFixes([reading(T0, 0), reading(T0 + 1000, 3)]));
+    const whole = first.phone.journal;
+    const cut = whole.slice(0, whole.lastIndexOf("\n", whole.length - 2) + 20);
+
+    const { phone, ports } = fakePhone(cut);
+    const reopened = makeRecorder(ports);
+    expect(isPaused(reopened.get()!)).toBe(false);
+    await first.run(reopened.pause);
+    expect(isPaused(reopened.get()!)).toBe(true);
+
+    const again = makeRecorder(fakePhone(phone.journal).ports);
+    expect(isPaused(again.get()!)).toBe(true);
+    expect(again.get()?.activityId).toBe(first.recorder.get()?.activityId);
+  });
+
   it("drops readings that arrive with no recording", async () => {
     const { recorder, run, phone } = setup();
     await run(recorder.addFixes([reading(T0, 0)]));

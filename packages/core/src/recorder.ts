@@ -58,13 +58,23 @@ const attempt = (step: RecorderError["step"], run: () => Promise<void>) =>
 export const makeRecorder = (ports: RecorderPorts) => {
   const lock = Semaphore.makeUnsafe(1);
   const serially = lock.withPermits(1);
+  const left = (() => {
+    try {
+      return ports.journal.read();
+    } catch {
+      return "";
+    }
+  })();
   let current = (() => {
     try {
-      return replay(parseJournal(ports.journal.read()));
+      return replay(parseJournal(left));
     } catch {
       return undefined;
     }
   })();
+  // A crash mid-write can leave the last line cut short. The next event starts a line
+  // of its own, so replay loses only the cut line and not the event after it.
+  let cutShort = left !== "" && !left.endsWith("\n");
 
   const set = (next: Recording | undefined) => {
     current = next;
@@ -73,9 +83,9 @@ export const makeRecorder = (ports: RecorderPorts) => {
 
   const write = (events: ReadonlyArray<RecordingEvent>) =>
     Effect.gen(function* () {
-      yield* attempt("journal", () =>
-        ports.journal.append(events.map((event) => `${encodeRecordingEvent(event)}\n`).join("")),
-      );
+      const lines = events.map((event) => `${encodeRecordingEvent(event)}\n`).join("");
+      yield* attempt("journal", () => ports.journal.append(cutShort ? `\n${lines}` : lines));
+      cutShort = false;
       set(events.reduce(applyEvent, current));
     });
 
@@ -88,6 +98,7 @@ export const makeRecorder = (ports: RecorderPorts) => {
 
   const forget = Effect.gen(function* () {
     yield* attempt("journal", ports.journal.remove);
+    cutShort = false;
     set(undefined);
   });
 
