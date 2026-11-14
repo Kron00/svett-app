@@ -68,18 +68,29 @@ describe("restore scratch databases", () => {
   const now = at("2026-11-14T03:00:00Z");
   const hour = 60 * 60 * 1000;
 
-  it("names a scratch database by when it was made and a random suffix", () => {
-    expect(restoreScratchName(now, "0123456789ab")).toBe(
-      "svett_restore_1794625200000_0123456789ab",
+  it("names a scratch database by its live database, when it was made and a random suffix", () => {
+    expect(restoreScratchName("0a1b2c3d", now, "0123456789ab")).toBe(
+      "svett_restore_0a1b2c3d_1794625200000_0123456789ab",
     );
   });
 
-  it("lists only scratch databases made more than a day ago", () => {
-    const old = restoreScratchName(now - 25 * hour, "aaaaaaaaaaaa");
-    const running = restoreScratchName(now - 23 * hour, "bbbbbbbbbbbb");
+  it("lists only scratch databases of its own live database made more than a day ago", () => {
+    const old = restoreScratchName("0a1b2c3d", now - 25 * hour, "aaaaaaaaaaaa");
+    const running = restoreScratchName("0a1b2c3d", now - 23 * hour, "bbbbbbbbbbbb");
+    const otherLive = restoreScratchName("ffffffff", now - 25 * hour, "cccccccccccc");
     expect(
       staleRestoreScratches(
-        [old, running, "svett", "svett_restore_check", "svett_restore_1_aaaaaaaaaaaa", "postgres"],
+        [
+          old,
+          running,
+          otherLive,
+          "svett",
+          "svett_restore_check",
+          "svett_restore_1794535200000_aaaaaaaaaaaa",
+          "svett_restore_0a1b2c3d_1_aaaaaaaaaaaa",
+          "postgres",
+        ],
+        "0a1b2c3d",
         now,
       ),
     ).toEqual([old]);

@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 
 import { restoreScratchName, staleRestoreScratches } from "@svett/core";
 import { Clock, Data, Duration, Effect, Option, Redacted } from "effect";
@@ -50,6 +50,19 @@ const countTables = Effect.gen(function* () {
   `;
   return rows[0]?.tables ?? 0;
 });
+
+/**
+ * The tag in the scratch database names of the live database `name`. Advisory locks
+ * only reach sessions on the same database, and every check and sweep locks on its
+ * live database, so a sweep must only consider scratch databases with its own tag.
+ */
+export const scratchTag = (name: string) =>
+  createHash("sha256").update(name).digest("hex").slice(0, 8);
+
+const liveTag = (live: Redacted.Redacted) =>
+  onLive(live, (sql) => sql<{ readonly name: string }>`select current_database() as name`).pipe(
+    Effect.map((rows) => scratchTag(rows[0]?.name ?? "")),
+  );
 
 /** The advisory lock class of restore scratch databases. Each one's key is its name's hash. */
 const SCRATCH_LOCK_CLASS = 0x7376;
@@ -108,7 +121,7 @@ export const checkRestore = (
 ) =>
   Effect.gen(function* () {
     const suffix = yield* Effect.sync(() => randomBytes(6).toString("hex"));
-    const name = restoreScratchName(yield* Clock.currentTimeMillis, suffix);
+    const name = restoreScratchName(yield* liveTag(live), yield* Clock.currentTimeMillis, suffix);
     const restored = yield* owningScratch(
       live,
       name,
@@ -141,9 +154,9 @@ export const checkRestore = (
   });
 
 /**
- * Drops the scratch databases more than a day old that no running check owns, which
- * checks that crashed left behind. It holds each one's ownership lock while it drops
- * it, and skips any whose lock another session holds.
+ * Drops the scratch databases of `live` more than a day old that no running check
+ * owns, which checks that crashed left behind. It holds each one's ownership lock
+ * while it drops it, and skips any whose lock another session holds.
  */
 export const dropStaleRestoreDatabases = (live: Redacted.Redacted) =>
   Effect.gen(function* () {
@@ -153,6 +166,7 @@ export const dropStaleRestoreDatabases = (live: Redacted.Redacted) =>
     );
     const stale = staleRestoreScratches(
       rows.map(({ datname }) => datname),
+      yield* liveTag(live),
       yield* Clock.currentTimeMillis,
     );
     const dropped = yield* Effect.forEach(stale, (name) =>

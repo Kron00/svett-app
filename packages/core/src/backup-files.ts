@@ -32,22 +32,29 @@ export const newestBackupsFirst = (names: ReadonlyArray<string>): Array<string> 
 export const backupsToPrune = (names: ReadonlyArray<string>, keep: number): Array<string> =>
   newestBackupsFirst(names).slice(Math.max(1, keep));
 
-const SCRATCH_PATTERN = /^svett_restore_(\d{13})_[0-9a-f]{12}$/;
+const SCRATCH_PATTERN = /^svett_restore_([0-9a-f]{8})_(\d{13})_[0-9a-f]{12}$/;
 const SCRATCH_STALE_MILLIS = 24 * 60 * 60 * 1000;
 
 /**
- * The scratch database a restore check creates at `epochMillis`. `suffix` is 12
- * random hex digits, so checks that start together on other servers never share one.
+ * The scratch database a restore check of the live database tagged `tag` creates at
+ * `epochMillis`. `tag` is 8 hex digits that stand for the live database, so each live
+ * database only ever sweeps its own. `suffix` is 12 random hex digits, so checks that
+ * start together on other servers never share one.
  */
-export const restoreScratchName = (epochMillis: number, suffix: string): string =>
-  `svett_restore_${String(epochMillis).padStart(13, "0")}_${suffix}`;
+export const restoreScratchName = (tag: string, epochMillis: number, suffix: string): string =>
+  `svett_restore_${tag}_${String(epochMillis).padStart(13, "0")}_${suffix}`;
 
 /**
- * The restore scratch databases created more than a day before `now`. A check that
- * crashed left them behind. Younger ones may belong to a check still running.
+ * The scratch databases of the live database tagged `tag` created more than a day
+ * before `now`. A check that crashed left them behind. Younger ones may belong to a
+ * check still running.
  */
-export const staleRestoreScratches = (names: ReadonlyArray<string>, now: number): Array<string> =>
+export const staleRestoreScratches = (
+  names: ReadonlyArray<string>,
+  tag: string,
+  now: number,
+): Array<string> =>
   names.filter((name) => {
     const match = SCRATCH_PATTERN.exec(name);
-    return match !== null && now - Number(match[1]) > SCRATCH_STALE_MILLIS;
+    return match !== null && match[1] === tag && now - Number(match[2]) > SCRATCH_STALE_MILLIS;
   });

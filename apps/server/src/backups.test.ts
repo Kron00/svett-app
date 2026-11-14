@@ -11,7 +11,7 @@ import { Backups, NightlyBackups } from "./backups.ts";
 import { ServerConfig } from "./config.ts";
 import { databaseLayer, migrate } from "./database.ts";
 import { type PgToolCommands, PgTools } from "./pg-tools.ts";
-import { checkRestore, dropStaleRestoreDatabases, restoreBackup } from "./restore.ts";
+import { checkRestore, dropStaleRestoreDatabases, restoreBackup, scratchTag } from "./restore.ts";
 import { startTestPostgres, type TestPostgres } from "./test-postgres.ts";
 
 let postgres: TestPostgres;
@@ -25,7 +25,12 @@ afterAll(async () => {
   await postgres?.stop();
 });
 
-const newDatabase = () => postgres.createDatabase(`test_${++databases}`);
+const newLive = async () => {
+  const name = `test_${++databases}`;
+  return { tag: scratchTag(name), url: await postgres.createDatabase(name) };
+};
+
+const newDatabase = async () => (await newLive()).url;
 
 const tempDir = async () => mkdtemp(join(tmpdir(), "svett-backups-"));
 
@@ -351,11 +356,11 @@ describe("server backups", { timeout: 120_000 }, () => {
   });
 
   it("drops scratch databases older than a day on start and keeps younger ones", async () => {
-    const source = await newDatabase();
+    const { tag, url: source } = await newLive();
     await seed(source);
     const dir = await tempDir();
-    const crashed = restoreScratchName(Date.now() - 25 * HOUR, "aaaaaaaaaaaa");
-    const running = restoreScratchName(Date.now() - HOUR, "bbbbbbbbbbbb");
+    const crashed = restoreScratchName(tag, Date.now() - 25 * HOUR, "aaaaaaaaaaaa");
+    const running = restoreScratchName(tag, Date.now() - HOUR, "bbbbbbbbbbbb");
     await postgres.createDatabase(crashed);
     await postgres.createDatabase(running);
     const layer = backupsLayer(source, dir);
@@ -375,7 +380,7 @@ describe("server backups", { timeout: 120_000 }, () => {
   });
 
   it("keeps an old scratch database that a running restore check still owns", async () => {
-    const source = await newDatabase();
+    const { tag, url: source } = await newLive();
     await seed(source);
     const dir = await tempDir();
     const backup = await Effect.runPromise(takeNow.pipe(Effect.provide(backupsLayer(source, dir))));
@@ -400,7 +405,39 @@ describe("server backups", { timeout: 120_000 }, () => {
     );
 
     expect(seen.owned).toHaveLength(1);
-    expect(seen.owned[0]).toMatch(new RegExp(`^svett_restore_${startedAt}_[0-9a-f]{12}$`));
+    expect(seen.owned[0]).toMatch(new RegExp(`^svett_restore_${tag}_${startedAt}_[0-9a-f]{12}$`));
+    expect(seen.dropped).toEqual([]);
+    expect(seen.left).toEqual(seen.owned);
+    expect(seen.tables).toBe(2);
+    expect(await scratchDatabases()).toEqual([]);
+  });
+
+  it("keeps an old scratch database that a check of another live database owns", async () => {
+    const owner = await newDatabase();
+    const sweeper = await newDatabase();
+    await seed(owner);
+    const dir = await tempDir();
+    const backup = await Effect.runPromise(takeNow.pipe(Effect.provide(backupsLayer(owner, dir))));
+    const gate = join(dir, "gate");
+
+    const seen = await Effect.runPromise(
+      Effect.gen(function* () {
+        const fiber = yield* Effect.forkChild(
+          checkRestore(backup.file, owner).pipe(
+            frozenAt(Date.now() - 25 * HOUR),
+            Effect.provide(PgTools.layer(restoreAfter(gate))),
+          ),
+        );
+        const owned = yield* untilScratch;
+        const dropped = yield* dropStaleRestoreDatabases(sweeper);
+        const left = yield* Effect.promise(scratchDatabases);
+        yield* Effect.promise(() => writeFile(gate, ""));
+        const tables = yield* Fiber.join(fiber);
+        return { owned, dropped, left, tables };
+      }),
+    );
+
+    expect(seen.owned).toHaveLength(1);
     expect(seen.dropped).toEqual([]);
     expect(seen.left).toEqual(seen.owned);
     expect(seen.tables).toBe(2);
@@ -408,8 +445,8 @@ describe("server backups", { timeout: 120_000 }, () => {
   });
 
   it("drops an old scratch database that no restore check owns", async () => {
-    const source = await newDatabase();
-    const crashed = restoreScratchName(Date.now() - 25 * HOUR, "cccccccccccc");
+    const { tag, url: source } = await newLive();
+    const crashed = restoreScratchName(tag, Date.now() - 25 * HOUR, "cccccccccccc");
     await postgres.createDatabase(crashed);
 
     const dropped = await Effect.runPromise(dropStaleRestoreDatabases(source));
