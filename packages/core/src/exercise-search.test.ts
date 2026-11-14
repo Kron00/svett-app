@@ -94,6 +94,13 @@ describe("searchExercises", () => {
     expect(search(exercises, "DÉVELOPPÉ")).toEqual(["Développé couché"]);
   });
 
+  it("finds a custom exercise named in a script other than Latin, and only that one", () => {
+    const own = [exercise("深蹲"), exercise("卧推"), exercise("Жим лёжа"), exercise("Bench Press")];
+    expect(search(own, "深蹲")).toEqual(["深蹲"]);
+    expect(search(own, "卧推")).toEqual(["卧推"]);
+    expect(search(own, "жим")).toEqual(["Жим лёжа"]);
+  });
+
   it("finds nothing for words that are not in any name", () => {
     expect(search([exercise("Bench Press")], "bench curl")).toEqual([]);
   });

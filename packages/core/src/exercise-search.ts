@@ -14,14 +14,14 @@ const LETTERS: Readonly<Record<string, string>> = {
   þ: "th",
 };
 
-/** Lowercase words of letters and digits, with accents and punctuation removed. */
+/** Lowercase words of letters and digits in any script, with accents and punctuation removed. */
 export const foldText = (text: string): string =>
   text
     .normalize("NFKD")
     .replaceAll(/\p{M}/gu, "")
     .toLowerCase()
     .replaceAll(/[ßæøœłđþ]/g, (letter) => LETTERS[letter] ?? letter)
-    .replaceAll(/[^a-z0-9]+/g, " ")
+    .replaceAll(/[^\p{L}\p{N}]+/gu, " ")
     .trim();
 
 export type ExerciseFilter = {
