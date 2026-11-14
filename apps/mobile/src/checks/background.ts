@@ -14,6 +14,7 @@ import { createStore } from "./store";
 export const awayWindows = createStore<ReadonlyArray<AwayWindow>>([]);
 
 AppState.addEventListener("change", (state) => {
+  console.warn("svett-diag appstate", state, Date.now());
   const windows = awayWindows.get();
   const last = windows.at(-1);
   const away = last !== undefined && last.to === undefined;
@@ -41,6 +42,7 @@ export const notificationsInSvett = createStore<ReadonlyMap<string, number>>(new
 // saved with the pending check before the check can see it and forget that record. Otherwise
 // a restart would find neither and judge it not delivered.
 Notifications.addNotificationReceivedListener(async (notification) => {
+  console.warn("svett-diag received", notification.request.identifier, notification.date, AppState.currentState);
   const at = deliveredInFront(AppState.currentState, notification.date);
   if (at === undefined) return;
   const id = notification.request.identifier;

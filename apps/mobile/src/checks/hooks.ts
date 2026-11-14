@@ -80,10 +80,22 @@ export function useNotificationCheck() {
   useEffect(() => {
     const look = async () => {
       const pending = scheduled.current;
+      console.warn("svett-diag look", JSON.stringify(pending), Date.now());
       if (pending === undefined) return;
-      const shown = await shownAt(pending.id);
+      let shown: number | undefined;
+      try {
+        const presented = await Notifications.getPresentedNotificationsAsync();
+        console.warn("svett-diag presented", JSON.stringify(presented.map((n) => [n.request.identifier, n.date])));
+        const tapped = Notifications.getLastNotificationResponse();
+        console.warn("svett-diag tapped", JSON.stringify(tapped?.notification.request.identifier));
+        shown = await shownAt(pending.id);
+      } catch (error) {
+        console.warn("svett-diag shownAt threw", String(error));
+        throw error;
+      }
       const inSvett = notificationsInSvett.get().get(pending.id);
       const next = findNotification(pending, { inSvett, shown }, Date.now());
+      console.warn("svett-diag next", JSON.stringify({ shown, inSvett, next }), scheduled.current === pending);
       if (next.kind === "scheduled" || scheduled.current !== pending) return;
       scheduled.current = undefined;
       void forgetPendingNotification();
@@ -98,7 +110,8 @@ export function useNotificationCheck() {
     });
     // Polls instead of waiting for AppState, because in a Release run on the simulator the
     // check had not found the notification after svett came back to the front.
-    const timer = setInterval(() => void look(), 1000);
+    console.warn("svett-diag mount");
+    const timer = setInterval(() => void look().catch((e) => console.warn("svett-diag reject", String(e))), 1000);
     const unsubscribe = notificationsInSvett.subscribe(() => void look());
     return () => {
       clearInterval(timer);
@@ -117,6 +130,7 @@ export function useNotificationCheck() {
         seconds: NOTIFICATION_DELAY_S,
       },
     });
+    console.warn("svett-diag scheduled", id, dueAt);
     scheduled.current = { id, dueAt };
     void savePendingNotification({ id, dueAt });
     setObservation({ kind: "scheduled", dueAt });
