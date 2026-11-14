@@ -3,7 +3,7 @@ import { Effect, Layer, Schema } from "effect";
 import { Ids } from "./ids.ts";
 import { migrate } from "./migrations.ts";
 import { ActivityRepository } from "./repositories/activities.ts";
-import { ExerciseRepository } from "./repositories/exercises.ts";
+import { ExerciseAliasRepository, ExerciseRepository } from "./repositories/exercises.ts";
 import { ProgressRepository } from "./repositories/progress.ts";
 import { HistoryRepository } from "./repositories/history.ts";
 import {
@@ -35,6 +35,7 @@ export const databaseFileName = (owner: DatabaseOwner): string =>
 export const Repositories = Layer.mergeAll(
   ActivityRepository.layer,
   ExerciseRepository.layer,
+  ExerciseAliasRepository.layer,
   RoutineRepository.layer,
   MeasurementRepository.layer,
   ImportRepository.layer,
