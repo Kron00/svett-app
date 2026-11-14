@@ -935,7 +935,10 @@ case "\$args" in
   *' get text id="workout-records" '*) echo "Records, 3" ;;
   *' get text id="calendar-month" '*) echo "October 2026" ;;
   *' get text id="calendar-count" '*) echo "13 workouts in October 2026" ;;
+  *' wait id="history-row" '*) exit 1 ;;
   *' is visible id="history-row" '*)
+    # The first row starts below the fold until a scroll brings it up.
+    grep -q -- '--until id="history-row"' "$root/bound-calls" || exit 1
     scrolls=\$(grep -c ' scroll down\$' "$root/bound-calls" || true)
     [[ -z "\${FAKE_BLANK_AFTER:-}" ]] || ((scrolls < FAKE_BLANK_AFTER)) ;;
   *' is visible id="workout-older" '*)
@@ -998,8 +1001,8 @@ check "history.sh shoots at the largest text size, then restores the default" \
   only_calls "settings" "settings text-size accessibility-extra-extra-extra-large" "settings text-size large"
 check "history.sh scrolls the history list until the oldest workout's row is on screen" \
   test "$(grep -cxF -- "$bound_prefix scroll down" "$root/bound-calls")" -eq 120
-check "history.sh looks for rows after each scroll" \
-  test "$(grep -cxF -- "$bound_prefix is visible id=\"history-row\"" "$root/bound-calls")" -eq 120
+check "history.sh looks for rows after each scroll, after scrolling to the first" \
+  test "$(grep -cxF -- "$bound_prefix is visible id=\"history-row\"" "$root/bound-calls")" -eq 121
 check "history.sh clears the weight and types 222.5 on the keypad" \
   only_calls "get attrs label" \
   'get attrs label="Delete"' 'get attrs label="Delete"' 'get attrs label="Delete"' 'get attrs label="Delete"' \

@@ -155,8 +155,10 @@ fi
 agent_device wait "$progress_tab" 120000
 agent_device press "$progress_tab"
 agent_device wait 'id="history-list"' 10000
-agent_device wait 'id="history-row"' 30000
 expect_text 'id="workout-counts"' "300 workouts"
+# The progress sections and the streak sit above the rows, so at the largest text
+# size the first row starts below the fold.
+reveal 'id="history-row"'
 screenshot history
 
 # The list loads 60 workouts at a time as it nears its end, and Legend List draws
