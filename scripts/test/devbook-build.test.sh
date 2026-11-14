@@ -26,7 +26,8 @@ cat >"$fake/pnpm" <<'EOF'
 case "$1 $2" in
   "install --frozen-lockfile") ;;
   "exec fingerprint") printf '{"hash":"%s"}' "$(cat native-inputs)" ;;
-  "fixture --out") echo "fake fixture" >"$3" ;;
+  "fixture --out")
+    if [[ -n "${FAKE_FIXTURE_DB:-}" ]]; then cp "$FAKE_FIXTURE_DB" "$3"; else echo "fake fixture" >"$3"; fi ;;
   "exec expo")
     rm -rf ios
     mkdir -p ios
@@ -880,4 +881,163 @@ check "exercises.sh fails when the first result is not the library exercise" tes
 check "exercises.sh names the result it found instead" \
   grep -qxF 'The first result was not "Barbell Squat". Its label is "Barbell Squat Jump, Chest · Cable".' "$output"
 
+# A fixture with the rows history.sh reads: an older and a newest workout, one
+# deleted later still, and the newest workout's warm-up and first normal set.
+history_fixture="$root/history-fixture.db"
+cat >"$root/history-fixture.cjs" <<'EOF'
+const { DatabaseSync } = require("node:sqlite");
+const database = new DatabaseSync(process.argv[2]);
+database.exec(`
+  CREATE TABLE activity (id TEXT, started_at INTEGER, deleted_at INTEGER);
+  CREATE TABLE activity_exercise (id TEXT, activity_id TEXT, position INTEGER);
+  CREATE TABLE activity_set (
+    id TEXT, activity_exercise_id TEXT, position INTEGER, set_type TEXT, reps INTEGER, deleted_at INTEGER
+  );
+  INSERT INTO activity VALUES ('older', 1, NULL), ('newest', 2, NULL), ('gone', 3, 4);
+  INSERT INTO activity_exercise VALUES ('newest-squat', 'newest', 0), ('older-squat', 'older', 0);
+  INSERT INTO activity_set VALUES
+    ('warm-up', 'newest-squat', 0, 'warm_up', 10, NULL),
+    ('first', 'newest-squat', 1, 'normal', 8, NULL),
+    ('older-set', 'older-squat', 0, 'normal', 5, NULL);
+`);
+EOF
+node "$root/history-fixture.cjs" "$history_fixture" 2>/dev/null
+
+# Stands in for the bound command on the Progress screens. It counts 300 workouts,
+# 299 after a press on Delete workout and 300 again after Undo, unless
+# FAKE_UNDO_BROKEN. The set reads its new weight after Save unless FAKE_EDIT_LOST.
+# The history list shows no row after FAKE_BLANK_AFTER scrolls. Every element has
+# the same frame.
+cat >"$fake/history-device" <<EOF
+#!/usr/bin/env bash
+echo "\$*" >>"$root/bound-calls"
+state="$root/history-state"
+mkdir -p "\$state"
+flag() { [[ -e "\$state/\$1" ]]; }
+args=" \$* "
+case "\$args" in
+  *" get attrs "*)
+    echo "\$*" >"\$state/last-attrs"
+    echo '{"label": "Save", "rect": {"x": 20, "y": 300, "width": 120, "height": 40}}' ;;
+  *" press "*)
+    attrs=\$(cat "\$state/last-attrs" 2>/dev/null || true)
+    case "\$attrs" in
+      *workout-delete*) touch "\$state/deleted" ;;
+      *undo-delete*) [[ -n "\${FAKE_UNDO_BROKEN:-}" ]] || rm -f "\$state/deleted"; touch "\$state/undone" ;;
+      *set-edit-save*) [[ -n "\${FAKE_EDIT_LOST:-}" ]] || touch "\$state/edited" ;;
+      *workout-save-routine*) touch "\$state/routine" ;;
+    esac ;;
+  *' get text id="workout-counts" '*)
+    if flag deleted; then echo "299 workouts, 6000 sets"; else echo "300 workouts, 6023 sets"; fi ;;
+  *' get text id="set-first" '*)
+    if flag edited; then echo "Set 1, 222.5 kg × 8, Heaviest weight record"; else echo "Set 1, 92.5 kg × 8"; fi ;;
+  *' get text id="workout-records" '*) echo "Records, 3" ;;
+  *' get text id="calendar-month" '*) echo "October 2026" ;;
+  *' get text id="calendar-count" '*) echo "13 workouts in October 2026" ;;
+  *' is visible id="history-row" '*)
+    scrolls=\$(grep -c ' scroll down\$' "$root/bound-calls" || true)
+    [[ -z "\${FAKE_BLANK_AFTER:-}" ]] || ((scrolls < FAKE_BLANK_AFTER)) ;;
+  *' wait id="undo-delete-banner" '*) flag deleted ;;
+  *' wait absent id="undo-delete-banner" '*) flag undone ;;
+  *' wait id="routine-saved" '*) flag routine ;;
+esac
+EOF
+chmod +x "$fake/history-device"
+
+# run_history [VAR=value...] [history.sh args...] leaves the exit status in history_status.
+run_history() {
+  local -a vars=()
+  while [[ "${1:-}" == *=* ]]; do
+    vars+=("$1")
+    shift
+  done
+  rm -rf "$root/simctl-calls" "$root/bound-calls" "$root/history-state" "$root/data container"
+  history_status=0
+  env PATH="$fake:$PATH" FAKE_FIXTURE_DB="$history_fixture" \
+    SVETT_DEVICE_CMD="history-device --session 't3-test session' --device FAKE-UDID" \
+    "${vars[@]}" "$repo/scripts/sim/history.sh" "$@" >"$output" 2>&1 || history_status=$?
+}
+
+history_sh() {
+  run_history "$@"
+  [[ "$history_status" == 0 ]] || fail "history.sh $* failed"
+}
+
+history_failed() {
+  [[ "$history_status" != 0 ]] || fail "history.sh succeeded"
+  grep -qF -- "$1" "$output" || fail "history.sh did not say \"$1\""
+}
+
+# only_screen_presses_at_centres checks every press is the Progress tab by selector or a point.
+only_screen_presses_at_centres() {
+  if grep -E -- "^$bound_prefix press " "$root/bound-calls" |
+    grep -vxF -e "$bound_prefix press label=\"Progress, tab, 3 of 5\"" -e "$bound_prefix $centre_press" >>"$output"; then
+    fail "history.sh pressed screen content by selector"
+  fi
+}
+
+history_links=(
+  "com.kron00.svett svett://workout/newest"
+  "com.kron00.svett svett://workout/newest/set/first"
+  "com.kron00.svett svett://calendar?month=2026-10"
+)
+history_fixture_args="--launch-args=-svettFixture --launch-args=$root/data container/Documents/svett-fixture.db"
+
+case_name="history.sh Debug with SVETT_DEVICE_CMD"
+history_sh "$root/history"
+check "history.sh copies the generated fixture into the app's data container" \
+  cmp -s "$history_fixture" "$root/data container/Documents/svett-fixture.db"
+check "history.sh relaunches into the dev client on the fixture, then opens the newest workout, its first normal set and the calendar" \
+  only_open "$debug_open $history_fixture_args" "${history_links[@]}"
+check "history.sh shoots at the largest text size, then restores the default" \
+  only_calls "settings" "settings text-size accessibility-extra-extra-extra-large" "settings text-size large"
+check "history.sh scrolls the history list 30 screens and looks for rows after each" \
+  test "$(grep -cxF -- "$bound_prefix scroll down" "$root/bound-calls")" -eq 30
+check "history.sh clears the weight and types 222.5 on the keypad" \
+  only_calls "get attrs label" \
+  'get attrs label="Delete"' 'get attrs label="Delete"' 'get attrs label="Delete"' 'get attrs label="Delete"' \
+  'get attrs label="Delete"' 'get attrs label="Delete"' 'get attrs label="Delete"' \
+  'get attrs label="2"' 'get attrs label="2"' 'get attrs label="2"' \
+  'get attrs label="Decimal point"' 'get attrs label="5"'
+check "history.sh saves the set, the routine, deletes and undoes, in that order" \
+  only_calls "get attrs id" 'get attrs id="set-edit-save"' 'get attrs id="workout-save-routine"' \
+  'get attrs id="workout-delete"' 'get attrs id="undo-delete"'
+check "history.sh reads the edited set back from the workout's detail" bound_got "$bound_prefix get text id=\"set-first\""
+check "history.sh presses tabs by selector and screen content only at an element's centre" \
+  only_screen_presses_at_centres
+check "history.sh screenshots each step of the proof" \
+  only_calls "screenshot" \
+  "screenshot $root/history/01-history.png" "screenshot $root/history/02-history-scroll-10.png" \
+  "screenshot $root/history/03-history-scroll-20.png" "screenshot $root/history/04-history-scroll-30.png" \
+  "screenshot $root/history/05-workout.png" "screenshot $root/history/06-muscle-split.png" \
+  "screenshot $root/history/07-set-before-edit.png" "screenshot $root/history/08-set-edit.png" \
+  "screenshot $root/history/09-set-typed.png" "screenshot $root/history/10-set-edited.png" \
+  "screenshot $root/history/11-records.png" "screenshot $root/history/12-saved-as-routine.png" \
+  "screenshot $root/history/13-deleted.png" "screenshot $root/history/14-undone.png" \
+  "screenshot $root/history/15-calendar.png" "screenshot $root/history/16-calendar-month.png"
+check "history.sh with SVETT_DEVICE_CMD calls neither simctl launch nor openurl" no_simctl_launch_or_openurl
+
+case_name="history.sh Release with SVETT_DEVICE_CMD"
+history_sh --release "$root/history-release"
+check "history.sh Release relaunches the installed app on the fixture without Metro" \
+  only_open "com.kron00.svett --relaunch $history_fixture_args" "${history_links[@]}"
+
+case_name="history.sh when the history list goes blank"
+run_history FAKE_BLANK_AFTER=12 "$root/history-blank"
+check "history.sh fails on a screen of the history list with no row" \
+  history_failed "The history list showed no row after scroll 12"
+check "history.sh screenshots the blank screen" \
+  bound_got "$bound_prefix screenshot $root/history-blank/03-blank-after-scroll-12.png"
+check "history.sh restores the default text size after a failure" \
+  only_calls "settings" "settings text-size accessibility-extra-extra-extra-large" "settings text-size large"
+
+case_name="history.sh when the edit does not show"
+run_history FAKE_EDIT_LOST=1 "$root/history-edit"
+check "history.sh fails when the detail does not show the edited set" \
+  history_failed 'Expected id="set-first" to show "222.5 kg × 8"'
+
+case_name="history.sh when Undo does not bring the workout back"
+run_history FAKE_UNDO_BROKEN=1 "$root/history-undo"
+check "history.sh fails when the count does not come back to 300" \
+  history_failed 'Expected id="workout-counts" to show "300 workouts"'
 echo "$passed passed"
