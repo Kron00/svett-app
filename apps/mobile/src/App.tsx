@@ -5,6 +5,7 @@ import { createNativeStackNavigator } from "@react-navigation/native-stack";
 import { StatusBar } from "expo-status-bar";
 
 import { ChatGPTScreen } from "./chatgpt/ChatGPTScreen";
+import { ProposalScreen } from "./coach/ProposalScreen";
 import { PhoneChecksScreen } from "./checks/PhoneChecksScreen";
 import { markLaunchOnNextFrame } from "./data/launch-timing";
 import { useNavigationTheme } from "./design/hooks";
@@ -67,6 +68,11 @@ export default function App() {
           name="ChatGPT"
           component={ChatGPTScreen}
           options={{ headerShown: true, title: "ChatGPT" }}
+        />
+        <Stack.Screen
+          name="Proposal"
+          component={ProposalScreen}
+          options={{ headerShown: true, title: "Coach proposal" }}
         />
         <Stack.Screen
           name="Exercises"
