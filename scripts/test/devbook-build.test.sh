@@ -564,7 +564,9 @@ check "checks.sh waits for the banner on the Home Screen, then keeps svett away 
 check "checks.sh moves the simulator along a route for the GPS check" grep -qE \
   '^simctl location FAKE-UDID start --speed=3 --interval=1( -?[0-9.]+,-?[0-9.]+){2,}$' "$root/simctl-calls"
 check "checks.sh clears the simulated route when it ends" simctl_got "simctl location FAKE-UDID clear"
-check "checks.sh shows svett dark, its only appearance" bound_got "$bound_prefix settings appearance dark"
+check "checks.sh shoots at the largest text size, then restores the default" \
+  only_calls "settings text-size|settings appearance" \
+  "settings text-size accessibility-extra-extra-extra-large" "settings text-size large"
 check "checks.sh cancels the ChatGPT sign-in sheet" bound_got "$bound_prefix alert dismiss"
 check "checks.sh saves the copied report" grep -qxF "fake phone check report" "$root/checks/report.txt"
 check "checks.sh says in the report that GPS ran on the Home Screen, since the simulator cannot lock" \

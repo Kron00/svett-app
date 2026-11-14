@@ -4,11 +4,11 @@
 #
 # Usage: scripts/sim/checks.sh [--release] [out-dir]
 #
-# It opens Phone checks from the You tab and resets the checks. Then it relaunches
-# for the Keychain check, runs the notification check and leaves svett at once, runs
-# Apple Health and allows it when its sheet shows, runs GPS on a simulated route
-# with svett in the background for 70 seconds, and opens the ChatGPT sign-in sheet
-# and cancels it. After each step that leaves svett it brings svett back to Phone
+# At the largest text size, it opens Phone checks from the You tab and resets the
+# checks. Then it relaunches for the Keychain check, runs the notification check
+# and leaves svett at once, runs Apple Health and allows it when its sheet shows,
+# runs GPS on a simulated route with svett in the background for 70 seconds, and
+# opens the ChatGPT sign-in sheet and cancels it. After each step that leaves svett it brings svett back to Phone
 # checks, and it stops before a scroll or press when svett is not in front. Last
 # it relaunches, copies the report and saves the clipboard as report.txt, with a
 # note on what the simulator cannot show.
@@ -64,6 +64,7 @@ open_flags=(--relaunch ${front_flags[@]+"${front_flags[@]}"})
 
 restore() {
   xcrun simctl location "$udid" clear || true
+  agent_device settings text-size large || true
   [[ -n "${SVETT_DEVICE_CMD:-}" ]] || agent_device close || true
 }
 trap restore EXIT
@@ -160,8 +161,8 @@ accept_alerts() {
   done
 }
 
-# svett is dark only, so its proof is too.
-agent_device settings appearance dark
+# Proof is at the largest text size. A running app adopts it only when it relaunches.
+agent_device settings text-size accessibility-extra-extra-extra-large
 relaunch
 tap 'id="reset-checks"'
 agent_device wait 2000
