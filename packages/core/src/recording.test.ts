@@ -349,7 +349,14 @@ const pausedWalks = (speed: number, seconds: number, walks = 10) => {
 };
 
 /** A walk round a city block, about 900 m, with no speeds, as a GPX file has it. */
-const BLOCK = [point(0, 0), point(250, 0), point(250, 180), point(120, 260), point(0, 180), point(0, 0)];
+const BLOCK = [
+  point(0, 0),
+  point(250, 0),
+  point(250, 180),
+  point(120, 260),
+  point(0, 180),
+  point(0, 0),
+];
 const gpxWalk = (seed: number, every: number) => {
   // A phone's error drifts slowly, half a metre a second, and stays 1 m to 5 m off.
   const error = wandering(seed, 0.5, 1, 5);
@@ -359,7 +366,11 @@ const gpxWalk = (seed: number, every: number) => {
     const { latitude, longitude } = event.fix;
     return {
       ...event,
-      fix: { ...event.fix, latitude: latitude + north / DEGREE_M, longitude: longitude + east / DEGREE_M },
+      fix: {
+        ...event.fix,
+        latitude: latitude + north / DEGREE_M,
+        longitude: longitude + east / DEGREE_M,
+      },
     };
   });
 };
@@ -676,10 +687,10 @@ const MOVEMENT: ReadonlyArray<MovementCase> = [
   },
   ...[0.1, 0.25, 0.5, 1].flatMap((speed) =>
     [3, 5, 10].map((accuracyM): MovementCase => ({
-      name: `300 m in a straight line at ${speed} m/s, read to ${accuracyM} m with no speeds, comes within ${speed < 1 ? 7 : 1}%`,
+      name: `300 m in a straight line at ${speed} m/s, read to ${accuracyM} m with no speeds, comes within ${speed < 1 ? 13 : 1}%`,
       kind: "walk",
       events: along([point(0, 0), point(0, 300)], speed, { accuracyM: () => accuracyM }),
-      expect: { near: 300, within: speed < 1 ? 0.07 : 0.01, live: speed < 1 ? 0.07 : 0.01 },
+      expect: { near: 300, within: speed < 1 ? 0.13 : 0.01, live: speed < 1 ? 0.13 : 0.01 },
     })),
   ),
   // Out and back by less than the gate around where it began, with no speeds, is drift.
@@ -902,7 +913,8 @@ describe("a recording", () => {
   });
 
   it("leaves out readings that are too unsure, out of order, or a jump no one could make", () => {
-    const sure = { accuracyM: null };
+    // Without a speed, 12 m within the readings' accuracy would be drift.
+    const sure = { accuracyM: null, speedMps: 3 };
     const recording = replay([
       start,
       fix(0, 0, sure),

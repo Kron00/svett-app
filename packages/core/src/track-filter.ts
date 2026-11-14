@@ -309,7 +309,7 @@ const saysOther = <R extends Reading>(
   // The furthest the filter got from where it was `SPEED_WINDOW_MS` before, so a turn
   // in that time does not look like a stop.
   const window: Estimate[] = [estimate];
-  for (let node = points; window[0]!.at - estimate.at > -SPEED_WINDOW_MS; ) {
+  for (let node = points; window[0]!.at - estimate.at > -SPEED_WINDOW_MS;) {
     window.unshift(node.value.estimate);
     if (node.before === null) break;
     node = node.before;
@@ -474,7 +474,13 @@ const turned = <R extends Reading>(
 ): Pick<Track<R>, "points" | "turn"> => {
   const points = append(track.points, point);
   const count = points.length;
-  const resumed = track.points !== null && !track.points.value.moving && point.moving;
+  // Positions alone resume a recording that may have moved all along, so only reported
+  // speeds say where it set off.
+  const resumed =
+    track.points !== null &&
+    !track.points.value.moving &&
+    point.moving &&
+    reportedMps(point.fix) !== null;
   const from = resumed ? count - 1 - MOVE_READINGS : Math.max(track.turn, count - 1 - 2 * LAG);
   const window = latest(points, count - from);
   const at = resumed ? 1 : turnIn(window);
@@ -579,8 +585,7 @@ const speedStepM = (previous: Reading, reading: Reading): number | null => {
  */
 const movedM = (previous: Reading, reading: Reading): number | null => {
   const stepM = speedStepM(previous, reading);
-  return stepM !== null &&
-    Math.max(reportedMps(previous)!, reportedMps(reading)!) < STILL_SPEED_MPS
+  return stepM !== null && Math.max(reportedMps(previous)!, reportedMps(reading)!) < STILL_SPEED_MPS
     ? 0
     : stepM;
 };
@@ -616,10 +621,9 @@ const walk = <R extends Reading>(
   const straightM = flatM(end.position, position);
   const slackM =
     SPEED_SIGMAS * SPEED_ERROR_MPS * ((point.fix.at - previous.fix.at) / 1000) +
-    (previous.moving
-      ? 0
-      : Math.sqrt(end.point.estimate.positionVar + point.estimate.positionVar));
-  const alongM = walked.alongM + (sinceM === null ? straightM : Math.min(straightM, sinceM + slackM));
+    (previous.moving ? 0 : Math.sqrt(end.point.estimate.positionVar + point.estimate.positionVar));
+  const alongM =
+    walked.alongM + (sinceM === null ? straightM : Math.min(straightM, sinceM + slackM));
   return { point, end: { point, position }, alongM, sinceM: 0 };
 };
 
