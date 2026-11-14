@@ -164,6 +164,7 @@ type Saving =
 /** One past workout with record badges and its muscle split. Sets open for editing, and it saves as a routine or deletes. */
 export function WorkoutScreen({ route, navigation }: Props) {
   const id = Option.getOrNull(parseActivityId(route.params.id));
+  const { unit } = useWorkoutSettings();
   const query = useQuery(`workout-${route.params.id}`, () =>
     id === null
       ? Effect.succeed(Option.none())
@@ -225,7 +226,7 @@ export function WorkoutScreen({ route, navigation }: Props) {
           value={formatWorkoutDuration(activity.durationS)}
           symbol="clock"
         />
-        <StatTile label="Volume" value={formatVolumeKg(view.volumeKg)} symbol="scalemass" />
+        <StatTile label="Volume" value={formatVolumeKg(view.volumeKg, unit)} symbol="scalemass" />
         <StatTile label="Sets" value={String(view.setCount)} symbol="number" />
         <StatTile
           testID="workout-records"

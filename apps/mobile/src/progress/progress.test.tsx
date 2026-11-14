@@ -12,10 +12,11 @@ import {
 import { Effect } from "effect";
 import type { ReactElement, ReactNode } from "react";
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
-import { beforeAll, beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 import { appDatabase } from "../data/database";
 import type { RootStackParamList } from "../navigation";
+import { changeWorkoutSettings } from "../settings/store";
 import { CalendarScreen } from "./CalendarScreen";
 import { ProgressScreen } from "./ProgressScreen";
 import { SetEditScreen } from "./SetEditScreen";
@@ -297,6 +298,31 @@ describe("a past workout", () => {
       Effect.flatMap(Effect.service(RoutineRepository), (repository) => repository.listRoutines),
     );
     expect(routines.map((routine) => routine.title)).toContain("Heavy legs");
+  });
+});
+
+describe("in pounds", () => {
+  beforeEach(() => changeWorkoutSettings((settings) => ({ ...settings, unit: "lb" })));
+  afterEach(() => changeWorkoutSettings((settings) => ({ ...settings, unit: "kg" })));
+
+  it("shows a past workout's sets and volume in pounds", async () => {
+    const tree = await render(<WorkoutScreen {...screenProps("Workout", { id: newest })} />);
+    const shown = lines(tree);
+    expect(shown).toEqual(
+      expect.arrayContaining(["132.28 lb × 8", "231.49 lb × 5", "220.46 lb × 5"]),
+    );
+    // 105 × 5 + 100 × 5 = 1,025 kg of working sets.
+    expect(shown).toContain("2,260 lb");
+    expect(shown.filter((line) => line.includes("kg"))).toEqual([]);
+  });
+
+  it("shows history's totals in pounds", async () => {
+    const history = await render(<ProgressScreen />);
+    await showsTestId(history, `workout-${newest}`);
+    expect(byTestId(history, `workout-${newest}`).props.accessibilityLabel).toContain(
+      "3 sets · 2,260 lb",
+    );
+    expect(lines(history).filter((line) => line.includes("kg"))).toEqual([]);
   });
 });
 

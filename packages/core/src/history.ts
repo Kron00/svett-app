@@ -13,7 +13,7 @@ import type {
 } from "./schema.ts";
 import { formatSetLoad, formatWeightKg, setBadge, type SetBadge } from "./set-format.ts";
 import { type SupersetPlace, supersetPlaces } from "./superset.ts";
-import type { WeightUnit } from "./weight-unit.ts";
+import { type WeightUnit, weightIn } from "./weight-unit.ts";
 
 type VolumeSet = Pick<ActivitySet, "setType" | "weightKg" | "reps">;
 
@@ -25,9 +25,9 @@ export const workingVolumeKg = (sets: ReadonlyArray<VolumeSet>): number =>
     0,
   );
 
-/** "12,450 kg", the way a workout's volume reads in history. */
-export const formatVolumeKg = (kg: number): string =>
-  `${String(Math.round(kg)).replaceAll(/\B(?=(\d{3})+$)/g, ",")} kg`;
+/** "12,450 kg" or "27,448 lb", the way a workout's volume reads in history. */
+export const formatVolumeKg = (kg: number, unit: WeightUnit): string =>
+  `${String(Math.round(weightIn(kg, unit))).replaceAll(/\B(?=(\d{3})+$)/g, ",")} ${unit}`;
 
 /** A workout's length to the minute, such as "58 min" or "1 h 5 min". */
 export const formatWorkoutDuration = (seconds: number): string => {

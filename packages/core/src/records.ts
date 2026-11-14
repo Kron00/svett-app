@@ -7,6 +7,12 @@ import {
 } from "./performed-set.ts";
 import type { ActivityId, ActivitySetId, EpochMillis, ExerciseId } from "./schema.ts";
 import { formatWeightKg } from "./set-format.ts";
+import {
+  formatWeightNumber,
+  formatWeightWithUnit,
+  type WeightUnit,
+  weightIn,
+} from "./weight-unit.ts";
 
 export const RECORD_KINDS = [
   "best_one_rep_max",
@@ -100,18 +106,37 @@ export const RECORD_RULES: Readonly<Record<RecordKind, RecordRule>> = {
 export const RECORDS_RULE =
   "Warm-up sets never count. A workout's best set sets a record when it beats every earlier workout with that exercise. A tie is not a record. The first workout with an exercise sets the starting point.";
 
-export const formatRecordValue = (unit: RecordUnit, value: number): string => {
+/** A value as the app shows it: a weight in `weightUnit`, any other unit as it is. */
+export const recordValueIn = (unit: RecordUnit, value: number, weightUnit: WeightUnit): number =>
+  unit === "kg" ? weightIn(value, weightUnit) : value;
+
+/** A value already in the unit the app shows, such as a chart point or tick from recordValueIn. */
+export const formatShownRecordValue = (
+  unit: RecordUnit,
+  shown: number,
+  weightUnit: WeightUnit,
+): string => {
   switch (unit) {
     case "kg":
-      return `${formatWeightKg(value)} kg`;
+      return `${formatWeightNumber(shown)} ${weightUnit}`;
     case "reps":
-      return `${value} ${value === 1 ? "rep" : "reps"}`;
+      return `${shown} ${shown === 1 ? "rep" : "reps"}`;
     case "duration":
-      return formatDuration(DurationSeconds.make(value));
+      return formatDuration(DurationSeconds.make(shown));
     case "metres":
-      return value >= 1000 ? `${formatWeightKg(value / 1000)} km` : `${formatWeightKg(value)} m`;
+      return shown >= 1000 ? `${formatWeightKg(shown / 1000)} km` : `${formatWeightKg(shown)} m`;
   }
 };
+
+/** A stored value, weights in kilograms, as the app shows it, such as "225 lb" or "12 reps". */
+export const formatRecordValue = (
+  unit: RecordUnit,
+  value: number,
+  weightUnit: WeightUnit,
+): string =>
+  unit === "kg"
+    ? formatWeightWithUnit(value, weightUnit)
+    : formatShownRecordValue(unit, value, weightUnit);
 
 /** The best value an exercise has reached for one kind of record, and the set that reached it first. */
 export interface PersonalBest {
