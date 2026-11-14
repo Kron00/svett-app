@@ -140,7 +140,7 @@ export interface RecordHistory {
  * Within a workout the first of several equal best sets holds the record.
  */
 export const personalRecords = (sets: ReadonlyArray<PerformedSet>): RecordHistory => {
-  const chronological = sets.toSorted((a, b) => a.startedAt - b.startedAt);
+  const chronological = [...sets].sort((a, b) => a.startedAt - b.startedAt);
   const bests = new Map<string, PersonalBest>();
   const records: Array<PersonalRecord> = [];
 
@@ -178,7 +178,7 @@ export const personalRecords = (sets: ReadonlyArray<PerformedSet>): RecordHistor
 
   const order = (best: PersonalBest) => RECORD_KINDS.indexOf(best.kind);
   return {
-    bests: [...bests.values()].toSorted(
+    bests: [...bests.values()].sort(
       (a, b) => a.exerciseId.localeCompare(b.exerciseId) || order(a) - order(b),
     ),
     records,

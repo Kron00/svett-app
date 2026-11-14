@@ -24,8 +24,8 @@ export const recentRecords = (count: number) =>
       progress.performedExercises,
     ]);
     const names = new Map(exercises.map(({ exercise }) => [exercise.id, exercise.name]));
-    return personalRecords(sets)
-      .records.toReversed()
+    return [...personalRecords(sets).records]
+      .reverse()
       .slice(0, count)
       .map((record) => ({ record, exerciseName: names.get(record.exerciseId) ?? "Exercise" }));
   });

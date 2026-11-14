@@ -69,7 +69,7 @@ export const latestMeasurements = (
   MeasurementKind.literals.flatMap((kind) => {
     const ofKind = measurements
       .filter((measurement) => measurement.kind === kind)
-      .toSorted((a, b) => a.measuredAt - b.measuredAt);
+      .sort((a, b) => a.measuredAt - b.measuredAt);
     const latest = ofKind[ofKind.length - 1];
     if (latest === undefined) return [];
     const before = ofKind[ofKind.length - 2];
@@ -95,7 +95,7 @@ export const measurementSeries = (
       (measurement) =>
         measurement.kind === kind && (from === null || measurement.measuredAt >= from),
     )
-    .toSorted((a, b) => a.measuredAt - b.measuredAt)
+    .sort((a, b) => a.measuredAt - b.measuredAt)
     .map((measurement) => ({
       key: measurement.id,
       at: measurement.measuredAt,

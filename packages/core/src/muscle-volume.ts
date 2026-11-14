@@ -79,7 +79,7 @@ export const muscleSets = (
       primarySets,
       secondarySets,
     }))
-    .toSorted(
+    .sort(
       (a, b) => b.sets - a.sets || MUSCLE_LABEL[a.muscle].localeCompare(MUSCLE_LABEL[b.muscle]),
     );
 };

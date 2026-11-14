@@ -76,7 +76,7 @@ export const exerciseSeries = (
   metric: ExerciseMetric,
   from: number | null = null,
 ): ReadonlyArray<SeriesPoint> =>
-  groupByWorkout(sets.toSorted((a, b) => a.startedAt - b.startedAt)).flatMap((workout) => {
+  groupByWorkout([...sets].sort((a, b) => a.startedAt - b.startedAt)).flatMap((workout) => {
     const first = workout[0];
     if (first === undefined || (from !== null && first.startedAt < from)) return [];
     const value = EXERCISE_METRIC_RULES[metric].summarize(workout.filter(isWorkingSet));
