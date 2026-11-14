@@ -229,6 +229,11 @@ const makeActivityRepository = Effect.gen(function* () {
     ) => run(updateRow(TABLES.activity, id, patch)),
     updateSet: (id: ActivitySetId, patch: Omit<Patch<ActivitySet>, "activityExerciseId">) =>
       run(updateRow(TABLES.activitySet, id, patch)),
+    /** Changes how much of each end of the route is hidden from others. */
+    updateTrack: (
+      id: ActivityTrackId,
+      patch: Pick<Patch<ActivityTrack>, "hideStartM" | "hideEndM">,
+    ) => run(updateRow(TABLES.activityTrack, id, patch)),
     samples: (trackId: ActivityTrackId) =>
       run(selectRows(TABLES.activitySample, "activity_track_id = ?", [trackId], "recorded_at, id")),
     counts: run(
