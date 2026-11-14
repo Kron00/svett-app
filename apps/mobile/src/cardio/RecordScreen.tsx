@@ -1,6 +1,7 @@
 import { useNavigation } from "@react-navigation/native";
 import {
   type CardioKind,
+  type DatabaseOwner,
   DurationSeconds,
   formatDuration,
   formatKm,
@@ -24,8 +25,10 @@ import { Icon } from "../ui/Icon";
 import { SegmentedControl } from "../ui/SegmentedControl";
 import { StatTile } from "../ui/StatTile";
 import {
+  discardOtherRecording,
   discardRecording,
   finishRecording,
+  otherOwnerRecording,
   pauseRecording,
   recordingProblem,
   resumeRecording,
@@ -134,6 +137,48 @@ const confirmDiscard = (database: OpenDatabase) =>
       onPress: () => void discardRecording(database).catch(showRefusal),
     },
   ]);
+
+const confirmDiscardOther = (database: OpenDatabase, owner: DatabaseOwner) =>
+  Alert.alert(
+    "Discard the other recording?",
+    "GPS stops and its route and time are deleted. Nothing is saved.",
+    [
+      { text: "Keep it", style: "cancel" },
+      {
+        text: "Discard",
+        style: "destructive",
+        onPress: () => void discardOtherRecording(database, owner).catch(showRefusal),
+      },
+    ],
+  );
+
+/**
+ * Another owner's recording, still going on this phone, which keeps this owner from starting
+ * one. It shows whose it is and nothing of its route, distance or times.
+ */
+function OtherRecording({
+  database,
+  owner,
+}: {
+  readonly database: OpenDatabase;
+  readonly owner: DatabaseOwner;
+}) {
+  return (
+    <View className="gap-3 px-gutter" testID="record-other">
+      <AppText tone="warning" testID="record-other-text">
+        {otherOwnerRecording(owner)}
+      </AppText>
+      <Button
+        label="Discard it"
+        symbol="trash"
+        variant="destructive"
+        accessibilityHint="Stops the other recording and deletes it without saving."
+        onPress={() => confirmDiscardOther(database, owner)}
+        testID="record-other-discard"
+      />
+    </View>
+  );
+}
 
 function Live({
   current,
@@ -245,7 +290,7 @@ function Live({
 
 /** Starts a run, walk, hike or ride, and shows it live until it is saved or discarded. */
 export function RecordScreen() {
-  const { current, database } = useRecording();
+  const { current, database, otherOwner } = useRecording();
   return (
     <ScrollView
       testID="record-cardio"
@@ -254,7 +299,12 @@ export function RecordScreen() {
       contentContainerClassName="py-6"
     >
       {current === undefined ? (
-        <Setup database={database} />
+        <View className="gap-6">
+          {otherOwner === undefined ? null : (
+            <OtherRecording database={database} owner={otherOwner} />
+          )}
+          <Setup database={database} />
+        </View>
       ) : (
         <Live current={current} database={database} />
       )}

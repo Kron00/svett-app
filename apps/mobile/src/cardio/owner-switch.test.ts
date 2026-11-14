@@ -156,19 +156,18 @@ describe("a recording when someone signs in or out", () => {
 
     current.switchOwner({ kind: "account", accountId: RUNNER });
     const signedIn = current.currentDatabase();
-    // The runner's screens do not show it, and cannot start, pause, finish or discard it.
+    // The runner's screens do not show it, and cannot start, pause or finish it. They can only
+    // discard it whole, which other-owner.test.tsx covers.
+    const refusal =
+      "A recording started before you signed in is still going on this phone. Sign out to finish it, or discard it here.";
     expect(recorder.shownRecording(signedIn)).toBeUndefined();
     expect(await recorder.startRecording("walk", signedIn)).toEqual({
       kind: "error",
       step: "start",
-      message: recorder.OTHER_OWNER_RECORDING,
+      message: refusal,
     });
-    await expect(recorder.finishRecording(signedIn)).rejects.toThrow(
-      recorder.OTHER_OWNER_RECORDING,
-    );
-    await expect(recorder.discardRecording(signedIn)).rejects.toThrow(
-      recorder.OTHER_OWNER_RECORDING,
-    );
+    await expect(recorder.finishRecording(signedIn)).rejects.toThrow(refusal);
+    await expect(recorder.discardRecording(signedIn)).rejects.toThrow(refusal);
     // A button pressed on the screen shown before the switch saves nothing either.
     await expect(recorder.pauseRecording(started)).rejects.toThrow(SWITCHED_BEFORE_WRITE);
     await expect(recorder.finishRecording(started)).rejects.toThrow(SWITCHED_BEFORE_WRITE);

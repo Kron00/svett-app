@@ -1,6 +1,7 @@
 import {
   type ActivityId,
   type CardioKind,
+  type DatabaseOwner,
   fixOf,
   type LocationReading,
   makeRecorder,
@@ -13,8 +14,8 @@ import * as Location from "expo-location";
 import * as TaskManager from "expo-task-manager";
 
 import { createStore, useStore } from "../checks/store";
-import { type OpenDatabase, sameOwner, useCurrentDatabase } from "../data/current";
-import { quietWriteTo, writeRefusal, writeTo } from "../data/store";
+import { type OpenDatabase, sameOwner, stillOpen, useCurrentDatabase } from "../data/current";
+import { quietWriteTo, SWITCHED_BEFORE_WRITE, writeRefusal, writeTo } from "../data/store";
 import { holdOpen } from "../data/turns";
 
 // Imported from index.ts, because iOS starts svett in the background to hand it
@@ -122,8 +123,11 @@ const failedAt = (step: StartStep, error: unknown): StartOutcome => ({
   message: problemOf(error),
 });
 
-export const OTHER_OWNER_RECORDING =
-  "A recording started before someone signed in or out is still going on this phone. Sign in to that account again to finish or discard it.";
+/** Why someone else's recording blocks this owner, and the way back to it from here. */
+export const otherOwnerRecording = (owner: DatabaseOwner): string =>
+  owner.kind === "anonymous"
+    ? "A recording started before you signed in is still going on this phone. Sign out to finish it, or discard it here."
+    : "A recording started in another account is still going on this phone. Sign in to that account to finish it, or discard it here.";
 
 /** The recording `database`'s owner sees: theirs, and never another owner's. */
 export const shownRecording = (database: OpenDatabase): Recording | undefined => {
@@ -131,28 +135,37 @@ export const shownRecording = (database: OpenDatabase): Recording | undefined =>
   return current !== undefined && sameOwner(current.owner, database.owner) ? current : undefined;
 };
 
+/** Whose recording is going on this phone when it is not `database`'s owner's. */
+const otherOwner = (database: OpenDatabase): DatabaseOwner | undefined => {
+  const current = recording.get();
+  return current === undefined || sameOwner(current.owner, database.owner)
+    ? undefined
+    : current.owner;
+};
+
 /**
  * The recording in progress for the open database, with the database it saves into. Another
- * owner's recording goes on in the background, and never shows here.
+ * owner's recording goes on in the background, and only its owner shows here, so it can be
+ * discarded without anything of its route, distance or times.
  */
 export function useRecording(): {
   readonly current: Recording | undefined;
   readonly database: OpenDatabase;
+  readonly otherOwner: DatabaseOwner | undefined;
 } {
   useStore(recording);
   const database = useCurrentDatabase();
-  return { current: shownRecording(database), database };
+  return { current: shownRecording(database), database, otherOwner: otherOwner(database) };
 }
 
 /**
  * Why a change made from `database`, the one a screen showed, would be refused now, or null:
  * someone signed in or out since, a move is unfinished, or another owner's recording is going.
  */
-const changeRefusal = (database: OpenDatabase): string | null =>
-  writeRefusal(database) ??
-  (recording.get() === undefined || shownRecording(database) !== undefined
-    ? null
-    : OTHER_OWNER_RECORDING);
+const changeRefusal = (database: OpenDatabase): string | null => {
+  const owner = otherOwner(database);
+  return writeRefusal(database) ?? (owner === undefined ? null : otherOwnerRecording(owner));
+};
 
 /** Starts a recording that saves into `database`, the one the Record screen showed. */
 export async function startRecording(
@@ -211,4 +224,15 @@ export const finishRecording = async (database: OpenDatabase): Promise<ActivityI
 export const discardRecording = async (database: OpenDatabase) => {
   refuseUnlessShown(database);
   await tracked(Effect.runPromise(recorder.discard)).catch(() => undefined);
+};
+
+/**
+ * Discards another owner's recording, `owner`'s, from `database`'s Record screen: stops GPS and
+ * deletes the journal. It saves nothing, into neither owner's database.
+ */
+export const discardOtherRecording = async (database: OpenDatabase, owner: DatabaseOwner) => {
+  if (!stillOpen(database)) throw new Error(SWITCHED_BEFORE_WRITE);
+  const going = otherOwner(database);
+  if (going === undefined || !sameOwner(going, owner)) return;
+  await tracked(Effect.runPromise(recorder.discard));
 };
