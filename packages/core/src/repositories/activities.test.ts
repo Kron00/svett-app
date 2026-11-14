@@ -193,10 +193,11 @@ describe("ActivityRepository", () => {
       audience: "followers",
       updatedAt: T0 + 60_000,
     });
+    // The second write in the same millisecond takes the next one.
     expect(detail.exercises[0]!.sets[1]).toMatchObject({
       weightKg: 102.5,
       rpe: 8.5,
-      updatedAt: T0 + 60_000,
+      updatedAt: T0 + 60_001,
     });
   });
 

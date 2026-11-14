@@ -3,10 +3,13 @@ import {
   type AccountId,
   type CheckedRow,
   checkSyncRow,
+  deletedAboveOf,
+  deletionMatters,
   isTooFarAhead,
   MAX_SYNC_ROWS,
+  mergeChange,
   mergeRow,
-  type RowVersion,
+  type RowCopy,
   type SyncedTable,
   type SyncPull,
   type SyncPush,
@@ -35,9 +38,11 @@ export interface AccountRowsShape {
   /** Records that the account exists. Safe to call on every request. */
   readonly ensureAccount: (account: AccountId) => Effect.Effect<void, SqlError>;
   /**
-   * Stores `rows` under `account` by the sync merge rule, and gives each row it applies the
-   * account's next change number. A row another account holds under the same ID is a
-   * different row and stays as it was. Rows timed too far past `nowMillis` are refused.
+   * Stores `rows` under `account` by the sync merge rule with deletes, and gives each row it
+   * applies the account's next change number. When it drops an edit to a row under a deleted
+   * workout, the deleted copy it keeps gets the next number too, so the phone that made the
+   * edit pulls that copy again. A row another account holds under the same ID is a different
+   * row and stays as it was. Rows timed too far past `nowMillis` are refused.
    */
   readonly write: (
     account: AccountId,
@@ -75,16 +80,17 @@ export class AccountRows extends Context.Service<AccountRows, AccountRowsShape>(
               let seq = Number(locked?.nextSeq ?? 0);
               const ahead = rows.filter((row) => isTooFarAhead(row.updatedAt, nowMillis));
               const timely = rows.filter((row) => !isTooFarAhead(row.updatedAt, nowMillis));
-              const stored = new Map<string, RowVersion>();
+              const stored = new Map<string, RowCopy>();
               if (timely.length > 0) {
                 const existing = yield* sql<{
                   readonly tableName: string;
                   readonly rowId: string;
                   readonly updatedAt: string;
+                  readonly deletedAt: string | null;
                   readonly changeId: string;
                 }>`
                   select table_name as "tableName", row_id as "rowId",
-                    updated_at as "updatedAt", change_id as "changeId"
+                    updated_at as "updatedAt", deleted_at as "deletedAt", change_id as "changeId"
                   from account_row
                   where account_id = ${account}
                     and row_id in ${sql.in([...new Set(timely.map((row) => row.id))])}
@@ -92,12 +98,39 @@ export class AccountRows extends Context.Service<AccountRows, AccountRowsShape>(
                 for (const row of existing) {
                   stored.set(key(row.tableName, row.rowId), {
                     updatedAt: Number(row.updatedAt),
+                    deletedAt: row.deletedAt === null ? null : Number(row.deletedAt),
                     changeId: row.changeId,
                   });
                 }
               }
+              const lookup = (table: SyncedTable, id: string) =>
+                Effect.map(
+                  sql<{ readonly data: Readonly<Record<string, unknown>> }>`
+                    select data from account_row
+                    where account_id = ${account} and table_name = ${table} and row_id = ${id}
+                  `,
+                  ([row]) => row?.data,
+                );
               for (const row of timely) {
-                if (mergeRow(stored.get(key(row.table, row.id)), row) === "keep") continue;
+                const current = stored.get(key(row.table, row.id));
+                const deletedAbove = deletionMatters(current, row)
+                  ? yield* deletedAboveOf(
+                      row.table,
+                      row.encoded as Readonly<Record<string, unknown>>,
+                      lookup,
+                    )
+                  : null;
+                if (mergeChange(current, row, deletedAbove) === "keep") {
+                  if (mergeRow(current, row) === "take") {
+                    seq++;
+                    yield* sql`
+                      update account_row set seq = ${seq}
+                      where account_id = ${account} and table_name = ${row.table}
+                        and row_id = ${row.id}
+                    `;
+                  }
+                  continue;
+                }
                 seq++;
                 yield* sql`
                   insert into account_row
@@ -118,6 +151,7 @@ export class AccountRows extends Context.Service<AccountRows, AccountRowsShape>(
               return {
                 stored: timely.length,
                 ahead: ahead.map(({ table, id }) => ({ table, id })),
+                serverMillis: nowMillis,
               };
             }),
           ),

@@ -1,4 +1,4 @@
-import { Clock, Context, Data, Effect, Option, Schema } from "effect";
+import { Clock, Data, Effect, Option, Schema } from "effect";
 
 import * as Model from "./schema.ts";
 import { Sql, type SqlError, type SqlValue } from "./sql.ts";
@@ -65,28 +65,23 @@ export class RowNotFoundError extends Data.TaggedError("RowNotFoundError")<{
 }> {}
 
 /**
- * The newest `updatedAt` this database has taken from the server. Each database has its own,
- * which sync raises as it applies rows.
+ * The time a change written here takes, from the database's hybrid logical clock: the wall
+ * clock, or one past the last time the database handed out or took from sync, whichever is
+ * later. Two writes in the same millisecond, or after the wall clock moved back, still come
+ * in order, and an edit always comes after the copy it edited. The clock is kept in the
+ * database, so it survives a restart.
  */
-export class NewestSeen extends Context.Service<NewestSeen, { millis: number }>()(
-  "svett/NewestSeen",
-) {}
-
-/**
- * The time a row written on this phone gets: the clock's, or just after the newest change
- * sync has applied, whichever is later. A phone whose clock runs behind then still writes an
- * edit that beats the copy it edited, as a hybrid logical clock does.
- */
-export const nextRowTime = (clockMillis: number, newestSeen: number): number =>
-  Math.max(clockMillis, newestSeen + 1);
-
-export const currentTime = Effect.gen(function* () {
-  const millis = yield* Clock.currentTimeMillis;
-  const seen = yield* Effect.serviceOption(NewestSeen);
-  return Model.EpochMillis.make(
-    Option.isSome(seen) ? nextRowTime(millis, seen.value.millis) : millis,
-  );
-});
+export const currentTime: Effect.Effect<Model.EpochMillis, SqlError, Sql> = Effect.gen(
+  function* () {
+    const millis = yield* Clock.currentTimeMillis;
+    const sql = yield* Sql;
+    const [row] = yield* sql.all(
+      "UPDATE sync_state SET clock = max(clock + 1, ?) WHERE id = 1 RETURNING clock",
+      [millis],
+    );
+    return Model.EpochMillis.make(Number(row?.["clock"] ?? millis));
+  },
+);
 
 const encode = <A extends RowBase>(target: Table<A>, row: A) =>
   Schema.encodeEffect(target.schema)(row).pipe(

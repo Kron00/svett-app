@@ -115,10 +115,19 @@ BEGIN
     VALUES ('${table}', NEW.id, (SELECT mark FROM sync_state));
 END;`;
 
+// `clock` is the hybrid logical clock: the time the last change written here took, or the
+// newest change sync applied. It starts after every row already here.
 const sync = `
 CREATE TABLE sync_state (id INTEGER PRIMARY KEY NOT NULL, quiet INTEGER NOT NULL,
-  mark INTEGER NOT NULL, cursor INTEGER NOT NULL, newest_seen INTEGER NOT NULL) STRICT;
-INSERT INTO sync_state (id, quiet, mark, cursor, newest_seen) VALUES (1, 0, 0, 0, 0);
+  mark INTEGER NOT NULL, cursor INTEGER NOT NULL, clock INTEGER NOT NULL,
+  newest_seen INTEGER NOT NULL) STRICT;
+INSERT INTO sync_state (id, quiet, mark, cursor, clock, newest_seen) VALUES (1, 0, 0, 0, max(0, ${[
+  ...syncedAtVersion4,
+  "proposal",
+  "coach_message",
+]
+  .map((table) => `(SELECT coalesce(max(updated_at), 0) FROM ${table})`)
+  .join(", ")}), 0);
 CREATE TABLE sync_outbox (table_name TEXT NOT NULL, row_id TEXT NOT NULL, mark INTEGER NOT NULL,
   PRIMARY KEY (table_name, row_id)) STRICT;
 CREATE INDEX sync_outbox_mark ON sync_outbox (mark);
