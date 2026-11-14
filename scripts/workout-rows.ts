@@ -5,7 +5,8 @@ import { DatabaseSync } from "node:sqlite";
 
 type Row = Record<string, unknown>;
 
-const open = (path: string) => new DatabaseSync(path, { readOnly: true });
+// Opened read-write so SQLite can replay a copied write-ahead log. The proof reads a copy.
+const open = (path: string) => new DatabaseSync(path);
 
 /** The ID of the live routine with this title, or null. */
 export function routineId(path: string, title: string): string | null {
