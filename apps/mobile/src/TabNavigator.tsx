@@ -10,6 +10,7 @@ import { DesignGalleryRow } from "./gallery/DesignGalleryRow";
 import type { TabParamList } from "./navigation";
 import { PhoneChecksRow } from "./PhoneChecksRow";
 import { PlaceholderScreen } from "./PlaceholderScreen";
+import { ProfileRow } from "./social/ProfileRow";
 import { ProgressScreen } from "./progress/ProgressScreen";
 import { type Tab, TABS } from "./tabs";
 import { DataRow } from "./transfer/DataRow";
@@ -33,6 +34,7 @@ function TabContent({ tab }: { readonly tab: Tab }) {
         <View className="mt-6 self-stretch">
           <ListSection>
             <AccountRow />
+            <ProfileRow />
             <ChatGPTRow />
             <DataRow />
             <PhoneChecksRow />

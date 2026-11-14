@@ -8,6 +8,13 @@ import { AccountProvider } from "./account/AccountProvider";
 import { AccountScreen } from "./account/AccountScreen";
 import { ChatGPTScreen } from "./chatgpt/ChatGPTScreen";
 import { PhoneChecksScreen } from "./checks/PhoneChecksScreen";
+import {
+  ConnectionsScreen,
+  EditProfileScreen,
+  FollowRequestsScreen,
+  PeopleScreen,
+} from "./social/PeopleScreens";
+import { OwnProfileScreen, ProfileScreen } from "./social/ProfileScreens";
 import { useNavigationTheme } from "./design/hooks";
 import { ExerciseDetailScreen } from "./exercises/ExerciseDetailScreen";
 import { EditExerciseScreen, NewExerciseScreen } from "./exercises/ExerciseFormScreen";
@@ -55,6 +62,51 @@ export default function App() {
             name="Account"
             component={AccountScreen}
             options={{ headerShown: true, title: "Account" }}
+          />
+          <Stack.Screen
+            name="OwnProfile"
+            component={OwnProfileScreen}
+            options={({ navigation }) => ({
+              headerShown: true,
+              title: "Profile",
+              unstable_headerRightItems: () => [
+                {
+                  type: "button",
+                  label: "Edit",
+                  accessibilityLabel: "Edit profile",
+                  identifier: "edit-profile",
+                  onPress: () => navigation.navigate("EditProfile"),
+                },
+              ],
+            })}
+          />
+          <Stack.Screen
+            name="EditProfile"
+            component={EditProfileScreen}
+            options={{ headerShown: true, title: "Edit profile" }}
+          />
+          <Stack.Screen
+            name="FollowRequests"
+            component={FollowRequestsScreen}
+            options={{ headerShown: true, title: "Follow requests" }}
+          />
+          <Stack.Screen
+            name="People"
+            component={PeopleScreen}
+            options={{ headerShown: true, title: "Find people" }}
+          />
+          <Stack.Screen
+            name="Profile"
+            component={ProfileScreen}
+            options={({ route }) => ({ headerShown: true, title: route.params.username })}
+          />
+          <Stack.Screen
+            name="Connections"
+            component={ConnectionsScreen}
+            options={({ route }) => ({
+              headerShown: true,
+              title: route.params.list === "following" ? "Following" : "Followers",
+            })}
           />
           <Stack.Screen
             name="Exercises"

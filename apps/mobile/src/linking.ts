@@ -9,7 +9,9 @@ import type { RootStackParamList } from "./navigation";
 // touch-transparent floating bar containers as toolbars that cover the whole screen.
 // scripts/sim/data.sh reaches export and import the same way, through svett://data,
 // svett://import?file=<name> and svett://imports/<id>/undo. scripts/sim/hevy.sh
-// adds &kind=hevy for a Hevy CSV.
+// adds &kind=hevy for a Hevy CSV. scripts/sim/social.sh opens svett://profile,
+// svett://profile/edit?username=<name>, svett://people?q=<prefix>, svett://people/<name>,
+// svett://people/<name>/followers and svett://profile/requests.
 export const linking: LinkingOptions<RootStackParamList> = {
   prefixes: ["svett://"],
   filter: (url) => !url.includes("expo-development-client"),
@@ -34,6 +36,12 @@ export const linking: LinkingOptions<RootStackParamList> = {
       Data: "data",
       ImportPreview: "import",
       UndoImport: "imports/:importBatchId/undo",
+      EditProfile: "profile/edit",
+      FollowRequests: "profile/requests",
+      OwnProfile: "profile",
+      Connections: "people/:username/:list",
+      Profile: "people/:username",
+      People: "people",
     },
   },
 };

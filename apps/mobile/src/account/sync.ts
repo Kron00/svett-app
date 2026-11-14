@@ -19,7 +19,7 @@ const DEFAULT_SERVER = "https://svett-app.jservers.net";
  * The svett server. A proof run passes `-svettServer <url>` at launch, such as an address
  * nothing answers on, to keep the phone offline.
  */
-const server = (): string => {
+export const svettServer = (): string => {
   const launched: unknown = Settings.get("svettServer");
   if (typeof launched === "string" && /^https?:\/\//.test(launched)) return launched;
   return process.env.EXPO_PUBLIC_SVETT_SERVER || DEFAULT_SERVER;
@@ -61,7 +61,7 @@ export const syncNow = (accountId: AccountId, token: Token): Promise<void> => {
     show({ kind: "syncing" });
     const runtime = open.handle.runtime;
     const exit = await runtime.runPromiseExit(
-      syncOnce(httpSyncApi({ server: server(), accountId, token, fetch })),
+      syncOnce(httpSyncApi({ server: svettServer(), accountId, token, fetch })),
     );
     const queued = await runtime.runPromise(
       Effect.flatMap(Effect.service(SyncRepository), (sync) => sync.queuedCount),
