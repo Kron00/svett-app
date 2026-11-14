@@ -14,7 +14,7 @@ import {
   type WorkoutSet,
 } from "@svett/core";
 import { Effect, Option, Schema } from "effect";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { ScrollView, View } from "react-native";
 
 import { useQuery, write } from "../data/store";
@@ -58,18 +58,28 @@ function SetEditor({
   const [edit, setEdit] = useState(() => setEditFrom(set));
   const [field, setField] = useState<Field>("weight");
   const [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  // State only disables Save after a render, and taps can land before it.
+  const savingNow = useRef(false);
 
   const save = () => {
+    if (savingNow.current) return;
     const result = setEditPatch(edit, set);
     if (!result.ok) {
       setError(result.message);
       return;
     }
+    savingNow.current = true;
+    setSaving(true);
     write(
       Effect.flatMap(Effect.service(ActivityRepository), (activities) =>
         activities.updateSet(set.id, result.patch),
       ),
-    ).then(onDone, (failure: unknown) => setError(`The set was not saved. ${String(failure)}`));
+    ).then(onDone, (failure: unknown) => {
+      savingNow.current = false;
+      setSaving(false);
+      setError(`The set was not saved. ${String(failure)}`);
+    });
   };
 
   const entry = (name: Field, label: string, unit: string) => (
@@ -125,8 +135,14 @@ function SetEditor({
         </AppText>
       ) : null}
       <View className="gap-2">
-        <Button label="Save" testID="set-edit-save" onPress={save} />
-        <Button label="Cancel" variant="plain" testID="set-edit-cancel" onPress={onDone} />
+        <Button label="Save" testID="set-edit-save" disabled={saving} onPress={save} />
+        <Button
+          label="Cancel"
+          variant="plain"
+          testID="set-edit-cancel"
+          disabled={saving}
+          onPress={onDone}
+        />
       </View>
     </ScrollView>
   );

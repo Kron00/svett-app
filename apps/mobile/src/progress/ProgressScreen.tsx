@@ -84,19 +84,39 @@ function HistoryRow({
 
 function UndoDeleteBar({ workout }: { readonly workout: DeletedWorkout }) {
   const stacked = useIsAccessibilityTextSize();
+  const [undoing, setUndoing] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   return (
     <View testID="undo-delete-banner" className="absolute inset-x-0 bottom-0 px-gutter pb-3">
       <View
         className={`gap-3 rounded-card bg-control p-4 ${stacked ? "" : "flex-row items-center"}`}
       >
-        <AppText className={stacked ? "" : "flex-1"}>Deleted {workout.title}.</AppText>
+        <View className={stacked ? "gap-1" : "flex-1 gap-1"}>
+          <AppText>Deleted {workout.title}.</AppText>
+          {error === null ? null : (
+            <AppText testID="undo-delete-error" tone="destructive">
+              It was not brought back. {error}
+            </AppText>
+          )}
+        </View>
         <View className="flex-row flex-wrap gap-2">
           <Button
             label="Undo"
             symbol="arrow.uturn.backward"
             testID="undo-delete"
             accessibilityHint="Brings the workout back"
-            onPress={() => void undoDelete(workout)}
+            disabled={undoing}
+            onPress={() => {
+              setUndoing(true);
+              setError(null);
+              undoDelete(workout).then(
+                () => setUndoing(false),
+                (failure: unknown) => {
+                  setUndoing(false);
+                  setError(String(failure));
+                },
+              );
+            }}
           />
           <Button
             label="Close"

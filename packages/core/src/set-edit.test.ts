@@ -33,6 +33,22 @@ describe("setEditPatch", () => {
     });
   });
 
+  it("keeps a weight the field shows rounded when only the reps change", () => {
+    const pounds = { ...lifted, weightKg: 102.0582 };
+    expect(setEditPatch({ ...setEditFrom(pounds), reps: "6" }, pounds)).toEqual({
+      ok: true,
+      patch: { setType: "normal", weightKg: 102.0582, reps: 6 },
+    });
+  });
+
+  it("saves a typed weight that differs from the one the field showed", () => {
+    const pounds = { ...lifted, weightKg: 102.0582 };
+    expect(setEditPatch({ setType: "normal", weight: "102.05", reps: "8" }, pounds)).toEqual({
+      ok: true,
+      patch: { setType: "normal", weightKg: 102.05, reps: 8 },
+    });
+  });
+
   it("reads a trailing decimal point as the whole number", () => {
     expect(setEditPatch({ setType: "normal", weight: "90.", reps: "5" }, lifted)).toEqual({
       ok: true,

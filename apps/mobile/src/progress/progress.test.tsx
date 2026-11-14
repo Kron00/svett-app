@@ -232,6 +232,24 @@ describe("a past workout", () => {
     expect(lines(detail)).toEqual(expect.arrayContaining(["122.5 kg × 4", "100 kg × 5"]));
   });
 
+  it("saves a set once and goes back once however often Save is pressed", async () => {
+    const detail = await render(<WorkoutScreen {...screenProps("Workout", { id: older })} />);
+    const setId = setIds(detail)[1] ?? "";
+    const edit = await render(
+      <SetEditScreen {...screenProps("SetEdit", { activityId: older, setId })} />,
+    );
+    await pressLabels(edit, ["Reps", "Delete", "7"]);
+    act(() => {
+      for (let tap = 0; tap < 3; tap++) byTestId(edit, "set-edit-save").props.onPress();
+    });
+    expect(byTestId(edit, "set-edit-save").props.disabled).toBe(true);
+    expect(byTestId(edit, "set-edit-cancel").props.disabled).toBe(true);
+    await settle();
+
+    expect(navigation.goBack).toHaveBeenCalledTimes(1);
+    expect(lines(detail)).toEqual(expect.arrayContaining(["122.5 kg × 4", "100 kg × 7"]));
+  });
+
   it("refuses a set left with no reps and saves nothing", async () => {
     const detail = await render(<WorkoutScreen {...screenProps("Workout", { id: newest })} />);
     const setId = setIds(detail)[1] ?? "";

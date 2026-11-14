@@ -154,6 +154,7 @@ export function WorkoutScreen({ route, navigation }: Props) {
   const [saving, setSaving] = useState<Saving>({ status: "idle" });
   // A deleted workout stays on screen while the screen slides away, instead of reading as missing.
   const [leaving, setLeaving] = useState<WorkoutView | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
   const view = leaving ?? (query.status === "ready" ? Option.getOrNull(query.value) : null);
   const title = view ? view.activity.title || SPORTS[view.activity.kind].label : "Workout";
 
@@ -263,13 +264,24 @@ export function WorkoutScreen({ route, navigation }: Props) {
           symbol="trash"
           testID="workout-delete"
           accessibilityHint="Deletes it. History offers Undo."
+          disabled={leaving !== null}
           onPress={() => {
             setLeaving(view);
-            void deleteWorkout({ id, title }).then(() =>
-              navigation.navigate("Tabs", { screen: "Progress" }),
+            setDeleteError(null);
+            deleteWorkout({ id, title }).then(
+              () => navigation.navigate("Tabs", { screen: "Progress" }),
+              (error: unknown) => {
+                setLeaving(null);
+                setDeleteError(String(error));
+              },
             );
           }}
         />
+        {deleteError === null ? null : (
+          <AppText testID="workout-delete-error" tone="destructive">
+            The workout was not deleted. {deleteError}
+          </AppText>
+        )}
       </View>
     </ScrollView>
   );
