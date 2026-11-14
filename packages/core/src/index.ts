@@ -47,3 +47,6 @@ export * from "./move-journal.ts";
 export * from "./sync.ts";
 export * from "./sync-api.ts";
 export * from "./repositories/sync.ts";
+export * from "./privacy.ts";
+export * from "./username.ts";
+export * from "./social-api.ts";
