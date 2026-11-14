@@ -25,6 +25,8 @@ export const Fix = Schema.Struct({
   altitudeAccuracyM: Schema.NullOr(Schema.Finite),
   /** The radius in metres the phone is confident of. Null when it did not say. */
   accuracyM: Schema.NullOr(Schema.Finite),
+  /** The speed the phone measured, in metres a second. Null or missing when it did not say. */
+  speedMps: Schema.optionalKey(Schema.NullOr(Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0)))),
 });
 export type Fix = typeof Fix.Type;
 
@@ -37,13 +39,15 @@ export interface LocationReading {
     readonly altitude: number | null;
     readonly accuracy: number | null;
     readonly altitudeAccuracy: number | null;
+    /** Metres a second. iOS reports a speed it could not measure as negative. */
+    readonly speed?: number | null;
   };
 }
 
 /** An altitude less sure than this is left out, so its noise does not count as climb. */
 export const MAX_ALTITUDE_ACCURACY_M = 15;
 
-/** iOS reports an altitude it could not measure with a negative accuracy. */
+/** iOS reports an altitude or a speed it could not measure as negative. */
 export const fixOf = ({ timestamp, coords }: LocationReading): Fix => {
   const measured =
     coords.altitude !== null &&
@@ -57,6 +61,7 @@ export const fixOf = ({ timestamp, coords }: LocationReading): Fix => {
     altitudeM: measured ? coords.altitude : null,
     altitudeAccuracyM: measured ? coords.altitudeAccuracy : null,
     accuracyM: coords.accuracy,
+    speedMps: coords.speed === undefined || coords.speed === null || coords.speed < 0 ? null : coords.speed,
   };
 };
 

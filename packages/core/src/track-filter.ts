@@ -5,6 +5,12 @@ export interface Reading extends LatLng {
   readonly at: number;
   /** The radius in metres the phone is confident of. Null when it did not say. */
   readonly accuracyM: number | null;
+  /**
+   * The speed the phone measured from the Doppler shift, in metres a second. Null or
+   * missing when it did not say. Only this tells a stop from slow movement, because
+   * both look alike within the readings' uncertainty.
+   */
+  readonly speedMps?: number | null;
 }
 
 /** How a sport moves. */
@@ -45,28 +51,59 @@ export interface Stretch {
   readonly stop: Still | null;
 }
 
+const ITEMS = Symbol("items");
+
 /**
  * A list that every version of a track shares, so a new reading does not copy the ones
- * before it. A version sees its first `length` items. Adding to a version that is not
- * the latest copies its items first, so no version sees another's.
+ * before it. A version sees only its first `length` items, and lets out no others.
+ * Adding to a version that is not the latest copies its items first, so no version sees
+ * another's.
  */
-export interface SharedList<T> {
-  readonly items: ReadonlyArray<T>;
+export class SharedList<T> implements Iterable<T> {
+  private readonly [ITEMS]: T[];
   readonly length: number;
+
+  constructor(items: T[] = []) {
+    this[ITEMS] = items;
+    this.length = items.length;
+  }
+
+  /** The item at `index`, counting from the end when negative, or undefined outside this version. */
+  at(index: number): T | undefined {
+    const at = index < 0 ? index + this.length : index;
+    return at >= 0 && at < this.length ? this[ITEMS][at] : undefined;
+  }
+
+  *[Symbol.iterator](): Iterator<T> {
+    const items = this[ITEMS];
+    for (let index = 0; index < this.length; index++) yield items[index]!;
+  }
+
+  /** The items from `start` up to `end`, within this version. */
+  slice(start = 0, end = this.length): T[] {
+    return this[ITEMS].slice(Math.max(0, start), Math.min(end, this.length));
+  }
+
+  toArray(): T[] {
+    return this.slice();
+  }
+
+  /** This version with `values` after its items. */
+  added(values: ReadonlyArray<T>): SharedList<T> {
+    if (values.length === 0) return this;
+    const items = this[ITEMS].length === this.length ? this[ITEMS] : this.toArray();
+    for (const value of values) items.push(value);
+    return new SharedList(items);
+  }
 }
 
-const sharedList = <T>(items: T[] = []): SharedList<T> => ({ items, length: items.length });
+const sharedList = <T>(items: T[] = []): SharedList<T> => new SharedList(items);
 
-const withAdded = <T>(list: SharedList<T>, values: ReadonlyArray<T>): SharedList<T> => {
-  if (values.length === 0) return list;
-  const items =
-    list.items.length === list.length ? (list.items as T[]) : list.items.slice(0, list.length);
-  for (const value of values) items.push(value);
-  return sharedList(items);
-};
+const withAdded = <T>(list: SharedList<T>, values: ReadonlyArray<T>): SharedList<T> =>
+  list.added(values);
 
 /** The items a version of a list sees. */
-export const listItems = <T>(list: SharedList<T>): T[] => list.items.slice(0, list.length);
+export const listItems = <T>(list: SharedList<T>): T[] => list.toArray();
 
 /**
  * One stretch of readings run through a constant-velocity Kalman filter. `fixes` are
@@ -76,9 +113,11 @@ export const listItems = <T>(list: SharedList<T>): T[] => list.items.slice(0, li
  *
  * Beside the filter runs a still model, which assumes no movement since the reading at
  * `anchor`. While it holds, nothing shows the recording went anywhere, so only the
- * filter's furthest reach from the anchor counts. When a reading refutes it, the
- * readings it held for close as stretches: a stop, which counts only the way in and
- * out through its mean, or else movement, which counts the filter's path.
+ * filter's furthest reach from the anchor counts. A reading refutes it when it lies
+ * outside the model, or when the speeds the readings report show movement that the
+ * reach hides. Then the readings it held for close as stretches: a stop, which counts
+ * only the way in and out through its mean, or else movement, which counts the
+ * filter's path. Only reported speeds can call a stretch a stop.
  */
 export interface Track<R extends Reading> {
   readonly motion: Motion;
@@ -95,8 +134,21 @@ export interface Track<R extends Reading> {
   readonly anchoredM: number;
   /** The furthest a confirmed reading has been from the anchor. */
   readonly readM: number;
-  /** The furthest the filter has been from the anchor, but never beyond `readM`. */
+  /**
+   * The distance the reported speeds give since the anchor, or null when a reading since
+   * then did not report one.
+   */
+  readonly pathM: number | null;
+  /**
+   * The furthest the filter has been from the anchor, but never beyond `readM` or what
+   * `pathM` allows, and no further once `settledStill` is set.
+   */
   readonly reachM: number;
+  /**
+   * The reported speeds since the anchor say still, or, with no speeds to say it, the
+   * still model has held for `STOP_MS`. The reach no longer grows.
+   */
+  readonly settledStill: boolean;
   /** The confirmed distance, which is what the recording shows. */
   readonly distanceM: number;
 }
@@ -113,7 +165,9 @@ export const emptyTrack = <R extends Reading>(motion: Motion): Track<R> => ({
   still: null,
   anchoredM: 0,
   readM: 0,
+  pathM: 0,
   reachM: 0,
+  settledStill: false,
   distanceM: 0,
 });
 
@@ -133,7 +187,7 @@ export const GATE = 13.82;
  * coming in expects the recording to carry on.
  */
 export const TURN_GATE = 9.21;
-/** The still model holding this long means the recording stopped. */
+/** The still model holding this long, with reported speeds that say still, is a stop. */
 export const STOP_MS = 60_000;
 /**
  * The still model holding this long is a stop too, when the recording did not turn in it
@@ -141,6 +195,16 @@ export const STOP_MS = 60_000;
  * Through a short stop that path is mostly noise.
  */
 export const SHORT_STOP_MS = 20_000;
+/**
+ * Readings whose reported speeds have a median under this were still. A still iPhone
+ * reports mostly 0, with lone readings up to about 0.5 m/s.
+ */
+export const STILL_SPEED_MPS = 0.3;
+/**
+ * This many readings in a row reporting at least `STILL_SPEED_MPS` show movement. It is
+ * also the fewest reported speeds that can say a stretch was still.
+ */
+export const MOVING_READINGS = 5;
 
 const EARTH_M_PER_DEGREE = (Math.PI * 6_371_008.8) / 180;
 const radians = (degrees: number) => (degrees * Math.PI) / 180;
@@ -169,6 +233,64 @@ const moved = (origin: LatLng, { east, north }: Offset): LatLng => ({
 
 const varianceOf = (reading: Reading) =>
   Math.max(MIN_ACCURACY_M, reading.accuracyM ?? UNSTATED_ACCURACY_M) ** 2;
+
+/** How far off a reported speed may be, in metres a second. */
+export const SPEED_ERROR_MPS = 0.3;
+/**
+ * A difference between what the reported speeds say and what the positions say counts
+ * once it is beyond this many standard deviations of both.
+ */
+export const SIGMAS = 2;
+
+/** The speed a reading reports, or null when it did not. iOS reports an unknown one as negative. */
+const speedOf = (reading: Reading): number | null => {
+  const speed = reading.speedMps;
+  return speed === undefined || speed === null || speed < 0 ? null : speed;
+};
+
+/** How far the reported speeds say the recording went between two readings, or null. */
+const reportedStepM = (before: Reading, after: Reading): number | null => {
+  const a = speedOf(before);
+  const b = speedOf(after);
+  return a === null || b === null ? null : ((a + b) / 2) * ((after.at - before.at) / 1000);
+};
+
+/**
+ * Whether the reported speeds of readings `from` to `to` say the recording was still:
+ * most of them and at least `MOVING_READINGS` report one, and their median is under
+ * `STILL_SPEED_MPS`. Positions alone cannot say it.
+ */
+const saysStill = (readings: ReadonlyArray<Reading>, from: number, to: number): boolean => {
+  const speeds: number[] = [];
+  for (let index = from; index <= to; index++) {
+    const speed = speedOf(readings[index]!);
+    if (speed !== null) speeds.push(speed);
+  }
+  if (speeds.length < MOVING_READINGS || speeds.length * 2 < to - from + 1) return false;
+  speeds.sort((a, b) => a - b);
+  const middle = speeds.length >> 1;
+  const median =
+    speeds.length % 2 === 1 ? speeds[middle]! : (speeds[middle - 1]! + speeds[middle]!) / 2;
+  return median < STILL_SPEED_MPS;
+};
+
+/**
+ * The readings after `from` up to `to` that end them reporting at least
+ * `STILL_SPEED_MPS`: how many, and the index of the first. Readings that report no
+ * speed neither end the run nor count in it.
+ */
+const movingRun = (readings: ReadonlyArray<Reading>, from: number, to: number) => {
+  let count = 0;
+  let start = to + 1;
+  for (let index = to; index > from && count < MOVING_READINGS; index--) {
+    const speed = speedOf(readings[index]!);
+    if (speed === null) continue;
+    if (speed < STILL_SPEED_MPS) break;
+    count++;
+    start = index;
+  }
+  return { moving: count >= MOVING_READINGS, start };
+};
 
 interface Prediction {
   readonly seconds: number;
@@ -330,10 +452,16 @@ const stay = (still: Still, reading: Reading): Still | null => {
 
 /**
  * The reading between `from` and `to` furthest from the one at `from`, when going there
- * and on to `to` is longer than going straight by more than the readings' uncertainty.
- * That is a turn, such as the end of an out-and-back.
+ * and on to `to` is longer than going straight by more than the readings' uncertainty,
+ * or when the reported speeds went further than the filter's ends are apart by more
+ * than theirs. That is a turn, such as the end of an out-and-back.
  */
-const turnBetween = (fixes: ReadonlyArray<Reading>, from: number, to: number): number | null => {
+const turnBetween = (
+  fixes: ReadonlyArray<Reading>,
+  from: number,
+  to: number,
+  estimates?: ReadonlyArray<Estimate>,
+): number | null => {
   let furthest = from;
   for (let index = from + 1; index < to; index++) {
     if (distanceM(fixes[from]!, fixes[index]!) > distanceM(fixes[from]!, fixes[furthest]!)) {
@@ -341,30 +469,79 @@ const turnBetween = (fixes: ReadonlyArray<Reading>, from: number, to: number): n
     }
   }
   if (furthest === from) return null;
+  const straight = distanceM(fixes[from]!, fixes[to]!);
   const detour =
-    distanceM(fixes[from]!, fixes[furthest]!) +
-    distanceM(fixes[furthest]!, fixes[to]!) -
-    distanceM(fixes[from]!, fixes[to]!);
-  return detour ** 2 > GATE * 2 * varianceOf(fixes[furthest]!) ? furthest : null;
+    distanceM(fixes[from]!, fixes[furthest]!) + distanceM(fixes[furthest]!, fixes[to]!) - straight;
+  if (detour ** 2 > GATE * 2 * varianceOf(fixes[furthest]!)) return furthest;
+  if (estimates === undefined || to - from < 2 * MOVING_READINGS) return null;
+  let speedM = 0;
+  for (let index = from + 1; index <= to; index++) {
+    const step = reportedStepM(fixes[index - 1]!, fixes[index]!);
+    if (step === null) return null;
+    speedM += step;
+  }
+  const seconds = (fixes[to]!.at - fixes[from]!.at) / 1000;
+  const spread =
+    SPEED_ERROR_MPS ** 2 * seconds +
+    estimates[from]!.positionVar +
+    estimates[to]!.positionVar;
+  const ends = distanceM(estimates[from]!, estimates[to]!);
+  return speedM > ends && (speedM - ends) ** 2 > SIGMAS ** 2 * spread ? furthest : null;
 };
+
+/** Every turn between `from` and `to`, in order: the one `turnBetween` finds, and those either side of it. */
+const turnsBetween = (
+  readings: ReadonlyArray<Reading>,
+  from: number,
+  to: number,
+  estimates: ReadonlyArray<Estimate>,
+): number[] => {
+  const turn = turnBetween(readings, from, to, estimates);
+  return turn === null
+    ? []
+    : [
+        ...turnsBetween(readings, from, turn, estimates),
+        turn,
+        ...turnsBetween(readings, turn, to, estimates),
+      ];
+};
+
+/** How far the filter went between two estimates, by its mean velocity. */
+const filterStepM = (before: Estimate, after: Estimate) =>
+  (Math.hypot(before.eastMps + after.eastMps, before.northMps + after.northMps) / 2) *
+  ((after.at - before.at) / 1000);
 
 /** How far the filter went from `from` to `to`, by its mean velocity over each step. */
 const filterPathM = (estimates: ReadonlyArray<Estimate>, from: number, to: number) => {
-  let total = 0;
+  let metres = 0;
   for (let index = from + 1; index <= to; index++) {
-    const before = estimates[index - 1]!;
-    const after = estimates[index]!;
-    total +=
-      (Math.hypot(before.eastMps + after.eastMps, before.northMps + after.northMps) / 2) *
-      ((after.at - before.at) / 1000);
+    metres += filterStepM(estimates[index - 1]!, estimates[index]!);
   }
-  return total;
+  return metres;
 };
+
+/**
+ * Whether the reported speeds went further since the anchor than the reach shows, by
+ * more than their error and the filter's uncertainty at both ends could explain.
+ */
+const hides = (pathM: number | null, reachM: number, anchor: Estimate, estimate: Estimate) => {
+  if (pathM === null) return false;
+  const seconds = (estimate.at - anchor.at) / 1000;
+  const spread =
+    SPEED_ERROR_MPS ** 2 * seconds + anchor.positionVar + estimate.positionVar;
+  return pathM > reachM && (pathM - reachM) ** 2 > SIGMAS ** 2 * spread;
+};
+
+/** The furthest the reported speeds allow since the anchor, within their error. */
+const pathCap = (pathM: number | null, from: number, to: number) =>
+  pathM === null
+    ? Number.POSITIVE_INFINITY
+    : pathM + SIGMAS * SPEED_ERROR_MPS * Math.sqrt((to - from) / 1000);
 
 const estimateAt = <R extends Reading>(track: Track<R>, index: number): Estimate =>
   index < track.settled.length
-    ? track.settled.items[index]!
-    : track.open.items[index - track.settled.length]!;
+    ? track.settled.at(index)!
+    : track.open.at(index - track.settled.length)!;
 
 /**
  * The track once the still model is refuted. `estimates` are the open ones, which
@@ -400,43 +577,75 @@ const refuted = <R extends Reading>(
     stretches: withAdded(track.stretches, done),
     last,
     anchor: last.to,
-    still: stillOf(fixes.items[last.to]!),
+    still: stillOf(fixes.at(last.to)!),
     anchoredM,
     readM: 0,
+    pathM: 0,
     reachM: 0,
+    settledStill: false,
     distanceM: anchoredM,
   };
 };
 
-const confirm = <R extends Reading>(track: Track<R>, fix: R, estimate: Estimate): Track<R> => {
+const confirm = <R extends Reading>(
+  track: Track<R>,
+  fix: R,
+  estimate: Estimate,
+  ending = false,
+): Track<R> => {
   const motion = track.motion;
   const fixes = withAdded(track.fixes, [fix]);
   const open = withAdded(track.open, [estimate]);
   if (track.still === null) return { ...track, fixes, open, still: stillOf(fix) };
   const anchor = estimateAt(track, track.anchor);
-  const still = stay(track.still, fix);
-  if (still !== null) {
-    // The filter carries on past a sudden stop, so it reaches no further than a reading.
-    // Once the still model has held long enough to call it a stop, nothing grows.
-    const readM = Math.max(track.readM, distanceM(anchor, fix));
-    const reachM =
-      estimate.at - anchor.at >= STOP_MS
-        ? track.reachM
-        : Math.max(track.reachM, Math.min(readM, distanceM(anchor, estimate)));
-    return { ...track, fixes, open, still, readM, reachM, distanceM: track.anchoredM + reachM };
-  }
   const base = track.settled.length;
-  const estimates = listItems(open);
-  const readings = fixes.items.slice(base, fixes.length);
+  const readings = fixes.slice(base);
   const from = track.anchor - base;
-  const to = estimates.length - 1;
+  const to = readings.length - 1;
+  const still = stay(track.still, fix);
+  const run = movingRun(readings, from, to);
+  // The filter carries on past a sudden stop, so it reaches no further than a reading,
+  // nor than the reported speeds say. Once the still model has held long enough to
+  // call it a stop, or the reported speeds say still, nothing grows.
+  const readM = Math.max(track.readM, distanceM(anchor, fix));
+  const step = reportedStepM(readings[to - 1]!, fix);
+  const pathM = track.pathM === null || step === null ? null : track.pathM + step;
+  const settledStill =
+    track.settledStill ||
+    (pathM === null && estimate.at - anchor.at >= STOP_MS) ||
+    saysStill(readings, from + 1, to);
+  const reachM = settledStill
+    ? track.reachM
+    : Math.max(
+        track.reachM,
+        Math.min(readM, distanceM(anchor, estimate), pathCap(pathM, anchor.at, estimate.at)),
+      );
+  // As the recording ends, movement the reported speeds show closes as it would later.
+  const closing = ending && pathM !== null && !settledStill;
+  if (still !== null && !closing && !(run.moving && hides(pathM, reachM, anchor, estimate))) {
+    return {
+      ...track,
+      fixes,
+      open,
+      still,
+      readM,
+      pathM,
+      reachM,
+      settledStill,
+      distanceM: track.anchoredM + reachM,
+    };
+  }
+  const estimates = listItems(open);
   const held = estimates[to - 1]!.at - anchor.at;
   const inAndOutM = distanceM(anchor, track.still) + distanceM(track.still, estimate);
+  // Only the reported speeds can say the recording stopped. The readings that refuted
+  // the still model by showing movement are the way out, so they do not count.
   if (
-    held >= STOP_MS ||
-    (held >= SHORT_STOP_MS &&
-      turnBetween(readings, from, to) === null &&
-      inAndOutM <= filterPathM(estimates, from, to))
+    saysStill(readings, from + 1, run.start - 1) &&
+    (held >= STOP_MS ||
+      (held >= SHORT_STOP_MS &&
+        turnBetween(readings, from, to) === null &&
+        inAndOutM <= filterPathM(estimates, from, to)))
   ) {
     const stop: Stretch = { from, to, startM: track.anchoredM, stop: track.still };
     return refuted(track, fixes, estimates, [stop], false, track.anchoredM + inAndOutM);
@@ -445,20 +654,22 @@ const confirm = <R extends Reading>(track: Track<R>, fix: R, estimate: Estimate)
   const last = track.last;
   const joined = last !== null && last.stop === null && last.to === track.anchor;
   const lookFrom = joined ? last.from - base : from;
-  const turn = turnBetween(readings, lookFrom, to);
-  if (turn !== null) {
+  const turns = turnsBetween(readings, lookFrom, to, estimates);
+  for (const [at, turn] of turns.entries()) {
     // Run the readings after the turn again from the turn, knowing nothing of the
     // velocity, so the filter does not carry on past it.
-    estimates[turn] = turnEstimate(estimates, readings, turn, to, motion);
+    const next = turns[at + 1] ?? to;
+    estimates[turn] = turnEstimate(estimates, readings, turn, next, motion);
     let previous = unknownVelocity(estimates[turn]!, motion);
-    for (let index = turn + 1; index <= to; index++) {
+    for (let index = turn + 1; index <= next; index++) {
       previous = update(previous, readings[index]!, motion, false)!;
       estimates[index] = previous;
     }
   }
+  const turn = turns[0] ?? null;
   // A turn before the anchor splits the movement stretch before it.
   const reopened = turn !== null && turn <= from;
-  const ends = turn === null ? [from, to] : [reopened ? lookFrom : from, turn, to];
+  const ends = [reopened ? lookFrom : from, ...turns, to];
   // After the start, a stop or a turn the filter is still learning the velocity, so its
   // path falls short. The straight line is a floor.
   const floor = turn !== null || !joined;
@@ -485,7 +696,7 @@ export const addReading = <R extends Reading>(track: Track<R>, reading: R): Trac
   const motion = track.motion;
   const pending = track.pending;
   const count = track.fixes.length;
-  const latest = pending ?? track.fixes.items[count - 1];
+  const latest = pending ?? track.fixes.at(count - 1);
   if (latest !== undefined && reading.at <= latest.at) return track;
   if (pending === null) return { ...track, pending: reading };
   const last = count === 0 ? undefined : estimateAt(track, count - 1);
@@ -518,7 +729,7 @@ export const finishTrack = <R extends Reading>(track: Track<R>): Track<R> => {
     open: sharedList(listItems(track.open)),
     stretches: sharedList(listItems(track.stretches)),
   };
-  return { ...confirm(own, pending, estimate), pending: null };
+  return { ...confirm(own, pending, estimate, true), pending: null };
 };
 
 /**
@@ -602,11 +813,21 @@ export const smoothTrack = <R extends Reading>(
   const anchor = estimates[track.anchor]!;
   const origin = positions[track.anchor]!;
   let readM = 0;
+  let pathM: number | null = 0;
   let reachM = 0;
+  let settledStill = false;
   for (let index = track.anchor + 1; index < count; index++) {
     readM = Math.max(readM, distanceM(origin, fixes[index]!));
-    if (estimates[index]!.at - anchor.at < STOP_MS) {
-      reachM = Math.max(reachM, Math.min(readM, distanceM(origin, positions[index]!)));
+    const step = reportedStepM(fixes[index - 1]!, fixes[index]!);
+    pathM = pathM === null || step === null ? null : pathM + step;
+    settledStill ||=
+      (pathM === null && estimates[index]!.at - anchor.at >= STOP_MS) ||
+      saysStill(fixes, track.anchor + 1, index);
+    if (!settledStill) {
+      reachM = Math.max(
+        reachM,
+        Math.min(readM, distanceM(origin, positions[index]!), pathCap(pathM, anchor.at, estimates[index]!.at)),
+      );
     }
     alongM[index] = alongM[track.anchor]! + reachM;
   }

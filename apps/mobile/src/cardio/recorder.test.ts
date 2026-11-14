@@ -67,6 +67,7 @@ const deliver = (seconds: number) =>
             altitude: null,
             accuracy: 5,
             altitudeAccuracy: null,
+            speed: 1.5,
           },
         },
       ],
@@ -93,8 +94,8 @@ describe("readings delivered in the background", () => {
     phone.diskFull = false;
     await deliver(3);
     expect(recordingProblem.get()).toBeUndefined();
-    // The reading waits there for a later one to confirm it.
-    expect(recording.get()?.segments[0]?.pending?.at).toBe(T + 3000);
+    // The reading waits there for a later one to confirm it, with the speed iOS measured.
+    expect(recording.get()?.segments[0]?.pending).toMatchObject({ at: T + 3000, speedMps: 1.5 });
   });
 
   it("keeps a problem it did not report when readings are saved", async () => {
