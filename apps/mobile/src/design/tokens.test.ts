@@ -36,6 +36,7 @@ const textColors: ReadonlyArray<ColorToken> = [
   "accent",
   "destructive",
   "success",
+  "warning",
   "set-warm-up",
   "set-normal",
   "set-failure",

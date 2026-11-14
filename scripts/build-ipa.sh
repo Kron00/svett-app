@@ -5,9 +5,13 @@
 #
 # The build number is SVETT_BUILD_NUMBER when set, otherwise the commit count,
 # which needs the full history of HEAD. The Release build is unsigned, then
-# signed ad hoc with the entitlements file that `expo prebuild` generates: AltStore re-signs with the entitlements it finds in
-# the app, and an unsigned app carries none. Writes build/release/svett.ipa and,
-# for the AltStore source, the app's Info.plist and signed entitlements as XML.
+# scripts/sign-app.sh signs it ad hoc with its entitlements: AltStore re-signs
+# with the entitlements it finds in the app, and an unsigned app carries none.
+# The build fails if anything is signed with push (aps-environment), which a
+# free Apple account cannot sign. Writes build/release/svett.ipa and, for the
+# AltStore source, the app's Info.plist and signed entitlements as XML.
+# fnm and CocoaPods are also found in their default install folders, as in
+# devbook-build.sh.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -22,6 +26,20 @@ if [[ -n "${SVETT_BUILD_NUMBER:-}" ]]; then
 else
   build_number=$(git rev-list --count HEAD)
   echo "Build number $build_number, the commit count"
+fi
+
+if ! command -v fnm >/dev/null && [[ -x "$HOME/.local/share/fnm/fnm" ]]; then
+  PATH="$HOME/.local/share/fnm:$PATH"
+fi
+if command -v fnm >/dev/null; then
+  eval "$(fnm env --shell bash)"
+  fnm use --install-if-missing
+fi
+if ! command -v pod >/dev/null; then
+  ruby_bin=$(printf '%s\n' "$HOME"/.local/share/mise/installs/ruby/*/bin | sort -V | tail -1)
+  if [[ -x "$ruby_bin/pod" ]]; then
+    PATH="$ruby_bin:$PATH"
+  fi
 fi
 
 SVETT_BUILD_NUMBER=$build_number scripts/ios-prebuild.sh
@@ -49,17 +67,22 @@ built_number=$(plutil -extract CFBundleVersion raw "$out/Info.plist")
   exit 1
 }
 
-entitlements="$out/signing.entitlements"
-plutil -convert xml1 -o "$entitlements" apps/mobile/ios/svett/svett.entitlements
+settings="$out/build-settings.json"
+xcodebuild -showBuildSettings -json \
+  -project apps/mobile/ios/svett.xcodeproj \
+  -alltargets \
+  -configuration Release \
+  -sdk iphoneos >"$settings"
 
-# Nested code is signed before the code that contains it, and without the app's entitlements.
-while IFS= read -r -d '' nested; do
-  codesign --force --sign - "$nested"
-done < <(find "$app" -mindepth 1 -depth \( -name '*.framework' -o -name '*.dylib' -o -name '*.appex' \) -print0)
-codesign --force --sign - --entitlements "$entitlements" "$app"
-codesign --verify --deep --strict "$app"
+scripts/sign-app.sh "$app" "$settings" "$out/signing"
 
 codesign -d --entitlements - --xml "$app" >"$out/entitlements.plist"
+while IFS= read -r -d '' signed; do
+  if [[ "$(codesign -d --entitlements - --xml "$signed")" == *"<key>aps-environment</key>"* ]]; then
+    echo "${signed#"$out/"} is signed with aps-environment, which a free Apple account cannot sign" >&2
+    exit 1
+  fi
+done < <(find "$app" \( -name '*.app' -o -name '*.appex' \) -print0)
 
 (cd "$out" && zip -qry svett.ipa Payload)
 echo "Built svett $version ($build_number) at $out/svett.ipa"

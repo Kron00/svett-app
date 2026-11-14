@@ -1,7 +1,8 @@
 import type { ReactNode } from "react";
-import { Text, View } from "react-native";
+import { View } from "react-native";
 
 import type { Tab } from "./tabs";
+import { AppText } from "./ui/AppText";
 
 export function PlaceholderScreen({
   tab,
@@ -11,9 +12,13 @@ export function PlaceholderScreen({
   readonly children?: ReactNode;
 }) {
   return (
-    <View className="flex-1 items-center justify-center gap-2 bg-black px-8">
-      <Text className="text-2xl font-semibold text-white">{tab.name}</Text>
-      <Text className="text-center text-base text-neutral-400">{tab.summary}</Text>
+    <View className="flex-1 items-center justify-center gap-2 bg-background px-8">
+      <AppText variant="title2" accessibilityRole="header">
+        {tab.name}
+      </AppText>
+      <AppText tone="secondary" className="text-center">
+        {tab.summary}
+      </AppText>
       {children}
     </View>
   );

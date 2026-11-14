@@ -1,12 +1,15 @@
 #!/usr/bin/env bash
 # Runs scripts/devbook-build.sh and the sim/ scripts on Linux against fake
 # Xcode, CocoaPods, pnpm, Expo and agent-device tools. It checks which native
-# build steps run, which native inputs the installed app was built from, which
-# simulator it lands on, where fnm and CocoaPods are found, and that the T3 Code
+# build steps run, which native inputs the installed app was built from, that
+# Xcode signs it locally and codesign never runs, which simulator it lands on, where fnm and CocoaPods are found, and that the T3 Code
 # bound device command replaces simctl launch and openurl.
 #
 # Usage: scripts/test/devbook-build.test.sh
 set -euo pipefail
+# Git exports these to commands it runs, such as `git rebase -x`. Left set, the
+# test's git calls would act on the repo under test instead of its temp repos.
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR
 
 repo=$(cd "$(dirname "$0")/../.." && pwd)
 root=$(mktemp -d)
@@ -26,7 +29,7 @@ case "$1 $2" in
   "fixture --out") echo "fake fixture" >"$3" ;;
   "exec expo")
     rm -rf ios
-    mkdir ios
+    mkdir -p ios
     cp native-inputs ios/generated-from
     ;;
   *) echo "fake pnpm: unexpected $*" >&2; exit 1 ;;
@@ -42,10 +45,12 @@ EOF
 
 cat >"$fake/xcodebuild" <<'EOF'
 #!/usr/bin/env bash
+settings=()
 while [[ $# -gt 0 ]]; do
   case $1 in
     -configuration) configuration=$2; shift ;;
     -derivedDataPath) derived_data=$2; shift ;;
+    *=*) settings+=("$1") ;;
   esac
   shift
 done
@@ -57,6 +62,12 @@ done
 app="$derived_data/Build/Products/$configuration-iphonesimulator/svett.app"
 mkdir -p "$app"
 cp apps/mobile/ios/generated-from "$app/built-from"
+printf '%s\n' "${settings[@]}" >"$app/build-settings"
+EOF
+
+cat >"$fake/codesign" <<EOF
+#!/usr/bin/env bash
+echo "\$*" >>"$root/codesign-calls"
 EOF
 
 cat >"$fake/xcrun" <<EOF
@@ -67,7 +78,9 @@ case "\$2" in
     '-- iOS 27.0 --' '    iPhone 16 Pro Max (STOCK-UDID) (Shutdown)' \
     '-- iOS 26.0 --' '    svett iPhone 16 Pro Max (OLD-UDID) (Shutdown)' \
     '-- iOS 27.2 --' '    svett iPhone 16 Pro Max (FAKE-UDID) (Booted)' ;;
-  install) cat "\$4/built-from" >"$root/installed" ;;
+  install)
+    cat "\$4/built-from" >"$root/installed"
+    cat "\$4/build-settings" >"$root/installed-settings" ;;
   get_app_container) echo "$root/data container" ;;
 esac
 EOF
@@ -143,13 +156,18 @@ run_build() {
 build() {
   local expected_line=$1 expected_inputs=$2 installed
   shift 2
-  rm -f "$root/installed"
+  rm -f "$root/installed" "$root/installed-settings" "$root/codesign-calls"
   run_build "$@" || fail "devbook-build.sh $* failed"
   grep -qxF "Native build: $expected_line" "$output" ||
     fail "devbook-build.sh $* did not print \"Native build: $expected_line\""
   installed=$(cat "$root/installed" 2>/dev/null || true)
   [[ "$installed" == "$expected_inputs" ]] ||
     fail "devbook-build.sh $* installed an app built from \"$installed\", not \"$expected_inputs\""
+  for setting in CODE_SIGN_IDENTITY=- CODE_SIGNING_REQUIRED=YES CODE_SIGNING_ALLOWED=YES DEVELOPMENT_TEAM=; do
+    grep -qxF -- "$setting" "$root/installed-settings" ||
+      fail "devbook-build.sh $* installed an app Xcode built without $setting"
+  done
+  [[ ! -e "$root/codesign-calls" ]] || fail "devbook-build.sh $* ran codesign: $(cat "$root/codesign-calls")"
 }
 
 # build_fails <expected message> [VAR=value...] [devbook-build.sh args...]
@@ -186,6 +204,13 @@ check "unchanged Debug rebuild skips the native build" build "$skipped" native-a
 check "switching to a branch with other native inputs regenerates the iOS project" build "$full" native-b "$metro" b
 check "Release after a Debug build of other inputs regenerates the iOS project" build "$full" native-a --release a
 check "Debug after a Release build of other inputs reuses its own app" build "$skipped" native-b "$metro" b
+
+# An app left by an earlier script that built it unsigned and recorded only the fingerprint.
+debug_build="$root/home/svett-app-build/Debug"
+echo native-b >"$debug_build/fingerprint"
+echo CODE_SIGNING_ALLOWED=NO >"$debug_build/DerivedData/Build/Products/Debug-iphonesimulator/svett.app/build-settings"
+check "an unsigned Debug app with a matching fingerprint is rebuilt with Xcode local signing, not reused" \
+  build "$full" native-b "$metro" b
 
 git_ -C "$work" checkout -q a
 echo native-a2 >"$work/apps/mobile/native-inputs"
@@ -333,6 +358,14 @@ SVETT_METRO=metro.invalid:8081 sim_script launch.sh
 check "launch.sh Debug opens the dev client on SVETT_METRO" \
   only_open "com.kron00.svett --relaunch --launch-url $dev_client_url"
 
+case_name="tabs.sh and launch.sh with a SVETT_METRO host and no port"
+SVETT_METRO=metro.invalid sim_script tabs.sh "$root/proof-metro-host"
+check "tabs.sh Debug opens the dev client on port 8081 of a SVETT_METRO host" \
+  only_open "com.kron00.svett --relaunch --launch-url $dev_client_url"
+SVETT_METRO=metro.invalid sim_script launch.sh
+check "launch.sh Debug opens the dev client on port 8081 of a SVETT_METRO host" \
+  only_open "com.kron00.svett --relaunch --launch-url $dev_client_url"
+
 case_name="launch.sh with SVETT_DEVICE_CMD"
 rm -f "$root/simctl-calls" "$root/bound-calls"
 env PATH="$fake:$PATH" SVETT_DEVICE_CMD="$bound_cmd" \
@@ -368,6 +401,7 @@ only_calls() {
 }
 
 debug_open="com.kron00.svett --relaunch --launch-url $local_dev_client_url"
+debug_front="com.kron00.svett --launch-url $local_dev_client_url"
 
 case_name="gallery.sh Debug with SVETT_DEVICE_CMD"
 FAKE_GALLERY_SCROLLS=2 sim_script gallery.sh "$root/gallery"
@@ -405,5 +439,208 @@ check "gallery.sh stops after 40 pages when the end marker never shows" \
   grep -qF "The gallery's end marker was not on screen after 40 pages" "$output"
 check "gallery.sh restores the default text size after a failure" \
   only_calls "settings" "settings text-size large" "settings text-size large"
+
+# Stands in for the bound command on Phone checks. It tracks what is in front:
+# the Home Screen, or svett on its tab root, the You tab or Phone checks. Like the
+# iOS 27 simulator, a Debug open by bundle id alone leaves the Home Screen in
+# front. A Release open by bundle id, or a Debug open of the dev client URL,
+# brings svett back on the screen it left, or on its tab root with FAKE_RELOAD,
+# or not at all with FAKE_STAYS_HOME. A scroll or press while the Home Screen is
+# in front fails and is logged. Every element has the same frame, the clipboard
+# holds a report whose notification check reads FAKE_NOTIFICATION, by default
+# PASSED, no permission prompt shows, and the Apple Health sheet shows
+# only with FAKE_HEALTH_SHEET. FAKE_NO_GRANT refuses a permission grant ahead.
+# With FAKE_CHATGPT_SHEET the ChatGPT sign-in sheet covers Phone checks, refuses
+# alert dismiss and closes on a Cancel press.
+cat >"$fake/checks-device" <<EOF
+#!/usr/bin/env bash
+echo "\$*" >>"$root/bound-calls"
+screen=\$(cat "$root/screen" 2>/dev/null || echo home)
+left=\$(cat "$root/svett-screen" 2>/dev/null || echo tabs)
+show() {
+  echo "\$1" >"$root/screen"
+  [[ "\$1" == home ]] || echo "\$1" >"$root/svett-screen"
+}
+refuse_on_home() {
+  [[ "\$screen" == home ]] || return 0
+  echo "\$*" >>"$root/home-screen-actions"
+  echo "fake device: \$* while the Home Screen is in front" >&2
+  exit 1
+}
+in_svett() { [[ "\$screen" != home ]]; }
+args=" \$* "
+case "\$args" in
+  *" home "* | *" open com.apple.springboard "*) show home ;;
+  *" open com.kron00.svett --relaunch "*) show tabs ;;
+  *" open com.kron00.svett "*)
+    if [[ -n "\${FAKE_STAYS_HOME:-}" ]] || [[ -z "\${FAKE_RELEASE:-}" && "\$args" != *" --launch-url "* ]]; then
+      :
+    elif [[ -n "\${FAKE_RELOAD:-}" ]]; then
+      show tabs
+    else
+      show "\$left"
+    fi ;;
+  *" scroll "*) refuse_on_home scroll ;;
+  *' press label="You, tab, 5 of 5" '*) refuse_on_home press You tab; show you ;;
+  *" press "*)
+    refuse_on_home press
+    attrs=\$(cat "$root/last-attrs")
+    [[ "\$screen" != you || "\$attrs" != *phone-checks-row* ]] || show checks
+    [[ -z "\${FAKE_CHATGPT_SHEET:-}" || "\$attrs" != *check-run-chatgpt* ]] || show sheet
+    [[ "\$screen" != sheet || "\$attrs" != *Cancel* ]] || show checks ;;
+  *" alert dismiss "*) [[ -z "\${FAKE_CHATGPT_SHEET:-}" ]] ;;
+  *" settings permission grant "*) [[ -z "\${FAKE_NO_GRANT:-}" ]] ;;
+  *" get attrs "*)
+    echo "\$*" >"$root/last-attrs"
+    echo '{"label": "Run", "rect": {"x": 20, "y": 300, "width": 120, "height": 40}}' ;;
+  *' label="You, tab, 5 of 5" '*) in_svett ;;
+  *' id="phone-checks-row" '*) [[ "\$screen" == you ]] ;;
+  *' label="Turn On All" '*) [[ -n "\${FAKE_HEALTH_SHEET:-}" ]] ;;
+  *" is visible "* | *' wait id='*) [[ "\$screen" == checks ]] ;;
+  *" clipboard read "*)
+    echo "fake phone check report"
+    echo "Keychain after restart: PASSED. Read back."
+    echo "Notification in the background: \${FAKE_NOTIFICATION:-PASSED}. Arrived."
+    echo "GPS with the screen locked: PASSED. 70 points." ;;
+  *" alert wait "*) exit 1 ;;
+esac
+EOF
+chmod +x "$fake/checks-device"
+
+# run_checks [VAR=value...] [checks.sh args...] leaves the exit status in checks_status.
+run_checks() {
+  local -a vars=()
+  while [[ "${1:-}" == *=* ]]; do
+    vars+=("$1")
+    shift
+  done
+  rm -f "$root/simctl-calls" "$root/bound-calls" "$root/screen" "$root/svett-screen" "$root/home-screen-actions"
+  checks_status=0
+  env PATH="$fake:$PATH" SVETT_DEVICE_CMD="checks-device --session 't3-test session' --device FAKE-UDID" \
+    "${vars[@]}" "$repo/scripts/sim/checks.sh" "$@" >"$output" 2>&1 || checks_status=$?
+}
+
+# checks_sh [VAR=value...] [checks.sh args...]
+checks_sh() {
+  run_checks "$@"
+  [[ "$checks_status" == 0 ]] || fail "checks.sh $* failed"
+}
+
+never_acts_on_home_screen() {
+  [[ ! -e "$root/home-screen-actions" ]] ||
+    fail "checks.sh acted on the Home Screen: $(tr '\n' ';' <"$root/home-screen-actions")"
+}
+
+# leaves_after_notification_run checks svett goes to the Home Screen in the call
+# right after the last press on the notification check's Run, which is due 10
+# seconds later.
+leaves_after_notification_run() {
+  local after
+  after=$(sed "s/^$bound_prefix //" "$root/bound-calls" |
+    grep -A2 -xF 'get attrs id="check-run-notification"' | tail -1)
+  [[ "$after" == home ]] || fail "after Run on the notification check came \"$after\", not home"
+}
+
+you_tab_press='press label="You, tab, 5 of 5"'
+centre_press="press 80 320"
+
+case_name="checks.sh Debug with SVETT_DEVICE_CMD"
+checks_sh "$root/checks"
+check "checks.sh never scrolls or presses while the Home Screen is in front" never_acts_on_home_screen
+check "checks.sh relaunches into the dev client, reopens it without a relaunch after each step that leaves svett, and relaunches for the report" \
+  only_open "$debug_open" "$debug_open" com.apple.springboard "$debug_front" "$debug_front" "$debug_front" "$debug_open"
+check "checks.sh presses tabs by selector and screen content only at an element's centre, which agent-device does not refuse on iOS 27" \
+  only_calls "press" \
+  "$you_tab_press" "$centre_press" "$centre_press" "$you_tab_press" "$centre_press" "$centre_press" \
+  "$centre_press" "$centre_press" "$centre_press" "$you_tab_press" "$centre_press" "$centre_press"
+check "checks.sh opens Phone checks, resets, runs each check and copies the report, in that order" \
+  only_calls "get attrs" \
+  'get attrs id="phone-checks-row"' 'get attrs id="reset-checks"' 'get attrs id="phone-checks-row"' \
+  'get attrs id="check-run-notification"' 'get attrs id="check-run-health"' \
+  'get attrs id="check-run-location"' 'get attrs id="check-run-chatgpt"' \
+  'get attrs id="phone-checks-row"' 'get attrs id="copy-report"'
+check "checks.sh grants notifications ahead, so no prompt holds svett in front after Run" \
+  bound_got "$bound_prefix settings permission grant notifications"
+check "checks.sh leaves svett straight after pressing Run on the notification check" \
+  leaves_after_notification_run
+check "checks.sh waits for the banner on the Home Screen, then keeps svett away for over a minute for GPS" \
+  only_calls "home|wait text|wait [0-9]{5,}" \
+  "home" "wait text The background notification check worked. 20000" "home" "wait 70000"
+check "checks.sh moves the simulator along a route for the GPS check" grep -qE \
+  '^simctl location FAKE-UDID start --speed=3 --interval=1( -?[0-9.]+,-?[0-9.]+){2,}$' "$root/simctl-calls"
+check "checks.sh clears the simulated route when it ends" simctl_got "simctl location FAKE-UDID clear"
+check "checks.sh shoots at the largest text size, then restores the default" \
+  only_calls "settings text-size|settings appearance" \
+  "settings text-size accessibility-extra-extra-extra-large" "settings text-size large"
+check "checks.sh cancels the ChatGPT sign-in sheet" bound_got "$bound_prefix alert dismiss"
+check "checks.sh saves the copied report" grep -qxF "fake phone check report" "$root/checks/report.txt"
+check "checks.sh says in the report that GPS ran on the Home Screen, since the simulator cannot lock" \
+  grep -qF "Simulator: it cannot lock its screen, so GPS ran with svett on the Home Screen." "$root/checks/report.txt"
+check "checks.sh says in a Debug report that a development client reload forgets when svett was away" \
+  grep -qF "Debug: when svett comes back on its tab root" "$root/checks/report.txt"
+check "checks.sh screenshots each check, the banner and the sign-in sheet" \
+  only_calls "screenshot" \
+  "screenshot $root/checks/01-reset.png" "screenshot $root/checks/02-keychain.png" \
+  "screenshot $root/checks/03-notification-banner.png" "screenshot $root/checks/04-notification.png" \
+  "screenshot $root/checks/05-health.png" "screenshot $root/checks/06-location.png" \
+  "screenshot $root/checks/07-chatgpt-sheet.png" "screenshot $root/checks/08-report.png"
+check "checks.sh with SVETT_DEVICE_CMD calls neither simctl launch nor openurl" no_simctl_launch_or_openurl
+
+case_name="checks.sh Release with SVETT_DEVICE_CMD"
+checks_sh FAKE_RELEASE=1 --release "$root/checks-release"
+check "checks.sh Release relaunches the installed app without Metro and reopens it by bundle id" \
+  only_open "com.kron00.svett --relaunch" "com.kron00.svett --relaunch" com.apple.springboard \
+  com.kron00.svett com.kron00.svett com.kron00.svett "com.kron00.svett --relaunch"
+check "checks.sh Release never scrolls or presses while the Home Screen is in front" never_acts_on_home_screen
+check "checks.sh Release notes the simulator in the report" \
+  grep -qF "Simulator: it cannot lock its screen" "$root/checks-release/report.txt"
+check "checks.sh Release leaves out the Debug reload note" \
+  test "$(grep -cF "Debug:" "$root/checks-release/report.txt")" -eq 0
+
+case_name="checks.sh when the dev client reloads on its way back"
+checks_sh FAKE_RELOAD=1 "$root/checks-reload"
+check "checks.sh reopens Phone checks from the You tab before each check after svett comes back on its tab root" \
+  only_calls "get attrs" \
+  'get attrs id="phone-checks-row"' 'get attrs id="reset-checks"' 'get attrs id="phone-checks-row"' \
+  'get attrs id="check-run-notification"' 'get attrs id="phone-checks-row"' 'get attrs id="check-run-health"' \
+  'get attrs id="phone-checks-row"' 'get attrs id="check-run-location"' 'get attrs id="phone-checks-row"' \
+  'get attrs id="check-run-chatgpt"' 'get attrs id="phone-checks-row"' 'get attrs id="copy-report"'
+check "checks.sh still saves the report after reloads" grep -qxF "fake phone check report" "$root/checks-reload/report.txt"
+
+case_name="checks.sh when svett stays in the background"
+run_checks FAKE_STAYS_HOME=1 "$root/checks-home"
+check "checks.sh fails when svett does not come back" test "$checks_status" -ne 0
+check "checks.sh says svett did not come back" grep -qF "svett did not come back to the foreground" "$output"
+check "checks.sh does not scroll or press on the Home Screen when svett stays away" never_acts_on_home_screen
+
+case_name="checks.sh with the Apple Health sheet"
+checks_sh FAKE_HEALTH_SHEET=1 "$root/checks-health"
+check "checks.sh screenshots the Apple Health sheet and allows every type" \
+  only_calls "screenshot $root/checks-health/0[56]|get attrs label" \
+  "screenshot $root/checks-health/05-health-sheet.png" 'get attrs label="Turn On All"' \
+  'get attrs label="Allow"' "screenshot $root/checks-health/06-health.png"
+
+case_name="checks.sh when notifications cannot be granted ahead"
+checks_sh FAKE_NO_GRANT=1 "$root/checks-no-grant"
+check "checks.sh presses Run once to answer the notification prompt, then again to leave straight after" \
+  test "$(grep -cxF -- "$bound_prefix get attrs id=\"check-run-notification\"" "$root/bound-calls")" -eq 2
+check "checks.sh leaves svett straight after the second Run" leaves_after_notification_run
+
+case_name="checks.sh when the ChatGPT sign-in sheet refuses alert dismiss"
+checks_sh FAKE_CHATGPT_SHEET=1 "$root/checks-chatgpt"
+check "checks.sh presses Cancel on the sheet that covers Phone checks" \
+  only_calls "get attrs label" 'get attrs label="Cancel"'
+check "checks.sh still saves the report after cancelling the sheet" \
+  grep -qxF "fake phone check report" "$root/checks-chatgpt/report.txt"
+
+case_name="checks.sh when the notification check did not pass"
+run_checks FAKE_RELEASE=1 FAKE_NOTIFICATION=WAITING --release "$root/checks-unpassed"
+check "checks.sh fails when a check the simulator can pass did not" test "$checks_status" -ne 0
+check "checks.sh names the check that did not pass" \
+  grep -qxF "Did not pass: Notification in the background" "$output"
+check "checks.sh still saves the report when a check did not pass" \
+  grep -qF "Notification in the background: WAITING." "$root/checks-unpassed/report.txt"
+check "checks.sh still screenshots the report when a check did not pass" \
+  bound_got "$bound_prefix screenshot $root/checks-unpassed/08-report.png"
 
 echo "$passed passed"

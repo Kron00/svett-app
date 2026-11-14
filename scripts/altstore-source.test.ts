@@ -1,5 +1,7 @@
-import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vite-plus/test";
@@ -49,6 +51,20 @@ describe("listVersions", () => {
       ["0.1.37", "37"],
       ["0.1.9", "9"],
     ]);
+  });
+
+  it("refuses a pending release older than the newest published one", () => {
+    const newer = [...releases, publishedRelease("v0.1.40")];
+    expect(() => listVersions(newer, "v0.1.38")).toThrow(
+      "v0.1.38 is older than the newest release 0.1.40",
+    );
+  });
+
+  it("refuses a pending tag that is not a release with svett.ipa", () => {
+    expect(() => listVersions(releases, "v0.1.20")).toThrow(
+      "v0.1.20 is not a release that carries svett.ipa",
+    );
+    expect(() => listVersions(releases, "v0.1.99")).toThrow("v0.1.99 is not a release");
   });
 
   it("orders by major and minor before the build number", () => {
@@ -127,6 +143,29 @@ describe("altstore-source.ts", () => {
     expect(app.appPermissions).toEqual(
       readPermissions(read("Info.plist"), read("entitlements.plist")),
     );
+  });
+
+  it("fails without printing a source when a newer release is already published", () => {
+    const dir = mkdtempSync(join(tmpdir(), "altstore-source-"));
+    const pages = join(dir, "releases.json");
+    writeFileSync(
+      pages,
+      JSON.stringify([...JSON.parse(read("releases.json")), [publishedRelease("v0.1.40")]]),
+    );
+    const run = spawnSync(process.execPath, [
+      fileURLToPath(new URL("altstore-source.ts", import.meta.url)),
+      "--releases",
+      pages,
+      "--info-plist",
+      fixture("Info.plist"),
+      "--entitlements",
+      fixture("entitlements.plist"),
+      "--pending",
+      "v0.1.38",
+    ]);
+    expect(run.status).not.toBe(0);
+    expect(run.stdout.toString()).toBe("");
+    expect(run.stderr.toString()).toContain("v0.1.38 is older than the newest release 0.1.40");
   });
 
   it("is the address the README tells people to add in AltStore", () => {

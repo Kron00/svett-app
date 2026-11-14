@@ -13,6 +13,10 @@
 # differs from the last successful build of that configuration, and prebuild and
 # pod install only when it differs from the generated project. --native forces
 # both. SVETT_SIMULATOR picks the simulator (see scripts/sim/simulator.sh).
+# Xcode signs the app locally, because the Keychain and Apple Health refuse an
+# app without its entitlements, and the simulator grants only the entitlements
+# Xcode embeds in the executable, not those in an ad hoc signature. A skipped
+# native build reuses the app only if it was built with these settings.
 # fnm and CocoaPods are also found in their default install folders, because
 # agents run in non-interactive shells that skip ~/.zshrc.
 # When SVETT_DEVICE_CMD holds the agent-device command from T3 Code's device_open,
@@ -51,6 +55,7 @@ bundle_id=com.kron00.svett
 build_dir="$HOME/svett-app-build/$configuration"
 derived_data="$build_dir/DerivedData"
 fingerprint_file="$build_dir/fingerprint"
+signing_settings=(CODE_SIGN_IDENTITY=- CODE_SIGNING_REQUIRED=YES CODE_SIGNING_ALLOWED=YES DEVELOPMENT_TEAM=)
 # The generated project and Pods are shared by Debug and Release, so they carry
 # their own fingerprint. It is written after pod install, and `expo prebuild
 # --clean` deletes it with the rest of ios/.
@@ -103,12 +108,13 @@ fingerprint=$(
   pnpm exec fingerprint fingerprint:generate --platform ios |
     node -e 'let s = ""; process.stdin.on("data", (d) => (s += d)).on("end", () => console.log(JSON.parse(s).hash))'
 )
-last_fingerprint=$(cat "$fingerprint_file" 2>/dev/null || true)
+build_stamp="$fingerprint ${signing_settings[*]}"
+last_build=$(cat "$fingerprint_file" 2>/dev/null || true)
 project_fingerprint=$(cat "$project_stamp" 2>/dev/null || true)
-echo "Current $fingerprint, last $configuration build ${last_fingerprint:-none}, iOS project ${project_fingerprint:-none}"
+echo "Current $build_stamp, last $configuration build ${last_build:-none}, iOS project ${project_fingerprint:-none}"
 
 # A Release app embeds the JS bundle, so it is rebuilt even when native inputs match.
-if [[ "$force_native" == false && "$configuration" == Debug && "$fingerprint" == "$last_fingerprint" && -d "$app_path" ]]; then
+if [[ "$force_native" == false && "$configuration" == Debug && "$build_stamp" == "$last_build" && -d "$app_path" ]]; then
   echo "Native build: skipped, the fingerprint matches $app_path"
 else
   if [[ "$force_native" == false && "$fingerprint" == "$project_fingerprint" ]]; then
@@ -136,9 +142,9 @@ else
     -sdk iphonesimulator \
     -destination "id=$udid" \
     -derivedDataPath "$derived_data" \
-    CODE_SIGNING_ALLOWED=NO \
+    "${signing_settings[@]}" \
     -quiet
-  echo "$fingerprint" >"$fingerprint_file"
+  echo "$build_stamp" >"$fingerprint_file"
 fi
 
 step "Installing on $simulator_name"

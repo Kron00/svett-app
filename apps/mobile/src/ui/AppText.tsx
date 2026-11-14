@@ -9,6 +9,7 @@ const TONES = {
   accent: "text-accent",
   destructive: "text-destructive",
   success: "text-success",
+  warning: "text-warning",
   onAccent: "text-on-accent",
 } as const;
 

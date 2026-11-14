@@ -66,7 +66,9 @@ export function parseReleasePages(json: string): GitHubRelease[] {
 /**
  * Lists every published release that carries svett.ipa, newest first. The draft
  * named by `pendingTag` is listed as if published, so the source can be attached
- * to it before it goes live.
+ * to it before it goes live. It must be the newest version: the source lists the
+ * pending build's permissions, which would be wrong for a newer release, so a
+ * rerun or out-of-order run fails and leaves its draft unpublished.
  */
 export function listVersions(
   releases: readonly GitHubRelease[],
@@ -80,6 +82,7 @@ export function listVersions(
     const [, major, minor, build] = tag.map(Number) as [number, number, number, number];
     return [
       {
+        tag: release.tag_name,
         order: [major, minor, build] as const,
         version: {
           version: `${major}.${minor}.${build}`,
@@ -93,11 +96,19 @@ export function listVersions(
       },
     ];
   });
-  return listed
-    .toSorted(
-      (a, b) => b.order[0] - a.order[0] || b.order[1] - a.order[1] || b.order[2] - a.order[2],
-    )
-    .map(({ version }) => version);
+  const sorted = listed.toSorted(
+    (a, b) => b.order[0] - a.order[0] || b.order[1] - a.order[1] || b.order[2] - a.order[2],
+  );
+  if (pendingTag !== undefined) {
+    const [newest] = sorted;
+    if (!sorted.some(({ tag }) => tag === pendingTag)) {
+      throw new Error(`${pendingTag} is not a release that carries ${IPA}`);
+    }
+    if (newest !== undefined && newest.tag !== pendingTag) {
+      throw new Error(`${pendingTag} is older than the newest release ${newest.version.version}`);
+    }
+  }
+  return sorted.map(({ version }) => version);
 }
 
 const USAGE_DESCRIPTION = /^NS\w+UsageDescription$/;
