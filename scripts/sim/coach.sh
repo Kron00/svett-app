@@ -11,7 +11,9 @@
 # plan usage, "What was my best squat set last month?" answered from the stand-in with
 # the tools reading the fixture, and the plan's limit. It asks through
 # svett://coach?ask=..., and fails when a state, the answer or the data it read does
-# not show.
+# not show. Under the answer it shoots the composer and fails unless it is whole: the
+# question field taller than its 44 point minimum, Send a full target under it, and both
+# above the tab bar.
 #
 # --live skips the stand-ins. It asks the same question of OpenAI with a real ChatGPT
 # account, signing in first when svett is signed out (a person signs in within 10
@@ -128,6 +130,25 @@ tap() {
   agent_device press "${point% *}" "${point#* }"
 }
 
+# composer_whole fails unless the question field has grown past its 44 point minimum,
+# which one line at the largest text size outgrows, Send is a full target under it, and
+# both end above the tab bar.
+composer_whole() {
+  node -e '
+    const [field, send, tab] = process.argv.slice(1).map((json) => JSON.parse(json).rect);
+    const problems = [];
+    if (field.height <= 44) problems.push(`the question field is ${field.height} points tall, so its text is clipped`);
+    if (send.height < 44) problems.push(`Send is ${send.height} points tall`);
+    if (send.y < field.y + field.height) problems.push("Send overlaps the question field");
+    if (send.y + send.height > tab.y) problems.push("Send runs under the tab bar");
+    if (problems.length > 0) {
+      console.error(`The composer is not whole: ${problems.join("; ")}.`);
+      process.exit(1);
+    }
+  ' "$(agent_device get attrs 'id="coach-input"')" "$(agent_device get attrs 'id="coach-send"')" \
+    "$(agent_device get attrs "$you_tab")"
+}
+
 # open_coach <link> [launch argument...] relaunches svett on the fixture with the
 # arguments, then opens the link.
 open_coach() {
@@ -192,6 +213,12 @@ expect "the best squat set" text "117.5 kg for 8 reps"
 expect "what the answer read" 'id="coach-sources"'
 expect "the best sets the tools read from the fixture" text "Best sets of Barbell Squat, 2026-10-01 to 2026-10-31"
 screenshot answer
+expect "the coach's composer" 'id="coach-composer"'
+screenshot composer
+composer_whole || {
+  echo "The screen is in the composer screenshot above." >&2
+  exit 1
+}
 
 open_coach "$ask_link" -svettChatGPTStub signedIn -svettCoachStub "$plan_limit"
 timeout=60000 expect "the plan's limit" 'id="coach-failure-planLimit"'

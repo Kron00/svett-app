@@ -1571,14 +1571,20 @@ check "chatgpt.sh --live signs out an earlier sign-in, then waits 10 minutes for
   'get attrs id="chatgpt-sign-out"' 'get attrs id="chatgpt-continue"' \
   'wait id="chatgpt-state-signedIn" 600000' 'get attrs id="chatgpt-sign-out"'
 
-# Stands in for the bound command on the coach. Every element has the same frame,
-# every wait succeeds except one containing FAKE_MISSING, the coach's answer is on
-# screen, and opening the ask link writes FAKE_RECORDING, as a live run would.
+# Stands in for the bound command on the coach. The question field is two lines tall at
+# the largest text size, or FAKE_FIELD_HEIGHT, with Send under it above the tab bar. Every
+# other element has the same frame, every wait succeeds except one containing
+# FAKE_MISSING, the coach's answer is on screen, and opening the ask link writes
+# FAKE_RECORDING, as a live run would.
 cat >"$fake/coach-device" <<EOF
 #!/usr/bin/env bash
 echo "\$*" >>"$root/bound-calls"
 args=" \$* "
 case "\$args" in
+  *" get attrs id=\"coach-input\" "*)
+    echo "{\"rect\": {\"x\": 16, \"y\": 560, \"width\": 408, \"height\": \${FAKE_FIELD_HEIGHT:-172}}}" ;;
+  *" get attrs id=\"coach-send\" "*) echo '{"rect": {"x": 16, "y": 740, "width": 408, "height": 86}}' ;;
+  *" get attrs label=\"You, tab, 5 of 5\" "*) echo '{"rect": {"x": 352, "y": 874, "width": 88, "height": 48}}' ;;
   *" get attrs "*) echo '{"rect": {"x": 20, "y": 300, "width": 120, "height": 40}}' ;;
   *" open "*"svett://coach?ask="*) [[ -z "\${FAKE_RECORDING:-}" ]] || echo '{"source": "live"}' >"\$FAKE_RECORDING" ;;
   *" is visible "*) [[ "\$args" == *coach-answer* ]] ;;
@@ -1635,7 +1641,11 @@ check "coach.sh shoots at the largest text size, then restores the default" \
 check "coach.sh screenshots each state" \
   only_calls "screenshot" \
   "screenshot $root/coach/01-signed-out.png" "screenshot $root/coach/02-no-plan-usage.png" \
-  "screenshot $root/coach/03-answer.png" "screenshot $root/coach/04-plan-limit.png"
+  "screenshot $root/coach/03-answer.png" "screenshot $root/coach/04-composer.png" \
+  "screenshot $root/coach/05-plan-limit.png"
+check "coach.sh measures the question field, Send and the tab bar under the answer" \
+  only_calls "get attrs" \
+  'get attrs id="coach-input"' 'get attrs id="coach-send"' 'get attrs label="You, tab, 5 of 5"'
 check "coach.sh with SVETT_DEVICE_CMD calls neither simctl launch nor openurl" no_simctl_launch_or_openurl
 
 case_name="coach.sh Release with SVETT_DEVICE_CMD"
@@ -1652,6 +1662,16 @@ check "coach.sh names what did not show" \
 check "coach.sh restores the default text size after a failure" \
   only_calls "settings text-size" \
   "settings text-size accessibility-extra-extra-extra-large" "settings text-size large"
+
+case_name="coach.sh when the question field is clipped"
+run_coach FAKE_FIELD_HEIGHT=44 "$root/coach-clipped"
+check "coach.sh fails when the question field stays at its minimum height" test "$coach_status" -ne 0
+check "coach.sh says the question field is clipped" \
+  grep -qF "The composer is not whole: the question field is 44 points tall, so its text is clipped" "$output"
+check "coach.sh keeps the composer screenshot of a clipped field and stops before the plan's limit" \
+  only_calls "screenshot" \
+  "screenshot $root/coach-clipped/01-signed-out.png" "screenshot $root/coach-clipped/02-no-plan-usage.png" \
+  "screenshot $root/coach-clipped/03-answer.png" "screenshot $root/coach-clipped/04-composer.png"
 
 case_name="coach.sh when the Swift tests fail"
 run_coach FAKE_SWIFT_FAIL=1 "$root/coach-swift"

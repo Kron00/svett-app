@@ -15,17 +15,16 @@ import {
   Linking,
   ScrollView,
   type ScrollViewInstance,
-  TextInput,
   View,
 } from "react-native";
 
 import { chatGPTStatus } from "../chatgpt/native";
 import { appDatabase } from "../data/database";
-import { useColor, useIsAccessibilityTextSize } from "../design/hooks";
 import type { CoachNavigation, CoachStackParamList } from "../navigation";
 import { AppText } from "../ui/AppText";
 import { Button } from "../ui/Button";
 import { EmptyState } from "../ui/EmptyState";
+import { Composer } from "./Composer";
 import { swiftTransport } from "./native";
 
 type CoachRoute = RouteProp<CoachStackParamList, "CoachRoot">;
@@ -114,45 +113,6 @@ function FailureNotice({
       {failure.kind === "signIn" || failure.kind === "planUsageOff" ? (
         <Button label="Open ChatGPT settings" variant="secondary" onPress={openSettings} />
       ) : null}
-    </View>
-  );
-}
-
-function Composer({
-  busy,
-  onSend,
-}: {
-  readonly busy: boolean;
-  readonly onSend: (question: string) => void;
-}) {
-  const [text, setText] = useState("");
-  const stacked = useIsAccessibilityTextSize();
-  const send = () => {
-    const question = text.trim();
-    if (question === "" || busy) return;
-    setText("");
-    onSend(question);
-  };
-  return (
-    <View
-      className={`gap-2 border-t border-separator bg-background px-gutter py-2 ${stacked ? "" : "flex-row items-end"}`}
-    >
-      <TextInput
-        accessibilityLabel="Question for the coach"
-        testID="coach-input"
-        value={text}
-        onChangeText={setText}
-        multiline
-        placeholder="Ask about your training"
-        placeholderTextColor={useColor("secondary-label")}
-        className="min-h-target flex-1 rounded-field bg-control px-3 py-2 text-body text-label"
-      />
-      <Button
-        label="Send"
-        testID="coach-send"
-        disabled={busy || text.trim() === ""}
-        onPress={send}
-      />
     </View>
   );
 }
