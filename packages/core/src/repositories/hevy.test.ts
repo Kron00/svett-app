@@ -588,7 +588,7 @@ describe("Hevy import", () => {
     // one imported from a file with another workout above the two was #2.
     const legacy = (from: string, to: string): ImportInput => {
       const input = hevyImport(hevy([HEADER, ...twins].join("\n")), new Set([`hevy/${from}`]));
-      const moved = new Map([
+      const moved = new Map<string, string>([
         [importedId("activity", "hevy", from), importedId("activity", "hevy", to)],
         [
           importedId("activity_exercise", "hevy", `${from}/exercise/0`),
