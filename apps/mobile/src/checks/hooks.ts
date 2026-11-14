@@ -7,6 +7,7 @@ import {
   type NotificationObservation,
   NOT_RUN,
   type PendingNotification,
+  cancelSignIn,
   chatGPTOutcome,
   encodeKeychainMark,
   healthOutcome,
@@ -239,7 +240,7 @@ export function useChatGPTCheck() {
       case "failed":
         return setObservation({ kind: "failed", problem: result.problem });
       case "cancelled":
-        return setObservation(before);
+        return setObservation(cancelSignIn(before));
     }
   };
 

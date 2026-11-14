@@ -4,13 +4,15 @@ export type CheckName = "keychain" | "notification" | "location" | "health" | "c
 
 export type CheckOutcome = { readonly status: "not run" } | SeenOutcome;
 
-/** The outcome of a check that has run. */
+/** What a check saw, which can be that it did not run, such as a cancelled sign-in. */
 export interface SeenOutcome {
-  readonly status: "waiting" | "passed" | "failed" | "inconclusive";
+  readonly status: "not run" | "waiting" | "passed" | "failed" | "inconclusive";
   readonly detail: string;
 }
 
 export const NOT_RUN: CheckOutcome = { status: "not run" };
+
+export const isSeen = (outcome: CheckOutcome): outcome is SeenOutcome => "detail" in outcome;
 
 const waiting = (detail: string): SeenOutcome => ({ status: "waiting", detail });
 const passed = (detail: string): SeenOutcome => ({ status: "passed", detail });
@@ -260,7 +262,12 @@ export const PLAN_USAGE_SCOPE = "chatgpt.tokens.use.direct";
 export type ChatGPTObservation =
   | { readonly kind: "signing in" }
   | { readonly kind: "signed in"; readonly scope: string; readonly earlier: boolean }
-  | { readonly kind: "failed"; readonly problem: string };
+  | { readonly kind: "failed"; readonly problem: string }
+  | { readonly kind: "cancelled" };
+
+/** A cancelled sign-in leaves an earlier one in place, so the check keeps showing that. */
+export const cancelSignIn = (before: ChatGPTObservation | undefined): ChatGPTObservation =>
+  before?.kind === "signed in" ? before : { kind: "cancelled" };
 
 export function chatGPTOutcome(observation: ChatGPTObservation): SeenOutcome {
   switch (observation.kind) {
@@ -268,6 +275,8 @@ export function chatGPTOutcome(observation: ChatGPTObservation): SeenOutcome {
       return waiting("Signing in.");
     case "failed":
       return failed(observation.problem);
+    case "cancelled":
+      return { status: "not run", detail: "Sign-in was cancelled." };
     case "signed in": {
       const planUsage = observation.scope.split(" ").includes(PLAN_USAGE_SCOPE);
       const when = observation.earlier ? "Signed in on an earlier launch." : "Signed in.";
@@ -305,7 +314,7 @@ export function parseCount(text: string): number | undefined {
 }
 
 const SeenOutcomeSchema = Schema.Struct({
-  status: Schema.Literals(["waiting", "passed", "failed", "inconclusive"]),
+  status: Schema.Literals(["not run", "waiting", "passed", "failed", "inconclusive"]),
   detail: Schema.String,
 });
 
@@ -338,7 +347,7 @@ export function mergeOutcome(
   stored: StoredOutcome | undefined,
   launchedAt: number,
 ): CheckOutcome {
-  if (live.status !== "not run") return live;
+  if (isSeen(live)) return live;
   if (stored === undefined) return NOT_RUN;
   if (stored.outcome.status === "waiting" && stored.launchedAt !== launchedAt) {
     return waiting("svett closed before this check finished. Run it again.");
@@ -392,7 +401,7 @@ export function formatReport(report: PhoneReport): string {
   const checks = PHONE_CHECKS.map(({ name, title }) => {
     const outcome = report.outcomes[name];
     const label = `${title}: ${statusLabel(outcome)}`;
-    return outcome.status === "not run" ? label : `${label}. ${outcome.detail}`;
+    return isSeen(outcome) ? `${label}. ${outcome.detail}` : label;
   });
   return [
     "svett phone checks",

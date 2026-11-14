@@ -4,6 +4,7 @@ import {
   type CheckOutcome,
   PHONE_CHECKS,
   formatReport,
+  isSeen,
   mergeOutcomes,
   parseCount,
   resetChecks,
@@ -79,11 +80,11 @@ function CheckCard({
         </Text>
       </View>
       <Text className="text-sm text-neutral-600 dark:text-neutral-400">{info.steps}</Text>
-      {outcome.status === "not run" ? null : (
+      {isSeen(outcome) ? (
         <Text selectable className="text-sm text-black dark:text-white">
           {outcome.detail}
         </Text>
-      )}
+      ) : null}
       {children === undefined ? null : <View className="flex-row flex-wrap gap-2">{children}</View>}
     </View>
   );
@@ -147,7 +148,7 @@ function useSavedOutcomes(live: Record<CheckName, CheckOutcome>): Record<CheckNa
   useEffect(() => {
     for (const { name } of PHONE_CHECKS) {
       const outcome = live[name];
-      if (outcome.status === "not run") continue;
+      if (!isSeen(outcome)) continue;
       const value = encodeOutcome(outcome);
       if (saved.current.get(name) === value) continue;
       saved.current.set(name, value);

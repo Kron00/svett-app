@@ -5,6 +5,7 @@ import {
   type CheckOutcome,
   NOT_RUN,
   type StoredOutcome,
+  cancelSignIn,
   chatGPTOutcome,
   decodePendingNotification,
   decodeStoredOutcome,
@@ -258,6 +259,21 @@ describe("chatGPTOutcome", () => {
       detail: "Try again.",
     });
   });
+
+  it("does not run when the sign-in is cancelled", () => {
+    expect(chatGPTOutcome(cancelSignIn(undefined))).toEqual({
+      status: "not run",
+      detail: "Sign-in was cancelled.",
+    });
+    expect(chatGPTOutcome(cancelSignIn({ kind: "failed", problem: "Try again." })).status).toBe(
+      "not run",
+    );
+  });
+
+  it("keeps an earlier sign-in when a new one is cancelled", () => {
+    const earlier = { kind: "signed in", scope: "openid", earlier: true } as const;
+    expect(chatGPTOutcome(cancelSignIn(earlier)).status).toBe("passed");
+  });
 });
 
 describe("parseCount", () => {
@@ -388,6 +404,21 @@ describe("saved outcomes across a restart", () => {
       keychain: keychainOutcome({ kind: "read", stored: encodeKeychainMark(launchA) }, launchA),
     };
     expect(report(mergeOutcomes(live, {}, launchA))).toContain("Keychain after restart: WAITING.");
+  });
+
+  it("reports a cancelled sign-in as NOT RUN over the saved Signing in, and after a restart", () => {
+    const signingIn = saved(chatGPTOutcome({ kind: "signing in" }), launchA);
+    const cancelled = chatGPTOutcome(cancelSignIn(undefined));
+    const line = "ChatGPT sign-in: NOT RUN. Sign-in was cancelled.\n";
+    const now = mergeOutcomes(
+      { ...nothingLive, chatgpt: cancelled },
+      { chatgpt: signingIn },
+      launchA,
+    );
+    expect(report(now)).toContain(line);
+    expect(
+      report(mergeOutcomes(nothingLive, { chatgpt: saved(cancelled, launchA) }, launchB)),
+    ).toContain(line);
   });
 
   it("shows this launch's outcome over a saved one", () => {
