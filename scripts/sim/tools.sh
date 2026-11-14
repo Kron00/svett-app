@@ -418,7 +418,8 @@ tap 'label="Finish"'
 agent_device alert wait 5000 >/dev/null || fail "Finish asked nothing"
 # The confirmation is svett's own alert, which agent-device's alert accept cannot
 # answer, so its button is pressed by its label like any other control.
-tap 'label="Finish workout"'
+# The alert nests its button in containers with the same label, so ask for the button.
+tap 'role="button" label="Finish workout"'
 agent_device wait absent 'id="workout-bar"' 10000 >/dev/null ||
   fail "The workout bar still shows after Finish"
 screenshot finished

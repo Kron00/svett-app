@@ -2159,7 +2159,7 @@ const elements = () => {
     if (!workout) return found;
     add("workout-title", workout.title);
     add("bar-finish", "Finish");
-    if (state.alert) add("alert-finish", "Finish workout");
+    if (state.alert) add("alert-finish", "Finish workout", false, "button");
     workout.exercises.forEach((exercise, e) => {
       add(`workout-exercise-${e}`, exercise.name);
       add(`exercise-options-${e}`);
