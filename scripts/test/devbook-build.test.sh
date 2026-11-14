@@ -1789,7 +1789,9 @@ const elements = () => {
     add("workout");
     if (!workout) return found;
     add("workout-title", workout.title);
-    add("finish-workout");
+    // The bar's Finish item has no identifier, so the script can only find it by label.
+    add("bar-finish", "Finish");
+    if (state.alert) add("alert-finish", "Finish workout");
     add("set-done-timing", state.timing === null ? "No set marked done yet" : `Set shown done in ${state.timing} ms`);
     workout.exercises.forEach((exercise, e) => {
       add(`workout-exercise-${e}`, exercise.name);
@@ -1876,8 +1878,17 @@ const press = () => {
     const [moved] = workout.exercises.splice(m[0], 1);
     workout.exercises.splice(m[0] + 1, 0, moved);
     state.scrolled = [];
-  } else if (target === "finish-workout") state.alert = true;
-  else process.exit(1);
+  } else if (target === "bar-finish") state.alert = true;
+  else if (target === "alert-finish") {
+    state.alert = false;
+    const workout = current();
+    if (!process.env.FAKE_KEEPS_UNDONE) {
+      for (const exercise of workout.exercises) exercise.sets = exercise.sets.filter((one) => one.done);
+      workout.exercises = workout.exercises.filter((exercise) => exercise.sets.length > 0);
+    }
+    workout.status = "finished";
+    show("tabs");
+  } else process.exit(1);
 };
 const fail = () => process.exit(1);
 switch (command[0]) {
@@ -1898,8 +1909,8 @@ switch (command[0]) {
       show("tabs");
     } else if (url === "svett://train") show("train");
     else if (url === "svett://routine/legs-routine") show("routine");
-    else if (url.startsWith("svett://workout/exercises?q=")) {
-      state.query = decodeURIComponent(url.slice("svett://workout/exercises?q=".length));
+    else if (url.startsWith("svett://train/workout/exercises?q=")) {
+      state.query = decodeURIComponent(url.slice("svett://train/workout/exercises?q=".length));
       show("picker");
     } else fail();
     break;
@@ -1930,16 +1941,8 @@ switch (command[0]) {
     break;
   case "alert":
     if (command[1] === "wait" && !state.alert) fail();
-    if (command[1] === "accept") {
-      state.alert = false;
-      const workout = current();
-      if (!process.env.FAKE_KEEPS_UNDONE) {
-        for (const exercise of workout.exercises) exercise.sets = exercise.sets.filter((one) => one.done);
-        workout.exercises = workout.exercises.filter((exercise) => exercise.sets.length > 0);
-      }
-      workout.status = "finished";
-      show("tabs");
-    }
+    // svett's own alerts have no button agent-device's alert accept can find.
+    if (command[1] === "accept") fail();
     break;
   default:
     fail();
@@ -1966,9 +1969,9 @@ run_logger() {
 logger_db="$root/data container/Documents/svett-logger.db"
 logger_args="--launch-args=-svettFixture --launch-args=$logger_db --launch-args=-svettTiming --launch-args=1"
 logger_links=("com.kron00.svett svett://routine/legs-routine"
-  "com.kron00.svett svett://workout/exercises?q=plank")
+  "com.kron00.svett svett://train/workout/exercises?q=plank")
 empty_links=("com.kron00.svett svett://train"
-  "com.kron00.svett svett://workout/exercises?q=barbell%20squat")
+  "com.kron00.svett svett://train/workout/exercises?q=barbell%20squat")
 
 case_name="logger.sh Debug with SVETT_DEVICE_CMD"
 run_logger "$root/logger"
