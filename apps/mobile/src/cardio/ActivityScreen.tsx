@@ -12,6 +12,7 @@ import {
   formatKm,
   formatPace,
   paceMeasure,
+  type RouteLines,
   trackParts,
 } from "@svett/core";
 import { Effect, Option, Schema } from "effect";
@@ -112,8 +113,8 @@ function Splits({
   );
 }
 
-function Elevation({ route }: { readonly route: ReturnType<typeof trackParts>["route"] }) {
-  const profile = useMemo(() => elevationProfile(route), [route]);
+function Elevation({ lines }: { readonly lines: RouteLines }) {
+  const profile = useMemo(() => elevationProfile(lines), [lines]);
   if (profile.length === 0) {
     return (
       <AppText tone="secondary" className="px-gutter">
@@ -197,7 +198,7 @@ export function ActivityScreen({ route, navigation }: Props) {
       </View>
       {parts.route.length > 0 && track !== null ? (
         <RouteMap
-          route={parts.route}
+          lines={parts.lines}
           hideStartM={track.hideStartM}
           hideEndM={track.hideEndM}
           color={sport.color}
@@ -232,7 +233,7 @@ export function ActivityScreen({ route, navigation }: Props) {
       {parts.splits.length > 0 ? <Splits kind={kind} splits={parts.splits} /> : null}
       <View className="gap-3">
         <SectionHeader title="Elevation" />
-        <Elevation route={parts.route} />
+        <Elevation lines={parts.lines} />
       </View>
       {track !== null ? (
         <View className="gap-3 px-gutter" testID="activity-hide">

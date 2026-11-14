@@ -1,4 +1,4 @@
-import { hideRouteEnds, type LatLng, regionFitting } from "@svett/core";
+import { hideRouteEnds, type RouteLines, regionFitting } from "@svett/core";
 import { AppleMaps } from "expo-maps";
 import { useMemo } from "react";
 import { View } from "react-native";
@@ -9,21 +9,27 @@ import type { TintColor } from "../design/tokens";
 const MAP_HEIGHT = 280;
 const LINE_WIDTH = 5;
 
-const line = (id: string, points: ReadonlyArray<LatLng>, color: string) =>
-  points.length > 1 ? [{ id, coordinates: [...points], color, width: LINE_WIDTH }] : [];
+const polylines = (id: string, lines: RouteLines, color: string) =>
+  lines.map((line, index) => ({
+    id: `${id}-${index}`,
+    coordinates: line.map(({ latitude, longitude }) => ({ latitude, longitude })),
+    color,
+    width: LINE_WIDTH,
+  }));
 
 /**
- * The route on an Apple Maps map. The stretches hidden from others at each end are
- * drawn grey, so the owner sees what others will not.
+ * The owner's own route on an Apple Maps map, one line for each stretch between
+ * pauses. The stretches hidden from others at each end are drawn grey, so the owner
+ * sees what others will not. Anyone else's view goes through `sharedTrack`.
  */
 export function RouteMap({
-  route,
+  lines,
   hideStartM,
   hideEndM,
   color,
   accessibilityLabel,
 }: {
-  readonly route: ReadonlyArray<LatLng>;
+  readonly lines: RouteLines;
   readonly hideStartM: number;
   readonly hideEndM: number;
   readonly color: TintColor;
@@ -34,12 +40,12 @@ export function RouteMap({
   const start = useColor("success");
   const end = useColor("destructive");
   const parts = useMemo(
-    () => hideRouteEnds(route, hideStartM, hideEndM),
-    [route, hideStartM, hideEndM],
+    () => hideRouteEnds(lines, hideStartM, hideEndM),
+    [lines, hideStartM, hideEndM],
   );
-  const region = useMemo(() => regionFitting(route), [route]);
-  const visibleStart = parts.visible[0];
-  const visibleEnd = parts.visible.at(-1);
+  const region = useMemo(() => regionFitting(lines.flat()), [lines]);
+  const visibleStart = parts.visible[0]?.[0];
+  const visibleEnd = parts.visible.at(-1)?.at(-1);
 
   return (
     <View
@@ -56,15 +62,31 @@ export function RouteMap({
           colorScheme={AppleMaps.MapColorScheme.DARK}
           cameraPosition={{ coordinates: region.center, zoom: region.zoom }}
           polylines={[
-            ...line("hidden-start", parts.start, hidden),
-            ...line("visible", parts.visible, shown),
-            ...line("hidden-end", parts.end, hidden),
+            ...polylines("hidden-start", parts.start, hidden),
+            ...polylines("visible", parts.visible, shown),
+            ...polylines("hidden-end", parts.end, hidden),
           ]}
           circles={[
             ...(visibleStart
-              ? [{ id: "start", center: visibleStart, radius: 12, color: start }]
+              ? [
+                  {
+                    id: "start",
+                    center: { latitude: visibleStart.latitude, longitude: visibleStart.longitude },
+                    radius: 12,
+                    color: start,
+                  },
+                ]
               : []),
-            ...(visibleEnd ? [{ id: "end", center: visibleEnd, radius: 12, color: end }] : []),
+            ...(visibleEnd
+              ? [
+                  {
+                    id: "end",
+                    center: { latitude: visibleEnd.latitude, longitude: visibleEnd.longitude },
+                    radius: 12,
+                    color: end,
+                  },
+                ]
+              : []),
           ]}
           uiSettings={{
             compassEnabled: false,

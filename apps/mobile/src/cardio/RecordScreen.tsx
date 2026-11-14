@@ -27,6 +27,7 @@ import {
   finishRecording,
   pauseRecording,
   recording,
+  recordingProblem,
   resumeRecording,
   startRecording,
   type StartOutcome,
@@ -105,6 +106,7 @@ function Live({ current }: { readonly current: Recording }) {
   const navigation = useNavigation<RootNavigation>();
   const paused = isPaused(current);
   const now = useNow(!paused);
+  const problem = useStore(recordingProblem);
   const [finishing, setFinishing] = useState(false);
   const durationS = movingMs(current, now) / 1000;
   const distanceM = recordedDistanceM(current);
@@ -158,6 +160,11 @@ function Live({ current }: { readonly current: Recording }) {
           testID="record-pace"
         />
       </View>
+      {problem === undefined ? null : (
+        <AppText tone="destructive" className="px-gutter" testID="record-problem">
+          {paused ? "Still paused." : "Still recording."} {problem}
+        </AppText>
+      )}
       <View className="gap-3 px-gutter">
         {paused ? (
           <>

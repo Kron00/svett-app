@@ -1,19 +1,10 @@
 import {
   type ActivityId,
-  ActivityRepository,
-  applyEvent,
   type CardioKind,
-  cardioDraft,
-  cardioTitle,
-  encodeRecordingEvent,
   fixOf,
-  isPaused,
   type LocationReading,
-  parseJournal,
+  makeRecorder,
   type Recording,
-  type RecordingEvent,
-  replay,
-  summarize,
 } from "@svett/core";
 import { Effect } from "effect";
 import { File, Paths } from "expo-file-system";
@@ -32,62 +23,71 @@ export const CARDIO_TASK = "svett-cardio-location";
 // ending svett in the background all leave the recording where it was.
 const journal = new File(Paths.document, "svett-recording.jsonl");
 
-const readJournal = (): ReadonlyArray<RecordingEvent> => {
-  try {
-    return journal.exists ? parseJournal(journal.textSync()) : [];
-  } catch {
-    return [];
-  }
-};
-
 /** The recording in progress, if there is one. */
-export const recording = createStore<Recording | undefined>(replay(readJournal()));
+export const recording = createStore<Recording | undefined>(undefined);
 
-const record = (events: ReadonlyArray<RecordingEvent>) => {
-  if (events.length === 0) return;
-  journal.write(events.map((event) => `${encodeRecordingEvent(event)}\n`).join(""), {
-    append: true,
-  });
-  recording.set(events.reduce(applyEvent, recording.get()));
-};
-
-const forget = () => {
-  if (journal.exists) journal.delete();
-  recording.set(undefined);
-};
+const recorder = makeRecorder({
+  journal: {
+    read: () => (journal.exists ? journal.textSync() : ""),
+    append: (text) => journal.write(text, { append: true }),
+    remove: async () => {
+      if (journal.exists) journal.delete();
+    },
+  },
+  location: {
+    start: async () => {
+      // iOS may relaunch svett in the background with the updates still on.
+      if (await Location.hasStartedLocationUpdatesAsync(CARDIO_TASK)) return;
+      await Location.startLocationUpdatesAsync(CARDIO_TASK, {
+        accuracy: Location.Accuracy.BestForNavigation,
+        distanceInterval: 0,
+        activityType: Location.ActivityType.Fitness,
+        pausesUpdatesAutomatically: false,
+        showsBackgroundLocationIndicator: true,
+      });
+    },
+    stop: async () => {
+      if (await Location.hasStartedLocationUpdatesAsync(CARDIO_TASK)) {
+        await Location.stopLocationUpdatesAsync(CARDIO_TASK);
+      }
+    },
+  },
+  localHour: (at) => new Date(at).getHours(),
+  onChange: recording.set,
+});
+recording.set(recorder.get());
 
 TaskManager.defineTask<{ locations: ReadonlyArray<LocationReading> }>(
   CARDIO_TASK,
   async ({ data, error }) => {
-    // Readings that arrive after Finish or Discard would start a new journal.
-    if (error !== null || recording.get() === undefined) return;
-    record(data.locations.map((location) => ({ type: "fix", fix: fixOf(location) })));
+    if (error !== null) return;
+    // Awaited, so iOS does not suspend svett before the readings are in the journal.
+    await Effect.runPromise(recorder.addFixes(data.locations.map(fixOf)));
   },
 );
 
-const startUpdates = () =>
-  Location.startLocationUpdatesAsync(CARDIO_TASK, {
-    accuracy: Location.Accuracy.BestForNavigation,
-    distanceInterval: 0,
-    activityType: Location.ActivityType.Fitness,
-    pausesUpdatesAutomatically: false,
-    showsBackgroundLocationIndicator: true,
-  });
+/** Why the last change to the recording did not happen, until one does. */
+export const recordingProblem = createStore<string | undefined>(undefined);
 
-const stopUpdates = async () => {
-  if (await Location.hasStartedLocationUpdatesAsync(CARDIO_TASK)) {
-    await Location.stopLocationUpdatesAsync(CARDIO_TASK);
+const problemOf = (error: unknown): string =>
+  typeof error === "object" && error !== null && "message" in error
+    ? String(error.message)
+    : String(error);
+
+const tracked = async <A>(change: Promise<A>): Promise<A> => {
+  try {
+    const result = await change;
+    recordingProblem.set(undefined);
+    return result;
+  } catch (error) {
+    recordingProblem.set(problemOf(error));
+    throw error;
   }
 };
 
 // iOS stops the updates when svett is closed from the app switcher. Opening svett
-// again picks the recording back up.
-const current = recording.get();
-if (current !== undefined && !isPaused(current)) {
-  void Location.hasStartedLocationUpdatesAsync(CARDIO_TASK)
-    .then((started) => (started ? undefined : startUpdates()))
-    .catch(() => undefined);
-}
+// again picks the recording back up, or pauses it when GPS will not start.
+void tracked(Effect.runPromise(recorder.restore)).catch(() => undefined);
 
 export type StartOutcome =
   | { readonly kind: "started" }
@@ -100,43 +100,26 @@ export async function startRecording(kind: CardioKind): Promise<StartOutcome> {
   // With only While Using, iOS still records with the screen locked, since the
   // recording started in front and shows the location indicator.
   await Location.requestBackgroundPermissionsAsync();
-  record([{ type: "start", at: Date.now(), kind }]);
   try {
-    await startUpdates();
+    await appDatabase().runPromise(recorder.start(kind));
   } catch (error) {
-    forget();
-    return { kind: "error", message: error instanceof Error ? error.message : String(error) };
+    return { kind: "error", message: problemOf(error) };
   }
+  recordingProblem.set(undefined);
   return { kind: "started" };
 }
 
-export async function pauseRecording() {
-  record([{ type: "pause", at: Date.now() }]);
-  await stopUpdates();
-}
+/** Pauses, or leaves the reason it could not in `recordingProblem`. */
+export const pauseRecording = () =>
+  tracked(Effect.runPromise(recorder.pause)).catch(() => undefined);
 
-export async function resumeRecording() {
-  record([{ type: "resume", at: Date.now() }]);
-  await startUpdates();
-}
+/** Resumes, or stays paused and leaves the reason in `recordingProblem`. */
+export const resumeRecording = () =>
+  tracked(Effect.runPromise(recorder.resume)).catch(() => undefined);
 
 /** Saves the recording as an activity and returns its ID. */
-export async function finishRecording(): Promise<ActivityId> {
-  const finished = recording.get();
-  if (finished === undefined) throw new Error("There is no recording to finish");
-  await stopUpdates();
-  const summary = summarize(finished, Date.now());
-  const title = cardioTitle(finished.kind, new Date(finished.startedAt).getHours());
-  const id = await appDatabase().runPromise(
-    Effect.flatMap(Effect.service(ActivityRepository), (activities) =>
-      activities.create(cardioDraft(summary, title)),
-    ),
-  );
-  forget();
-  return id;
-}
+export const finishRecording = (): Promise<ActivityId> =>
+  tracked(appDatabase().runPromise(recorder.finish));
 
-export async function discardRecording() {
-  await stopUpdates();
-  forget();
-}
+export const discardRecording = () =>
+  tracked(Effect.runPromise(recorder.discard)).catch(() => undefined);
