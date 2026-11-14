@@ -104,6 +104,24 @@ vi.mock("@legendapp/list/react-native", async () => {
 vi.mock("../global.css", () => ({}));
 vi.mock("../modules/svett-native", () => ({ default: { launchedAt: 0 } }));
 vi.mock("expo", () => ({ uuid: { v4: () => "00000000-0000-4000-8000-000000000000" } }));
+// K1's recorder and map load native modules; the guard only needs them to import.
+vi.mock("expo-location", () => ({
+  hasStartedLocationUpdatesAsync: async () => false,
+  stopLocationUpdatesAsync: async () => undefined,
+  Accuracy: { BestForNavigation: 6 },
+  ActivityType: { Fitness: 3 },
+}));
+vi.mock("expo-task-manager", () => ({
+  defineTask: () => undefined,
+  isTaskRegisteredAsync: async () => false,
+}));
+vi.mock("expo-maps", () => ({ AppleMaps: { View: "AppleMapsView" } }));
+vi.mock("expo-file-system", () => ({
+  Paths: { document: "/documents" },
+  File: class {
+    exists = false;
+  },
+}));
 // The coach stays on "Opening the coach" while its sign-in status is unread.
 vi.mock("./chatgpt/native", () => ({ chatGPTStatus: () => new Promise(() => {}) }));
 vi.mock("./coach/native", () => ({ swiftTransport: {} }));
