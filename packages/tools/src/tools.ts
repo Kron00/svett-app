@@ -5,6 +5,7 @@ import {
   dayStart,
   ExerciseId,
   ExerciseRepository,
+  exerciseLibrary,
   exerciseSessions,
   type FunctionTool,
   localDay,
@@ -108,10 +109,16 @@ const MAX_NAME = 120;
 
 const userText = (text: string, maximum = MAX_NAME) => ({ userWritten: clip(text, maximum) });
 
-/** A library exercise's name is svett's own. Any other was written by the user or an import. */
+/**
+ * A name is svett's own only when it is the bundled library's name for that ID. A row can keep
+ * source "library" through an edited export and import with a name the user wrote.
+ */
 const ExerciseName = Schema.Union([Schema.String, UserText]);
-const exerciseLabel = (exercise: Exercise) =>
-  exercise.source === "library" ? exercise.name : userText(exercise.name);
+let libraryNames: ReadonlyMap<string, string> | undefined;
+const exerciseLabel = (exercise: Exercise) => {
+  libraryNames ??= new Map(exerciseLibrary().map((entry) => [entry.id, entry.name]));
+  return libraryNames.get(exercise.id) === exercise.name ? exercise.name : userText(exercise.name);
+};
 
 const NO_PARAMETERS = { type: "object", properties: {}, additionalProperties: false };
 
