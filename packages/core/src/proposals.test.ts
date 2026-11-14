@@ -13,11 +13,13 @@ import {
   undoProposal,
   unknownExercises,
 } from "./proposals.ts";
+import { ActivityRepository } from "./repositories/activities.ts";
 import { MADE_HERE } from "./repositories/origin.ts";
 import { ExerciseRepository } from "./repositories/exercises.ts";
 import { ProposalRepository } from "./repositories/records.ts";
 import { RoutineRepository } from "./repositories/routines.ts";
 import type { ExerciseId, ProposalId } from "./schema.ts";
+import { startWorkoutFromRoutine } from "./start-workout.ts";
 import { openTestDatabase, pointersToDeleted } from "./test-database.ts";
 import { trainOverview } from "./train-overview.ts";
 
@@ -246,6 +248,42 @@ describe("a coach proposal", () => {
     expect(why, name).toContain("after Apply, so Undo would throw your changes away");
     expect(await train(database), name).toEqual(after);
     expect(await status(database, id), name).toBe("applied");
+  });
+
+  it.each([
+    ["a routine", upper],
+    ["a program's routine", program],
+  ] as const)("refuses Undo once a workout was started from %s it created", async (_name, plan) => {
+    const database = await withOwnRoutine();
+    const id = await propose(database, plan);
+    await run(database, applyProposal(id));
+    const [first] = (await run(database, proposalView(id))).routineIds;
+    await run(database, startWorkoutFromRoutine(first as never));
+    const after = await train(database);
+
+    const why = await failure(database, undoProposal(id));
+    expect(why).toContain("Undo would leave that workout pointing at a deleted routine");
+    expect(await train(database)).toEqual(after);
+    expect(await status(database, id)).toBe("applied");
+    expect(pointersToDeleted(database)).toEqual([]);
+  });
+
+  it("undoes once the workout started from it was deleted", async () => {
+    const database = await withOwnRoutine();
+    const id = await propose(database, upper);
+    await run(database, applyProposal(id));
+    const [first] = (await run(database, proposalView(id))).routineIds;
+    const workout = await run(database, startWorkoutFromRoutine(first as never));
+    await run(
+      database,
+      Effect.flatMap(Effect.service(ActivityRepository), (activities) =>
+        activities.remove(workout as never),
+      ),
+    );
+
+    await run(database, undoProposal(id));
+    expect(await status(database, id)).toBe("undone");
+    expect(await train(database)).toEqual([["none", ["My legs"]]]);
   });
 
   it("refuses Undo before Apply", async () => {

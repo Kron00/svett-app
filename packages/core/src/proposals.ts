@@ -294,6 +294,20 @@ export const undoProposal = (id: ProposalId) =>
             message: `You changed ${what} on the Train tab after Apply, so Undo would throw your changes away. Delete it there if you no longer want it.`,
           });
         }
+        // A workout started from one of these routines points at it, so deleting the routine
+        // would leave that workout, in progress or finished, naming a deleted routine.
+        const marks = applied.routineIds.map(() => "?").join(", ");
+        const [used] = yield* sql.all(
+          `SELECT count(*) AS n FROM activity WHERE deleted_at IS NULL AND routine_id IN (${marks})`,
+          applied.routineIds,
+        );
+        if (Number(used?.["n"] ?? 0) > 0) {
+          const what =
+            payload.plan.kind === "program" ? "a routine of this program" : "this routine";
+          return yield* new ProposalError({
+            message: `You started a workout from ${what} after Apply, so Undo would leave that workout pointing at a deleted routine. Delete the routine on the Train tab if you no longer want it.`,
+          });
+        }
         if (applied.folderId !== null) yield* routines.removeFolder(applied.folderId);
         else for (const routineId of applied.routineIds) yield* routines.removeRoutine(routineId);
         yield* (yield* ProposalRepository).update(id, { status: "undone" });
