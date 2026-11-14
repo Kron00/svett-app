@@ -1624,6 +1624,11 @@ case "\$args" in
     [[ "\$attrs" != *low* ]] || exit 0
     case "\$screen:\$attrs" in
       setup:*record-start*)
+        # With FAKE_FIRST_PRESS_STOPS the first press only stops the screen gliding, as on iOS.
+        if [[ -n "\${FAKE_FIRST_PRESS_STOPS:-}" && ! -e "$root/press-stopped" ]]; then
+          touch "$root/press-stopped"
+          exit 0
+        fi
         [[ -n "\${FAKE_NO_START:-}" ]] || { echo recording >"$root/recording"; show recording; } ;;
       recording:*record-pause*) echo paused >"$root/recording"; show paused ;;
       paused:*record-resume*) echo recording >"$root/recording"; show recording ;;
@@ -1662,7 +1667,7 @@ run_cardio() {
     shift
   done
   rm -rf "$root/simctl-calls" "$root/bound-calls" "$root/screen" "$root/svett-screen" \
-    "$root/recording" "$root/home-screen-actions" "$root/data container/Documents"
+    "$root/recording" "$root/home-screen-actions" "$root/data container/Documents" "$root/press-stopped"
   cardio_status=0
   env PATH="$fake:$PATH" SVETT_DEVICE_CMD="cardio-device --session 't3-test session' --device FAKE-UDID" \
     "${vars[@]}" "$repo/scripts/sim/cardio.sh" "$@" >"$output" 2>&1 || cardio_status=$?
@@ -1763,7 +1768,7 @@ check "cardio.sh drags Start up from the bottom edge before pressing it" \
   only_calls "gesture pan" "gesture pan 20 600 0 -300 400"
 check "cardio.sh presses Start only once it is clear of the bottom edge" \
   only_calls "get attrs|press" \
-  'get attrs id="record-start"' 'get attrs id="record-start"' "$cardio_press" \
+  'get attrs id="record-start"' 'get attrs id="record-start"' 'get attrs id="record-start"' "$cardio_press" \
   'get attrs id="record-pause"' "$cardio_press" 'get attrs id="record-resume"' "$cardio_press" \
   'get attrs id="record-pause"' "$cardio_press" 'get attrs id="record-finish"' "$cardio_press"
 
@@ -1774,6 +1779,11 @@ check "cardio.sh says Start stayed at the bottom edge" \
   grep -qF 'id="record-start" stayed at the bottom edge of the screen' "$output"
 check "cardio.sh never presses Start on the bottom edge" \
   test "$(grep -c -- " press " "$root/bound-calls")" -eq 0
+
+case_name="cardio.sh when the first press on Start only stops the screen gliding"
+cardio_sh FAKE_RELEASE=1 FAKE_START_LOW=1 FAKE_FIRST_PRESS_STOPS=1 --release "$root/cardio-glide"
+check "cardio.sh presses Start again when the recording has not started" \
+  test "$(grep -c -- "$cardio_press" "$root/bound-calls")" -eq 6
 
 case_name="cardio.sh when the saved run is short of the route"
 run_cardio FAKE_RELEASE=1 FAKE_SHORT=1 --release "$root/cardio-short"

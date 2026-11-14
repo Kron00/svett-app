@@ -130,6 +130,21 @@ tap() {
       exit 1
     }
   done
+  # A drag leaves the screen gliding, and iOS takes a tap on a gliding screen as a
+  # stop, not a press, so the press waits until two reads of the frame agree.
+  if ((drags > 0)); then
+    local before=$point reads=0
+    while ((reads < 10)); do
+      agent_device wait 250 >/dev/null
+      point=$(centre_of "$1") || {
+        echo "Could not read where $1 is" >&2
+        exit 1
+      }
+      [[ "$point" != "$before" ]] || break
+      before=$point
+      reads=$((reads + 1))
+    done
+  fi
   agent_device press "${point% *}" "${point#* }"
 }
 
@@ -194,7 +209,12 @@ screenshot start
 started_after=$(($(date +%s) * 1000))
 tap 'id="record-start"'
 accept_alerts
-agent_device wait 'id="record-pause"' 10000 || {
+# One more press if the first was taken as a stop, as long as Start is still there.
+agent_device wait 'id="record-pause"' 5000 >/dev/null 2>&1 || {
+  agent_device is visible 'id="record-start"' >/dev/null 2>&1 && tap 'id="record-start"'
+  accept_alerts
+  agent_device wait 'id="record-pause"' 10000
+} || {
   echo "The recording did not start" >&2
   exit 1
 }
