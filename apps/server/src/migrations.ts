@@ -205,5 +205,8 @@ export const MIGRATIONS: Record<string, Effect.Effect<void, unknown, SqlClient>>
       )
     `;
     yield* sql`create index activity_like_liker on activity_like (liker_id)`;
+    // The ID of the deletion ledger in BACKUP_DIR, recorded when the ledger is made, so a start
+    // or a restore can tell a lost or wrongly mounted ledger from a server that never had one.
+    yield* sql`create table deletion_ledger (id text primary key)`;
   }),
 };

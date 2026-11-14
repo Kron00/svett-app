@@ -1,18 +1,22 @@
 import { type ChildProcess, spawn } from "node:child_process";
-import { mkdtemp } from "node:fs/promises";
+import { appendFile, mkdtemp, readFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { Effect, Layer, Redacted } from "effect";
+import * as Migrator from "effect/sql/Migrator";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
 
-import { DeletionLedger } from "./deletion-ledger.ts";
+import { prepareDatabase } from "./account-deletion.ts";
+import { databaseLayer } from "./database.ts";
+import { DeletionLedger, LEDGER_FILE, readLedger } from "./deletion-ledger.ts";
+import { MIGRATIONS } from "./migrations.ts";
 import { PgTools } from "./pg-tools.ts";
 import { restoreBackup, restoreForUse } from "./restore.ts";
 import { type StandInIssuer, startStandInIssuer } from "./test-issuer.ts";
-import { rowsNaming, startTestPostgres, type TestPostgres } from "./test-postgres.ts";
+import { query, rowsNaming, startTestPostgres, type TestPostgres } from "./test-postgres.ts";
 
 let postgres: TestPostgres;
 let issuer: StandInIssuer;
@@ -154,11 +158,52 @@ describe("the production server", { timeout: 90_000 }, () => {
   });
 });
 
+const pgTools = () => PgTools.layer(postgres.tools);
+
+/** Readies `url` the way the server does on start, with the ledger in `dir`. */
+const start = (url: Redacted.Redacted, dir: string) =>
+  Effect.runPromise(
+    prepareDatabase.pipe(
+      Effect.provide(Layer.merge(databaseLayer(url), DeletionLedger.layer(dir))),
+    ),
+  );
+
+const restore = async (backup: string, dir: string) =>
+  Effect.runPromise(
+    restoreForUse(backup, await postgres.createDatabase(`main_${++databases}`)).pipe(
+      Effect.provide(Layer.merge(pgTools(), DeletionLedger.layer(dir))),
+    ),
+  );
+
+const backUp = async (url: Redacted.Redacted, dir: string) => {
+  const backup = join(dir, `backup-${++databases}.dump`);
+  await Effect.runPromise(
+    Effect.flatMap(Effect.service(PgTools), (pg) => pg.dump(url, backup)).pipe(
+      Effect.provide(pgTools()),
+    ),
+  );
+  return backup;
+};
+/** Records the deletion of `account` in the ledger in `dir`, as a deletion does. */
+const recordDeletion = (url: Redacted.Redacted, dir: string, account: string) =>
+  query<{ id: string }>(url, "select id from deletion_ledger").then(([named]) =>
+    Effect.runPromise(
+      Effect.flatMap(Effect.service(DeletionLedger), (ledger) =>
+        ledger.record(named!.id, { account, at: 1, receipt: null }),
+      ).pipe(Effect.provide(DeletionLedger.layer(dir))),
+    ),
+  );
+
+const ledgerId = async (dir: string) => {
+  const ledger = readLedger(await readFile(join(dir, LEDGER_FILE), "utf8"));
+  return "id" in ledger ? ledger.id : undefined;
+};
+
 const nothingLeft = (rows: Record<string, number>) =>
   Object.values(rows).every((count) => count === 0);
 
 describe("the deletion ledger", { timeout: 120_000 }, () => {
-  it("deletes an account again after a restore from a backup taken before its deletion", async () => {
+  it("deletes an account again after a restore from a backup taken before its deletion, past a line a crash cut short", async () => {
     const n = ++databases;
     const live = await postgres.createDatabase(`main_${n}`);
     const backupDir = await mkdtemp(join(tmpdir(), "svett-main-"));
@@ -212,12 +257,18 @@ describe("the deletion ledger", { timeout: 120_000 }, () => {
         Effect.provide(tools),
       ),
     );
+    // A crash part way through an earlier append left the start of a line that never committed.
+    const ledgerFile = join(backupDir, LEDGER_FILE);
+    await appendFile(ledgerFile, '{"account":"user_never_deleted","at":1,"rec');
     const receipt = "c".repeat(64);
     expect(await first.call("DELETE", "/v1/me", held, { receipt })).toEqual({
       status: 200,
       body: { deleted: true },
     });
     first.stop();
+    expect(first.output()).toContain("Cut off the half-written last line");
+    const ledger = readLedger(await readFile(ledgerFile, "utf8"));
+    expect("entries" in ledger && ledger.entries.map(({ account }) => account)).toEqual([anna]);
 
     // `cli.ts restore` deletes the account again as it restores.
     const restored = await postgres.createDatabase(`main_${++databases}`);
@@ -249,5 +300,77 @@ describe("the deletion ledger", { timeout: 120_000 }, () => {
       following: 0,
     });
     expect(restarted.output()).toContain("Deleted 1 accounts again from the deletion ledger");
+  });
+
+  it("makes a ledger for a new server, and records its ID in the database", async () => {
+    const url = await postgres.createDatabase(`main_${++databases}`);
+    const dir = await mkdtemp(join(tmpdir(), "svett-main-"));
+    expect(await start(url, dir)).toBe(0);
+    const id = await ledgerId(dir);
+    expect(id).toEqual(expect.any(String));
+    expect(await query(url, "select id from deletion_ledger")).toEqual([{ id }]);
+    expect(await start(url, dir)).toBe(0);
+    expect(await ledgerId(dir)).toBe(id);
+  });
+
+  it("makes a ledger on the deployed server's first start after the ledger had an ID", async () => {
+    const url = await postgres.createDatabase(`main_${++databases}`);
+    const dir = await mkdtemp(join(tmpdir(), "svett-main-"));
+    // The deployed server has only main's migrations, and no ledger.
+    await Effect.runPromise(
+      Migrator.make({})({
+        loader: Migrator.fromRecord({ "1_accounts": MIGRATIONS["1_accounts"]! }),
+      }).pipe(Effect.provide(databaseLayer(url))),
+    );
+    await query(url, "insert into account (id) values ('user_deployed')");
+
+    expect(await start(url, dir)).toBe(0);
+
+    const id = await ledgerId(dir);
+    expect(await query(url, "select id from deletion_ledger")).toEqual([{ id }]);
+    expect(await query(url, "select id from account")).toEqual([{ id: "user_deployed" }]);
+  });
+
+  it("refuses a start and a restore without the ledger the database names", async () => {
+    const url = await postgres.createDatabase(`main_${++databases}`);
+    const dir = await mkdtemp(join(tmpdir(), "svett-main-"));
+    await start(url, dir);
+    await query(url, "insert into account (id) values ('user_gone')");
+    const backup = await backUp(url, dir);
+    await recordDeletion(url, dir, "user_gone");
+    const id = await ledgerId(dir);
+
+    const empty = await mkdtemp(join(tmpdir(), "svett-main-"));
+    const missing = `The database names deletion ledger ${id}, but ${join(empty, LEDGER_FILE)} is missing. Check that BACKUP_DIR is the backup volume and that it is mounted.`;
+    await expect(start(url, empty)).rejects.toThrow(missing);
+    await expect(restore(backup, empty)).rejects.toThrow(missing);
+    await expect(
+      startServer({ DATABASE_URL: Redacted.value(url), BACKUP_DIR: empty }),
+    ).rejects.toThrow(missing);
+
+    const other = await mkdtemp(join(tmpdir(), "svett-main-"));
+    await start(await postgres.createDatabase(`main_${++databases}`), other);
+    const another = `but ${join(other, LEDGER_FILE)} is ledger ${await ledgerId(other)}. Check that BACKUP_DIR is this server's backup volume.`;
+    await expect(start(url, other)).rejects.toThrow(another);
+    await expect(restore(backup, other)).rejects.toThrow(another);
+
+    expect(await restore(backup, dir)).toBe(1);
+    expect(await start(url, dir)).toBe(1);
+    expect(await query(url, "select id from account")).toEqual([]);
+  });
+
+  it("refuses a start and a restore when a line before the last is damaged", async () => {
+    const url = await postgres.createDatabase(`main_${++databases}`);
+    const dir = await mkdtemp(join(tmpdir(), "svett-main-"));
+    await start(url, dir);
+    const backup = await backUp(url, dir);
+    await appendFile(
+      join(dir, LEDGER_FILE),
+      '{"account":"user_a\n{"account":"user_b","at":2,"receipt":null}\n',
+    );
+
+    const damaged = "is damaged. Line 2 is damaged. The server refuses to start, restore";
+    await expect(start(url, dir)).rejects.toThrow(damaged);
+    await expect(restore(backup, dir)).rejects.toThrow(damaged);
   });
 });

@@ -2,11 +2,12 @@ import { createHash } from "node:crypto";
 
 import { PgClient } from "@effect/sql-pg";
 import type { AccountId } from "@svett/core";
-import { Clock, Context, Effect, Layer } from "effect";
+import { Clock, Context, Effect, Layer, Option } from "effect";
 import type { SqlError } from "effect/sql/SqlError";
 
 import { ClerkUsers, type SessionEndFailed } from "./clerk-users.ts";
-import { DeletionLedger, type LedgerError } from "./deletion-ledger.ts";
+import { migrate } from "./database.ts";
+import { DeletionLedger, LedgerError } from "./deletion-ledger.ts";
 import { lockAlone, Safety } from "./safety.ts";
 
 /**
@@ -32,6 +33,7 @@ export const ACCOUNT_TABLES: Readonly<Record<string, ReadonlyArray<string>>> = {
 export const KEPT_TABLES: Readonly<Record<string, string>> = {
   deleted_account: "It keeps the deleted account's ID alone, so nothing recreates the account.",
   deletion_receipt: "It keeps the hash of a deletion's receipt alone, and names no account.",
+  deletion_ledger: "It keeps the deletion ledger's ID alone, and names no account.",
   effect_sql_migrations: "The migrator's record of the schema. It names no account.",
 };
 
@@ -59,12 +61,65 @@ const eraseAccount = (sql: PgClient.PgClient, account: string, receipt: string |
   });
 
 /**
- * Deletes again every account the ledger holds that the database does not know as deleted, as
- * after a restore from a backup taken before its deletion. Gives back how many it deleted.
+ * The key of the lock every append to the ledger and every check of it holds, inside its
+ * transaction. Its first key is the account locks' space plus one, so it meets none of them.
+ */
+const LEDGER_LOCK_SPACE = 5_151;
+
+const lockLedger = (sql: PgClient.PgClient) =>
+  sql`select pg_advisory_xact_lock(${LEDGER_LOCK_SPACE}, 0)`;
+
+/** The ID of the ledger the database recorded, if it has one. */
+const namedLedger = (sql: PgClient.PgClient) =>
+  Effect.map(sql<{ readonly id: string }>`select id from deletion_ledger`, (rows) =>
+    Option.fromNullishOr(rows[0]?.id),
+  );
+
+/**
+ * The ledger this database belongs with. A database that names no ledger, a new server or one
+ * from before the ledger had an ID, takes the ledger in BACKUP_DIR, and makes one when there is
+ * none. A database that names a ledger refuses a missing ledger or another one, since serving
+ * from it would bring back every account the lost ledger deleted.
+ */
+const checkLedger = (sql: PgClient.PgClient) =>
+  Effect.gen(function* () {
+    const ledger = yield* DeletionLedger;
+    yield* lockLedger(sql);
+    const named = yield* namedLedger(sql);
+    const found = yield* ledger.read;
+    if (Option.isNone(named)) {
+      if (Option.isNone(found)) {
+        yield* ledger.create;
+        yield* Effect.logInfo(`Made the deletion ledger ${ledger.path}`);
+      }
+      const taken = Option.isSome(found) ? found : yield* ledger.read;
+      if (Option.isNone(taken)) {
+        return yield* new LedgerError({ message: `The deletion ledger ${ledger.path} is gone.` });
+      }
+      yield* sql`insert into deletion_ledger (id) values (${taken.value.id})`;
+      return taken.value;
+    }
+    if (Option.isNone(found)) {
+      return yield* new LedgerError({
+        message: `The database names deletion ledger ${named.value}, but ${ledger.path} is missing. Check that BACKUP_DIR is the backup volume and that it is mounted. The server refuses to start or restore without its ledger, as it would serve accounts that were deleted.`,
+      });
+    }
+    if (found.value.id !== named.value) {
+      return yield* new LedgerError({
+        message: `The database names deletion ledger ${named.value}, but ${ledger.path} is ledger ${found.value.id}. Check that BACKUP_DIR is this server's backup volume. The server refuses to start or restore with another ledger, as it would serve accounts that were deleted.`,
+      });
+    }
+    return found.value;
+  });
+
+/**
+ * Checks the database's ledger, then deletes again every account the ledger holds that the
+ * database does not know as deleted, as after a restore from a backup taken before its
+ * deletion. Gives back how many it deleted.
  */
 export const applyLedger = Effect.gen(function* () {
   const sql = yield* PgClient.PgClient;
-  const entries = yield* (yield* DeletionLedger).entries;
+  const { entries } = yield* sql.withTransaction(checkLedger(sql));
   if (entries.length === 0) return 0;
   const deleted = new Set(
     (yield* sql<{ readonly id: string }>`select id from deleted_account`).map(({ id }) => id),
@@ -94,6 +149,17 @@ export const applyLedger = Effect.gen(function* () {
   }
   return accounts.size;
 });
+
+/**
+ * Readies the database to serve, on every start and after every restore: migrates it, then
+ * applies the deletion ledger.
+ */
+export const prepareDatabase = migrate.pipe(
+  Effect.tap((applied) =>
+    Effect.forEach(applied, ([id, name]) => Effect.logInfo(`Migrated ${id}_${name}`)),
+  ),
+  Effect.andThen(applyLedger),
+);
 
 export interface AccountDeletionShape {
   /**
@@ -134,10 +200,17 @@ export class AccountDeletion extends Context.Service<AccountDeletion, AccountDel
             const at = yield* Clock.currentTimeMillis;
             yield* safety.exclusively(
               account,
-              Effect.andThen(
-                eraseAccount(sql, account, hash),
-                ledger.record({ account, at, receipt: hash }),
-              ),
+              Effect.gen(function* () {
+                yield* eraseAccount(sql, account, hash);
+                yield* lockLedger(sql);
+                const named = yield* namedLedger(sql);
+                if (Option.isNone(named)) {
+                  return yield* new LedgerError({
+                    message: "The database names no deletion ledger. Start the server to make one.",
+                  });
+                }
+                yield* ledger.record(named.value, { account, at, receipt: hash });
+              }),
             );
             yield* Effect.logInfo("Deleted an account's rows");
             yield* clerk.deleteUser(account);

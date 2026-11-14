@@ -317,12 +317,14 @@ describe("deleting the account", () => {
     await device.start(true);
     expect(device.server.sent).toHaveLength(1);
 
-    for (const someone of [BOB, undefined]) {
+    const launchAs = async (someone: AccountId | undefined) => {
       device.server.signedIn = someone;
       device.server.says = "not_deleted";
       expect(await device.launch()).toEqual({ kind: "pending", problem: DELETION_NEEDS_SIGN_IN });
       expect(device.journal()).toMatchObject({ state: "deleting", account: ALICE, keep: true });
-    }
+    };
+    await launchAs(BOB);
+    await launchAs(undefined);
     expect(device.server.sent).toHaveLength(1);
     expect(device.server.asked).toEqual(["r1", "r1", "r1"]);
 

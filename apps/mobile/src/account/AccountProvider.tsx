@@ -32,17 +32,20 @@ function OwnerFromSession() {
  * that account sends it again. One that fails again stays saved for the next try.
  */
 function FinishDeletion() {
-  const { isLoaded, userId, getToken, signOut } = useAuth();
+  const { isLoaded, userId } = useAuth();
+  return isLoaded ? <FinishDeletionOnce key={userId ?? ""} /> : null;
+}
+
+function FinishDeletionOnce() {
+  const { userId, getToken, signOut } = useAuth();
   const signedIn = useEffectEvent(() => userId);
   const token = useEffectEvent(() => getToken());
   const forget = useEffectEvent(async (account: string) => {
     if (userId === account) await signOut();
   });
   useEffect(() => {
-    if (isLoaded) {
-      finishPendingDeletion({ signedIn, token, signOut: forget }).catch(() => undefined);
-    }
-  }, [isLoaded, userId]);
+    finishPendingDeletion({ signedIn, token, signOut: forget }).catch(() => undefined);
+  }, []);
   return null;
 }
 

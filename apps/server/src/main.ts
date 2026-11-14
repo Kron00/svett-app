@@ -4,7 +4,7 @@ import { NodeHttpServer, NodeRuntime } from "@effect/platform-node";
 import { Effect, Layer } from "effect";
 import { HttpRouter } from "effect/http";
 
-import { AccountDeletion, applyLedger } from "./account-deletion.ts";
+import { AccountDeletion, prepareDatabase } from "./account-deletion.ts";
 import { AccountRoutes, DeletionRoutes } from "./account-routes.ts";
 import { AccountRows } from "./account-rows.ts";
 import { Sessions } from "./auth.ts";
@@ -12,7 +12,7 @@ import { Backups, NightlyBackups } from "./backups.ts";
 import { ClerkConfig } from "./clerk-config.ts";
 import { ClerkUsers } from "./clerk-users.ts";
 import { ServerConfig } from "./config.ts";
-import { Database, migrate } from "./database.ts";
+import { Database } from "./database.ts";
 import { DeletionLedger } from "./deletion-ledger.ts";
 import { FeedRoutes } from "./feed-routes.ts";
 import { FeedRows } from "./feed-rows.ts";
@@ -30,14 +30,7 @@ const HttpServer = Layer.unwrap(
 
 // A restore from a backup taken before a deletion brings the account back, so the ledger
 // deletes it again before the server answers any request.
-const Prepared = Layer.effectDiscard(
-  migrate.pipe(
-    Effect.tap((applied) =>
-      Effect.forEach(applied, ([id, name]) => Effect.logInfo(`Migrated ${id}_${name}`)),
-    ),
-    Effect.andThen(applyLedger),
-  ),
-);
+const Prepared = Layer.effectDiscard(prepareDatabase);
 
 const Services = Layer.mergeAll(
   Backups.layer,

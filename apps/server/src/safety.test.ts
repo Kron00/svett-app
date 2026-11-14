@@ -36,13 +36,18 @@ import {
 import { HttpRouter, HttpServer } from "effect/http";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 
-import { ACCOUNT_TABLES, AccountDeletion, KEPT_TABLES } from "./account-deletion.ts";
+import {
+  ACCOUNT_TABLES,
+  AccountDeletion,
+  KEPT_TABLES,
+  prepareDatabase,
+} from "./account-deletion.ts";
 import { AccountRoutes, DeletionRoutes } from "./account-routes.ts";
 import { AccountRows } from "./account-rows.ts";
 import { Sessions } from "./auth.ts";
 import { ClerkConfig } from "./clerk-config.ts";
 import { ClerkUsers } from "./clerk-users.ts";
-import { databaseLayer, migrate } from "./database.ts";
+import { databaseLayer } from "./database.ts";
 import { DeletionLedger } from "./deletion-ledger.ts";
 import { FeedRoutes } from "./feed-routes.ts";
 import { FeedRows } from "./feed-rows.ts";
@@ -71,9 +76,19 @@ let accounts = 0;
 /** A new account ID per test, as the stand-in issuer remembers deleted users. */
 const account = (name: string) => `user_${name}_${++accounts}`;
 
+/** The deletion ledger of each database, by its address. */
+const ledgerDirs = new Map<string, string>();
+
+/** A new database, readied the way the server readies it on start, with a ledger of its own. */
 const freshDatabase = async () => {
   const url = await postgres.createDatabase(`safety_${++databases}`);
-  await Effect.runPromise(migrate.pipe(Effect.provide(databaseLayer(url))));
+  const dir = mkdtempSync(join(tmpdir(), "svett-ledger-"));
+  ledgerDirs.set(Redacted.value(url), dir);
+  await Effect.runPromise(
+    prepareDatabase.pipe(
+      Effect.provide(Layer.merge(databaseLayer(url), DeletionLedger.layer(dir))),
+    ),
+  );
   return url;
 };
 
@@ -81,11 +96,7 @@ interface ServerOptions {
   readonly limits?: Partial<Record<RateLimitGroup, RateLimit>>;
   /** Null starts the server without a Clerk secret key. */
   readonly secretKey?: string | null;
-  /** Where the deletion ledger lives, a new directory by default. */
-  readonly ledgerDir?: string;
 }
-
-const newLedgerDir = () => mkdtempSync(join(tmpdir(), "svett-ledger-"));
 
 const servicesOf = (url: Redacted.Redacted, options: ServerOptions = {}) => {
   const clerk = Layer.succeed(
@@ -111,7 +122,7 @@ const servicesOf = (url: Redacted.Redacted, options: ServerOptions = {}) => {
     AccountDeletion.layer,
   ).pipe(
     Layer.provideMerge(Safety.layer(options.limits)),
-    Layer.provideMerge(DeletionLedger.layer(options.ledgerDir ?? newLedgerDir())),
+    Layer.provideMerge(DeletionLedger.layer(ledgerDirs.get(Redacted.value(url))!)),
     Layer.provideMerge(databaseLayer(url)),
     Layer.provide(users),
     Layer.provide(clerk),

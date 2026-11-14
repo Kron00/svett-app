@@ -5,8 +5,8 @@ import { Clock, Data, Duration, Effect, Option, Redacted } from "effect";
 import { SqlClient } from "effect/sql/SqlClient";
 import type { SqlError } from "effect/sql/SqlError";
 
-import { applyLedger } from "./account-deletion.ts";
-import { databaseLayer, isEmptyDatabase, migrate } from "./database.ts";
+import { prepareDatabase } from "./account-deletion.ts";
+import { databaseLayer, isEmptyDatabase } from "./database.ts";
 import { PgTools } from "./pg-tools.ts";
 
 export class RestoreError extends Data.TaggedError("RestoreError")<{
@@ -31,13 +31,14 @@ export const restoreBackup = (file: string, target: Redacted.Redacted) =>
 
 /**
  * Restores a backup to serve from, into the empty database at `target`: it loads the backup,
- * migrates it, and deletes again every account the deletion ledger holds, so no account
- * deleted after the backup comes back. Gives back how many accounts it deleted again.
+ * migrates it, checks it belongs with the deletion ledger, and deletes again every account the
+ * ledger holds, so no account deleted after the backup comes back. Gives back how many
+ * accounts it deleted again.
  */
 export const restoreForUse = (file: string, target: Redacted.Redacted) =>
   Effect.gen(function* () {
     yield* restoreBackup(file, target);
-    return yield* Effect.andThen(migrate, applyLedger).pipe(Effect.provide(databaseLayer(target)));
+    return yield* prepareDatabase.pipe(Effect.provide(databaseLayer(target)));
   });
 
 const onDatabase = (url: Redacted.Redacted, name: string) => {
