@@ -1,40 +1,19 @@
 import { PgClient } from "@effect/sql-pg";
-import { type AccountId, TABLES } from "@svett/core";
-import { Context, Data, Effect, Layer, Schema } from "effect";
+import {
+  type AccountId,
+  type CheckedRow,
+  checkSyncRow,
+  isTooFarAhead,
+  MAX_SYNC_ROWS,
+  mergeRow,
+  type RowVersion,
+  type SyncedTable,
+  type SyncPull,
+  type SyncPush,
+  type SyncPushResult,
+} from "@svett/core";
+import { Context, Data, Effect, Layer } from "effect";
 import type { SqlError } from "effect/sql/SqlError";
-
-const TABLE_BY_NAME = new Map(Object.values(TABLES).map((table) => [table.name, table]));
-
-export const TableName = Schema.Literals(Object.values(TABLES).map((table) => table.name));
-export type TableName = typeof TableName.Type;
-
-/** The most rows one request may write. */
-export const MAX_ROWS_PER_WRITE = 500;
-
-/**
- * A request that writes rows. Any owner it names is ignored: the server takes the owner from
- * the session.
- */
-export const RowsWrite = Schema.Struct({
-  rows: Schema.Array(Schema.Struct({ table: TableName, row: Schema.Unknown })).check(
-    Schema.isMaxLength(MAX_ROWS_PER_WRITE),
-  ),
-});
-export type RowsWrite = typeof RowsWrite.Type;
-
-export interface StoredRow {
-  readonly table: TableName;
-  readonly row: unknown;
-}
-
-/** One stored row, checked against its table's schema and in its stored form. */
-interface CheckedRow {
-  readonly table: TableName;
-  readonly id: string;
-  readonly updatedAt: number;
-  readonly deletedAt: number | null;
-  readonly encoded: unknown;
-}
 
 export class InvalidRow extends Data.TaggedError("InvalidRow")<{
   readonly table: string;
@@ -43,39 +22,34 @@ export class InvalidRow extends Data.TaggedError("InvalidRow")<{
 }> {}
 
 /** Checks each row against its table's schema, as the phone's own database would. */
-export const checkRows = (write: RowsWrite) =>
-  Effect.forEach(write.rows, ({ table, row }, index) => {
-    const target = TABLE_BY_NAME.get(table);
-    if (target === undefined) {
-      return Effect.fail(new InvalidRow({ table, index, message: "Unknown table." }));
-    }
-    return Schema.decodeUnknownEffect(target.schema)(row).pipe(
-      Effect.flatMap((decoded) =>
-        Effect.map(Schema.encodeEffect(target.schema)(decoded), (encoded): CheckedRow => ({
-          table,
-          id: decoded.id,
-          updatedAt: decoded.updatedAt,
-          deletedAt: decoded.deletedAt,
-          encoded,
-        })),
-      ),
-      Effect.mapError((issue) => new InvalidRow({ table, index, message: issue.message })),
-    );
-  });
+export const checkRows = (push: SyncPush) =>
+  Effect.forEach(push.rows, ({ table, row }, index) =>
+    checkSyncRow(table, row).pipe(
+      Effect.mapError((invalid) => new InvalidRow({ table, index, message: invalid.message })),
+    ),
+  );
+
+const key = (table: string, id: string) => `${table}/${id}`;
 
 export interface AccountRowsShape {
   /** Records that the account exists. Safe to call on every request. */
   readonly ensureAccount: (account: AccountId) => Effect.Effect<void, SqlError>;
   /**
-   * Stores `rows` under `account`. A row another account holds under the same ID is a
-   * different row and stays as it was. An older copy never replaces a newer one.
+   * Stores `rows` under `account` by the sync merge rule, and gives each row it applies the
+   * account's next change number. A row another account holds under the same ID is a
+   * different row and stays as it was. Rows timed too far past `nowMillis` are refused.
    */
   readonly write: (
     account: AccountId,
     rows: ReadonlyArray<CheckedRow>,
-  ) => Effect.Effect<void, SqlError>;
-  /** Every row `account` holds, deleted ones included, and nobody else's. */
-  readonly list: (account: AccountId) => Effect.Effect<ReadonlyArray<StoredRow>, SqlError>;
+    nowMillis: number,
+  ) => Effect.Effect<SyncPushResult, SqlError>;
+  /** Up to `limit` of the account's rows with a change number after `after`, in order. */
+  readonly changes: (
+    account: AccountId,
+    after: number,
+    limit?: number,
+  ) => Effect.Effect<SyncPull, SqlError>;
 }
 
 export class AccountRows extends Context.Service<AccountRows, AccountRowsShape>()(
@@ -89,35 +63,83 @@ export class AccountRows extends Context.Service<AccountRows, AccountRowsShape>(
         Effect.asVoid(sql`insert into account (id) values (${account}) on conflict do nothing`);
       return AccountRows.of({
         ensureAccount,
-        write: (account, rows) =>
+        write: (account, rows, nowMillis) =>
           sql.withTransaction(
             Effect.gen(function* () {
               yield* ensureAccount(account);
-              for (const row of rows) {
+              // Holding the account's row until commit applies its writes one at a time, so
+              // change numbers commit in order and a pull never skips one.
+              const [locked] = yield* sql<{ readonly nextSeq: string }>`
+                select next_seq as "nextSeq" from account where id = ${account} for update
+              `;
+              let seq = Number(locked?.nextSeq ?? 0);
+              const ahead = rows.filter((row) => isTooFarAhead(row.updatedAt, nowMillis));
+              const timely = rows.filter((row) => !isTooFarAhead(row.updatedAt, nowMillis));
+              const stored = new Map<string, RowVersion>();
+              if (timely.length > 0) {
+                const existing = yield* sql<{
+                  readonly tableName: string;
+                  readonly rowId: string;
+                  readonly updatedAt: string;
+                  readonly changeId: string;
+                }>`
+                  select table_name as "tableName", row_id as "rowId",
+                    updated_at as "updatedAt", change_id as "changeId"
+                  from account_row
+                  where account_id = ${account}
+                    and row_id in ${sql.in([...new Set(timely.map((row) => row.id))])}
+                `;
+                for (const row of existing) {
+                  stored.set(key(row.tableName, row.rowId), {
+                    updatedAt: Number(row.updatedAt),
+                    changeId: row.changeId,
+                  });
+                }
+              }
+              for (const row of timely) {
+                if (mergeRow(stored.get(key(row.table, row.id)), row) === "keep") continue;
+                seq++;
                 yield* sql`
                   insert into account_row
-                    (account_id, table_name, row_id, updated_at, deleted_at, data)
+                    (account_id, table_name, row_id, updated_at, deleted_at, data, seq, change_id)
                   values
                     (${account}, ${row.table}, ${row.id}, ${row.updatedAt}, ${row.deletedAt},
-                     ${sql.json(row.encoded)})
+                     ${sql.json(row.encoded)}, ${seq}, ${row.changeId})
                   on conflict (account_id, table_name, row_id) do update set
                     updated_at = excluded.updated_at,
                     deleted_at = excluded.deleted_at,
-                    data = excluded.data
-                  where account_row.updated_at <= excluded.updated_at
+                    data = excluded.data,
+                    seq = excluded.seq,
+                    change_id = excluded.change_id
                 `;
+                stored.set(key(row.table, row.id), row);
               }
+              yield* sql`update account set next_seq = ${seq} where id = ${account}`;
+              return {
+                stored: timely.length,
+                ahead: ahead.map(({ table, id }) => ({ table, id })),
+              };
             }),
           ),
-        list: (account) =>
-          sql<{ readonly tableName: TableName; readonly data: unknown }>`
-            select table_name as "tableName", data from account_row
-            where account_id = ${account}
-            order by table_name, row_id
+        changes: (account, after, limit = MAX_SYNC_ROWS) =>
+          sql<{ readonly seq: string; readonly tableName: SyncedTable; readonly data: unknown }>`
+            select seq, table_name as "tableName", data from account_row
+            where account_id = ${account} and seq > ${after}
+            order by seq
+            limit ${limit + 1}
           `.pipe(
-            Effect.map((rows) =>
-              rows.map(({ tableName, data }) => ({ table: tableName, row: data })),
-            ),
+            Effect.map((found): SyncPull => {
+              const page = found.slice(0, limit);
+              return {
+                rows: page.map(({ seq, tableName, data }) => ({
+                  seq: Number(seq),
+                  table: tableName,
+                  row: data,
+                })),
+                next: page.length === 0 ? after : Number(page[page.length - 1]?.seq),
+                more: found.length > limit,
+              };
+            }),
           ),
       });
     }),

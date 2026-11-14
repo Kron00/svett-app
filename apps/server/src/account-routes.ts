@@ -1,7 +1,8 @@
-import { Effect, Layer } from "effect";
+import { SyncPush } from "@svett/core";
+import { Clock, Effect, Layer, Schema } from "effect";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 
-import { AccountRows, checkRows, RowsWrite } from "./account-rows.ts";
+import { AccountRows, checkRows } from "./account-rows.ts";
 import { signedInAccount } from "./auth.ts";
 
 const unauthorized = () =>
@@ -27,19 +28,42 @@ const me = Effect.gen(function* () {
   return HttpServerResponse.jsonUnsafe({ accountId: account });
 }).pipe(Effect.catchTags({ Unauthorized: unauthorized, SignInUnavailable: signInUnavailable }));
 
-const listRows = Effect.gen(function* () {
-  const account = yield* signedInAccount;
-  const rows = yield* AccountRows;
-  return HttpServerResponse.jsonUnsafe({ rows: yield* rows.list(account) });
-}).pipe(Effect.catchTags({ Unauthorized: unauthorized, SignInUnavailable: signInUnavailable }));
+const PullQuery = Schema.Struct({
+  after: Schema.optional(
+    Schema.NumberFromString.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),
+  ),
+});
 
-const writeRows = Effect.gen(function* () {
+const invalidRequest = (error: { readonly message: string }) =>
+  Effect.succeed(
+    HttpServerResponse.jsonUnsafe(
+      { error: "invalid_request", message: error.message },
+      { status: 400 },
+    ),
+  );
+
+/** The account's rows applied after the change number `after`, a page at a time. */
+const pullRows = Effect.gen(function* () {
   const account = yield* signedInAccount;
-  const write = yield* HttpServerRequest.schemaBodyJson(RowsWrite);
-  const checked = yield* checkRows(write);
+  const { after } = yield* HttpServerRequest.schemaSearchParams(PullQuery);
   const rows = yield* AccountRows;
-  yield* rows.write(account, checked);
-  return HttpServerResponse.jsonUnsafe({ stored: checked.length });
+  return HttpServerResponse.jsonUnsafe(yield* rows.changes(account, after ?? 0));
+}).pipe(
+  Effect.catchTags({
+    Unauthorized: unauthorized,
+    SignInUnavailable: signInUnavailable,
+    SchemaError: invalidRequest,
+  }),
+);
+
+const pushRows = Effect.gen(function* () {
+  const account = yield* signedInAccount;
+  const push = yield* HttpServerRequest.schemaBodyJson(SyncPush);
+  const checked = yield* checkRows(push);
+  const rows = yield* AccountRows;
+  return HttpServerResponse.jsonUnsafe(
+    yield* rows.write(account, checked, yield* Clock.currentTimeMillis),
+  );
 }).pipe(
   Effect.catchTags({
     Unauthorized: unauthorized,
@@ -56,19 +80,13 @@ const writeRows = Effect.gen(function* () {
           { status: 400 },
         ),
       ),
-    SchemaError: (error) =>
-      Effect.succeed(
-        HttpServerResponse.jsonUnsafe(
-          { error: "invalid_request", message: error.message },
-          { status: 400 },
-        ),
-      ),
+    SchemaError: invalidRequest,
   }),
 );
 
 /** The routes that need a signed-in account. Each takes the owner from the session alone. */
 export const AccountRoutes = Layer.mergeAll(
   HttpRouter.add("GET", "/v1/me", me),
-  HttpRouter.add("GET", "/v1/rows", listRows),
-  HttpRouter.add("PUT", "/v1/rows", writeRows),
+  HttpRouter.add("GET", "/v1/rows", pullRows),
+  HttpRouter.add("PUT", "/v1/rows", pushRows),
 );
