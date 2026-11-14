@@ -1,8 +1,13 @@
+import type { NavigatorScreenParams } from "@react-navigation/native";
 import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
+
+import type { Tab } from "./tabs";
+
+export type TabParamList = { readonly [name in Tab["name"]]: undefined };
 
 /** Link params are strings from outside. Each screen parses them with @svett/core. */
 export type RootStackParamList = {
-  Tabs: undefined;
+  Tabs: NavigatorScreenParams<TabParamList> | undefined;
   Gallery: { sheet?: "open" } | undefined;
   PhoneChecks: undefined;
   Exercises: { q?: string; muscle?: string; equipment?: string } | undefined;
@@ -16,6 +21,11 @@ export type RootStackParamList = {
   ExerciseProgress: { exerciseId: string; range?: string };
   MuscleSets: { week?: string; muscle?: string } | undefined;
   Measurements: { kind?: string; range?: string; sheet?: "open" } | undefined;
+  /** IDs come from deep links too, so screens parse them before use. */
+  Workout: { id: string };
+  SetEdit: { activityId: string; setId: string };
+  /** A month such as "2026-10". Without one the calendar opens on this month. */
+  Calendar: { month?: string } | undefined;
 };
 
 export type RootNavigation = NativeStackNavigationProp<RootStackParamList>;

@@ -27,6 +27,14 @@ export const workingVolumeKg = (sets: ReadonlyArray<VolumeSet>): number =>
 export const formatVolumeKg = (kg: number): string =>
   `${String(Math.round(kg)).replaceAll(/\B(?=(\d{3})+$)/g, ",")} kg`;
 
+/** A workout's length to the minute, such as "58 min" or "1 h 5 min". */
+export const formatWorkoutDuration = (seconds: number): string => {
+  const minutes = Math.round(seconds / 60);
+  const hours = Math.floor(minutes / 60);
+  if (hours === 0) return `${minutes} min`;
+  return minutes % 60 === 0 ? `${hours} h` : `${hours} h ${minutes % 60} min`;
+};
+
 const formatDistance = (metres: number): string =>
   metres >= 1000 ? `${formatWeightKg(metres / 1000)} km` : `${formatWeightKg(metres)} m`;
 
