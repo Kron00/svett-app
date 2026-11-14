@@ -1,5 +1,6 @@
-// Imports, undos and the steps of a move into an account take turns. A move never copies or
-// deletes the phone's data while an import is being applied to it.
+// Imports, undos, syncs and the steps of a move into an account take turns. A move never
+// copies or deletes the phone's data while an import is being applied to it, and a sync never
+// reads or writes it during any of them.
 let turn: Promise<unknown> = Promise.resolve();
 const applying = new Set<Promise<unknown>>();
 
@@ -11,8 +12,8 @@ export const inTurn = <A>(task: () => Promise<A>): Promise<A> => {
 };
 
 /**
- * Like `inTurn`, for an import, an undo or a coach answer, which `transfersSettled` then
- * waits for.
+ * Like `inTurn`, for an import, an undo, a coach answer or a sync, which `transfersSettled`
+ * then waits for.
  */
 export const transferInTurn = <A>(task: () => Promise<A>): Promise<A> =>
   inTurn(() => {
@@ -25,7 +26,10 @@ export const transferInTurn = <A>(task: () => Promise<A>): Promise<A> =>
     return run;
   });
 
-/** Waits for the import, undo or coach answer being saved now, so its database is not closed under it. */
+/**
+ * Waits for the import, undo, coach answer or sync running now, so its database is not
+ * closed under it.
+ */
 export const transfersSettled = async () => {
   await Promise.all([...applying].map((run) => run.catch(() => undefined)));
 };

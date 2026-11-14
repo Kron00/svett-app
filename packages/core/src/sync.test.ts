@@ -1,7 +1,7 @@
 import { Effect, Exit } from "effect";
 import { describe, expect, it } from "vite-plus/test";
 
-import { tokenSubject } from "./sync-api.ts";
+import { syncStatusMessage, tokenSubject } from "./sync-api.ts";
 import {
   changeIdOf,
   checkSyncRow,
@@ -134,5 +134,26 @@ describe("tokenSubject", () => {
   it("names no account for a token without one or one that is not a token", () => {
     expect(tokenSubject(token({ sid: "sess_1" }))).toBeUndefined();
     expect(tokenSubject("not a token")).toBeUndefined();
+  });
+});
+
+describe("syncStatusMessage", () => {
+  it.each([
+    [{ kind: "synced", queued: 0, held: 0 }, "Up to date"],
+    [{ kind: "synced", queued: 1, held: 0 }, "1 change waits to upload."],
+    [
+      { kind: "synced", queued: 3, held: 3 },
+      "This phone's clock is ahead of the svett server. 3 changes wait on this phone until the clock is right.",
+    ],
+    [
+      { kind: "failed", problem: "offline", queued: 2 },
+      "Cannot reach svett. 2 changes wait on this phone, and sync tries again soon.",
+    ],
+    [
+      { kind: "failed", problem: "signed_out", queued: 2 },
+      "Sign in again to sync. Everything stays on this phone meanwhile.",
+    ],
+  ] as const)("describes %o", (status, message) => {
+    expect(syncStatusMessage(status)).toBe(message);
   });
 });

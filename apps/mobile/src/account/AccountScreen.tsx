@@ -9,6 +9,7 @@ import {
   accountProblemMessage,
   type SignInState,
   signInStep,
+  syncStatusMessage,
 } from "@svett/core";
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { ScrollView, View } from "react-native";
@@ -29,6 +30,7 @@ import { chatGPTEmail } from "./chatgpt-email";
 import { CLERK_PUBLISHABLE_KEY } from "./config";
 import { useEmailCode } from "./email-code";
 import { declineMove, moveIntoAccount, pendingMoveOffer, resumeMove } from "./move";
+import { syncNow, useSyncStatus } from "./sync";
 
 function Card({ testID, children }: { readonly testID: string; readonly children: ReactNode }) {
   return (
@@ -236,6 +238,32 @@ function MoveOffer({
   );
 }
 
+/** Where sync stands for this account, and a way to sync at once. */
+function SyncState({ accountId }: { readonly accountId: string }) {
+  const { getToken } = useAuth();
+  const status = useSyncStatus();
+  const owner = ownerOf(accountId);
+  return (
+    <View className="gap-2">
+      <AppText variant="headline" accessibilityRole="header">
+        Sync
+      </AppText>
+      <AppText testID="sync-status" tone="secondary">
+        {syncStatusMessage(status)}
+      </AppText>
+      <Button
+        label={status.kind === "syncing" ? "Syncing" : "Sync now"}
+        variant="secondary"
+        disabled={status.kind === "syncing" || owner.kind !== "account"}
+        onPress={() => {
+          if (owner.kind === "account") void syncNow(owner.accountId, () => getToken());
+        }}
+        testID="sync-now"
+      />
+    </View>
+  );
+}
+
 function SignedIn({ accountId }: { readonly accountId: string }) {
   const { signOut } = useAuth();
   const { user } = useUser();
@@ -304,6 +332,7 @@ function SignedIn({ accountId }: { readonly accountId: string }) {
         {user?.primaryEmailAddress?.emailAddress ?? accountId}
       </AppText>
       <Problem text={offer.problem} />
+      <SyncState accountId={accountId} />
       <Button
         label={signingOut ? "Signing out" : "Sign out"}
         variant="destructive"
