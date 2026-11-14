@@ -1982,4 +1982,186 @@ run_sync SVETT_DEVICE_CMD_B= "$root/sync-one"
 check "sync.sh refuses to run with one bound command" test "$sync_status" -eq 64
 check "sync.sh asks for phone B's bound command" grep -qF "SVETT_DEVICE_CMD_B must hold" "$output"
 
+# Stands in for the bound command on the social screens. It tracks the screen, the
+# sign-in step, the saved username and the follow of the other profile. Each button
+# under a screen's top shows only after a scroll since the screen last changed, so
+# the test proves the script scrolls to it. A press or fill lands on the element
+# whose attrs were read last. FAKE_NO_CLERK makes Account say the build has no
+# Clerk key, FAKE_TAKEN refuses the username, FAKE_NOBODY finds nobody, and
+# FAKE_STUCK leaves the follow button as it was.
+cat >"$fake/social-device" <<EOF
+#!/usr/bin/env bash
+echo "\$*" >>"$root/bound-calls"
+state="$root/social-state"
+get() { cat "\$state/\$1" 2>/dev/null || echo "\$2"; }
+put() { echo "\$2" >"\$state/\$1"; }
+mkdir -p "\$state"
+screen=\$(get screen tabs)
+step=\$(get step choose)
+scrolled=\$(get scrolled no)
+show() { put screen "\$1"; put scrolled no; }
+id_of() { sed -nE 's/.*id="([^"]+)".*/\1/p' <<<"\$1"; }
+label_of() { sed -nE 's/.*label="([^"]+)".*/\1/p' <<<"\$1"; }
+follow_label() { [[ "\$(get follow none)" == requested ]] && echo Requested || echo "Ask to follow"; }
+# on_screen <id> is true when the element is on screen now.
+on_screen() {
+  case "\$screen:\$1" in
+    account:account) true ;;
+    account:accounts-off) [[ -n "\${FAKE_NO_CLERK:-}" ]] ;;
+    account:*) [[ -z "\${FAKE_NO_CLERK:-}" ]] || return 1
+      case "\$step:\$1" in
+        choose:sign-in-choose | email:sign-in-email | email:email-field | code:sign-in-code | \
+          code:code-field | signedin:signed-in) true ;;
+        choose:continue-with-email | email:send-code | code:check-code) [[ "\$scrolled" == yes ]] ;;
+        *) false ;;
+      esac ;;
+    edit:username-field) true ;;
+    edit:save-profile | own:requests-row) [[ "\$scrolled" == yes ]] ;;
+    own:own-username) true ;;
+    people:people-search) true ;;
+    people:person-social_proof_a) [[ -z "\${FAKE_NOBODY:-}" ]] ;;
+    profile:profile-username | profile:follow-button) true ;;
+    connections:connections | connections:connections-empty | requests:requests | requests:requests-empty) true ;;
+    *) false ;;
+  esac
+}
+label() {
+  case "\$1" in
+    own-username) get saved "" ;;
+    profile-username) echo social_proof_a ;;
+    follow-button) follow_label ;;
+    *) echo "" ;;
+  esac
+}
+exists() { on_screen "\$1" || { scrolled=yes; on_screen "\$1"; }; }
+args=" \$* "
+target=\$(id_of "\$args")
+case "\$args" in
+  *" open com.kron00.svett svett://account "*) show account ;;
+  *" open com.kron00.svett svett://profile/edit?username="*)
+    put linked "\$(sed -nE 's/.*username=([^ ]+).*/\1/p' <<<"\$args")"
+    show edit ;;
+  *" open com.kron00.svett svett://profile/requests "*) show requests ;;
+  *" open com.kron00.svett svett://profile "*) show own ;;
+  *" open com.kron00.svett svett://people?q=social_proof_ "*) show people ;;
+  *" open com.kron00.svett svett://people/"*"/followers "*) show connections ;;
+  *" open com.kron00.svett "*) show tabs ;;
+  *" scroll "*" --until "*) exists "\$target" && put scrolled yes ;;
+  *" scroll "*) put scrolled yes ;;
+  *" get attrs "*)
+    on_screen "\$target" || exit 1
+    put last "\$target"
+    echo '{"label": "Field", "rect": {"x": 20, "y": 300, "width": 120, "height": 40}}' ;;
+  *" fill 80 320 "*)
+    [[ "\$(get last)" == email-field || "\$(get last)" == code-field ]] || exit 1 ;;
+  *" press 80 320 "*)
+    case "\$screen:\$step:\$(get last)" in
+      account:choose:continue-with-email) put step email ;;
+      account:email:send-code) put step code ;;
+      account:code:check-code) put step signedin ;;
+      edit:*:save-profile) [[ -n "\${FAKE_TAKEN:-}" ]] || { put saved "\$(get linked)"; show tabs; } ;;
+      people:*:person-social_proof_a) show profile ;;
+      profile:*:follow-button)
+        [[ -n "\${FAKE_STUCK:-}" ]] ||
+          if [[ "\$(get follow none)" == none ]]; then put follow requested; else put follow none; fi ;;
+      *) echo "fake device: press on \$(get last) on \$screen" >&2; exit 1 ;;
+    esac ;;
+  *" get text "*) label "\$target" ;;
+  *" wait absent "*) ! on_screen "\$target" ;;
+  *" is visible "* | *" wait "*)
+    [[ -z "\$target" ]] && exit 0
+    on_screen "\$target" || exit 1
+    wanted=\$(label_of "\$args")
+    [[ -z "\$wanted" || "\$(label "\$target")" == "\$wanted" ]] ;;
+esac
+EOF
+chmod +x "$fake/social-device"
+
+# run_social [VAR=value...] [social.sh args...] leaves the exit status in social_status.
+run_social() {
+  local -a vars=()
+  while [[ "${1:-}" == *=* ]]; do
+    vars+=("$1")
+    shift
+  done
+  rm -rf "$root/simctl-calls" "$root/bound-calls" "$root/social-state"
+  social_status=0
+  env PATH="$fake:$PATH" SVETT_DEVICE_CMD="social-device --session 't3-test session' --device FAKE-UDID" \
+    "${vars[@]}" "$repo/scripts/sim/social.sh" "$@" >"$output" 2>&1 || social_status=$?
+}
+
+social_links=("com.kron00.svett svett://account" "com.kron00.svett svett://profile/edit?username=social_proof_c"
+  "com.kron00.svett svett://profile" "com.kron00.svett svett://people?q=social_proof_"
+  "com.kron00.svett svett://people/social_proof_c/followers" "com.kron00.svett svett://profile/requests")
+
+case_name="social.sh Debug with SVETT_DEVICE_CMD"
+for stale in svett-anonymous.db svett-account-user_old.db-wal ExpoSQLiteStorage; do
+  echo stale >"$container_sqlite/$stale"
+done
+run_social "$root/social"
+[[ "$social_status" == 0 ]] || fail "social.sh failed"
+check "social.sh removes svett's databases and its stored answers" test -z "$(ls "$container_sqlite")"
+check "social.sh stops svett and drops every Clerk session before it changes the files" \
+  only_simctl "simctl list devices available" "simctl terminate FAKE-UDID com.kron00.svett" "simctl keychain FAKE-UDID reset" \
+  "simctl get_app_container FAKE-UDID com.kron00.svett data"
+check "social.sh relaunches into the dev client, then opens each screen by its link" \
+  only_open "$debug_open" "${social_links[@]}"
+check "social.sh signs in a Clerk test account with the test code, at the field centres" \
+  only_calls "fill" "fill 80 320 svett-social-c+clerk_test@example.com" "fill 80 320 $test_code"
+check "social.sh scrolls to each control under the fold before it presses it" \
+  only_calls "get attrs" \
+  'get attrs id="continue-with-email"' 'get attrs id="email-field"' 'get attrs id="send-code"' \
+  'get attrs id="code-field"' 'get attrs id="check-code"' 'get attrs id="save-profile"' \
+  'get attrs id="person-social_proof_a"' 'get attrs id="follow-button"' 'get attrs id="follow-button"'
+check "social.sh reaches the requests row below the fold" \
+  bound_got '--session t3-test session --device FAKE-UDID scroll down --until id="requests-row"'
+check "social.sh shoots each screen at the largest text size, then restores the default" \
+  only_calls "settings text-size" \
+  "settings text-size accessibility-extra-extra-extra-large" "settings text-size large"
+check "social.sh screenshots the username, the profile, the search, the request, the followers and the requests" \
+  only_calls "screenshot" \
+  "screenshot $root/social/01-edit-profile.png" "screenshot $root/social/02-own-profile.png" \
+  "screenshot $root/social/03-search.png" "screenshot $root/social/04-requested.png" \
+  "screenshot $root/social/05-followers.png" "screenshot $root/social/06-requests.png"
+check "social.sh says the saved username shows on Profile" \
+  grep -qxF "Profile's username reads \"social_proof_c\"" "$output"
+check "social.sh says asking to follow the private profile left a request" \
+  grep -qxF 'The follow button after asking reads "Requested"' "$output"
+check "social.sh takes the request back" \
+  grep -qxF 'The follow button after taking the request back reads "Ask to follow"' "$output"
+check "social.sh with SVETT_DEVICE_CMD calls neither simctl launch nor openurl" no_simctl_launch_or_openurl
+
+case_name="social.sh Release with SVETT_DEVICE_CMD"
+run_social --release "$root/social-release"
+[[ "$social_status" == 0 ]] || fail "social.sh --release failed"
+check "social.sh Release relaunches the installed app without Metro" \
+  only_open "com.kron00.svett --relaunch" "${social_links[@]}"
+
+case_name="social.sh when the follow button does not change"
+run_social FAKE_STUCK=1 "$root/social-stuck"
+check "social.sh fails when asking to follow leaves no request" test "$social_status" -ne 0
+check "social.sh says what the follow button reads instead" \
+  grep -qF 'The follow button after asking should read "Requested", but it reads: Ask to follow' "$output"
+check "social.sh restores the default text size after a failure" \
+  only_calls "settings text-size" \
+  "settings text-size accessibility-extra-extra-extra-large" "settings text-size large"
+
+case_name="social.sh when the search finds nobody"
+run_social FAKE_NOBODY=1 "$root/social-nobody"
+check "social.sh fails when the search does not find the other profile" test "$social_status" -ne 0
+check "social.sh says to run the server proof first" \
+  grep -qF 'Searching "social_proof_" did not find social_proof_a. Run apps/server/src/social-proof.ts' "$output"
+
+case_name="social.sh when the username is taken"
+run_social FAKE_TAKEN=1 "$root/social-taken"
+check "social.sh fails when the username does not save" test "$social_status" -ne 0
+check "social.sh says the username did not save" \
+  grep -qF "Saving the username social_proof_c failed" "$output"
+
+case_name="social.sh on a build without a Clerk key"
+run_social FAKE_NO_CLERK=1 "$root/social-no-clerk"
+check "social.sh fails on a build without a Clerk key" test "$social_status" -ne 0
+check "social.sh says to build with the publishable key" \
+  grep -qF "Build it with EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY set" "$output"
+
 echo "$passed passed"
