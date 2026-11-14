@@ -1,4 +1,7 @@
+import { Exit, Schema } from "effect";
+
 import { DurationSeconds, formatDuration } from "./duration.ts";
+import { ActivityExerciseId, ActivityId } from "./schema.ts";
 import { supersetPlaces } from "./superset.ts";
 
 /** The rest an exercise gets when neither its routine nor its last workout set one. */
@@ -57,19 +60,69 @@ export const restAfterSet = (
   return { seconds: rest, next };
 };
 
-/** A rest that is running: when it ends, and how long it was set for. */
-export type RestTimer = {
-  readonly endsAt: number;
-  readonly totalS: number;
-  /** The exercise the next set belongs to, for the notification. */
+/** The set a rest waits for: the exercise it belongs to in the workout in progress. */
+export type RestFor = {
+  /** The exercise's name, for the notification. */
   readonly exercise: string;
+  readonly activityId: ActivityId;
+  readonly activityExerciseId: ActivityExerciseId;
 };
 
-export const startRest = (seconds: number, exercise: string, now: number): RestTimer => ({
+/**
+ * A rest that is running: when it ends, how long it was set for, and the set it waits for.
+ * The phone keeps it, so it outlives svett being killed, and it is never exported or synced.
+ */
+export const RestTimer = Schema.Struct({
+  endsAt: Schema.Finite,
+  totalS: Schema.Finite,
+  exercise: Schema.String,
+  activityId: ActivityId,
+  activityExerciseId: ActivityExerciseId,
+});
+export type RestTimer = typeof RestTimer.Type;
+
+export const startRest = (seconds: number, next: RestFor, now: number): RestTimer => ({
   endsAt: now + seconds * 1000,
   totalS: seconds,
-  exercise,
+  ...next,
 });
+
+/** A rest the phone kept, or null when there is none or it does not read as one. */
+export const decodeRestTimer = (text: unknown): RestTimer | null => {
+  if (typeof text !== "string") return null;
+  let raw: unknown;
+  try {
+    raw = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  const decoded = Schema.decodeUnknownExit(RestTimer)(raw);
+  return Exit.isSuccess(decoded) ? decoded.value : null;
+};
+
+/**
+ * Whether a rest kept from before svett closed still runs at `now`. It ended once its time is
+ * up, or when its workout is no longer the one in progress or no longer has its exercise.
+ */
+export const restStillRuns = (
+  rest: RestTimer,
+  workout: {
+    readonly activityId: ActivityId;
+    readonly exerciseIds: ReadonlyArray<ActivityExerciseId>;
+  } | null,
+  now: number,
+): boolean =>
+  rest.endsAt > now &&
+  workout !== null &&
+  workout.activityId === rest.activityId &&
+  workout.exerciseIds.includes(rest.activityExerciseId);
+
+/**
+ * Whole seconds from `now` until the rest's notification, or null when the rest is already
+ * over and needs none. iOS takes at least one second, so a rest with less left gets one.
+ */
+export const restNoticeSeconds = (rest: RestTimer, now: number): number | null =>
+  rest.endsAt <= now ? null : Math.max(1, Math.round((rest.endsAt - now) / 1000));
 
 /** Whole seconds left, counting a part second as one, so it reads 0 only when it ends. */
 export const restLeft = (timer: RestTimer, now: number): number =>

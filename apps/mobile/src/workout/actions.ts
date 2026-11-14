@@ -21,6 +21,7 @@ import {
 } from "@svett/core";
 import { Effect } from "effect";
 
+import { skipRestTimer } from "./rest";
 import { changeSet, changeWorkout, currentWorkout, saveWorkout } from "./store";
 
 const withActivities = <A, E>(
@@ -195,7 +196,7 @@ export type FinishResult =
   | { readonly finished: true }
   | { readonly finished: false; readonly problem: string };
 
-/** Finishes the workout in progress with its done sets, or says why it cannot. */
+/** Finishes the workout in progress with its done sets and ends its rest, or says why it cannot. */
 export const finish = async (): Promise<FinishResult> => {
   const id = inProgress();
   if (id === null) return { finished: false, problem: "No workout is in progress." };
@@ -208,18 +209,22 @@ export const finish = async (): Promise<FinishResult> => {
     ),
     true,
   );
+  if (result?.finished === true) await skipRestTimer();
   return result ?? { finished: false, problem: "The workout was not saved." };
 };
 
 /**
- * Discards the workout in progress. Nothing from it reaches history. False when the delete
- * fails, so the workout stays in progress and the screen shows why.
+ * Discards the workout in progress and ends its rest. Nothing from it reaches history. False
+ * when the delete fails, so the workout and its rest stay and the screen shows why.
  */
 export const discard = async (): Promise<boolean> => {
   const id = inProgress();
-  if (id === null) return true;
-  const removed = await saveWorkout(
-    withActivities((activities) => activities.remove(id)).pipe(Effect.as(true)),
-  );
-  return removed ?? false;
+  const removed =
+    id === null
+      ? true
+      : ((await saveWorkout(
+          withActivities((activities) => activities.remove(id)).pipe(Effect.as(true)),
+        )) ?? false);
+  if (removed) await skipRestTimer();
+  return removed;
 };

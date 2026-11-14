@@ -211,8 +211,13 @@ function Logger({
       exercises.map((exercise) => exercise.row),
       index,
     );
-    if (next === null) return;
-    startRestTimer(next.seconds, exercises[next.next]?.exercise?.name ?? "your next exercise");
+    const after = exercises[next?.next ?? -1];
+    if (next === null || after === undefined) return;
+    void startRestTimer(next.seconds, {
+      exercise: after.exercise?.name ?? "your next exercise",
+      activityId: current.current.activity.id,
+      activityExerciseId: after.row.id,
+    });
   }, []);
   const onTool = useCallback(
     (exercise: LoggedExercise, index: number, tool: ExerciseTool) => {
@@ -311,12 +316,7 @@ function Logger({
               label="Discard workout"
               symbol="trash"
               variant="destructive"
-              onPress={() =>
-                confirmDiscard(() => {
-                  skipRestTimer();
-                  navigation.goBack();
-                })
-              }
+              onPress={() => confirmDiscard(() => navigation.goBack())}
               testID="discard-workout"
             />
           </View>
@@ -424,11 +424,7 @@ export function WorkoutScreen() {
   const ready = workout.status === "ready" && workout.log !== null;
   useLayoutEffect(() => {
     navigation.setOptions({
-      unstable_headerRightItems: () =>
-        finishItems(ready, () => {
-          skipRestTimer();
-          navigation.goBack();
-        }),
+      unstable_headerRightItems: () => finishItems(ready, () => navigation.goBack()),
     });
   }, [navigation, ready]);
   useFocusEffect(

@@ -23,7 +23,13 @@ import type { Focus } from "./focus";
 const app = vi.hoisted(() => ({ runtime: undefined as unknown }));
 vi.mock("../data/database", () => ({ appDatabase: () => app.runtime }));
 const alert = vi.hoisted(() => vi.fn());
-vi.mock("react-native", () => ({ Alert: { alert } }));
+vi.mock("react-native", () => ({
+  Alert: { alert },
+  Settings: { get: () => undefined, set: () => undefined },
+}));
+vi.mock("expo-notifications", () => ({
+  cancelScheduledNotificationAsync: async () => undefined,
+}));
 
 const squat = libraryExerciseId("Barbell_Squat");
 const plank = libraryExerciseId("Plank");

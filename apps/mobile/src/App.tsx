@@ -30,7 +30,8 @@ import { TabNavigator } from "./TabNavigator";
 import { DataScreen } from "./transfer/DataScreen";
 import { ImportPreviewScreen } from "./transfer/ImportPreviewScreen";
 import { UndoImportScreen } from "./transfer/UndoImportScreen";
-import { reloadWorkout } from "./workout/store";
+import { restoreRestTimer } from "./workout/rest";
+import { currentWorkout, reloadWorkout, workoutState } from "./workout/store";
 import { PlatesScreen } from "./tools/PlatesScreen";
 import { WarmUpScreen } from "./tools/WarmUpScreen";
 import { WorkoutSettingsScreen } from "./tools/WorkoutSettingsScreen";
@@ -84,8 +85,11 @@ const linking: LinkingOptions<RootStackParamList> = {
   },
 };
 
-// A workout left in progress, even by an app that was killed, shows above the tabs at launch.
-void reloadWorkout();
+// A workout left in progress, even by an app that was killed, shows above the tabs at launch,
+// with the rest that was running. A workout that could not be read leaves the rest as kept.
+void reloadWorkout().then(() => {
+  if (workoutState().status === "ready") void restoreRestTimer(currentWorkout());
+});
 
 export default function App() {
   return (

@@ -10,6 +10,7 @@ import {
   restText,
   startRest,
 } from "./rest-timer.ts";
+import { SQUAT_NEXT } from "./test-sets.ts";
 import {
   leaveSuperset,
   supersetPlaces,
@@ -99,7 +100,7 @@ describe("the rest timer", () => {
   });
 
   it("counts down in whole seconds and ends at zero", () => {
-    const timer = startRest(90, "Barbell Squat", 1_000);
+    const timer = startRest(90, SQUAT_NEXT, 1_000);
     expect(restLeft(timer, 1_000)).toBe(90);
     expect(restLeft(timer, 1_500)).toBe(90);
     expect(restLeft(timer, 2_000)).toBe(89);
@@ -108,7 +109,7 @@ describe("the rest timer", () => {
   });
 
   it("moves 15 seconds either way, never below zero", () => {
-    const timer = startRest(30, "Barbell Squat", 0);
+    const timer = startRest(30, SQUAT_NEXT, 0);
     const longer = adjustRest(timer, 15, 10_000);
     expect(restLeft(longer, 10_000)).toBe(35);
     expect(longer.totalS).toBe(45);
@@ -123,7 +124,7 @@ describe("the rest timer", () => {
     expect(restLabel(90)).toBe("1 minute 30 seconds");
     expect(restLabel(120)).toBe("2 minutes");
     expect(restLabel(15)).toBe("15 seconds");
-    expect(restNotice(startRest(90, "Barbell Squat", 0))).toEqual({
+    expect(restNotice(startRest(90, SQUAT_NEXT, 0))).toEqual({
       title: "Rest is over",
       body: "Time for your next set of Barbell Squat.",
     });
