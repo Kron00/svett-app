@@ -1,7 +1,5 @@
 import {
-  type Activity,
   ActivityRepository,
-  type ActivitySet,
   type ExerciseId,
   ExerciseRepository,
   exerciseName,
@@ -94,36 +92,3 @@ export const saveRoutine = (id: RoutineId | null, routine: Omit<RoutineDraft, "p
 export const withRoutines = <A, E>(
   body: (routines: typeof RoutineRepository.Service) => Effect.Effect<A, E>,
 ): Promise<A> => runOnDatabase(Effect.flatMap(Effect.service(RoutineRepository), body));
-
-export interface WorkoutView {
-  readonly activity: Activity;
-  readonly exercises: ReadonlyArray<{
-    readonly id: string;
-    readonly name: string;
-    readonly notes: string;
-    readonly sets: ReadonlyArray<ActivitySet>;
-  }>;
-}
-
-const loadWorkout = () =>
-  runOnDatabase(
-    Effect.gen(function* () {
-      const activities = yield* ActivityRepository;
-      const current = yield* activities.inProgress;
-      if (Option.isNone(current)) return null;
-      const { activity, exercises } = current.value;
-      const names = yield* exerciseNames(exercises.map(({ exercise }) => exercise.exerciseId));
-      return {
-        activity,
-        exercises: exercises.map(({ exercise, sets }) => ({
-          id: exercise.id,
-          name: exerciseName(names, exercise.exerciseId),
-          notes: exercise.notes,
-          sets,
-        })),
-      } satisfies WorkoutView;
-    }),
-  );
-
-/** The workout in progress, or null when there is none. */
-export const useWorkoutInProgress = () => useOnFocus(loadWorkout);

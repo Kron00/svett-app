@@ -31,6 +31,7 @@ vi.mock("./PhoneChecksRow", () => ({ PhoneChecksRow: () => "phone checks row" })
 vi.mock("./transfer/DataRow", () => ({ DataRow: () => "data row" }));
 vi.mock("./gallery/DesignGalleryRow", () => ({ DesignGalleryRow: () => "design gallery row" }));
 vi.mock("./routines/TrainScreen", () => ({ TrainScreen: () => "train screen" }));
+vi.mock("./workout/WorkoutTabBar", () => ({ WorkoutTabBar: () => "workout tab bar" }));
 vi.mock("./ui/List", () => ({
   ListSection: ({ children }: { readonly children: ReactNode }) => children,
 }));

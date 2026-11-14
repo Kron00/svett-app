@@ -45,6 +45,10 @@ export type RootStackParamList = {
   SetTarget: { exercise: string; set: string };
   /** The workout in progress. */
   ActiveWorkout: undefined;
+  /** The exercise library choosing exercises to add to the workout in progress. */
+  AddWorkoutExercise: { q?: string; muscle?: string; equipment?: string } | undefined;
+  /** The exercise library choosing the exercise that takes the place of `exercise`, a workout exercise's ID. */
+  ReplaceWorkoutExercise: { exercise: string; q?: string; muscle?: string; equipment?: string };
 };
 
 export type RootNavigation = NativeStackNavigationProp<RootStackParamList>;

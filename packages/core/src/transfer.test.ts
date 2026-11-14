@@ -212,7 +212,10 @@ describe("workouts in progress", () => {
     const before = workout("Legs");
     const after = {
       activity: before.activity.map((top) => ({ ...top, status: "finished", routineId: null })),
-      activityExercise: before.activityExercise,
+      activityExercise: before.activityExercise.map((exercise) => ({
+        ...exercise,
+        setFields: "reps",
+      })),
       activitySet: before.activitySet.map((set) => ({
         ...set,
         done: true,
@@ -222,6 +225,32 @@ describe("workouts in progress", () => {
     };
     expect(writtenOf(after)).toBe(writtenOf(before));
     expect(writtenOf(inProgress(before))).not.toBe(writtenOf(before));
+    const timed = {
+      ...after,
+      activityExercise: [row("e", { activityId: "a", setFields: "time" })],
+    };
+    expect(writtenOf(timed)).not.toBe(writtenOf(before));
+  });
+
+  it("fingerprints an exercise written before set fields the same as one with the fields its sets give", () => {
+    const run = {
+      activity: [row("a", { title: "Run", kind: "strength", startedAt: 1_000 })],
+      activityExercise: [row("e", { activityId: "a" }), row("f", { activityId: "a" })],
+      activitySet: [
+        row("s", { activityExerciseId: "e", distanceM: 400, durationS: 90, deletedAt: 3 }),
+        row("t", { activityExerciseId: "e", durationS: 60 }),
+      ],
+    };
+    const fields = (e: string, f: string) => ({
+      ...run,
+      activityExercise: [
+        { ...run.activityExercise[0]!, setFields: e },
+        { ...run.activityExercise[1]!, setFields: f },
+      ],
+    });
+    expect(writtenOf(fields("distance_time", "weight_reps"))).toBe(writtenOf(run));
+    expect(writtenOf(fields("time", "weight_reps"))).not.toBe(writtenOf(run));
+    expect(writtenOf(fields("distance_time", "reps"))).not.toBe(writtenOf(run));
   });
 
   it("says why import skips a workout in progress", () => {

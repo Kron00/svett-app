@@ -21,7 +21,14 @@ import { Sql } from "../sql.ts";
 import { decodeSvettFile, type SvettFile } from "../svett-file.ts";
 import { TABLES } from "../table.ts";
 import { openTestDatabase, pointersToDeleted, T0 } from "../test-database.ts";
-import { PARENT, REFERENCES, TABLE_KEYS, undoSelection } from "../transfer.ts";
+import {
+  PARENT,
+  REFERENCES,
+  TABLE_KEYS,
+  type TableRows,
+  undoSelection,
+  writtenOf,
+} from "../transfer.ts";
 import { type ActivityDraft, ActivityRepository } from "./activities.ts";
 import { ExerciseAliasRepository, ExerciseRepository } from "./exercises.ts";
 import { MADE_HERE, type Origin } from "./origin.ts";
@@ -428,6 +435,138 @@ describe("TransferRepository and a workout in progress", () => {
     expect(
       phone.database.prepare("SELECT title, status FROM activity WHERE deleted_at IS NULL").all(),
     ).toEqual([{ title: "Legs", status: "finished" }]);
+  });
+});
+
+const timedSet = {
+  setType: "normal",
+  weightKg: null,
+  reps: null,
+  distanceM: null,
+  rpe: null,
+} as const;
+
+/** The row as svett wrote it before set fields. */
+const withoutSetFieldsKey = <A extends Readonly<Record<string, unknown>>>(row: A): A =>
+  Object.fromEntries(Object.entries(row).filter(([field]) => field !== "setFields")) as A;
+
+/** A workout with a lift logged by weight and reps and a plank logged by time. */
+const liftAndPlank = (title: string): ActivityDraft => ({
+  ...workout(title),
+  exercises: [
+    ...workout(title).exercises,
+    {
+      exerciseId: libraryExerciseId("Plank"),
+      supersetGroup: null,
+      notes: "",
+      sets: [
+        { ...timedSet, durationS: DurationSeconds.make(60) },
+        { ...timedSet, durationS: DurationSeconds.make(45) },
+      ],
+    },
+  ],
+});
+
+/** The file as svett wrote it before exercises had set fields. */
+const withoutSetFields = (file: SvettFile): string =>
+  JSON.stringify({
+    format: "svett",
+    version: 2,
+    exportedAt: file.exportedAt,
+    tables: Object.fromEntries(
+      TABLE_KEYS.map((key) => [
+        TABLES[key].name,
+        (file.tables[key] ?? []).map(withoutSetFieldsKey),
+      ]),
+    ),
+  });
+
+describe("TransferRepository and rows made before set fields", () => {
+  it("imports a version 2 file into a new install with the set fields migration 5 gave the rows", async () => {
+    const original = openTestDatabase(1);
+    await logged(original, "Legs");
+    await original.runtime.runPromise(
+      Effect.flatMap(Effect.service(ActivityRepository), (activities) =>
+        activities.create(liftAndPlank("Core")),
+      ),
+    );
+    const old = decodeSvettFile(withoutSetFields(await exportFile(original)));
+    if (Result.isFailure(old)) throw new Error(old.failure.message);
+
+    const fresh = openTestDatabase(2);
+    const imported = await transfer(fresh, (repository) => repository.applyImport(old.success, []));
+    const batch = Option.getOrThrow(imported).importBatchId;
+    expect(everyRow(fresh, batch)).toEqual(allRows(original));
+    expect(
+      fresh.database.prepare("SELECT set_fields FROM activity_exercise ORDER BY position").all(),
+    ).toEqual([
+      { set_fields: "weight_reps" },
+      { set_fields: "weight_reps" },
+      { set_fields: "time" },
+    ]);
+  });
+
+  it("undoes an import whose journal was written before exercises had set fields", async () => {
+    const phone = openTestDatabase(1);
+    const core = await phone.runtime.runPromise(
+      Effect.flatMap(Effect.service(ActivityRepository), (activities) =>
+        activities.create(liftAndPlank("Core")),
+      ),
+    );
+    const file = await exportFile(phone);
+    const changed: SvettFile = {
+      ...file,
+      tables: {
+        ...file.tables,
+        activity: (file.tables.activity ?? []).map((row) =>
+          Object.assign({}, row, { title: "Core day" }),
+        ),
+        activityExercise: (file.tables.activityExercise ?? []).map((row) =>
+          Object.assign({}, row, { notes: "Hold longer" }),
+        ),
+      },
+    };
+    const { importBatchId } = Option.getOrThrow(
+      await transfer(phone, (repository) => repository.applyImport(changed, [`activity/${core}`])),
+    );
+    // The journal as svett wrote it then: kept exercises without set fields, and the
+    // fingerprint of the record's rows without them.
+    const record = await exportFile(phone);
+    const before: TableRows = {
+      activity: record.tables.activity ?? [],
+      activityExercise: (record.tables.activityExercise ?? []).map(withoutSetFieldsKey),
+      activitySet: record.tables.activitySet ?? [],
+    };
+    phone.database
+      .prepare(
+        "UPDATE import_change SET written = ?, replaced = json_remove(replaced, '$.activity_exercise[0].setFields', '$.activity_exercise[1].setFields') WHERE import_batch_id = ?",
+      )
+      .run(writtenOf(before), importBatchId);
+    expect(
+      phone.database
+        .prepare(
+          "SELECT json_extract(replaced, '$.activity_exercise[1]') AS kept FROM import_change",
+        )
+        .all()
+        .map((row) => JSON.parse(String(row["kept"]))),
+    ).toEqual([expect.not.objectContaining({ setFields: expect.anything() })]);
+
+    const preview = await transfer(phone, (repository) => repository.previewUndo(importBatchId));
+    expect(preview.changes.map(({ edited }) => edited)).toEqual([false]);
+    expect(await transfer(phone, (repository) => repository.undoImport(importBatchId, []))).toEqual(
+      { removed: 0, restored: 1, left: 0, kept: 0, discarded: 0 },
+    );
+    expect(
+      phone.database
+        .prepare(
+          "SELECT notes, set_fields FROM activity_exercise WHERE deleted_at IS NULL ORDER BY position",
+        )
+        .all(),
+    ).toEqual([
+      { notes: "", set_fields: "weight_reps" },
+      { notes: "", set_fields: "time" },
+    ]);
+    expect(liveTitles(phone)).toEqual(["Core"]);
   });
 });
 

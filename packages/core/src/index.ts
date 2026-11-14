@@ -47,4 +47,6 @@ export * from "./backup-files.ts";
 export * from "./coach.ts";
 export * from "./best-sets.ts";
 export * from "./routine-plan.ts";
+export * from "./logger.ts";
 export * from "./start-workout.ts";
+export * from "./link-params.ts";

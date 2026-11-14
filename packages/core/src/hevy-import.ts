@@ -2,6 +2,7 @@ import { libraryExerciseId } from "./exercise-library.ts";
 import { HEVY_LIBRARY, equipmentFromName } from "./hevy-exercises.ts";
 import type { HevyFile, HevyWorkout } from "./hevy-file.ts";
 import { canonicalJson, contentFingerprint, importedId } from "./ids.ts";
+import { setFieldsFromSets } from "./logger.ts";
 import { type EpochMillis, ExerciseId } from "./schema.ts";
 import { TABLES } from "./table.ts";
 import type {
@@ -244,6 +245,7 @@ export const hevyImport = (file: HevyFile, keep: ReadonlySet<string> = new Set()
           position,
           supersetGroup: exercise.supersetGroup,
           notes: exercise.notes,
+          setFields: setFieldsFromSets(exercise.sets) ?? "weight_reps",
         });
         exercise.sets.forEach((set, setPosition) =>
           add(built, "activitySet", {
