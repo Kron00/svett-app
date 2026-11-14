@@ -1997,8 +1997,8 @@ check "logger.sh types each set on the keypad, one press at each key's centre, w
   'get attrs id="keypad-done"'
 check "logger.sh scrolls down to a set below the fold before it checks it" \
   bound_got "--session t3-test session --device FAKE-UDID scroll down --until id=\"workout-set-1-0\" label=\"Set 1, 100 kg, 5 reps, Done\""
-check "logger.sh checks the restored workout in the database" \
-  grep -qxF "Set 2.4: failure, 100 kg, 4 reps, done" "$root/logger/restored.txt"
+check "logger.sh finds the restored Legs in the database exactly as logged" \
+  diff "$root/logger/restored-expected.txt" "$root/logger/restored.txt"
 check "logger.sh finds the finished Legs in the database with only its done sets" \
   diff "$root/logger/finished-expected.txt" "$root/logger/finished.txt"
 check "logger.sh finds the empty workout in the database with the set it took from last time" \

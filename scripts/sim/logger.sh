@@ -218,12 +218,11 @@ add_exercise() {
   expect 'id="workout"' "Choosing $2 did not go back to the workout"
 }
 
-# check_rows <exact|includes> <name> <title> <expected line>...: copies the
-# database with its write-ahead log and checks the workout's rows are exactly
-# the lines given, or include each of them in that order.
+# check_rows <name> <title> <expected line>...: copies the database with its
+# write-ahead log and checks the workout's rows are exactly the lines given.
 check_rows() {
-  local mode=$1 name=$2 title=$3 copy
-  shift 3
+  local name=$1 title=$2 copy
+  shift 2
   copy="$out/$name.db"
   rm -f "$copy" "$copy-wal" "$copy-shm"
   cp "$database" "$copy"
@@ -231,26 +230,8 @@ check_rows() {
   node scripts/workout-rows.ts workout "$copy" "$title" >"$out/$name.txt" ||
     fail "The database holds no workout called \"$title\""
   printf '%s\n' "$@" >"$out/$name-expected.txt"
-  if [[ "$mode" == exact ]]; then
-    diff -u "$out/$name-expected.txt" "$out/$name.txt" >&2 ||
-      fail "The database does not hold \"$title\" as logged. See $out/$name.txt"
-  else
-    # shellcheck disable=SC2016 # The ${...} are JavaScript template literals.
-    node -e '
-      const [found, expected] = process.argv.slice(1).map((path) =>
-        require("node:fs").readFileSync(path, "utf8").trimEnd().split("\n"));
-      let at = 0;
-      for (const line of expected) {
-        at = found.indexOf(line, at);
-        if (at === -1) {
-          console.error(`Missing from the database: ${line}`);
-          process.exit(1);
-        }
-        at += 1;
-      }
-    ' "$out/$name.txt" "$out/$name-expected.txt" ||
-      fail "The database does not hold \"$title\" as logged. See $out/$name.txt"
-  fi
+  diff -u "$out/$name-expected.txt" "$out/$name.txt" >&2 ||
+    fail "The database does not hold \"$title\" as logged. See $out/$name.txt"
   echo "The database holds \"$title\" as logged. See $out/$name.txt"
 }
 
@@ -330,7 +311,7 @@ expect_set 1 3 "Failure set, 100 kg, 4 reps, Done"
 expect_exercise 5 "Plank"
 expect_set 5 0 "Set 1, 60 seconds, Done"
 screenshot restored
-check_rows includes restored Legs "Legs: in_progress" "Notes: none" "Workouts in progress: 1" \
+check_rows restored Legs "Legs: in_progress" "Notes: none" "Workouts in progress: 1" \
   "Exercise 1: Romanian Deadlift, by weight_reps" "Set 1.1: normal, 80 kg, to do" \
   "Set 1.2: normal, to do" "Set 1.3: normal, to do" \
   "Exercise 2: Barbell Squat, by weight_reps" \
@@ -342,11 +323,12 @@ check_rows includes restored Legs "Legs: in_progress" "Notes: none" "Workouts in
   "Set 4.2: normal, to do" "Set 4.3: normal, to do" \
   "Exercise 5: Standing Calf Raises, by weight_reps" "Set 5.1: normal, to do" \
   "Set 5.2: normal, to do" "Set 5.3: normal, to do" \
-  "Exercise 6: Plank, by time" "Set 6.1: normal, 60 s, done"
+  "Exercise 6: Plank, by time" "Set 6.1: normal, 60 s, done" "Set 6.2: normal, to do" \
+  "Set 6.3: normal, to do"
 
 finish_workout
 screenshot finished
-check_rows exact finished Legs "Legs: finished" "Notes: none" "Workouts in progress: 0" \
+check_rows finished Legs "Legs: finished" "Notes: none" "Workouts in progress: 0" \
   "Exercise 1: Barbell Squat, by weight_reps" \
   "Set 1.1: normal, 100 kg, 5 reps, done" "Set 1.2: normal, 100 kg, 5 reps, done" \
   "Set 1.3: failure, 100 kg, 4 reps, done" "Set 1.4: failure, 100 kg, 4 reps, done" \
@@ -370,7 +352,7 @@ echo "Marking a set done until the row showed it: ${BASH_REMATCH[1]} ms ($build,
   tee "$out/set-done.txt"
 screenshot empty-workout
 finish_workout
-check_rows exact empty "$title" "$title: finished" "Notes: none" "Workouts in progress: 0" \
+check_rows empty "$title" "$title: finished" "Notes: none" "Workouts in progress: 0" \
   "Exercise 1: Barbell Squat, by weight_reps" "Set 1.1: normal, 100 kg, 5 reps, done"
 
 echo "Logged Legs from its routine and \"$title\" from empty, restored Legs after a kill, and found both in the database. Screenshots are in $out"
