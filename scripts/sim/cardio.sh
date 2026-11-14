@@ -4,10 +4,11 @@
 #
 # Usage: scripts/sim/cardio.sh [--release] [out-dir]
 #
-# At the largest text size, it opens Record through svett://record and starts a
-# run at the route's first waypoint. The simulator plays the first leg of
-# scripts/sim/cardio-route.json with svett on the Home Screen, which stands in for
-# a locked screen. Back in svett it pauses, resumes, plays the second leg with
+# At the largest text size, it opens svett, allows it location, relaunches it, opens
+# Record through svett://record and starts a run at the route's first waypoint.
+# When Start fails, it prints the reason svett shows above Start. The simulator
+# plays the first leg of scripts/sim/cardio-route.json with svett on the Home
+# Screen, which stands in for a locked screen. Back in svett it pauses, resumes, plays the second leg with
 # svett in front, pauses and finishes. It screenshots each step and every page of
 # the saved activity, then reads the activity from the app's database and writes
 # proof.txt. It fails unless the saved distance is within 1% of the route's
@@ -195,13 +196,32 @@ play_leg() {
   agent_device wait $((($(leg_seconds "$1") + 10) * 1000))
 }
 
+# Fails with the reason the Record screen shows above Start, word for word.
+start_failed() {
+  local reason
+  reason=$(agent_device get text 'id="record-start-problem-text"' 2>/dev/null) || reason=""
+  screenshot start-failed || true
+  if [[ -n "$reason" ]]; then
+    echo "The recording did not start. svett says \"$reason\"" >&2
+  else
+    echo "The recording did not start, and svett showed no reason" >&2
+  fi
+  exit 1
+}
+
 # Proof is at the largest text size. A running app adopts it only when it relaunches.
 agent_device settings text-size accessibility-extra-extra-extra-large
-agent_device settings permission grant location-always ||
-  echo "Could not grant location ahead, so Start's own prompts get accepted" >&2
 xcrun simctl location "$udid" set "${first_leg[0]}"
 agent_device open "$bundle_id" "${open_flags[@]}"
 agent_device wait "$train_tab" 120000
+# agent-device grants a permission only to the app open in its session, so svett is
+# open first. The relaunch lets it start with location already allowed.
+if agent_device settings permission grant location-always; then
+  agent_device open "$bundle_id" "${open_flags[@]}"
+  agent_device wait "$train_tab" 120000
+else
+  echo "Could not grant location ahead, so Start's own prompts get accepted" >&2
+fi
 agent_device open "$bundle_id" svett://record
 agent_device wait 'id="record-start"' 10000
 screenshot start
@@ -209,15 +229,16 @@ screenshot start
 started_after=$(($(date +%s) * 1000))
 tap 'id="record-start"'
 accept_alerts
-# One more press if the first was taken as a stop, as long as Start is still there.
-agent_device wait 'id="record-pause"' 5000 >/dev/null 2>&1 || {
-  agent_device is visible 'id="record-start"' >/dev/null 2>&1 && tap 'id="record-start"'
-  accept_alerts
-  agent_device wait 'id="record-pause"' 10000
-} || {
-  echo "The recording did not start" >&2
-  exit 1
-}
+# One more press if the first was taken as a stop, as long as Start is still there
+# and svett gave no reason it did not start.
+if ! agent_device wait 'id="record-pause"' 5000 >/dev/null 2>&1; then
+  ! agent_device is visible 'id="record-start-problem-text"' >/dev/null 2>&1 || start_failed
+  if agent_device is visible 'id="record-start"' >/dev/null 2>&1; then
+    tap 'id="record-start"'
+    accept_alerts
+  fi
+  agent_device wait 'id="record-pause"' 10000 >/dev/null 2>&1 || start_failed
+fi
 screenshot recording
 
 # The simulator cannot lock its screen, so the first leg runs with svett on the Home Screen.

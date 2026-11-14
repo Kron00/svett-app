@@ -2275,6 +2275,8 @@ check "logger.sh says what the timing line showed" \
 # The activity's hide setting shows after FAKE_ACTIVITY_SCROLLS scrolls, default 2.
 # Every button has the same frame, except that with FAKE_START_LOW Start sits at the
 # screen's bottom edge until a drag moves it up, or for good when it is "stuck".
+# With FAKE_START_FAILS, Start shows that reason above itself instead of starting.
+# Like agent-device, it grants a permission only while an app is open.
 cat >"$fake/cardio-device" <<EOF
 #!/usr/bin/env bash
 echo "\$*" >>"$root/bound-calls"
@@ -2298,6 +2300,11 @@ scrolls() { awk '/ press / { n = 0 } / scroll down 0[.]6\$/ { n++ } END { print 
 args=" \$* "
 case "\$args" in
   *" home "*) show home ;;
+  *" settings permission "*)
+    [[ "\$screen" != home ]] || {
+      echo "permission setting requires an active app in session" >&2
+      exit 1
+    } ;;
   *" open com.kron00.svett --relaunch "*) show tabs ;;
   *" open com.kron00.svett svett://record "*) record_screen ;;
   *" open com.kron00.svett "*)
@@ -2322,7 +2329,12 @@ case "\$args" in
           touch "$root/press-stopped"
           exit 0
         fi
-        [[ -n "\${FAKE_NO_START:-}" ]] || { echo recording >"$root/recording"; show recording; } ;;
+        if [[ -n "\${FAKE_START_FAILS:-}" ]]; then
+          echo "\$FAKE_START_FAILS" >"$root/start-problem"
+        elif [[ -z "\${FAKE_NO_START:-}" ]]; then
+          echo recording >"$root/recording"
+          show recording
+        fi ;;
       recording:*record-pause*) echo paused >"$root/recording"; show paused ;;
       paused:*record-resume*) echo recording >"$root/recording"; show recording ;;
       paused:*record-finish*)
@@ -2340,6 +2352,9 @@ case "\$args" in
       echo "\$*" >"$root/last-attrs"
       echo '{"label": "Button", "rect": {"x": 20, "y": 600, "width": 300, "height": 50}}'
     fi ;;
+  *' id="record-start-problem-text" '*)
+    [[ "\$screen" == setup && -s "$root/start-problem" ]] || exit 1
+    [[ "\$args" != *" get text "* ]] || cat "$root/start-problem" ;;
   *' label="Train, tab, 2 of 5" '*) [[ "\$screen" != home ]] ;;
   *' id="record-cardio" '*) [[ "\$screen" =~ ^(setup|recording|paused)\$ ]] ;;
   *' id="record-start" '*) [[ "\$screen" == setup ]] ;;
@@ -2360,7 +2375,8 @@ run_cardio() {
     shift
   done
   rm -rf "$root/simctl-calls" "$root/bound-calls" "$root/screen" "$root/svett-screen" \
-    "$root/recording" "$root/home-screen-actions" "$root/data container/Documents" "$root/press-stopped"
+    "$root/recording" "$root/home-screen-actions" "$root/data container/Documents" "$root/press-stopped" \
+    "$root/start-problem"
   cardio_status=0
   env PATH="$fake:$PATH" SVETT_DEVICE_CMD="cardio-device --session 't3-test session' --device FAKE-UDID" \
     "${vars[@]}" "$repo/scripts/sim/cardio.sh" "$@" >"$output" 2>&1 || cardio_status=$?
@@ -2399,8 +2415,8 @@ cardio_press="press 170 625"
 case_name="cardio.sh Debug with SVETT_DEVICE_CMD"
 cardio_sh "$root/cardio"
 check "cardio.sh never scrolls or presses while the Home Screen is in front" never_acts_on_home_screen
-check "cardio.sh relaunches into the dev client, opens Record by link, and comes back without a relaunch" \
-  only_open "$debug_open" "com.kron00.svett svett://record" "$debug_front"
+check "cardio.sh relaunches into the dev client twice, opens Record by link, and comes back without a relaunch" \
+  only_open "$debug_open" "$debug_open" "com.kron00.svett svett://record" "$debug_front"
 check "cardio.sh presses Start, Pause, Resume, Pause and Finish at their centres, in that order" \
   only_calls "get attrs|press" \
   'get attrs id="record-start"' "$cardio_press" 'get attrs id="record-pause"' "$cardio_press" \
@@ -2414,8 +2430,12 @@ check "cardio.sh starts at the route's first waypoint, plays each leg at its spe
 check "cardio.sh plays the first leg with svett on the Home Screen" goes_home_after_start "$root/cardio"
 check "cardio.sh waits out each leg and the pause" only_calls "wait [0-9]+$" \
   "wait 210000" "wait 5000" "wait 211000" "wait 3000"
-check "cardio.sh grants location ahead, so no prompt stops the start" \
-  bound_got "$bound_prefix settings permission grant location-always"
+check "cardio.sh grants location once svett is open, then relaunches it before Record" \
+  only_calls "open|settings permission" \
+  "open $debug_open" "settings permission grant location-always" "open $debug_open" \
+  "open com.kron00.svett svett://record" "open $debug_front"
+check "cardio.sh has location granted, so no prompt stops the start" \
+  bash -c '! grep -qF "Could not grant location" "$1"' _ "$output"
 check "cardio.sh shoots at the largest text size, then restores the default" \
   only_calls "settings text-size" \
   "settings text-size accessibility-extra-extra-extra-large" "settings text-size large"
@@ -2434,12 +2454,14 @@ check "cardio.sh with SVETT_DEVICE_CMD calls neither simctl launch nor openurl" 
 case_name="cardio.sh Release with SVETT_DEVICE_CMD"
 cardio_sh FAKE_RELEASE=1 --release "$root/cardio-release"
 check "cardio.sh Release relaunches the installed app without Metro and comes back by bundle id" \
-  only_open "com.kron00.svett --relaunch" "com.kron00.svett svett://record" com.kron00.svett
+  only_open "com.kron00.svett --relaunch" "com.kron00.svett --relaunch" "com.kron00.svett svett://record" \
+  com.kron00.svett
 
 case_name="cardio.sh when the dev client reloads on its way back"
 cardio_sh FAKE_RELOAD=1 "$root/cardio-reload"
 check "cardio.sh opens Record by link again after svett comes back on its tab root" \
-  only_open "$debug_open" "com.kron00.svett svett://record" "$debug_front" "com.kron00.svett svett://record"
+  only_open "$debug_open" "$debug_open" "com.kron00.svett svett://record" "$debug_front" \
+  "com.kron00.svett svett://record"
 check "cardio.sh still proves the recording after a reload" \
   grep -qF "PASSED: Distance" "$root/cardio-reload/proof.txt"
 
@@ -2452,8 +2474,24 @@ check "cardio.sh does not scroll or press on the Home Screen when svett stays aw
 case_name="cardio.sh when the recording does not start"
 run_cardio FAKE_NO_START=1 "$root/cardio-no-start"
 check "cardio.sh fails when Start does not start a recording" test "$cardio_status" -ne 0
-check "cardio.sh says the recording did not start" grep -qF "The recording did not start" "$output"
+check "cardio.sh says the recording did not start and svett gave no reason" \
+  grep -qxF "The recording did not start, and svett showed no reason" "$output"
+check "cardio.sh presses Start twice when nothing happens and no reason shows" \
+  test "$(grep -c -- "$cardio_press" "$root/bound-calls")" -eq 2
+check "cardio.sh screenshots the Record screen when the start fails" \
+  bound_got "$bound_prefix screenshot $root/cardio-no-start/02-start-failed.png"
 check "cardio.sh clears the simulated location after a failure" simctl_got "simctl location FAKE-UDID clear"
+
+case_name="cardio.sh when Start fails with a reason"
+reason="The recording did not start, at the location step. Location services are disabled"
+run_cardio FAKE_RELEASE=1 "FAKE_START_FAILS=$reason" --release "$root/cardio-start-fails"
+check "cardio.sh fails when svett shows why Start failed" test "$cardio_status" -ne 0
+check "cardio.sh prints svett's reason word for word" \
+  grep -qxF "The recording did not start. svett says \"$reason\"" "$output"
+check "cardio.sh presses Start once, since svett said why it did not start" \
+  test "$(grep -c -- "$cardio_press" "$root/bound-calls")" -eq 1
+check "cardio.sh reads the reason from above Start" \
+  bound_got "$bound_prefix get text id=\"record-start-problem-text\""
 
 case_name="cardio.sh when Start sits at the screen's bottom edge"
 cardio_sh FAKE_RELEASE=1 FAKE_START_LOW=1 --release "$root/cardio-low"
