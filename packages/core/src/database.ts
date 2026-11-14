@@ -14,6 +14,7 @@ import {
   ProposalRepository,
 } from "./repositories/records.ts";
 import { RoutineRepository } from "./repositories/routines.ts";
+import { SyncRepository } from "./repositories/sync.ts";
 import { TrainingReads } from "./repositories/training.ts";
 import { TransferRepository } from "./repositories/transfer.ts";
 import { Sql, type SqlDriver } from "./sql.ts";
@@ -47,6 +48,7 @@ export const Repositories = Layer.mergeAll(
   TransferRepository.layer,
   GearRepository.layer,
   TrainingReads.layer,
+  SyncRepository.layer,
 );
 
 /** The steps of opening a database that the app times at launch. */
@@ -58,7 +60,8 @@ const prepared = (onStep: (step: OpenStep) => void) =>
       yield* migrate();
       yield* Effect.sync(() => onStep("migrated"));
       const exercises = yield* ExerciseRepository;
-      yield* exercises.seedLibrary();
+      const sync = yield* SyncRepository;
+      yield* sync.quietly(exercises.seedLibrary());
       yield* Effect.sync(() => onStep("seeded"));
     }),
   );

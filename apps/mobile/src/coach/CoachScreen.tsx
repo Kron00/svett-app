@@ -20,7 +20,9 @@ import {
 } from "react-native";
 
 import { chatGPTStatus } from "../chatgpt/native";
-import { appDatabase } from "../data/database";
+import { currentDatabase, type OpenDatabase, useCurrentDatabase } from "../data/current";
+import { quietWriteTo } from "../data/store";
+import { transferInTurn } from "../data/turns";
 import type { CoachNavigation, CoachStackParamList } from "../navigation";
 import { AppText } from "../ui/AppText";
 import { Button } from "../ui/Button";
@@ -41,8 +43,8 @@ const NO_SOURCES: ReadonlyArray<string> = [];
 
 const newConversation = () => ConversationId.make(uuid.v4());
 
-const loadEntries = (conversationId: ConversationId) =>
-  appDatabase().runPromise(
+const loadEntries = (database: OpenDatabase, conversationId: ConversationId) =>
+  database.handle.runtime.runPromise(
     Effect.map(
       Effect.flatMap(Effect.service(CoachMessageRepository), (messages) =>
         messages.conversation(conversationId),
@@ -51,8 +53,8 @@ const loadEntries = (conversationId: ConversationId) =>
     ),
   );
 
-const latestConversation = () =>
-  appDatabase().runPromise(
+const latestConversation = (database: OpenDatabase) =>
+  database.handle.runtime.runPromise(
     Effect.flatMap(
       Effect.service(CoachMessageRepository),
       (messages) => messages.latestConversation,
@@ -134,8 +136,20 @@ function FailureNotice({
   );
 }
 
-/** The Coach tab: a chat with the user's ChatGPT plan that answers from their own data. */
+/**
+ * The Coach tab: a chat with the user's ChatGPT plan that answers from their own data. Each
+ * owner's chats are in their own database, so signing in or out starts the chat over on the
+ * new one. Nothing of the previous owner's shows, and an answer still arriving for them changes
+ * nothing here.
+ */
 export function CoachScreen() {
+  const { version } = useCurrentDatabase();
+  return <Coach key={version} />;
+}
+
+function Coach() {
+  // The database this chat was opened on. CoachScreen opens a new chat when it changes.
+  const [database] = useState(currentDatabase);
   const navigation = useNavigation<CoachNavigation>();
   const route = useRoute<CoachRoute>();
   const scroll = useRef<ScrollViewInstance>(null);
@@ -167,15 +181,15 @@ export function CoachScreen() {
   }, [checkStatus]);
 
   useEffect(() => {
-    latestConversation().then(
+    latestConversation(database).then(
       async (latest) => {
         const id = latest ?? newConversation();
-        setEntries(latest === null ? [] : await loadEntries(id));
+        setEntries(latest === null ? [] : await loadEntries(database, id));
         setConversationId(id);
       },
       () => setConversationId(newConversation()),
     );
-  }, []);
+  }, [database]);
 
   const ready = status?.state === "signedIn" && status.planUsage && conversationId !== undefined;
 
@@ -185,18 +199,23 @@ export function CoachScreen() {
       setFailure(undefined);
       setPending({ question, reads: [], draft: "" });
       try {
-        const outcome = await appDatabase().runPromise(
-          askCoach({
-            conversationId,
-            question,
-            transport: swiftTransport,
-            offsetMinutes: -new Date().getTimezoneOffset(),
-            hooks: {
-              onText: (delta) => setPending((now) => now && { ...now, draft: now.draft + delta }),
-              onRead: (source) =>
-                setPending((now) => now && { ...now, reads: [...now.reads, source], draft: "" }),
-            },
-          }),
+        // The question and its answer save to the database it was asked in. Signing in or out
+        // meanwhile waits to close that file until the answer is saved.
+        const outcome = await transferInTurn(() =>
+          quietWriteTo(
+            database,
+            askCoach({
+              conversationId,
+              question,
+              transport: swiftTransport,
+              offsetMinutes: -new Date().getTimezoneOffset(),
+              hooks: {
+                onText: (delta) => setPending((now) => now && { ...now, draft: now.draft + delta }),
+                onRead: (source) =>
+                  setPending((now) => now && { ...now, reads: [...now.reads, source], draft: "" }),
+              },
+            }),
+          ),
         );
         if (outcome.type === "failed") {
           setFailure(outcome.failure);
@@ -208,11 +227,11 @@ export function CoachScreen() {
           text: error instanceof Error ? error.message : String(error),
         });
       }
-      setEntries(await loadEntries(conversationId));
+      setEntries(await loadEntries(database, conversationId));
       setPending(undefined);
       chatGPTStatus().then(setStatus, () => undefined);
     },
-    [conversationId, pending],
+    [conversationId, database, pending],
   );
 
   // scripts/sim/coach.sh asks through svett://coach?ask=..., because agent-device cannot type

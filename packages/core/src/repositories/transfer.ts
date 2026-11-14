@@ -15,6 +15,7 @@ import { encodeSvettFile, exportFileName, type SvettFile } from "../svett-file.t
 import {
   columnOf,
   currentTime,
+  nextTime,
   insertRows,
   putRows,
   RowNotFoundError,
@@ -303,12 +304,16 @@ const changesOf = (importBatchId: ImportBatchId) =>
     "item_at DESC, title, id",
   );
 
+/**
+ * The fingerprint of an import change's whole record as it is now. It equals the change's
+ * `written` until any row of the record changes.
+ */
+export const journalFingerprint = (change: ImportChange) =>
+  Effect.map(journalRows(change.rowIds, { table: change.itemTable, id: change.itemId }), writtenOf);
+
 /** True when any row of the record changed after the import, not only a row it wrote. */
 const isEdited = (change: ImportChange) =>
-  Effect.map(
-    journalRows(change.rowIds, { table: change.itemTable, id: change.itemId }),
-    (rows) => writtenOf(rows) !== change.written,
-  );
+  Effect.map(journalFingerprint(change), (now) => now !== change.written);
 
 const rowKey = (key: TableKey, id: string) => `${key}/${id}`;
 
@@ -528,7 +533,7 @@ const makeTransferRepository = Effect.gen(function* () {
       run(
         Effect.gen(function* () {
           const local = yield* snapshot;
-          const { tables, duplicates } = inputOf(file).read(local, yield* currentTime);
+          const { tables, duplicates } = inputOf(file).read(local, yield* Effect.orDie(nextTime));
           return planImport(local, tables, duplicates);
         }),
       ),

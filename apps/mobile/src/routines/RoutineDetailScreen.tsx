@@ -12,6 +12,7 @@ import { Effect, Option } from "effect";
 import { useState } from "react";
 import { Alert, ScrollView, View } from "react-native";
 
+import { write } from "../data/store";
 import { useWorkoutSettings } from "../settings/store";
 import type { RootNavigation, RootStackParamList } from "../navigation";
 import { AppText } from "../ui/AppText";
@@ -19,13 +20,13 @@ import { Button } from "../ui/Button";
 import { EmptyState } from "../ui/EmptyState";
 import { ListRow, ListSection } from "../ui/List";
 import { OptionSheet } from "../ui/OptionSheet";
-import { exerciseName, runOnDatabase, type RoutineView, useRoutine, withRoutines } from "./data";
+import { changeRoutines, exerciseName, type RoutineView, useRoutine } from "./data";
 
 type Started = { readonly started: true } | { readonly started: false; readonly title: string };
 
 /** Starts the routine, or names the workout already in progress. */
 const start = (id: RoutineId) =>
-  runOnDatabase(
+  write(
     startWorkoutFromRoutine(id).pipe(
       Effect.as<Started>({ started: true }),
       Effect.catchTag("WorkoutInProgressError", ({ activityId }) =>
@@ -73,15 +74,15 @@ function Details({ view, reload }: { readonly view: RoutineView; readonly reload
   };
 
   const move = (to: number) =>
-    void withRoutines((routines) =>
+    void changeRoutines((routines) =>
       routines.orderRoutines(moveItem(view.siblings, index, to).map((sibling) => sibling.id)),
     ).then(reload);
 
   const moveToFolder = (folderId: FolderId | null) =>
-    void withRoutines((routines) => routines.moveRoutine(routine.id, folderId)).then(reload);
+    void changeRoutines((routines) => routines.moveRoutine(routine.id, folderId)).then(reload);
 
   const duplicate = () =>
-    void withRoutines((routines) => routines.duplicateRoutine(routine.id)).then((copy) =>
+    void changeRoutines((routines) => routines.duplicateRoutine(routine.id)).then((copy) =>
       navigation.push("Routine", { id: copy }),
     );
 
@@ -92,7 +93,7 @@ function Details({ view, reload }: { readonly view: RoutineView; readonly reload
         text: "Delete",
         style: "destructive",
         onPress: () =>
-          void withRoutines((routines) => routines.removeRoutine(routine.id)).then(() =>
+          void changeRoutines((routines) => routines.removeRoutine(routine.id)).then(() =>
             navigation.goBack(),
           ),
       },

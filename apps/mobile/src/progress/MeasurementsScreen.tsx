@@ -25,7 +25,7 @@ import { type RouteProp, useNavigation, useRoute } from "@react-navigation/nativ
 import { useRef, useState } from "react";
 import { ScrollView, View } from "react-native";
 
-import { appDatabase } from "../data/database";
+import { write } from "../data/store";
 import { useQuery } from "../data/useQuery";
 import type { RootNavigation, RootStackParamList } from "../navigation";
 import { useWorkoutSettings } from "../settings/store";
@@ -183,8 +183,7 @@ function AddMeasurementSheet({
     if (savingNow.current) return;
     savingNow.current = true;
     setSaving(true);
-    appDatabase()
-      .runPromise(addMeasurement(kind, measured))
+    write(addMeasurement(kind, measured))
       .then(
         () => close(onSaved),
         (cause: unknown) => setError(`The measurement was not saved. ${String(cause)}`),

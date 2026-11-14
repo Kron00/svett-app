@@ -55,6 +55,7 @@ export type RootStackParamList = {
   Plates: { kg?: string } | undefined;
   /** Units, RPE, and your plates and bars. */
   WorkoutSettings: undefined;
+  Account: undefined;
 };
 
 export type RootNavigation = NativeStackNavigationProp<RootStackParamList>;

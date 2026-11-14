@@ -16,13 +16,14 @@ import {
 import { Effect, Option, Schema } from "effect";
 import { useCallback } from "react";
 
-import { appDatabase } from "../data/database";
+import { appDatabase, type OpenDatabase } from "../data/current";
 import { markLaunch } from "../data/launch-timing";
 import { useOnFocus } from "../data/loaded";
+import { write, writeTo } from "../data/store";
 
 type Repositories = RoutineRepository | ActivityRepository | ExerciseRepository;
 
-/** Runs one effect on the repositories of the database this launch opened. */
+/** Reads through the repositories of the open database. */
 export const runOnDatabase = <A, E>(effect: Effect.Effect<A, E, Repositories>): Promise<A> =>
   appDatabase().runPromise(effect);
 
@@ -77,9 +78,17 @@ export function useRoutine(id: string) {
   return useOnFocus(load);
 }
 
-/** Saves the editor's routine, new or edited, and gives back its ID. */
-export const saveRoutine = (id: RoutineId | null, routine: Omit<RoutineDraft, "position">) =>
-  runOnDatabase(
+/**
+ * Saves the editor's routine, new or edited, into `database`, the one the editor opened in,
+ * and gives back its ID.
+ */
+export const saveRoutine = (
+  database: OpenDatabase,
+  id: RoutineId | null,
+  routine: Omit<RoutineDraft, "position">,
+) =>
+  writeTo(
+    database,
     Effect.gen(function* () {
       const routines = yield* RoutineRepository;
       const position = routinePosition(yield* routines.listRoutines, id, routine.folderId);
@@ -89,6 +98,11 @@ export const saveRoutine = (id: RoutineId | null, routine: Omit<RoutineDraft, "p
     }),
   );
 
-export const withRoutines = <A, E>(
+export const readRoutines = <A, E>(
   body: (routines: typeof RoutineRepository.Service) => Effect.Effect<A, E>,
 ): Promise<A> => runOnDatabase(Effect.flatMap(Effect.service(RoutineRepository), body));
+
+/** Changes routines or folders in the open database, as every other write does. */
+export const changeRoutines = <A, E>(
+  body: (routines: typeof RoutineRepository.Service) => Effect.Effect<A, E>,
+): Promise<A> => write(Effect.flatMap(Effect.service(RoutineRepository), body));

@@ -115,6 +115,69 @@ const gear = `
 CREATE TABLE gear (${row}, unit TEXT NOT NULL, plates TEXT NOT NULL, bars TEXT NOT NULL) STRICT;
 `;
 
+// The tables migration 8 syncs, frozen as they were then. A table added later needs its own
+// triggers in its own migration.
+const syncedAtVersion8 = [
+  "import_batch",
+  "import_change",
+  "exercise",
+  "activity",
+  "activity_exercise",
+  "activity_set",
+  "activity_track",
+  "activity_sample",
+  "folder",
+  "routine",
+  "routine_exercise",
+  "routine_set",
+  "measurement",
+  "exercise_alias",
+  "gear",
+];
+
+// Every write made on this phone queues its row, whichever code wrote it, unless sync is
+// applying rows from the server or the bundled exercise library is being seeded, which every
+// phone does for itself. A row queued again gets a new mark, so a confirmation of the copy
+// sent before leaves the newer change queued.
+const queueTrigger = (table: string, event: "INSERT" | "UPDATE") => `
+CREATE TRIGGER ${table}_queue_${event.toLowerCase()} AFTER ${event} ON ${table}
+WHEN (SELECT quiet FROM sync_state) = 0
+BEGIN
+  UPDATE sync_state SET mark = mark + 1;
+  -- The outer statement's conflict policy overrides one written here, so no OR REPLACE.
+  DELETE FROM sync_outbox WHERE table_name = '${table}' AND row_id = NEW.id;
+  INSERT INTO sync_outbox (table_name, row_id, mark)
+    VALUES ('${table}', NEW.id, (SELECT mark FROM sync_state));
+END;`;
+
+// `clock` is the hybrid logical clock: the time the last change written here took, or the
+// newest change sync applied. It starts after every row already here.
+const sync = `
+CREATE TABLE sync_state (id INTEGER PRIMARY KEY NOT NULL, quiet INTEGER NOT NULL,
+  mark INTEGER NOT NULL, cursor INTEGER NOT NULL, clock INTEGER NOT NULL,
+  newest_seen INTEGER NOT NULL) STRICT;
+INSERT INTO sync_state (id, quiet, mark, cursor, clock, newest_seen) VALUES (1, 0, 0, 0, max(0, ${[
+  ...syncedAtVersion8,
+  "proposal",
+  "coach_message",
+]
+  .map((table) => `(SELECT coalesce(max(updated_at), 0) FROM ${table})`)
+  .join(", ")}), 0);
+CREATE TABLE sync_outbox (table_name TEXT NOT NULL, row_id TEXT NOT NULL, mark INTEGER NOT NULL,
+  PRIMARY KEY (table_name, row_id)) STRICT;
+CREATE INDEX sync_outbox_mark ON sync_outbox (mark);
+${syncedAtVersion8
+  .map(
+    (table) =>
+      `INSERT INTO sync_outbox (table_name, row_id, mark) SELECT '${table}', id, 0 FROM ${table}${
+        // Library rows still at the bundled time 0 are unedited.
+        table === "exercise" ? " WHERE source <> 'library' OR updated_at <> 0" : ""
+      };`,
+  )
+  .join("\n")}
+${syncedAtVersion8.flatMap((table) => [queueTrigger(table, "INSERT"), queueTrigger(table, "UPDATE")]).join("\n")}
+`;
+
 /** Applied in order and never edited once released. A change to the schema is a new migration. */
 export const MIGRATIONS: ReadonlyArray<Migration> = [
   { version: 1, name: "initial", sql: initial },
@@ -124,6 +187,7 @@ export const MIGRATIONS: ReadonlyArray<Migration> = [
   { version: 5, name: "set fields", sql: setFields },
   { version: 6, name: "rest timer", sql: restTimer },
   { version: 7, name: "plates and bars", sql: gear },
+  { version: 8, name: "sync", sql: sync },
 ];
 
 export class DatabaseTooNewError extends Data.TaggedError("DatabaseTooNewError")<{

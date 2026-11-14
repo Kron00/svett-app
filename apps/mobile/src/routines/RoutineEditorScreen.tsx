@@ -16,6 +16,7 @@ import { type RouteProp, useNavigation, useRoute } from "@react-navigation/nativ
 import { type ReactNode, useEffect, useMemo, useState } from "react";
 import { ScrollView, View } from "react-native";
 
+import { currentDatabase } from "../data/current";
 import { useWorkoutSettings } from "../settings/store";
 import { useOnFocus } from "../data/loaded";
 import { useIsAccessibilityTextSize } from "../design/hooks";
@@ -28,7 +29,7 @@ import { IconButton } from "../ui/IconButton";
 import { ListRow, ListSection } from "../ui/List";
 import { OptionSheet } from "../ui/OptionSheet";
 import { TextField } from "../ui/TextField";
-import { exerciseName, saveRoutine, useRoutine, withRoutines } from "./data";
+import { exerciseName, readRoutines, saveRoutine, useRoutine } from "./data";
 import { changeDraft, closeDraft, openDraft, type RoutineDraft, useDraft } from "./draft";
 
 function ExerciseCard({
@@ -151,7 +152,7 @@ function Editor({
     }
     setError(null);
     setSaving(true);
-    saveRoutine(draft.routineId, result.routine)
+    saveRoutine(draft.database, draft.routineId, result.routine)
       .then(onSaved)
       .catch((cause: unknown) => setError(`The routine was not saved. ${String(cause)}`))
       .finally(() => setSaving(false));
@@ -224,7 +225,7 @@ function Editor({
   );
 }
 
-const loadFolders = () => withRoutines((routines) => routines.listFolders);
+const loadFolders = () => readRoutines((routines) => routines.listFolders);
 
 function EditorScroll({ children }: { readonly children: ReactNode }) {
   return (
@@ -257,7 +258,12 @@ export function NewRoutineScreen() {
   const route = useRoute<RouteProp<RootStackParamList, "NewRoutine">>();
   const draft = useOwnedDraft(route.key);
   useEffect(() => {
-    openDraft({ owner: route.key, routineId: null, form: routineFormFromParams(route.params) });
+    openDraft({
+      owner: route.key,
+      routineId: null,
+      database: currentDatabase(),
+      form: routineFormFromParams(route.params),
+    });
   }, [route.key, route.params]);
   return (
     <EditorScroll>
@@ -277,7 +283,12 @@ export function EditRoutineScreen() {
   const detail = loaded.state === "ready" ? loaded.value?.detail : undefined;
   useEffect(() => {
     if (detail !== undefined && draft === null) {
-      openDraft({ owner: route.key, routineId: detail.routine.id, form: routineForm(detail) });
+      openDraft({
+        owner: route.key,
+        routineId: detail.routine.id,
+        database: currentDatabase(),
+        form: routineForm(detail),
+      });
     }
   }, [detail, draft, route.key]);
   return (

@@ -28,7 +28,7 @@ import { Icon } from "../ui/Icon";
 import { ListRow, ListSection, SectionHeader } from "../ui/List";
 import { StatTile } from "../ui/StatTile";
 import { formatDay, PHONE_OFFSET, useNow } from "./dates";
-import { type DeletedWorkout, setDeletedWorkout, undoDelete, useDeletedWorkout } from "./deleted";
+import { closeDeletedWorkout, type UndoableDelete, undoDelete, useDeletedWorkout } from "./deleted";
 import { recentRecords } from "./queries";
 
 const PAGE = 60;
@@ -84,7 +84,7 @@ function HistoryRow({
   );
 }
 
-function UndoDeleteBar({ workout }: { readonly workout: DeletedWorkout }) {
+function UndoDeleteBar({ workout }: { readonly workout: UndoableDelete }) {
   const stacked = useIsAccessibilityTextSize();
   const [undoing, setUndoing] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -124,7 +124,7 @@ function UndoDeleteBar({ workout }: { readonly workout: DeletedWorkout }) {
             label="Close"
             variant="plain"
             testID="undo-delete-close"
-            onPress={() => setDeletedWorkout(null)}
+            onPress={closeDeletedWorkout}
           />
         </View>
       </View>

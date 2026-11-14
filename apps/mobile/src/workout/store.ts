@@ -11,8 +11,15 @@ import {
 import { type Effect, Option } from "effect";
 import { useSyncExternalStore } from "react";
 
-import { appDatabase } from "../data/database";
-import { write } from "../data/store";
+import {
+  currentDatabase,
+  type OpenDatabase,
+  sameDatabase,
+  stillOpen,
+  subscribeDatabase,
+} from "../data/current";
+import { quietWriteTo, writeTo } from "../data/store";
+import { skipRestTimer } from "./rest";
 
 export type WorkoutState =
   | { readonly status: "loading" }
@@ -32,6 +39,11 @@ type Change = (log: WorkoutLog) => WorkoutLog;
 
 /** What the database holds: the last read, with each change saved since. */
 let saved: WorkoutState = { status: "loading" };
+/**
+ * The database the workout shown was read from. A workout in progress is a draft in the
+ * database it was started in, so each change to it saves there and nowhere else.
+ */
+let shownFrom: OpenDatabase | null = null;
 /** Changes shown before they are saved, oldest first. Each read is shown with them on top. */
 let unsaved: ReadonlyArray<{ readonly change: Change }> = [];
 let state: WorkoutState = saved;
@@ -62,23 +74,48 @@ const enqueue = <A>(task: () => Promise<A>): Promise<A> => {
   return next;
 };
 
-const run = <A>(effect: Effect.Effect<A, unknown, Services>) => appDatabase().runPromise(effect);
-
 const read = async () => {
+  const database = currentDatabase();
   try {
-    const log = await run(loadWorkoutLog);
+    const log = await database.handle.runtime.runPromise(loadWorkoutLog);
+    // Someone signed in or out during the read, and the read queued by the switch shows theirs.
+    if (!stillOpen(database)) return;
     saved = { status: "ready", log: Option.getOrNull(log), problem: null, failures };
   } catch (error) {
+    if (!stillOpen(database)) return;
     saved = { status: "failed", message: String(error) };
   }
+  shownFrom = database;
   show();
 };
+
+/** The database a change to the workout shown is meant for. */
+const target = (): OpenDatabase => shownFrom ?? currentDatabase();
+
+/**
+ * Signing in or out opens another database, with its own workout in progress or none. The
+ * previous owner's workout stays in their database, and nothing of it shows or saves here,
+ * its rest timer included.
+ */
+subscribeDatabase(() => {
+  if (shownFrom !== null && !sameDatabase(shownFrom, currentDatabase())) {
+    saved = { status: "loading" };
+    unsaved = [];
+    failures = 0;
+    shownFrom = null;
+    show();
+    void skipRestTimer();
+  }
+  void enqueue(read);
+});
 
 /** Reads the workout in progress again, after every change already asked for is saved. */
 export const reloadWorkout = (): Promise<void> => enqueue(read);
 
-const failed = (error: unknown) =>
+const failed = (database: OpenDatabase, error: unknown) =>
   enqueue(async () => {
+    // A change to the previous owner's workout, refused after a switch, is not this one's problem.
+    if (!sameDatabase(database, currentDatabase())) return;
     failures += 1;
     await read();
     keepSaved((log) => log, String(error));
@@ -93,15 +130,17 @@ const failed = (error: unknown) =>
 export const saveWorkout = <A>(
   effect: Effect.Effect<A, unknown, Services>,
   everywhere = false,
-): Promise<A | null> =>
-  enqueue(async () => {
-    const result = await (everywhere ? write(effect) : run(effect));
+): Promise<A | null> => {
+  const database = target();
+  return enqueue(async () => {
+    const result = await (everywhere ? writeTo : quietWriteTo)(database, effect);
     await read();
     return result;
   }).catch(async (error: unknown) => {
-    await failed(error);
+    await failed(database, error);
     return null;
   });
+};
 
 /**
  * Saves a change and shows it. Typing shows at once and saves behind, so a note keeps up with
@@ -115,19 +154,20 @@ export const changeWorkout = (
   shown: "now" | "once saved" = "now",
 ) => {
   const edit = { change };
+  const database = target();
   if (shown === "now") {
     unsaved = [...unsaved, edit];
     show();
   }
   void enqueue(async () => {
     try {
-      await run(save);
+      await quietWriteTo(database, save);
     } finally {
       unsaved = unsaved.filter((other) => other !== edit);
     }
     keepSaved(change);
     show();
-  }).catch(failed);
+  }).catch((error: unknown) => failed(database, error));
 };
 
 /**

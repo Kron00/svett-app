@@ -17,7 +17,7 @@ import { EmptyState } from "../ui/EmptyState";
 import { IconButton } from "../ui/IconButton";
 import { ListRow, ListSection, SectionHeader } from "../ui/List";
 import { startEmpty } from "../workout/actions";
-import { type RoutineOverview, useRoutineOverview, withRoutines } from "./data";
+import { changeRoutines, type RoutineOverview, useRoutineOverview } from "./data";
 
 const folderPrompt = (title: string, name: string, onSave: (name: string) => void) =>
   Alert.prompt(
@@ -52,7 +52,7 @@ function FolderHeader({
   const navigation = useNavigation<RootNavigation>();
   const index = folders.findIndex((other) => other.id === folder.id);
   const move = (to: number) =>
-    void withRoutines((routines) =>
+    void changeRoutines((routines) =>
       routines.orderFolders(moveItem(folders, index, to).map((other) => other.id)),
     ).then(onChanged);
 
@@ -68,7 +68,7 @@ function FolderHeader({
           "Rename folder",
           folder.name,
           (name) =>
-            void withRoutines((routines) => routines.updateFolder(folder.id, { name })).then(
+            void changeRoutines((routines) => routines.updateFolder(folder.id, { name })).then(
               onChanged,
             ),
         ),
@@ -91,7 +91,7 @@ function FolderHeader({
           text: "Delete",
           style: "destructive",
           onPress: () =>
-            void withRoutines((routines) => routines.removeFolder(folder.id)).then(onChanged),
+            void changeRoutines((routines) => routines.removeFolder(folder.id)).then(onChanged),
         },
       ],
     );
@@ -232,7 +232,7 @@ export function TrainScreen() {
   const newFolder = () =>
     folderPrompt("New folder", "", (name) => {
       if (loaded.state !== "ready") return;
-      void withRoutines((routines) =>
+      void changeRoutines((routines) =>
         routines.createFolder({ name, position: endPosition(loaded.value.folders) }),
       ).then(loaded.reload);
     });

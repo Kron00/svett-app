@@ -1,19 +1,25 @@
 import {
+  AccountId,
+  ANONYMOUS,
   type ChatGPTStatus,
   type CoachEvent,
+  CoachMessageRepository,
   databaseLayer,
   Ids,
   PLAN_LIMIT_CODE,
 } from "@svett/core";
 import { manualClock, openNodeDatabase } from "@svett/core/node";
-import { Layer, ManagedRuntime } from "effect";
+import { Effect, Layer, ManagedRuntime } from "effect";
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
+import { switchOwner } from "../data/current";
 import { CoachScreen } from "./CoachScreen";
 
 const app = vi.hoisted(() => ({
-  runtime: undefined as unknown,
+  databases: new Map<string, unknown>(),
+  /** The stand-in for Swift waits for this before it streams. */
+  gate: Promise.resolve(),
   status: (): Promise<unknown> => Promise.resolve(undefined),
   /** The events the stand-in for Swift streams for request n. */
   answer: (_number: number): ReadonlyArray<unknown> => [],
@@ -56,20 +62,57 @@ vi.mock("@react-navigation/native", async () => {
   };
 });
 vi.mock("../chatgpt/native", () => ({ chatGPTStatus: () => app.status() }));
-vi.mock("../data/database", () => ({ appDatabase: () => app.runtime }));
+vi.mock("expo-sqlite/kv-store", () => ({
+  default: { getItemSync: () => null, setItemSync: () => {}, removeItemSync: () => {} },
+}));
+vi.mock("../account/config", () => ({ CLERK_PUBLISHABLE_KEY: "pk_test_svett" }));
+// Each owner's file is an in-memory SQLite database that outlives its handles, as a file would.
+vi.mock("../data/database", () => ({
+  launchFixture: () => undefined,
+  openDatabaseHandle: (target: { kind: string; owner?: { kind: string; accountId?: string } }) => ({
+    target,
+    get runtime() {
+      return app.databases.get(target.owner?.accountId ?? target.owner?.kind ?? target.kind);
+    },
+    close: async () => {},
+  }),
+}));
 vi.mock("./native", async () => {
-  const { Effect } = await import("effect");
+  const effect = await import("effect");
   return {
     swiftTransport: {
       send: (_: unknown, onEvent: (event: unknown) => void) =>
-        Effect.sync(() => {
-          const events = app.answer(++app.requests);
+        effect.Effect.promise(async () => {
+          const number = ++app.requests;
+          await app.gate;
+          const events = app.answer(number);
           events.forEach(onEvent);
           return events;
         }),
     },
   };
 });
+
+const FIRST = AccountId.make("user_svett_first");
+type Runtime = ManagedRuntime.ManagedRuntime<CoachMessageRepository, unknown>;
+
+const openDatabase = (): Runtime => {
+  const { driver } = openNodeDatabase();
+  return ManagedRuntime.make(
+    Layer.provideMerge(
+      databaseLayer(driver, Ids.layerSeeded(5)),
+      manualClock(new Date(2026, 10, 14, 12).getTime()).layer,
+    ),
+  );
+};
+
+const latestConversation = (runtime: Runtime) =>
+  runtime.runPromise(
+    Effect.flatMap(
+      Effect.service(CoachMessageRepository),
+      (messages) => messages.latestConversation,
+    ),
+  );
 
 const SIGNED_IN: ChatGPTStatus = {
   state: "signedIn",
@@ -91,19 +134,18 @@ beforeAll(() => {
 });
 
 beforeEach(() => {
-  const { driver } = openNodeDatabase();
-  app.runtime = ManagedRuntime.make(
-    Layer.provideMerge(
-      databaseLayer(driver, Ids.layerSeeded(5)),
-      manualClock(new Date(2026, 10, 14, 12).getTime()).layer,
-    ),
-  );
+  app.databases.set("anonymous", openDatabase());
+  app.databases.set(FIRST, openDatabase());
+  switchOwner(ANONYMOUS);
+  app.gate = Promise.resolve();
   app.status = () => Promise.resolve(SIGNED_IN);
   app.answer = () => [{ type: "text", delta: "Hello." }, { type: "done" }];
   app.requests = 0;
 });
 
-afterEach(() => (app.runtime as ManagedRuntime.ManagedRuntime<never, never>).dispose());
+afterEach(() =>
+  Promise.all([...app.databases.values()].map((runtime) => (runtime as Runtime).dispose())),
+);
 
 /** Lets the screen's promises and the database settle. */
 const settle = () => act(() => new Promise((resolve) => setTimeout(resolve, 50)));
@@ -186,5 +228,34 @@ describe("CoachScreen", () => {
     await settle();
     act(() => byTestID(tree, "coach-input")[0]!.props.onChangeText("Once more?"));
     expect(sendDisabled(tree)).toBe(false);
+  });
+
+  it("opens the new owner's chat on a sign-in, and keeps an answer arriving for the previous one out of it", async () => {
+    const gate = Promise.withResolvers<void>();
+    app.gate = gate.promise;
+    app.answer = () => [{ type: "text", delta: "Phone answer." }, { type: "done" }];
+    const tree = await open();
+    await send(tree, "Phone question?");
+    expect(byTestID(tree, "coach-pending")).toHaveLength(1);
+
+    await act(async () => switchOwner({ kind: "account", accountId: FIRST }));
+    await settle();
+    expect(texts(tree)).not.toContain("Phone question?");
+    expect(byTestID(tree, "coach-pending")).toHaveLength(0);
+    act(() => byTestID(tree, "coach-input")[0]!.props.onChangeText("Account question?"));
+    expect(sendDisabled(tree)).toBe(false);
+
+    await act(async () => gate.resolve());
+    await settle();
+    expect(texts(tree)).not.toContain("Phone question?");
+    expect(texts(tree)).not.toContain("Phone answer.");
+    expect(byTestID(tree, "coach-new")).toHaveLength(0);
+    const account = app.databases.get(FIRST) as Runtime;
+    expect(await latestConversation(account)).toBeNull();
+
+    await act(async () => switchOwner(ANONYMOUS));
+    await settle();
+    expect(texts(tree)).toContain("Phone question?");
+    expect(texts(tree)).toContain("Phone answer.");
   });
 });
