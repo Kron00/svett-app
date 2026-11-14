@@ -104,4 +104,29 @@ struct SignInAttemptTests {
         #expect(SignInProblem.identity(.badSignature).code == "identity.badSignature")
         #expect(SignInProblem.codeExpired.code == "codeExpired")
     }
+
+    @Test func aPastedAddressForThisAttemptIsTakenAndClearedFromThePasteboard() {
+        let text = " http://127.0.0.1:54321/auth/callback?code=c1&state=state-1&client_id=oaiapp_new\n"
+        let pasteboard = TestPasteboard(text)
+        #expect(attempt().answer(on: pasteboard) == .success(text))
+        #expect(pasteboard.text == nil)
+    }
+
+    @Test func aPastedAddressFromAnotherAttemptIsRefusedAndLeftOnThePasteboard() {
+        let text = "http://127.0.0.1:54321/auth/callback?code=c1&state=state-0&client_id=oaiapp_new"
+        let pasteboard = TestPasteboard(text)
+        #expect(attempt().answer(on: pasteboard) == .failure(.otherAttempt))
+        #expect(pasteboard.text == text)
+    }
+
+    @Test func pastedTextThatIsNotTheAddressIsRefused() {
+        let pasteboard = TestPasteboard("https://chatgpt.com/")
+        #expect(attempt().answer(on: pasteboard) == .failure(.notTheAddress))
+        #expect(pasteboard.text == "https://chatgpt.com/")
+    }
+
+    @Test(arguments: [nil, "", " \n"] as [String?])
+    func anEmptyPasteboardIsReported(text: String?) {
+        #expect(attempt().answer(on: TestPasteboard(text)) == .failure(.nothingPasted))
+    }
 }

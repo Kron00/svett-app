@@ -10,17 +10,24 @@ enum SignInRoute: String, Sendable {
 }
 
 enum SignInOutcome: Sendable {
-    case signedIn(AccountStatus)
+    case signedIn(AccountSnapshot)
     case failed(SignInProblem)
     case cancelled
 
     var record: [String: Any] {
         switch self {
-        case .signedIn(let status): ["status": "signedIn", "account": status.record]
+        case .signedIn(let snapshot): ["status": "signedIn", "account": snapshot.record]
         case .failed(let problem): ["status": "failed", "problem": problem.code]
         case .cancelled: ["status": "cancelled"]
         }
     }
+}
+
+/// The system pasteboard, read only in Swift.
+struct SystemPasteboard: AddressPasteboard {
+    var text: String? { UIPasteboard.general.string }
+
+    func clear() { UIPasteboard.general.items = [] }
 }
 
 /// One sign-in from start to finish: the loopback listener, the sheet or Safari, the paste, and the
@@ -59,14 +66,22 @@ final class SignInFlow {
         self.signInPage = signInPage
     }
 
-    func signIn(by route: SignInRoute, choice: SignInChoice) async -> SignInOutcome {
+    func signIn(by route: SignInRoute, choice: SignInChoice, account savedAccount: String?) async -> SignInOutcome {
         guard attempt == nil else { return .failed(.busy) }
         let (events, feed) = AsyncStream.makeStream(of: SignInEvent.self)
         attempt = Attempt(route: route, events: feed)
         let reply: LoopbackCallback.Reply = route == .sheet
             ? .redirect(WebSignIn.done) : .page("Signed in. Go back to svett.")
         let listener = try? await LoopbackCallback.start(reply: reply) { feed.yield(.callback($0)) }
-        let begun = await account.beginSignIn(port: listener?.port ?? Self.portWithoutListener, choice: choice)
+        let begun: (attempt: SignInAttempt, page: URL)
+        switch await account.beginSignIn(
+            port: listener?.port ?? Self.portWithoutListener, choice: choice, account: savedAccount) {
+        case .success(let started): begun = started
+        case .failure(let problem):
+            listener?.stop()
+            attempt = nil
+            return .failed(problem)
+        }
         attempt?.signIn = begun.attempt
         let page = signInPage(begun.page)
         switch route {
@@ -104,10 +119,13 @@ final class SignInFlow {
             case .exchanged(let problem):
                 if let problem {
                     outcome = .failed(problem)
-                } else if case .signedIn = await account.status {
-                    outcome = .signedIn(await account.status)
                 } else {
-                    outcome = .failed(.refused)
+                    let snapshot = await account.snapshot
+                    if case .signedIn = snapshot.status {
+                        outcome = .signedIn(snapshot)
+                    } else {
+                        outcome = .failed(.refused)
+                    }
                 }
                 break waiting
             case .sheetClosed:
@@ -128,16 +146,17 @@ final class SignInFlow {
         return outcome
     }
 
-    /// Finishes a Safari sign-in with the address that Safari was sent to and could not open. Returns
-    /// why the address cannot finish this sign-in, or nil when it was taken.
-    func paste(_ address: String) -> SignInProblem? {
+    /// Finishes a Safari sign-in with the address that Safari was sent to and could not open, read
+    /// from `pasteboard`. Returns why it cannot finish this sign-in, or nil when it was taken.
+    func paste(from pasteboard: any AddressPasteboard) -> SignInProblem? {
         guard let attempt, let signIn = attempt.signIn else { return .notRunning }
-        if case .failure(let problem) = signIn.grant(from: address),
-           problem == .notTheAddress || problem == .otherAttempt {
+        switch signIn.answer(on: pasteboard) {
+        case .success(let address):
+            attempt.events.yield(.callback(address))
+            return nil
+        case .failure(let problem):
             return problem
         }
-        attempt.events.yield(.callback(address))
-        return nil
     }
 
     func cancel() {

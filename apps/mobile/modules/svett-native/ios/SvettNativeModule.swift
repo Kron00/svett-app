@@ -28,28 +28,31 @@ public class SvettNativeModule: Module {
 
         // Nothing below hands JavaScript a token. It gets the account's status and problem codes.
         AsyncFunction("chatGPTStatus") { (promise: Promise) in
-            Task { promise.resolve(await chatGPT.account.status.record) }
+            Task { promise.resolve(await chatGPT.account.snapshot.record) }
         }
 
         AsyncFunction("renewChatGPT") { (promise: Promise) in
             Task {
                 let problem = await chatGPT.account.renewIfDue()
-                var record: [String: Any] = ["account": await chatGPT.account.status.record]
+                var record: [String: Any] = ["account": await chatGPT.account.snapshot.record]
                 if let problem { record["problem"] = problem.code }
                 promise.resolve(record)
             }
         }
 
-        AsyncFunction("signInWithChatGPT") { (route: String, choice: String, promise: Promise) in
+        // `account` is a saved account's id from the status, or null for the one used last.
+        AsyncFunction("signInWithChatGPT") { (route: String, choice: String, account: String?, promise: Promise) in
             Task { @MainActor in
                 let outcome = await signInFlow.signIn(
-                    by: SignInRoute(rawValue: route) ?? .sheet, choice: SignInChoice(rawValue: choice) ?? .returning)
+                    by: SignInRoute(rawValue: route) ?? .sheet, choice: SignInChoice(rawValue: choice) ?? .returning,
+                    account: account)
                 promise.resolve(outcome.record)
             }
         }
 
-        AsyncFunction("pasteSignInAddress") { (address: String, promise: Promise) in
-            Task { @MainActor in promise.resolve(signInFlow.paste(address)?.code) }
+        // Swift reads the pasteboard, so the address and its code never cross to JavaScript.
+        AsyncFunction("pasteSignInAddress") { (promise: Promise) in
+            Task { @MainActor in promise.resolve(signInFlow.paste(from: SystemPasteboard())?.code) }
         }
 
         AsyncFunction("cancelSignIn") { (promise: Promise) in
@@ -60,7 +63,7 @@ public class SvettNativeModule: Module {
         }
 
         AsyncFunction("signOutOfChatGPT") { (promise: Promise) in
-            Task { promise.resolve(["revoked": await chatGPT.account.signOut()]) }
+            Task { promise.resolve(await chatGPT.account.signOut().record) }
         }
     }
 }

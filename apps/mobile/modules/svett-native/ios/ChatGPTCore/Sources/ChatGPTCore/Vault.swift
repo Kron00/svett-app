@@ -89,10 +89,12 @@ enum SessionEnd: String, Codable, Sendable {
     case clientRefused
 }
 
-/// Where the vault is kept: the Keychain in the app, memory in tests and the stand-in mode.
+/// Where the vault is kept: the Keychain in the app, memory in tests and the stand-in mode. Both
+/// methods throw when the store fails, so a write that did not happen is never taken for one that did.
 protocol VaultStore: Sendable {
-    func load() -> Vault?
-    func save(_ vault: Vault)
+    /// The saved vault, or nil when none was saved.
+    func load() throws -> Vault?
+    func save(_ vault: Vault) throws
 }
 
 final class MemoryVaultStore: VaultStore, @unchecked Sendable {

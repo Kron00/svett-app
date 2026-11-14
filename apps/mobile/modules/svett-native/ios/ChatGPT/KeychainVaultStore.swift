@@ -6,6 +6,10 @@ import Security
 struct KeychainVaultStore: VaultStore {
     var account = "vault"
 
+    struct Failure: Error {
+        let status: OSStatus
+    }
+
     private var item: [CFString: Any] {
         [
             kSecClass: kSecClassGenericPassword,
@@ -14,23 +18,28 @@ struct KeychainVaultStore: VaultStore {
         ]
     }
 
-    func load() -> Vault? {
+    func load() throws -> Vault? {
         var query = item
         query[kSecReturnData] = true
         query[kSecMatchLimit] = kSecMatchLimitOne
         var found: CFTypeRef?
-        guard SecItemCopyMatching(query as CFDictionary, &found) == errSecSuccess, let data = found as? Data else {
-            return nil
-        }
+        let status = SecItemCopyMatching(query as CFDictionary, &found)
+        if status == errSecItemNotFound { return nil }
+        guard status == errSecSuccess, let data = found as? Data else { throw Failure(status: status) }
+        // A vault that cannot be decoded can never be read again, so it counts as none and the next
+        // save replaces it.
         return try? JSONDecoder().decode(Vault.self, from: data)
     }
 
-    func save(_ vault: Vault) {
-        guard let data = try? JSONEncoder().encode(vault) else { return }
-        guard SecItemUpdate(item as CFDictionary, [kSecValueData: data] as CFDictionary) == errSecItemNotFound else { return }
+    func save(_ vault: Vault) throws {
+        let data = try JSONEncoder().encode(vault)
+        let updated = SecItemUpdate(item as CFDictionary, [kSecValueData: data] as CFDictionary)
+        if updated == errSecSuccess { return }
+        guard updated == errSecItemNotFound else { throw Failure(status: updated) }
         var new = item
         new[kSecValueData] = data
         new[kSecAttrAccessible] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
-        SecItemAdd(new as CFDictionary, nil)
+        let added = SecItemAdd(new as CFDictionary, nil)
+        guard added == errSecSuccess else { throw Failure(status: added) }
     }
 }

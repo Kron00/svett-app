@@ -15,7 +15,7 @@ enum ChatGPTStub {
         default: break
         }
         let account = ChatGPTAccount(transport: stub, store: MemoryVaultStore(vault(for: scenario)))
-        return (account: account, signInPage: StubOpenAI.signInPage)
+        return (account: account, signInPage: { StubOpenAI.signInPage($0) })
     }
 
     private static func vault(for scenario: String) -> Vault? {
@@ -28,6 +28,10 @@ enum ChatGPTStub {
         }
         return switch scenario {
         case "returning": Vault(registrations: [registration])
+        // The stand-in's account was used before another one, so it is offered second.
+        case "twoAccounts":
+            Vault(registrations: [registration, Vault.Registration(
+                clientID: "oaiapp_stub_other", subject: "user-other", email: "other@example.com")])
         case "signedIn", "revokeFails": Vault(registrations: [registration], session: session(expiresIn: 3600))
         case "noPlanUsage":
             Vault(registrations: [registration], session: session(scope: "openid profile email offline_access", expiresIn: 3600))

@@ -3,7 +3,8 @@ import Foundation
 
 /// Which sign-in the user asked for.
 enum SignInChoice: String, Sendable {
-    /// The account used last, through its issued client ID. A first sign-in registers this install.
+    /// A saved account through its issued client ID, by default the one used last. A first sign-in
+    /// registers this install.
     case returning
     /// A ChatGPT account this install has not signed in to, through a new registration.
     case anotherAccount
@@ -87,6 +88,20 @@ struct SignInAttempt: Equatable, Sendable {
         return .success(SignInGrant(code: code, clientID: registration.clientID))
     }
 
+    /// Takes the address a Safari sign-in could not open from the pasteboard, when it answers this
+    /// attempt. Swift reads it, so the address and its one-time code never reach JavaScript. A taken
+    /// address is cleared from the pasteboard, because the code in it signs in once.
+    func answer(on pasteboard: any AddressPasteboard) -> Result<String, SignInProblem> {
+        guard let address = pasteboard.text, !address.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return .failure(.nothingPasted)
+        }
+        if case .failure(let problem) = grant(from: address), problem == .notTheAddress || problem == .otherAttempt {
+            return .failure(problem)
+        }
+        pasteboard.clear()
+        return .success(address)
+    }
+
     func exchange(_ grant: SignInGrant) -> URLRequest {
         .form(OpenAI.token, [
             "grant_type": "authorization_code",
@@ -97,6 +112,12 @@ struct SignInAttempt: Equatable, Sendable {
             "resource": OpenAI.resource,
         ])
     }
+}
+
+/// Where the user copied the address Safari could not open. The app's is the system pasteboard.
+protocol AddressPasteboard {
+    var text: String? { get }
+    func clear()
 }
 
 /// What a finished visit to the sign-in page hands back: the code to exchange, and the client id
@@ -124,6 +145,12 @@ enum SignInProblem: Error, Equatable, Sendable {
     /// The ID token's verified account is not the one this registration belongs to.
     case otherAccount
     case identity(IDTokenProblem)
+    /// The pasteboard holds no text to finish a Safari sign-in with.
+    case nothingPasted
+    /// The saved account to return to is no longer saved.
+    case unknownAccount
+    /// The Keychain could not be read, so this install's saved sign-in is not known.
+    case storage
 
     var code: String {
         switch self {
@@ -141,6 +168,9 @@ enum SignInProblem: Error, Equatable, Sendable {
         case .otherClient: "otherClient"
         case .otherAccount: "otherAccount"
         case .identity(let problem): "identity.\(problem.rawValue)"
+        case .nothingPasted: "nothingPasted"
+        case .unknownAccount: "unknownAccount"
+        case .storage: "storage"
         }
     }
 }

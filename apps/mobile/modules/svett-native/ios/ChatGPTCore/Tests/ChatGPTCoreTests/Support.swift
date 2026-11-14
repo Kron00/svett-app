@@ -50,17 +50,69 @@ struct HeldRefreshes: OpenAITransport {
     }
 }
 
+/// A vault in memory whose reads and writes a test can make fail, as a Keychain can.
+final class FlakyStore: VaultStore, @unchecked Sendable {
+    private let lock = NSLock()
+    private var vault: Vault?
+    private var failingReads = false
+    private var failingWrites = false
+
+    init(_ vault: Vault? = nil) {
+        self.vault = vault
+    }
+
+    struct Refused: Error {}
+
+    /// What the store holds, read past any failure.
+    var saved: Vault? { lock.withLock { vault } }
+
+    var failsReads: Bool {
+        get { lock.withLock { failingReads } }
+        set { lock.withLock { failingReads = newValue } }
+    }
+
+    var failsWrites: Bool {
+        get { lock.withLock { failingWrites } }
+        set { lock.withLock { failingWrites = newValue } }
+    }
+
+    func load() throws -> Vault? {
+        try lock.withLock {
+            if failingReads { throw Refused() }
+            return vault
+        }
+    }
+
+    func save(_ vault: Vault) throws {
+        try lock.withLock {
+            if failingWrites { throw Refused() }
+            self.vault = vault
+        }
+    }
+}
+
+/// A pasteboard that holds one text.
+final class TestPasteboard: AddressPasteboard {
+    var text: String?
+
+    init(_ text: String?) {
+        self.text = text
+    }
+
+    func clear() { text = nil }
+}
+
 /// An account on the stand-in, with a clock the test moves.
 final class Harness: @unchecked Sendable {
     let clock: TestClock
     let stub: StubOpenAI
-    let store: MemoryVaultStore
+    let store: FlakyStore
     let account: ChatGPTAccount
 
     init(vault: Vault? = nil, grantedScope: String = OpenAI.scope, gate: Gate? = nil) {
         let clock = TestClock()
         let stub = StubOpenAI(grantedScope: grantedScope, now: { clock.now })
-        let store = MemoryVaultStore(vault)
+        let store = FlakyStore(vault)
         let transport: any OpenAITransport = gate.map { HeldRefreshes(stub: stub, gate: $0) } ?? stub
         self.clock = clock
         self.stub = stub
@@ -69,10 +121,15 @@ final class Harness: @unchecked Sendable {
     }
 
     /// Signs in as the browser would: opens the attempt's page on the stand-in, follows it back to
-    /// the callback address, and exchanges the code.
-    func signIn(_ choice: SignInChoice = .returning) async -> SignInProblem? {
-        let begun = await account.beginSignIn(port: 1455, choice: choice)
-        switch begun.attempt.grant(from: StubOpenAI.signInPage(begun.page).absoluteString) {
+    /// the callback address, and exchanges the code. A new registration gets the client ID `issuing`.
+    func signIn(_ choice: SignInChoice = .returning, account saved: String? = nil,
+                issuing: String = StubOpenAI.issuedClientID) async -> SignInProblem? {
+        let begun: (attempt: SignInAttempt, page: URL)
+        switch await account.beginSignIn(port: 1455, choice: choice, account: saved) {
+        case .success(let started): begun = started
+        case .failure(let problem): return problem
+        }
+        switch begun.attempt.grant(from: StubOpenAI.signInPage(begun.page, issuing: issuing).absoluteString) {
         case .success(let grant): return await account.finishSignIn(begun.attempt, grant)
         case .failure(let problem): return problem
         }
@@ -90,8 +147,8 @@ final class Harness: @unchecked Sendable {
     }
 
     /// The query of the page the next sign-in would open.
-    func signInPage(_ choice: SignInChoice) async -> [String: String] {
-        let page = await account.beginSignIn(port: 1455, choice: choice).page
+    func signInPage(_ choice: SignInChoice, account saved: String? = nil) async throws -> [String: String] {
+        let page = try await account.beginSignIn(port: 1455, choice: choice, account: saved).get().page
         return query(URLComponents(url: page, resolvingAgainstBaseURL: false)?.queryItems)
     }
 }
@@ -112,4 +169,4 @@ func eventually(_ condition: () -> Bool) async {
     }
 }
 
-let returningYou = AccountStatus.Returning(email: "you@example.com")
+let savedYou = AccountStatus.SavedAccount(id: StubOpenAI.issuedClientID, email: "you@example.com")

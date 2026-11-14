@@ -41,6 +41,12 @@ final class StubOpenAI: OpenAITransport, @unchecked Sendable {
         set { lock.withLock { identityValue = newValue } }
     }
 
+    /// The key it signs ID tokens with and publishes. A test swaps it to rotate OpenAI's keys.
+    var signer: StubSigner {
+        get { lock.withLock { signerValue } }
+        set { lock.withLock { signerValue = newValue } }
+    }
+
     /// Every request it was sent, in order.
     var requests: [URLRequest] { lock.withLock { sent } }
 
@@ -51,7 +57,10 @@ final class StubOpenAI: OpenAITransport, @unchecked Sendable {
     /// Made once, because making an RSA key takes a moment. The stranger's key has the same key ID.
     static let signer = StubSigner(kid: "stub-key")
     static let stranger = StubSigner(kid: "stub-key")
+    /// The key that replaces `signer` when a test rotates the keys.
+    static let rotated = StubSigner(kid: "stub-key-2")
     private var identityValue = Identity()
+    private var signerValue = StubOpenAI.signer
     private var scripted: [Endpoint: [Answer]] = [:]
     private var sent: [URLRequest] = []
     private var issued = 0
@@ -68,8 +77,9 @@ final class StubOpenAI: OpenAITransport, @unchecked Sendable {
 
     /// Stands in for ChatGPT's sign-in page: an address that goes straight back to the app, as the
     /// real page does once the user has approved. The code carries the nonce, so that the token
-    /// endpoint can answer with an ID token that matches the attempt.
-    static func signInPage(_ authorize: URL) -> URL {
+    /// endpoint can answer with an ID token that matches the attempt. A new registration gets the
+    /// client ID `issuing`.
+    static func signInPage(_ authorize: URL, issuing: String = issuedClientID) -> URL {
         let asked = URLComponents(url: authorize, resolvingAgainstBaseURL: false)?.queryItems ?? []
         func value(_ name: String) -> String? { asked.first { $0.name == name }?.value }
         var page = URLComponents(string: value("redirect_uri") ?? "") ?? URLComponents()
@@ -77,7 +87,7 @@ final class StubOpenAI: OpenAITransport, @unchecked Sendable {
             URLQueryItem(name: "code", value: code(nonce: value("nonce") ?? "")),
             URLQueryItem(name: "state", value: value("state")),
         ] + (value("client_id") == OpenAI.unregisteredClient
-            ? [URLQueryItem(name: "client_id", value: issuedClientID)] : [])
+            ? [URLQueryItem(name: "client_id", value: issuing)] : [])
         return page.url ?? authorize
     }
 
@@ -108,15 +118,15 @@ final class StubOpenAI: OpenAITransport, @unchecked Sendable {
         case .exchange: return (200, tokens(clientID: form["client_id"] ?? "", code: form["code"] ?? ""))
         case .refresh: return (200, tokens(clientID: form["client_id"] ?? "", code: nil))
         case .revoke: return (200, Data())
-        case .keys: return (200, (try? JSONEncoder().encode(Self.signer.keySet)) ?? Data())
+        case .keys: return (200, (try? JSONEncoder().encode(signer.keySet)) ?? Data())
         case nil: return (404, Data())
         }
     }
 
     private func tokens(clientID: String, code: String?) -> Data {
-        let (number, identity) = lock.withLock {
+        let (number, identity, signer) = lock.withLock {
             issued += 1
-            return (issued, identityValue)
+            return (issued, identityValue, signerValue)
         }
         var answer: [String: Any] = [
             "access_token": "stub-access-\(number)", "refresh_token": "stub-refresh-\(number)",
@@ -129,7 +139,7 @@ final class StubOpenAI: OpenAITransport, @unchecked Sendable {
                 "nonce": String(code.dropFirst(5)), "iat": issuedAt, "exp": issuedAt + identity.lifetime,
             ]
             if let email = identity.email { claims["email"] = email }
-            answer["id_token"] = (identity.signedByStranger ? Self.stranger : Self.signer).token(claims)
+            answer["id_token"] = (identity.signedByStranger ? Self.stranger : signer).token(claims)
         }
         return (try? JSONSerialization.data(withJSONObject: answer)) ?? Data()
     }
