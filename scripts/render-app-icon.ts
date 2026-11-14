@@ -4,17 +4,11 @@ import { deflateSync, crc32 } from "node:zlib";
 import { Resvg } from "@resvg/resvg-js";
 
 const SIZE = 1024;
-const BACKGROUND = "#e11d48";
 const source = new URL("../assets/icon.svg", import.meta.url);
 const target = new URL("../apps/mobile/assets/icon.png", import.meta.url);
 
-// iOS rounds the corners itself, and an App Store icon may not carry an alpha channel.
-const svg = readFileSync(source, "utf8").replace(/\srx="[^"]*"/, "");
-
-const rendered = new Resvg(svg, {
+const rendered = new Resvg(readFileSync(source, "utf8"), {
   fitTo: { mode: "width", value: SIZE },
-  background: BACKGROUND,
-  font: { loadSystemFonts: true, defaultFontFamily: "DejaVu Sans", sansSerifFamily: "DejaVu Sans" },
 }).render();
 
 if (rendered.width !== SIZE || rendered.height !== SIZE) {

@@ -111,9 +111,11 @@ describe("altstore-source.ts", () => {
     ]);
     const source = JSON.parse(output.toString());
     expect(source.sourceURL).toBe(SOURCE_URL);
+    expect(source.tintColor).toBe("#E4202E");
     expect(source.apps).toHaveLength(1);
     const [app] = source.apps;
     expect(app.bundleIdentifier).toBe("com.kron00.svett");
+    expect(app.tintColor).toBe("#E4202E");
     expect(app.iconURL).toBe(
       "https://raw.githubusercontent.com/Kron00/svett-app/main/apps/mobile/assets/icon.png",
     );
