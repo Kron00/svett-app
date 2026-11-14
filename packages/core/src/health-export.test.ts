@@ -117,8 +117,8 @@ describe("parseGpx", () => {
     const track = Result.getOrThrow(parsed);
     expect(track.name).toBe("Saturday ride & coffee");
     expect(track.type).toBe("cycling");
-    expect(track.points).toHaveLength(41);
-    expect(track.points[1]).toEqual({
+    expect(track.segments.map((points) => points.length)).toEqual([41]);
+    expect(track.segments[0]![1]).toEqual({
       recordedAt: SAMPLE_GPX_START + MINUTE,
       latitude: 59.3345,
       longitude: 18.07,
@@ -129,8 +129,25 @@ describe("parseGpx", () => {
 
   it("reads an Apple Health route, whose points carry no heart rate", () => {
     const track = Result.getOrThrow(parseGpx(sampleRouteGpx()));
-    expect(track.points).toHaveLength(61);
-    expect(track.points[0]).toMatchObject({ recordedAt: SAMPLE_RUN_START, heartRate: null });
+    expect(track.segments.map((points) => points.length)).toEqual([61]);
+    expect(track.segments[0]![0]).toMatchObject({ recordedAt: SAMPLE_RUN_START, heartRate: null });
+  });
+
+  it("keeps each segment of each track apart, and takes the first track's name", () => {
+    const point = (lat: number) =>
+      `<trkpt lat="${lat}" lon="18"><time>2026-11-07T09:0${lat}:00Z</time></trkpt>`;
+    const track = Result.getOrThrow(
+      parseGpx(
+        `<gpx><trk><name>Out</name><trkseg>${point(1)}${point(2)}</trkseg><trkseg></trkseg><trkseg>${point(3)}</trkseg></trk>` +
+          `<trk><name>Back</name><trkseg>${point(4)}${point(5)}</trkseg></trk></gpx>`,
+      ),
+    );
+    expect(track.name).toBe("Out");
+    expect(track.segments.map((points) => points.map((p) => p.latitude))).toEqual([
+      [1, 2],
+      [3],
+      [4, 5],
+    ]);
   });
 
   it("refuses a file that is not GPX, or has a point off the map", () => {

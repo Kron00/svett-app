@@ -1,13 +1,18 @@
 import { describe, expect, it } from "vite-plus/test";
 
+import { Result } from "effect";
+
 import { DurationSeconds } from "./duration.ts";
-import { ActivityId, EpochMillis, Fingerprint, SourceIdentity } from "./schema.ts";
+import type { GpxPoint, GpxTrack } from "./gpx.ts";
+import { ActivityId, EpochMillis, Fingerprint, ImportBatchId, SourceIdentity } from "./schema.ts";
 import {
+  fromGpx,
   healthActivityName,
   heartRateSummary,
   type LocalActivity,
   planSourceImport,
   sourceActivityId,
+  sourceActivityRows,
   sourceImportOutcome,
   type SourceWorkout,
 } from "./source-import.ts";
@@ -100,6 +105,58 @@ describe("planSourceImport", () => {
   });
 });
 
+const MINUTE = 60_000;
+/** About 100 metres of latitude. */
+const STEP = 0.0009;
+
+/** Points a minute apart heading north, from `lat`, starting `start`. */
+const northward = (start: number, lat: number, count: number): Array<GpxPoint> =>
+  Array.from({ length: count }, (_, index) => ({
+    recordedAt: start + index * MINUTE,
+    latitude: lat + index * STEP,
+    longitude: 18,
+    altitudeM: null,
+    heartRate: null,
+  }));
+
+const ride = (segments: GpxTrack["segments"], name: string | null = "Ride"): SourceWorkout =>
+  Result.getOrThrow(fromGpx({ name, type: "cycling", segments }, () => 9));
+
+describe("fromGpx", () => {
+  it("counts no distance, time or splits across the gap between two segments", () => {
+    // Two kilometres ridden, with a 5 km jump and half an hour between the segments.
+    const workout = ride([northward(T, 59, 11), northward(T + 40 * MINUTE, 59.05, 11)]);
+    expect(workout.distanceM).toBeCloseTo(2 * 10 * STEP * 111_195, -1);
+    expect(workout.durationS).toBe(20 * 60);
+    expect(workout.endedAt).toBe(T + 50 * MINUTE);
+
+    const rows = sourceActivityRows(workout, ImportBatchId.make(UUID(9)), EpochMillis.make(T));
+    const samples = rows.activitySample ?? [];
+    const locations = samples.filter((sample) => sample["kind"] === "location");
+    expect(locations.map((sample) => sample["segment"])).toEqual([
+      ...Array<number>(11).fill(0),
+      ...Array<number>(11).fill(1),
+    ]);
+    const splits = samples.filter((sample) => sample["kind"] === "split");
+    const total = (key: string) => splits.reduce((sum, split) => sum + (split[key] as number), 0);
+    expect(total("distanceM")).toBeCloseTo(workout.distanceM!, 6);
+    expect(total("durationS")).toBeCloseTo(workout.durationS, 6);
+    expect(splits).toHaveLength(3);
+  });
+
+  it("reads a track too long to spread into Math.max", () => {
+    const still = northward(T, 0, 300_000).map((point) => ({ ...point, latitude: 0 }));
+    const workout = ride([still]);
+    expect(workout.endedAt).toBe(T + 299_999 * MINUTE);
+  });
+
+  it("counts a renamed track as other content", () => {
+    const points = [northward(T, 59, 3)];
+    expect(ride(points, "Ride").fingerprint).toBe(ride(points, "Ride").fingerprint);
+    expect(ride(points, "Ride to work").fingerprint).not.toBe(ride(points, "Ride").fingerprint);
+  });
+});
+
 describe("heartRateSummary", () => {
   it("gives the rounded mean and the highest reading", () => {
     expect(
@@ -110,6 +167,11 @@ describe("heartRateSummary", () => {
       ]),
     ).toEqual({ averageBpm: 131, maxBpm: 141 });
     expect(heartRateSummary([{ kind: "location" }])).toBeNull();
+    const long = Array.from({ length: 300_000 }, (_, index) => ({
+      kind: "heart_rate",
+      bpm: 100 + (index % 50),
+    }));
+    expect(heartRateSummary(long)?.maxBpm).toBe(149);
   });
 });
 

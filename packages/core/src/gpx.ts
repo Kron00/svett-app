@@ -18,7 +18,11 @@ export interface GpxTrack {
   readonly name: string | null;
   /** The activity type the file names, such as "running". */
   readonly type: string | null;
-  readonly points: ReadonlyArray<GpxPoint>;
+  /**
+   * The points of each track segment, in file order. A recorder starts a new segment
+   * after a pause or a lost signal, so nothing was recorded between two.
+   */
+  readonly segments: ReadonlyArray<ReadonlyArray<GpxPoint>>;
 }
 
 const decodePoint = Schema.decodeUnknownExit(GpxPoint);
@@ -38,11 +42,14 @@ const timeOrNull = (text: string | undefined) => {
 };
 
 /**
- * Reads the track points of a GPX file, in file order, across all its tracks and
- * segments. A point that is not a valid position refuses the whole file.
+ * Reads the track points of a GPX file, in file order, one list for each segment of
+ * each track. The name and type are the first track's. A point that is not a valid
+ * position refuses the whole file.
  */
 export const parseGpx = (text: string): Result.Result<GpxTrack, GpxError> => {
-  const points: Array<GpxPoint> = [];
+  const segments: Array<Array<GpxPoint>> = [];
+  let segment: Array<GpxPoint> = [];
+  let count = 0;
   const path: Array<string> = [];
   let name: string | null = null;
   let type: string | null = null;
@@ -71,9 +78,10 @@ export const parseGpx = (text: string): Result.Result<GpxTrack, GpxError> => {
       const parent = path.at(-1);
       const value = decodeEntities(textOf).trim();
       if (point !== undefined && local !== "trkpt") point.fields[local] ??= value;
-      else if (parent === "trk" && local === "name") name = value || null;
-      else if (parent === "trk" && local === "type") type = value || null;
+      else if (parent === "trk" && local === "name") name ??= value || null;
+      else if (parent === "trk" && local === "type") type ??= value || null;
       if (local === "trkpt") finishPoint();
+      if (local === "trkseg" || local === "trk") finishSegment();
       textOf = "";
     },
     text: (raw) => {
@@ -91,9 +99,15 @@ export const parseGpx = (text: string): Result.Result<GpxTrack, GpxError> => {
       heartRate: numberOrNull(point.fields["hr"]),
     };
     point = undefined;
+    count++;
     const decoded = decodePoint(candidate);
-    if (Exit.isSuccess(decoded)) points.push(decoded.value);
-    else problem ??= `Track point ${points.length + 1} is not a valid position and time.`;
+    if (Exit.isSuccess(decoded)) segment.push(decoded.value);
+    else problem ??= `Track point ${count} is not a valid position and time.`;
+  }
+
+  function finishSegment() {
+    if (segment.length > 0) segments.push(segment);
+    segment = [];
   }
 
   try {
@@ -105,5 +119,6 @@ export const parseGpx = (text: string): Result.Result<GpxTrack, GpxError> => {
   }
   if (!isGpx) return Result.fail(new GpxError({ message: "This is not a GPX file." }));
   if (problem !== undefined) return Result.fail(new GpxError({ message: problem }));
-  return Result.succeed({ name, type, points });
+  finishSegment();
+  return Result.succeed({ name, type, segments });
 };

@@ -28,6 +28,8 @@ import { TABLES } from "./table.ts";
 import type { TableKey, TableRows } from "./transfer.ts";
 
 export interface TimedRoutePoint {
+  /** Which stretch of the route it is on, counting from 0, as a GPX track segment. */
+  readonly segment: number;
   readonly recordedAt: EpochMillis;
   readonly latitude: number;
   readonly longitude: number;
@@ -78,9 +80,14 @@ export const healthActivityName = (activityType: string): string => {
   return words.charAt(0).toUpperCase() + words.slice(1);
 };
 
-const fingerprintOf = (workout: Omit<SourceWorkout, "fingerprint" | "title">) =>
+/** `sourceTitle` is the title the source itself gave, so renaming a GPX track changes it. */
+const fingerprintOf = (
+  workout: Omit<SourceWorkout, "fingerprint" | "title">,
+  sourceTitle: string | null,
+) =>
   Fingerprint.make(
     contentFingerprint({
+      title: sourceTitle,
       kind: workout.kind,
       startedAt: workout.startedAt,
       endedAt: workout.endedAt,
@@ -92,22 +99,44 @@ const fingerprintOf = (workout: Omit<SourceWorkout, "fingerprint" | "title">) =>
     }),
   );
 
-/** Track points with a time. A point without one takes the time of the point before it. */
+/**
+ * Track points with a time, each on its segment. A point without a time takes the time
+ * of the point before it.
+ */
 const routeOf = (track: GpxTrack | null, fallback: number): Array<TimedRoutePoint> => {
   let last = fallback;
-  return (track?.points ?? []).map((point) => {
-    last = point.recordedAt ?? last;
-    return {
-      recordedAt: EpochMillis.make(last),
-      latitude: point.latitude,
-      longitude: point.longitude,
-      altitudeM: point.altitudeM,
-    };
-  });
+  return (track?.segments ?? []).flatMap((points, segment) =>
+    points.map((point) => {
+      last = point.recordedAt ?? last;
+      return {
+        segment,
+        recordedAt: EpochMillis.make(last),
+        latitude: point.latitude,
+        longitude: point.longitude,
+        altitudeM: point.altitudeM,
+      };
+    }),
+  );
 };
 
-const routeDistance = (route: ReadonlyArray<TimedRoutePoint>) =>
-  route.length < 2 ? null : pathLengthM(route);
+/** The route's points, one list for each segment, so nothing is drawn or counted across a gap. */
+const stretchesOf = (route: ReadonlyArray<TimedRoutePoint>): Array<Array<TimedRoutePoint>> => {
+  const stretches: Array<Array<TimedRoutePoint>> = [];
+  for (const point of route) {
+    const stretch = stretches.at(-1);
+    if (stretch !== undefined && stretch[0]!.segment === point.segment) stretch.push(point);
+    else stretches.push([point]);
+  }
+  return stretches;
+};
+
+/** The length of each segment added up, or null when no segment has two points. */
+const routeDistance = (route: ReadonlyArray<TimedRoutePoint>) => {
+  const stretches = stretchesOf(route).filter((stretch) => stretch.length > 1);
+  return stretches.length === 0
+    ? null
+    : stretches.reduce((total, stretch) => total + pathLengthM(stretch), 0);
+};
 
 /** A Health workout, with its route when the export holds one. */
 export const fromHealthWorkout = (
@@ -135,7 +164,8 @@ export const fromHealthWorkout = (
   };
   return {
     ...content,
-    fingerprint: fingerprintOf(content),
+    // Health gives a workout no title of its own. svett names it from its type and hour.
+    fingerprint: fingerprintOf(content, null),
     title:
       isCardio(kind) || kind === "strength"
         ? activityTitle(kind, workout.localHour)
@@ -152,16 +182,29 @@ const GPX_KIND: ReadonlyArray<readonly [RegExp, ActivityKind]> = [
 
 /**
  * A GPX file as one workout. Its identity is its first point's time, so the same file
- * imports once. `hourOf` gives the phone's local hour of a time, for its title.
+ * imports once. Its duration is the time spent in its segments, as a recording's is,
+ * because a gap between two segments is a pause. `hourOf` gives the phone's local hour
+ * of a time, for its title.
  */
 export const fromGpx = (
   track: GpxTrack,
   hourOf: (at: number) => number,
 ): Result.Result<SourceWorkout, GpxError> => {
-  const times = track.points.flatMap((point) =>
-    point.recordedAt === null ? [] : [point.recordedAt],
-  );
-  const first = times[0];
+  let first: number | undefined;
+  let last = Number.NEGATIVE_INFINITY;
+  const heartRate: Array<HeartRateReading> = [];
+  for (const points of track.segments) {
+    for (const point of points) {
+      if (point.recordedAt === null) continue;
+      first ??= point.recordedAt;
+      // A loop, not Math.max(...times), which runs out of stack on a long track.
+      if (point.recordedAt > last) last = point.recordedAt;
+      const bpm = point.heartRate === null ? Number.NaN : Math.round(point.heartRate);
+      if (bpm >= 20 && bpm <= 260) {
+        heartRate.push({ recordedAt: EpochMillis.make(point.recordedAt), bpm });
+      }
+    }
+  }
   if (first === undefined) {
     return Result.fail(
       new GpxError({
@@ -169,29 +212,27 @@ export const fromGpx = (
       }),
     );
   }
-  const last = Math.max(...times);
   const kind = GPX_KIND.find(([pattern]) => pattern.test(track.type ?? ""))?.[1] ?? "other";
   const route = routeOf(track, first);
+  const movingMs = stretchesOf(route).reduce(
+    (total, stretch) => total + stretch.at(-1)!.recordedAt - stretch[0]!.recordedAt,
+    0,
+  );
   const content = {
     source: "gpx" as const,
     identity: SourceIdentity.make(new Date(first).toISOString()),
     kind,
     startedAt: EpochMillis.make(first),
     endedAt: EpochMillis.make(last),
-    durationS: DurationSeconds.make((last - first) / 1000),
+    durationS: DurationSeconds.make(movingMs / 1000),
     distanceM: routeDistance(route),
     energyKcal: null,
     route,
-    heartRate: track.points.flatMap((point) => {
-      const bpm = point.heartRate === null ? Number.NaN : Math.round(point.heartRate);
-      return point.recordedAt !== null && bpm >= 20 && bpm <= 260
-        ? [{ recordedAt: EpochMillis.make(point.recordedAt), bpm }]
-        : [];
-    }),
+    heartRate,
   };
   return Result.succeed({
     ...content,
-    fingerprint: fingerprintOf(content),
+    fingerprint: fingerprintOf(content, track.name),
     title: track.name ?? activityTitle(kind, hourOf(first)),
   });
 };
@@ -361,6 +402,7 @@ export const sourceActivityRows = (
     importBatchId,
   };
   const { route } = workout;
+  const stretches = stretchesOf(route);
   if (route.length === 0 && workout.heartRate.length === 0 && workout.distanceM === null) {
     return { activity: [activity] };
   }
@@ -371,18 +413,21 @@ export const sourceActivityRows = (
     deletedAt: null,
     activityId,
     distanceM: workout.distanceM,
-    elevationGainM: elevationGainM([
-      route.map((point) => ({
-        at: point.recordedAt,
-        altitudeM: point.altitudeM,
-        altitudeAccuracyM: null,
-      })),
-    ]),
+    elevationGainM: elevationGainM(
+      stretches.map((stretch) =>
+        stretch.map((point) => ({
+          at: point.recordedAt,
+          altitudeM: point.altitudeM,
+          altitudeAccuracyM: null,
+        })),
+      ),
+    ),
     hideStartM: route.length > 0 ? DEFAULT_HIDE_M : 0,
     hideEndM: route.length > 0 ? DEFAULT_HIDE_M : 0,
   };
   const first = route[0];
   const last = route.at(-1);
+  // Each segment is a stretch of K1's recording, so a gap between two is a pause.
   const splits =
     first !== undefined && last !== undefined && route.length > 1 && isCardio(workout.kind)
       ? splitsOf(
@@ -390,22 +435,20 @@ export const sourceActivityRows = (
             activityId,
             kind: workout.kind as CardioKind,
             startedAt: first.recordedAt,
-            segments: [
-              {
-                from: first.recordedAt,
-                to: last.recordedAt,
-                fixes: route.map((point) => ({
-                  at: point.recordedAt,
-                  latitude: point.latitude,
-                  longitude: point.longitude,
-                  altitudeM: point.altitudeM,
-                  altitudeAccuracyM: null,
-                  accuracyM: null,
-                })),
-                distanceM: pathLengthM(route),
-                pending: null,
-              },
-            ],
+            segments: stretches.map((stretch) => ({
+              from: stretch[0]!.recordedAt,
+              to: stretch.at(-1)!.recordedAt,
+              fixes: stretch.map((point) => ({
+                at: point.recordedAt,
+                latitude: point.latitude,
+                longitude: point.longitude,
+                altitudeM: point.altitudeM,
+                altitudeAccuracyM: null,
+                accuracyM: null,
+              })),
+              distanceM: pathLengthM(stretch),
+              pending: null,
+            })),
           },
           last.recordedAt,
         )
@@ -418,8 +461,6 @@ export const sourceActivityRows = (
     deletedAt: null,
     activityTrackId: trackId,
     kind: "location",
-    // An imported route is one stretch. Neither file says where a pause began.
-    segment: 0,
     ...point,
   }));
   const splitRows: Array<ActivitySample> = splits.map((split, index) => ({
@@ -511,7 +552,7 @@ export const heartRateSummary = (
   if (beats.length === 0) return null;
   return {
     averageBpm: Math.round(beats.reduce((total, bpm) => total + bpm, 0) / beats.length),
-    maxBpm: Math.max(...beats),
+    maxBpm: beats.reduce((highest, bpm) => (bpm > highest ? bpm : highest), 0),
   };
 };
 
