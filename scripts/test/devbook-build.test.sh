@@ -2189,7 +2189,12 @@ const find = (selector) => {
 };
 const isField = (id) => /^set-\d+-\d+-(weight|reps)$/.test(id ?? "");
 // Where an element is after `reads` reads of its frame. A gliding field stops after three.
-const topAt = (id, reads) => (process.env.FAKE_GLIDES && isField(id) ? 600 + 20 * Math.max(0, 3 - reads) : 600);
+const topAt = (id, reads) =>
+  process.env.FAKE_LOW && id === process.env.FAKE_LOW && !state.panned
+    ? 905
+    : process.env.FAKE_GLIDES && isField(id)
+      ? 600 + 20 * Math.max(0, 3 - reads)
+      : 600;
 const centre = (top) => `${16 + 408 / 2} ${top + 50 / 2}`;
 const belowFold = (element) =>
   /^(workout-exercise|workout-superset|workout-set|exercise-options|set)-1/.test(element.id ?? "") ||
@@ -2314,7 +2319,14 @@ switch (command[0]) {
     break;
   }
   case "press":
+    // A press at a point must get two numbers, as agent-device would demand.
+    if (!command[1].includes("=") && !/^\d+ \d+$/.test(`${command[1]} ${command[2]}`)) fail();
     press(`${command[1]} ${command[2]}`);
+    break;
+  case "gesture":
+    // agent-device reports each gesture on stdout, which must not reach a coordinate.
+    state.panned = true;
+    console.log(`Panned (${command[2]}, ${command[3]}) by (${command[4]}, ${command[5]})`);
     break;
   case "alert":
     if (command[1] === "wait" && !state.alert) fail();
@@ -2402,6 +2414,13 @@ check "tools.sh Release launches the installed app on the fixture without Metro"
   "com.kron00.svett --relaunch $tools_args" "com.kron00.svett svett://train/workout" \
   "com.kron00.svett --relaunch $tools_args" "com.kron00.svett svett://train/workout" \
   "com.kron00.svett svett://tools/plates?kg=100" "com.kron00.svett svett://train/workout"
+
+case_name="tools.sh when Start empty workout sits at the screen's bottom edge"
+run_tools FAKE_LOW=start-empty-workout "$root/tools-low"
+check "tools.sh drags a control up from the bottom edge and still presses a number" \
+  test "$tools_status" -eq 0
+check "tools.sh drags once before pressing Start empty workout" \
+  only_calls "gesture" "gesture pan 20 600 0 -300 400"
 
 case_name="tools.sh when the rest notification never shows"
 run_tools FAKE_NO_NOTIFICATION=1 "$root/tools-silent"

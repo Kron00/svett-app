@@ -67,7 +67,7 @@ bundle_id=com.kron00.svett
 # The Train tab showing means the app has loaded and can take a link.
 train_tab='label="Train, tab, 2 of 5"'
 banner='Rest is over'
-safe_bottom=${SVETT_SAFE_BOTTOM:-840}
+safe_bottom=${SVETT_SAFE_BOTTOM:-880}
 
 if command -v fnm >/dev/null; then
   eval "$(fnm env --shell bash)"
@@ -194,7 +194,7 @@ clear_point() {
   point=$(centre_of "$1") || fail "$1 is not on screen"
   while ((${point#* } > safe_bottom)); do
     ((drags < 3)) || fail "$1 stayed at the bottom edge of the screen"
-    agent_device gesture pan 20 600 0 -300 400
+    agent_device gesture pan 20 600 0 -300 400 >/dev/null
     drags=$((drags + 1))
     settle=true
     point=$(centre_of "$1") || fail "$1 is not on screen"
