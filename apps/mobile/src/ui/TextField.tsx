@@ -58,7 +58,6 @@ export function TextField({
           returnKeyType={multiline ? "default" : "done"}
           testID={testID}
           className={`py-2.5 text-body text-label ${multiline ? "min-h-24" : ""}`}
-          style={multiline ? { textAlignVertical: "top" } : undefined}
         />
         {problem ? null : <FieldOutline focused={focused} />}
       </View>

@@ -38,15 +38,38 @@ export const xmlAttributes = (raw: string): Record<string, string> => {
   return attributes;
 };
 
+/**
+ * Finds the next of one character in a piece of text, remembering where it is. A search
+ * that finds nothing is never repeated, so a file with no single quotes, such as Apple
+ * Health's export, is not scanned to its end once for every attribute.
+ */
+const finder = (data: string, char: string) => {
+  let next = -2;
+  return (from: number) => {
+    if (next !== -1 && next < from) next = data.indexOf(char, from);
+    return next;
+  };
+};
+
 /** The index just past the `>` that ends the tag starting at `from`, or -1 if it has not arrived. */
-const tagEnd = (data: string, from: number): number => {
+const tagEnd = (
+  data: string,
+  from: number,
+  double: (from: number) => number,
+  single: (from: number) => number,
+): number => {
   let at = from;
   for (;;) {
     const end = data.indexOf(">", at);
     if (end === -1) return -1;
-    const double = data.indexOf('"', at);
-    const single = data.indexOf("'", at);
-    const quote = double === -1 ? single : single === -1 ? double : Math.min(double, single);
+    const nextDouble = double(at);
+    const nextSingle = single(at);
+    const quote =
+      nextDouble === -1
+        ? nextSingle
+        : nextSingle === -1
+          ? nextDouble
+          : Math.min(nextDouble, nextSingle);
     if (quote === -1 || quote > end) return end + 1;
     const closing = data.indexOf(data[quote]!, quote + 1);
     if (closing === -1) return -1;
@@ -91,6 +114,8 @@ export class XmlScanner {
   push(chunk: string): void {
     const data = this.pending === "" ? chunk : this.pending + chunk;
     const { handler } = this;
+    const double = finder(data, '"');
+    const single = finder(data, "'");
     let at = 0;
     for (;;) {
       const lt = data.indexOf("<", at);
@@ -133,7 +158,7 @@ export class XmlScanner {
           end++;
         }
       } else {
-        end = tagEnd(data, lt + 1);
+        end = tagEnd(data, lt + 1, double, single);
         if (end !== -1) {
           const selfClosing = data[end - 2] === "/";
           const tag = data.slice(lt + 1, selfClosing ? end - 2 : end - 1);
