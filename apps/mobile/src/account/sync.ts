@@ -10,7 +10,7 @@ import { Cause, Effect, Exit, Option } from "effect";
 import { Settings } from "react-native";
 import { useSyncExternalStore } from "react";
 
-import { currentDatabase, dataChanged, sameOwner } from "../data/current";
+import { currentDatabase, dataChanged, sameOwner, stillOpen } from "../data/current";
 import { transferInTurn } from "../data/turns";
 
 const DEFAULT_SERVER = "https://svett-app.jservers.net";
@@ -69,7 +69,7 @@ export const syncNow = (accountId: AccountId, token: Token): Promise<void> => {
     if (Exit.isSuccess(exit)) {
       show({ kind: "synced", queued, held: exit.value.held });
       // Only a sync that changed the open file makes screens read it again.
-      if (exit.value.pulled > 0 && currentDatabase().handle === open.handle) dataChanged();
+      if (exit.value.pulled > 0 && stillOpen(open)) dataChanged();
       return;
     }
     const error = Option.getOrUndefined(Cause.findErrorOption(exit.cause));
