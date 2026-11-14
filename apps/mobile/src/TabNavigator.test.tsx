@@ -27,6 +27,9 @@ vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 vi.mock("./progress/ProgressScreen", () => ({ ProgressScreen: () => "progress screen" }));
 vi.mock("./PhoneChecksRow", () => ({ PhoneChecksRow: () => "phone checks row" }));
 vi.mock("./gallery/DesignGalleryRow", () => ({ DesignGalleryRow: () => "design gallery row" }));
+vi.mock("./exercises/ExerciseLibraryRow", () => ({
+  ExerciseLibraryRow: () => "exercise library row",
+}));
 vi.mock("./ui/List", () => ({
   ListSection: ({ children }: { readonly children: ReactNode }) => children,
 }));

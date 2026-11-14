@@ -1,29 +1,7 @@
 import { isWorkingSet, type PerformedSet } from "./performed-set.ts";
 import { addWeeks } from "./progress-dates.ts";
 import { Muscle, type ExerciseId } from "./schema.ts";
-
-export const MUSCLE_LABEL: Readonly<Record<Muscle, string>> = {
-  abdominals: "Abdominals",
-  abductors: "Abductors",
-  adductors: "Adductors",
-  biceps: "Biceps",
-  calves: "Calves",
-  cardio: "Cardio",
-  chest: "Chest",
-  forearms: "Forearms",
-  full_body: "Full body",
-  glutes: "Glutes",
-  hamstrings: "Hamstrings",
-  lats: "Lats",
-  lower_back: "Lower back",
-  neck: "Neck",
-  quadriceps: "Quadriceps",
-  shoulders: "Shoulders",
-  traps: "Traps",
-  triceps: "Triceps",
-  upper_back: "Upper back",
-  other: "Other",
-};
+import { MUSCLE_LABEL } from "./exercise-format.ts";
 
 export const isMuscle = (value: unknown): value is Muscle =>
   Muscle.literals.some((muscle) => muscle === value);
