@@ -2,6 +2,7 @@ import { Exit, Schema } from "effect";
 
 import { LIBRARY_UPDATED_AT } from "./exercise-library.ts";
 import { canonicalJson, contentFingerprint } from "./ids.ts";
+import { setFieldsFromSets } from "./logger.ts";
 import {
   EpochMillis,
   Fingerprint,
@@ -9,6 +10,7 @@ import {
   type ImportChangeId,
   type ImportSource,
   type MeasurementKind,
+  type SetFields,
 } from "./schema.ts";
 import { TABLES } from "./table.ts";
 
@@ -81,28 +83,111 @@ export const CHILDREN: Readonly<Record<TableKey, ReadonlyArray<TableKey>>> = Obj
 export const tableKeyOf = (name: string): TableKey | undefined =>
   TABLE_KEYS.find((key) => TABLES[key].name === name);
 
+/** Rows of some tables as they were read, before any schema checked them. */
+export type RawRows = Partial<Record<TableKey, ReadonlyArray<unknown>>>;
+
+type Fields = Readonly<Record<string, unknown>>;
+
+type SetValues = Parameters<typeof setFieldsFromSets>[0][number];
+
+const SET_VALUE_KEYS: ReadonlyArray<keyof SetValues> = [
+  "weightKg",
+  "reps",
+  "durationS",
+  "distanceM",
+];
+
+const fieldsOf = (raw: unknown): Fields | undefined =>
+  typeof raw === "object" && raw !== null && !Array.isArray(raw) ? (raw as Fields) : undefined;
+
+/**
+ * Each exercise's set fields as migration 4 gave an exercise logged before them, from all its
+ * sets, deleted ones too.
+ */
+const setFieldsBySets = (sets: ReadonlyArray<unknown>) => {
+  const byExercise = new Map<unknown, Array<SetValues>>();
+  for (const raw of sets) {
+    const set = fieldsOf(raw);
+    if (set === undefined) continue;
+    const list = byExercise.get(set["activityExerciseId"]) ?? [];
+    list.push(
+      Object.fromEntries(
+        SET_VALUE_KEYS.map((key) => [key, set[key] ?? null]),
+      ) as unknown as SetValues,
+    );
+    byExercise.set(set["activityExerciseId"], list);
+  }
+  return (exerciseId: unknown): SetFields =>
+    setFieldsFromSets(byExercise.get(exerciseId) ?? []) ?? "weight_reps";
+};
+
 /**
  * Fields added after svett files and import journals were first written, with the value the
  * migration gave every row before them. A row written before a field existed reads with it,
- * and a row whose field still has that value fingerprints as it did before.
+ * and a row whose field still has that value fingerprints as it did before. A value can come
+ * from the rows in `beside`, as an exercise's set fields come from its sets.
  */
-const ADDED_FIELDS: Partial<Record<TableKey, Readonly<Record<string, unknown>>>> = {
-  activity: { status: "finished", routineId: null },
-  activitySet: { done: true, targetRepsMin: null, targetRepsMax: null },
+const addedFields = (beside: RawRows): Partial<Record<TableKey, (row: Fields) => Fields>> => {
+  let setFieldsOf: ((exerciseId: unknown) => SetFields) | undefined;
+  return {
+    activity: () => ({ status: "finished", routineId: null }),
+    activityExercise: (row) => ({
+      setFields: (setFieldsOf ??= setFieldsBySets(beside.activitySet ?? []))(row["id"]),
+    }),
+    activitySet: () => ({ done: true, targetRepsMin: null, targetRepsMax: null }),
+  };
 };
 
-/** A raw row with each field added since it was written filled in, ready for its schema. */
-export const withAddedFields = (table: TableKey, raw: unknown): unknown =>
-  ADDED_FIELDS[table] !== undefined && typeof raw === "object" && raw !== null
-    ? { ...ADDED_FIELDS[table], ...raw }
-    : raw;
-
-const withoutAddedFields = (table: TableKey, row: AnyRow): AnyRow => {
-  const added = ADDED_FIELDS[table];
-  if (added === undefined) return row;
+/**
+ * Raw rows with each field added since they were written filled in, ready for their schemas.
+ * `beside` holds the rows a filled in value comes from, by default the rows themselves.
+ */
+export const withAddedFields = (rows: RawRows, beside: RawRows = rows): RawRows => {
+  const added = addedFields(beside);
   return Object.fromEntries(
-    Object.entries(row).filter(([field, value]) => !(field in added) || added[field] !== value),
-  ) as AnyRow;
+    Object.entries(rows).map(([key, list]) => {
+      const fill = added[key as TableKey];
+      return [
+        key,
+        fill === undefined
+          ? list
+          : (list ?? []).map((raw) => {
+              const row = fieldsOf(raw);
+              return row === undefined ? raw : { ...fill(row), ...row };
+            }),
+      ];
+    }),
+  ) as RawRows;
+};
+
+/** Raw rows by table name, such as a journal keeps, by table. Unknown tables are left out. */
+export const rawRowsByKey = (rows: Readonly<Record<string, ReadonlyArray<unknown>>>): RawRows =>
+  Object.fromEntries(
+    Object.entries(rows).flatMap(([name, list]) => {
+      const key = tableKeyOf(name);
+      return key === undefined ? [] : [[key, list]];
+    }),
+  ) as RawRows;
+
+const withoutAddedFields = (rows: TableRows): TableRows => {
+  const added = addedFields(rows);
+  return Object.fromEntries(
+    Object.entries(rows).map(([key, list]) => {
+      const fill = added[key as TableKey];
+      if (fill === undefined) return [key, list];
+      return [
+        key,
+        (list ?? []).map((row) => {
+          const first = fill(row);
+          return Object.fromEntries(
+            Object.entries(row).filter(
+              ([field, value]) => !(field in first) || first[field] !== value,
+            ),
+          ) as AnyRow;
+        }),
+      ];
+    }),
+  ) as TableRows;
 };
 
 /** A workout still in progress, deleted or not. It is a draft on the phone that started it. */
@@ -212,16 +297,18 @@ export const groupItems = (rows: TableRows, lookup: TableRows = rows): Map<strin
 };
 
 /** Changes with any write to the record, even one that leaves its content as it was. */
-export const writtenOf = (rows: TableRows): Fingerprint =>
-  Fingerprint.make(
+export const writtenOf = (rows: TableRows): Fingerprint => {
+  const first = withoutAddedFields(rows);
+  return Fingerprint.make(
     contentFingerprint(
       TABLE_KEYS.flatMap((table) =>
-        [...(rows[table] ?? [])]
+        [...(first[table] ?? [])]
           .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
-          .map((row) => [TABLES[table].name, withoutAddedFields(table, row)]),
+          .map((row) => [TABLES[table].name, row]),
       ),
     ),
   );
+};
 
 const MEASUREMENT_TITLE: Readonly<Record<MeasurementKind, string>> = {
   body_weight: "Body weight",
@@ -439,12 +526,17 @@ export const journalProblem = (change: ImportChange): string | undefined => {
     if (tableKeyOf(name) === undefined) return `it names a table svett does not know, ${name}`;
     written.set(name, new Set(ids));
   }
-  for (const [name, rows] of Object.entries(change.replaced ?? {})) {
-    const key = tableKeyOf(name);
-    if (key === undefined) return `it names a table svett does not know, ${name}`;
+  const replaced = change.replaced ?? {};
+  const unknown = Object.keys(replaced).find((name) => tableKeyOf(name) === undefined);
+  if (unknown !== undefined) return `it names a table svett does not know, ${unknown}`;
+  const filled = withAddedFields(rawRowsByKey(replaced));
+  for (const key of TABLE_KEYS) {
+    const raws = filled[key];
+    if (raws === undefined) continue;
+    const name = TABLES[key].name;
     const decode = Schema.decodeUnknownExit(Schema.toType(TABLES[key].schema));
-    for (const raw of rows) {
-      const row = decode(withAddedFields(key, raw));
+    for (const raw of raws) {
+      const row = decode(raw);
       if (Exit.isFailure(row)) return `it keeps a ${name} row that is not valid`;
       const value = row.value as AnyRow;
       if (!written.get(name)?.has(value.id)) {
