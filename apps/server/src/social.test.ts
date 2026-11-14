@@ -16,6 +16,7 @@ import { socialProof } from "./social-proof.ts";
 import { SocialRoutes } from "./social-routes.ts";
 import { PAGE, SocialRows, type SocialRowsShape } from "./social-rows.ts";
 import { type StandInIssuer, startStandInIssuer } from "./test-issuer.ts";
+import { withoutDeletions } from "./test-ledger.ts";
 import { startTestPostgres, type TestPostgres } from "./test-postgres.ts";
 import { Safety } from "./safety.ts";
 
@@ -54,7 +55,11 @@ const routes = async () => {
     SocialRows.layer,
     Sessions.layer,
     Safety.layer(),
-  ).pipe(Layer.provide(databaseLayer(url)), Layer.provide(clerk));
+  ).pipe(
+    Layer.provideMerge(withoutDeletions()),
+    Layer.provide(databaseLayer(url)),
+    Layer.provide(clerk),
+  );
   return HttpRouter.serve(Layer.mergeAll(AccountRoutes, SocialRoutes), {
     disableLogger: true,
     disableListenLog: true,

@@ -9,6 +9,8 @@ import {
 import { Clock, Context, Data, Effect, Layer, Option } from "effect";
 import type { SqlError } from "effect/sql/SqlError";
 
+import { DeletionLedger, type LedgerError } from "./deletion-ledger.ts";
+
 /** The account was deleted. Nothing it sends is stored again. */
 export class AccountDeleted extends Data.TaggedError("AccountDeleted")<{}> {}
 
@@ -41,7 +43,8 @@ export const lockAlone = (sql: PgClient.PgClient, account: string) =>
 
 /**
  * Holds the lock of `other`, an account the running write names, until its transaction ends,
- * then checks that the account still exists and was not deleted. A deletion of `other` then
+ * then checks that the account still exists and was not deleted, in the database or in the
+ * deletion ledger. A deletion of `other` then
  * either finished before, and this fails with AccountGone, or waits for the write to commit
  * and deletes what it wrote. Call it before the write takes any row lock.
  *
@@ -68,6 +71,13 @@ export const lockOther = (sql: PgClient.PgClient, other: string) =>
       }
       held.add(other);
     }
+    const ledger = yield* Effect.serviceOption(DeletionLedger);
+    if (
+      Option.isSome(ledger) &&
+      (yield* Effect.orDie(ledger.value.deletionsOf(other))).length > 0
+    ) {
+      return yield* new AccountGone();
+    }
     const [present] = yield* sql`
       select 1 from account a
       where a.id = ${other} and not exists (select 1 from deleted_account d where d.id = a.id)
@@ -79,6 +89,8 @@ export interface SafetyShape {
   /**
    * Runs `effect` for `account` in one transaction that holds the account's lock shared, after
    * checking that the account was not deleted and taking a token of `group` when it names one.
+   * An account is deleted once the deletion ledger holds it, before the database commits, so a
+   * deletion whose commit failed still refuses the account while the server finishes it.
    * Deleting the account takes the same lock alone, so a request either finishes before the
    * deletion starts or sees the account gone, and nothing it writes outlives the deletion. A
    * write that names another account takes that account's lock too, through `lockOther`. The
@@ -88,7 +100,7 @@ export interface SafetyShape {
     account: AccountId,
     group: RateLimitGroup | undefined,
     effect: Effect.Effect<A, E, R>,
-  ) => Effect.Effect<A, E | AccountDeleted | RateLimited | SqlError, R>;
+  ) => Effect.Effect<A, E | AccountDeleted | RateLimited | SqlError | LedgerError, R>;
   /**
    * Runs `effect` in one transaction that holds the account's lock alone, once every request
    * running for the account has finished.
@@ -103,11 +115,12 @@ export class Safety extends Context.Service<Safety, SafetyShape>()("svett/server
   /** `limits` replaces the limits of the groups it names, as tests do to reach one quickly. */
   static readonly layer = (
     limits: Partial<Record<RateLimitGroup, RateLimit>> = {},
-  ): Layer.Layer<Safety, never, PgClient.PgClient> =>
+  ): Layer.Layer<Safety, never, PgClient.PgClient | DeletionLedger> =>
     Layer.effect(
       Safety,
       Effect.gen(function* () {
         const sql = yield* PgClient.PgClient;
+        const ledger = yield* DeletionLedger;
 
         const take = (account: AccountId, group: RateLimitGroup) =>
           Effect.gen(function* () {
@@ -147,13 +160,19 @@ export class Safety extends Context.Service<Safety, SafetyShape>()("svett/server
                   yield* sql`
                   select pg_advisory_xact_lock_shared(${ACCOUNT_LOCK_SPACE}, hashtext(${account}))
                 `;
+                  if ((yield* ledger.deletionsOf(account)).length > 0) {
+                    return yield* new AccountDeleted();
+                  }
                   const [deleted] = yield* sql`select 1 from deleted_account where id = ${account}`;
                   if (deleted !== undefined) return yield* new AccountDeleted();
                   if (group !== undefined) yield* take(account, group);
                   // A refused request still spent its token, so the transaction commits whatever
                   // the request answers. Each write that spans several rows has its own savepoint.
                   return yield* Effect.exit(
-                    Effect.provideService(effect, HeldAccounts, new Set([account])),
+                    effect.pipe(
+                      Effect.provideService(HeldAccounts, new Set([account])),
+                      Effect.provideService(DeletionLedger, ledger),
+                    ),
                   );
                 }),
               )

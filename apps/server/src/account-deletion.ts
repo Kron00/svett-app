@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 
 import { PgClient } from "@effect/sql-pg";
 import type { AccountId } from "@svett/core";
-import { Clock, Context, Effect, Layer, Option } from "effect";
+import { Clock, Context, Effect, Exit, Layer, Option } from "effect";
 import type { SqlError } from "effect/sql/SqlError";
 
 import { ClerkUsers, type SessionEndFailed } from "./clerk-users.ts";
@@ -31,7 +31,8 @@ export const ACCOUNT_TABLES: Readonly<Record<string, ReadonlyArray<string>>> = {
 
 /** The tables a deletion leaves, and why. */
 export const KEPT_TABLES: Readonly<Record<string, string>> = {
-  deleted_account: "It keeps the deleted account's ID alone, so nothing recreates the account.",
+  deleted_account:
+    "It keeps the deleted account's ID alone, so nothing recreates the account, and whether Clerk ended its sessions.",
   deletion_receipt: "It keeps the hash of a deletion's receipt alone, and names no account.",
   deletion_ledger: "It keeps the deletion ledger's ID alone, and names no account.",
   effect_sql_migrations: "The migrator's record of the schema. It names no account.",
@@ -41,13 +42,18 @@ export const KEPT_TABLES: Readonly<Record<string, string>> = {
 export const receiptHash = (receipt: string) => createHash("sha256").update(receipt).digest("hex");
 
 /**
- * Deletes every row of `account` in every table and remembers it as deleted, with the hash of
- * its receipt. It runs inside a transaction that holds the account's lock alone.
+ * Deletes every row of `account` in every table and remembers it as deleted, with the hashes of
+ * its receipts. It runs inside a transaction that holds the account's lock alone.
  */
-const eraseAccount = (sql: PgClient.PgClient, account: string, receipt: string | null) =>
+const eraseAccount = (
+  sql: PgClient.PgClient,
+  account: string,
+  receipts: ReadonlyArray<string | null>,
+) =>
   Effect.gen(function* () {
     yield* sql`insert into deleted_account (id) values (${account}) on conflict do nothing`;
-    if (receipt !== null) {
+    for (const receipt of receipts) {
+      if (receipt === null) continue;
       yield* sql`
         insert into deletion_receipt (receipt_hash) values (${receipt}) on conflict do nothing
       `;
@@ -167,7 +173,7 @@ export const applyLedger = Effect.gen(function* () {
     sql.withTransaction(
       Effect.andThen(
         lockAlone(sql, entry.account),
-        eraseAccount(sql, entry.account, entry.receipt),
+        eraseAccount(sql, entry.account, [entry.receipt]),
       ),
     ),
   );
@@ -182,7 +188,8 @@ export const applyLedger = Effect.gen(function* () {
 
 /**
  * Readies the database to serve, on every start and after every restore: migrates it, then
- * applies the deletion ledger.
+ * applies the deletion ledger. A start then ends the sessions of each deleted account, through
+ * `AccountDeletion.finishAccepted`.
  */
 export const prepareDatabase = migrate.pipe(
   Effect.tap((applied) =>
@@ -195,18 +202,29 @@ export interface AccountDeletionShape {
   /**
    * Deletes every row of `account` in every table, remembers its ID as deleted, records the
    * deletion in the ledger before it commits, then deletes its Clerk user, which ends every
-   * session. Nothing changes when the server could not end sessions at all. Running it again
-   * for a deleted account deletes the Clerk user again, so a deletion that Clerk failed can be
-   * finished. `receipt` is a secret the phone made, which `deleted` takes later to tell the
-   * phone the deletion happened, once its session is gone with the account.
+   * session. Nothing changes when the server could not end sessions at all, or when the
+   * deletion fails before its ledger entry is in place. Once the entry is in place the
+   * deletion is accepted, and when the commit or Clerk then fails, the server finishes it at
+   * once and keeps trying in the background. Running it again for a deleted account finishes
+   * it too. `receipt` is a secret the phone made, which `deleted` takes later to tell the phone
+   * the deletion happened, once its session is gone with the account.
    */
   readonly remove: (
     account: AccountId,
     receipt?: string,
   ) => Effect.Effect<void, SqlError | SessionEndFailed | LedgerError>;
-  /** Whether a deletion sent with `receipt` happened. */
-  readonly deleted: (receipt: string) => Effect.Effect<boolean, SqlError>;
+  /** Whether a deletion sent with `receipt` was accepted. */
+  readonly deleted: (receipt: string) => Effect.Effect<boolean, SqlError | LedgerError>;
+  /**
+   * Ends the sessions of every deleted account whose Clerk user may still be there, on every
+   * start once `prepareDatabase` deleted the ledger's accounts again. One that fails is left
+   * to the background. Gives back how many it tried.
+   */
+  readonly finishAccepted: Effect.Effect<number, SqlError>;
 }
+
+/** How long the background waits before it tries to finish a deletion again, at first and at most. */
+export const FINISH_RETRY_MS = { first: 1_000, most: 5 * 60_000 };
 
 export class AccountDeletion extends Context.Service<AccountDeletion, AccountDeletionShape>()(
   "svett/server/AccountDeletion",
@@ -222,33 +240,143 @@ export class AccountDeletion extends Context.Service<AccountDeletion, AccountDel
       const safety = yield* Safety;
       const clerk = yield* ClerkUsers;
       const ledger = yield* DeletionLedger;
+      const scope = yield* Effect.scope;
+      const finishing = new Set<string>();
+
+      const endSessions = (account: string) =>
+        clerk
+          .deleteUser(account as AccountId)
+          .pipe(
+            Effect.andThen(
+              sql`update deleted_account set sessions_ended = true where id = ${account}`,
+            ),
+          );
+
+      /**
+       * Finishes the deletion the ledger accepted for `account`: deletes any row of it that is
+       * left, with every receipt the ledger holds for it, then ends its sessions. It is safe to
+       * run twice, and Clerk counts a user that is gone as deleted.
+       */
+      const finish = (account: string) =>
+        Effect.gen(function* () {
+          const entries = yield* ledger.deletionsOf(account);
+          yield* safety.exclusively(
+            account as AccountId,
+            eraseAccount(
+              sql,
+              account,
+              entries.map(({ receipt }) => receipt),
+            ),
+          );
+          yield* endSessions(account);
+        });
+
+      /** Keeps trying to finish the deletion of `account`, waiting longer each time. */
+      const retry = (account: string, wait: number): Effect.Effect<void> =>
+        Effect.sleep(wait).pipe(
+          Effect.andThen(finish(account)),
+          Effect.catch((error) =>
+            Effect.logWarning(
+              `Could not finish an accepted deletion yet, trying again. ${String(error)}`,
+            ).pipe(Effect.andThen(retry(account, Math.min(wait * 2, FINISH_RETRY_MS.most)))),
+          ),
+        );
+
+      const finishLater = (account: string) =>
+        Effect.suspend(() => {
+          if (finishing.has(account)) return Effect.void;
+          finishing.add(account);
+          return Effect.asVoid(
+            Effect.forkIn(
+              retry(account, FINISH_RETRY_MS.first).pipe(
+                Effect.tap(() => Effect.logInfo("Finished an accepted deletion")),
+                Effect.ensuring(Effect.sync(() => finishing.delete(account))),
+              ),
+              scope,
+            ),
+          );
+        });
+
+      /** Finishes the deletion of `account` in the background, if the ledger accepted it. */
+      const finishIfAccepted = (account: string) =>
+        ledger.deletionsOf(account).pipe(
+          Effect.flatMap((entries) => (entries.length > 0 ? finishLater(account) : Effect.void)),
+          Effect.ignore,
+        );
+
       return AccountDeletion.of({
         remove: (account, receipt) =>
           Effect.gen(function* () {
             yield* clerk.available;
             const hash = receipt === undefined ? null : receiptHash(receipt);
             const at = yield* Clock.currentTimeMillis;
-            yield* safety.exclusively(
-              account,
-              Effect.gen(function* () {
-                yield* eraseAccount(sql, account, hash);
-                const named = yield* namedLedger(sql);
-                if (Option.isNone(named)) {
-                  return yield* new LedgerError({
-                    message: "The database names no deletion ledger. Start the server to make one.",
-                  });
-                }
-                yield* ledger.record(named.value, { account, at, receipt: hash });
-              }),
+            const committed = yield* Effect.exit(
+              safety.exclusively(
+                account,
+                Effect.gen(function* () {
+                  yield* eraseAccount(sql, account, [hash]);
+                  const named = yield* namedLedger(sql);
+                  if (Option.isNone(named)) {
+                    return yield* new LedgerError({
+                      message:
+                        "The database names no deletion ledger. Start the server to make one.",
+                    });
+                  }
+                  yield* ledger.record(named.value, { account, at, receipt: hash });
+                }),
+              ),
             );
+            if (Exit.isFailure(committed)) {
+              // A failure after the entry was renamed into place, in the directory's sync or in
+              // the commit, leaves a deletion the ledger accepted, which the server must finish.
+              if ((yield* ledger.deletionsOf(account)).length === 0) return yield* committed;
+              yield* Effect.logWarning(
+                "An accepted deletion did not commit, so the server finishes it now",
+              );
+              return yield* finish(account).pipe(Effect.tapError(() => finishLater(account)));
+            }
             yield* Effect.logInfo("Deleted an account's rows");
-            yield* clerk.deleteUser(account);
-          }),
-        deleted: (receipt) =>
-          sql`select 1 from deletion_receipt where receipt_hash = ${receiptHash(receipt)}`.pipe(
-            Effect.map((rows) => rows.length > 0),
+            yield* endSessions(account).pipe(Effect.tapError(() => finishLater(account)));
+          }).pipe(
+            // A request cut off once the entry is in place still leaves a deletion to finish.
+            Effect.onInterrupt(() => finishIfAccepted(account)),
           ),
+        deleted: (receipt) =>
+          Effect.gen(function* () {
+            const hash = receiptHash(receipt);
+            if (yield* ledger.holdsReceipt(hash)) return true;
+            const rows = yield* sql`select 1 from deletion_receipt where receipt_hash = ${hash}`;
+            return rows.length > 0;
+          }),
+        finishAccepted: Effect.gen(function* () {
+          const pending = yield* sql<{ readonly id: string }>`
+            select id from deleted_account where not sessions_ended
+          `;
+          yield* Effect.forEach(
+            pending,
+            ({ id }) =>
+              endSessions(id).pipe(
+                Effect.catch((error) =>
+                  Effect.logWarning(
+                    `Could not end a deleted account's sessions on start, trying again. ${String(error)}`,
+                  ).pipe(Effect.andThen(finishLater(id))),
+                ),
+              ),
+            { concurrency: 8, discard: true },
+          );
+          return pending.length;
+        }),
       });
     }),
   );
 }
+
+/**
+ * Readies the server to serve: prepares the database, then ends the sessions of every deleted
+ * account whose Clerk user may still be there.
+ */
+export const readyToServe = prepareDatabase.pipe(
+  Effect.andThen(
+    Effect.flatMap(Effect.service(AccountDeletion), (deletion) => deletion.finishAccepted),
+  ),
+);

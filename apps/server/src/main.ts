@@ -4,7 +4,7 @@ import { NodeHttpServer, NodeRuntime } from "@effect/platform-node";
 import { Effect, Layer } from "effect";
 import { HttpRouter } from "effect/http";
 
-import { AccountDeletion, prepareDatabase } from "./account-deletion.ts";
+import { AccountDeletion, readyToServe } from "./account-deletion.ts";
 import { AccountRoutes, DeletionRoutes } from "./account-routes.ts";
 import { AccountRows } from "./account-rows.ts";
 import { Sessions } from "./auth.ts";
@@ -28,9 +28,10 @@ const HttpServer = Layer.unwrap(
   ),
 );
 
-// A restore from a backup taken before a deletion brings the account back, so the ledger
-// deletes it again before the server answers any request.
-const Prepared = Layer.effectDiscard(prepareDatabase);
+// A restore from a backup taken before a deletion brings the account back, and a deletion the
+// ledger accepted may not have committed, so the ledger deletes each again before the server
+// answers any request.
+const Prepared = Layer.effectDiscard(readyToServe);
 
 const Services = Layer.mergeAll(
   Backups.layer,

@@ -77,6 +77,8 @@ export interface LedgerOptions {
   readonly newLedgerOverAccounts?: boolean;
   /** How a file's bytes reach the disk. Tests pass one that stores less than it is asked to. */
   readonly write?: LedgerWrite;
+  /** How a directory's names reach the disk. Tests pass one that fails or dies. */
+  readonly syncDirectory?: (dir: string) => Promise<void>;
 }
 
 export interface DeletionLedgerShape {
@@ -100,9 +102,18 @@ export interface DeletionLedgerShape {
    * entry is written whole to a temporary file, synced, and only then renamed to its final
    * name, so a reader sees all of it or none. Two deletions never touch the same file, so they
    * need no lock. Fails when the ledger is missing or another ledger, or when a write stores
-   * nothing, and then leaves nothing behind.
+   * nothing, and then leaves nothing behind. Once the rename is done the deletion is accepted,
+   * and `deletionsOf` holds it, even when the directory's sync then fails.
    */
   readonly record: (id: string, entry: LedgerEntry) => Effect.Effect<void, LedgerError>;
+  /**
+   * The ledger's entries for `account`, from memory. A read fills that memory, which the server
+   * does on every start, and so does every entry this server records. Any entry means the
+   * account is deleted, whatever the database says.
+   */
+  readonly deletionsOf: (account: string) => Effect.Effect<ReadonlyArray<LedgerEntry>, LedgerError>;
+  /** Whether the ledger holds a deletion sent with the receipt of this hash, from memory. */
+  readonly holdsReceipt: (hash: string) => Effect.Effect<boolean, LedgerError>;
   /**
    * Removes temporary files older than LEFTOVER_AGE_MS, which a crash left part way through a
    * deletion that never committed. Gives back how many it removed.
@@ -134,7 +145,7 @@ const writeWhole = async (
   return writeWhole(write, file, bytes, offset + bytesWritten);
 };
 
-const syncDirectory = async (dir: string) => {
+const defaultSyncDirectory = async (dir: string) => {
   const handle = await open(dir, "r");
   try {
     await handle.sync();
@@ -192,6 +203,16 @@ export class DeletionLedger extends Context.Service<DeletionLedger, DeletionLedg
     const path = join(backupDir, LEDGER_DIR);
     const idFile = join(path, LEDGER_ID_FILE);
     const write = options.write ?? defaultWrite;
+    const syncDirectory = options.syncDirectory ?? defaultSyncDirectory;
+    const known = new Map<string, Array<LedgerEntry>>();
+    const receipts = new Set<string>();
+    let loaded = false;
+    const remember = (entry: LedgerEntry) => {
+      const entries = known.get(entry.account) ?? [];
+      if (!entries.some((each) => each.receipt === entry.receipt)) entries.push(entry);
+      known.set(entry.account, entries);
+      if (entry.receipt !== null) receipts.add(entry.receipt);
+    };
     const damaged = (problem: string) =>
       new LedgerError({
         message: `The deletion ledger ${path} is damaged. ${problem} The server refuses to start or restore until it is mended, as it cannot tell which accounts were deleted.`,
@@ -222,6 +243,7 @@ export class DeletionLedger extends Context.Service<DeletionLedger, DeletionLedg
           if (names.length > 0) {
             throw damaged(`It holds ${names.length} deletions but no ${LEDGER_ID_FILE}.`);
           }
+          loaded = true;
           return Option.none<Ledger>();
         }
         const entries = await Promise.all(
@@ -233,6 +255,8 @@ export class DeletionLedger extends Context.Service<DeletionLedger, DeletionLedg
             return entry.value;
           }),
         );
+        entries.forEach(remember);
+        loaded = true;
         return Option.some<Ledger>({
           id: id.value,
           entries: entries.toSorted((a, b) => a.at - b.at),
@@ -240,6 +264,8 @@ export class DeletionLedger extends Context.Service<DeletionLedger, DeletionLedg
       },
       catch: failed("read"),
     });
+
+    const load = Effect.suspend(() => (loaded ? Effect.void : Effect.asVoid(read)));
 
     const create = Effect.tryPromise({
       try: async () => {
@@ -292,6 +318,7 @@ export class DeletionLedger extends Context.Service<DeletionLedger, DeletionLedg
             await rm(temporary, { force: true });
             throw error;
           }
+          remember(entry);
           await syncDirectory(path);
         },
         catch: failed("write"),
@@ -337,6 +364,16 @@ export class DeletionLedger extends Context.Service<DeletionLedger, DeletionLedg
         read,
         create,
         record,
+        deletionsOf: (account) =>
+          Effect.andThen(
+            load,
+            Effect.sync(() => [...(known.get(account) ?? [])]),
+          ),
+        holdsReceipt: (hash) =>
+          Effect.andThen(
+            load,
+            Effect.sync(() => receipts.has(hash)),
+          ),
         removeLeftovers,
       }),
     );

@@ -9,7 +9,7 @@ import { Effect, Layer, Redacted } from "effect";
 import * as Migrator from "effect/sql/Migrator";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
 
-import { prepareDatabase } from "./account-deletion.ts";
+import { prepareDatabase, receiptHash } from "./account-deletion.ts";
 import { databaseLayer } from "./database.ts";
 import {
   DeletionLedger,
@@ -24,6 +24,7 @@ import { MIGRATIONS } from "./migrations.ts";
 import { PgTools } from "./pg-tools.ts";
 import { restoreBackup, restoreForUse } from "./restore.ts";
 import { type StandInIssuer, startStandInIssuer } from "./test-issuer.ts";
+import { writer } from "./test-ledger.ts";
 import { query, rowsNaming, startTestPostgres, type TestPostgres } from "./test-postgres.ts";
 
 let postgres: TestPostgres;
@@ -331,6 +332,63 @@ describe("the deletion ledger", { timeout: 120_000 }, () => {
     expect((await restarted.call("GET", `/v1/profiles/ben${n}`, bens)).body).toMatchObject({
       followers: 0,
       following: 0,
+    });
+    expect(restarted.output()).toContain("Deleted 1 accounts again from the deletion ledger");
+  });
+
+  it("finishes a deletion whose process died after the ledger's rename, on the next start before it serves", async () => {
+    const n = ++databases;
+    const live = await postgres.createDatabase(`main_${n}`);
+    const backupDir = await mkdtemp(join(tmpdir(), "svett-main-"));
+    const env = {
+      NODE_ENV: "development",
+      CLERK_ISSUER: issuer.issuer,
+      CLERK_JWKS_URL: issuer.jwksUrl,
+      CLERK_SECRET_KEY: issuer.secretKey,
+      CLERK_API_URL: issuer.apiUrl,
+      DATABASE_URL: Redacted.value(live),
+      BACKUP_DIR: backupDir,
+    };
+    const anna = `user_renamed_anna_${n}`;
+    const held = await issuer.sessionToken(anna);
+    const first = await startServer(env);
+    await first.call("PUT", "/v1/profile", held, { username: `anna${n}`, private: false });
+    first.stop();
+    const receipt = "r".repeat(43);
+
+    // The deletion's process dies once its entry is in place, before the directory's sync and
+    // before the database commits.
+    const died = await writer([
+      "renamed",
+      backupDir,
+      await ledgerId(backupDir),
+      anna,
+      receiptHash(receipt),
+    ]);
+    expect(died.code).toBe(9);
+    expect(await ledgerAccounts(backupDir)).toEqual([anna]);
+    expect(await rowsNaming(live, anna)).toMatchObject({ account: 1, profile: 1 });
+    expect(issuer.deletedUsers()).not.toContain(anna);
+
+    const restarted = await startServer(env);
+
+    // The server answers only once the deletion is finished.
+    expect(nothingLeft(await rowsNaming(live, anna))).toBe(true);
+    expect(issuer.deletedUsers()).toContain(anna);
+    expect(
+      await query(live, `select sessions_ended from deleted_account where id = '${anna}'`),
+    ).toEqual([{ sessions_ended: true }]);
+    expect(await restarted.call("GET", "/v1/me", held)).toMatchObject({
+      status: 410,
+      body: { error: "account_deleted" },
+    });
+    expect(await restarted.call("GET", `/v1/deletions/${receipt}`)).toEqual({
+      status: 200,
+      body: { deleted: true },
+    });
+    expect(await restarted.call("DELETE", "/v1/me", held, { receipt })).toEqual({
+      status: 200,
+      body: { deleted: true },
     });
     expect(restarted.output()).toContain("Deleted 1 accounts again from the deletion ledger");
   });

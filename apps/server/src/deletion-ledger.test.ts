@@ -1,8 +1,6 @@
-import { spawn } from "node:child_process";
 import { mkdir, mkdtemp, readdir, readFile, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 
 import { Effect, Option } from "effect";
 import { describe, expect, it } from "vite-plus/test";
@@ -18,6 +16,7 @@ import {
   type LedgerWrite,
   TEMPORARY_PREFIX,
 } from "./deletion-ledger.ts";
+import { writer } from "./test-ledger.ts";
 
 const newDir = () => mkdtemp(join(tmpdir(), "svett-ledger-"));
 
@@ -53,19 +52,9 @@ const filesIn = async (dir: string) => (await readdir(join(dir, LEDGER_DIR))).to
 const temporaryFiles = async (dir: string) =>
   (await filesIn(dir)).filter((name) => name.startsWith(TEMPORARY_PREFIX));
 
-/** Runs test-ledger-writer.ts with `args`, and gives back its exit code and output. */
-const writer = (args: ReadonlyArray<string>) =>
-  new Promise<{ readonly code: number | null; readonly output: string }>((resolve, reject) => {
-    const script = fileURLToPath(new URL("./test-ledger-writer.ts", import.meta.url));
-    const child = spawn(process.execPath, [script, ...args], {
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    let output = "";
-    child.stdout.on("data", (chunk) => (output += chunk));
-    child.stderr.on("data", (chunk) => (output += chunk));
-    child.once("error", reject);
-    child.once("exit", (code) => resolve({ code, output }));
-  });
+const syncFails = async () => {
+  throw new Error("The disk did not sync the directory.");
+};
 
 describe("the deletion ledger", () => {
   it("keeps its ID in a file written once, and makes only one ledger", async () => {
@@ -146,6 +135,62 @@ describe("the deletion ledger", () => {
     await utimes(join(dir, LEDGER_DIR, leftover!), old, old);
     expect(await run(dir, (ledger) => ledger.removeLeftovers)).toBe(1);
     expect(await filesIn(dir)).toEqual([LEDGER_ID_FILE]);
+  });
+
+  it("holds a deletion once its entry is renamed into place, even when the directory's sync then fails", async () => {
+    const dir = await newDir();
+    const id = await run(dir, (ledger) => ledger.create);
+    const receipt = "d".repeat(64);
+
+    const held = await run(
+      dir,
+      (ledger) =>
+        Effect.gen(function* () {
+          const failed = yield* Effect.flip(ledger.record(id, entry("user_anna", 1, receipt)));
+          return {
+            failed: failed.message,
+            anna: yield* ledger.deletionsOf("user_anna"),
+            ben: yield* ledger.deletionsOf("user_ben"),
+            receipt: yield* ledger.holdsReceipt(receipt),
+          };
+        }),
+      { syncDirectory: syncFails },
+    );
+
+    expect(held).toEqual({
+      failed: expect.stringContaining("The disk did not sync the directory."),
+      anna: [entry("user_anna", 1, receipt)],
+      ben: [],
+      receipt: true,
+    });
+    // A new server reads it from the directory.
+    expect(
+      await run(dir, (ledger) =>
+        Effect.all([ledger.deletionsOf("user_anna"), ledger.holdsReceipt(receipt)]),
+      ),
+    ).toEqual([[entry("user_anna", 1, receipt)], true]);
+  });
+
+  it("holds no deletion that died before its rename", async () => {
+    const dir = await newDir();
+    const id = await run(dir, (ledger) => ledger.create);
+
+    expect((await writer(["crash", dir, id, "user_anna"])).code).toBe(9);
+
+    expect(await run(dir, (ledger) => ledger.deletionsOf("user_anna"))).toEqual([]);
+  });
+
+  it("holds a deletion whose process died after its rename", async () => {
+    const dir = await newDir();
+    const id = await run(dir, (ledger) => ledger.create);
+    const receipt = "e".repeat(64);
+
+    expect((await writer(["renamed", dir, id, "user_anna", receipt])).code).toBe(9);
+
+    expect(await run(dir, (ledger) => ledger.deletionsOf("user_anna"))).toEqual([
+      entry("user_anna", 0, receipt),
+    ]);
+    expect(await temporaryFiles(dir)).toEqual([]);
   });
 
   it("writes the whole entry when each write stores only a few bytes of it", async () => {

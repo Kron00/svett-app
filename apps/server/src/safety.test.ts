@@ -43,6 +43,8 @@ import {
   AccountDeletion,
   KEPT_TABLES,
   prepareDatabase,
+  readyToServe,
+  receiptHash,
 } from "./account-deletion.ts";
 import { AccountRoutes, DeletionRoutes } from "./account-routes.ts";
 import { AccountRows } from "./account-rows.ts";
@@ -148,6 +150,8 @@ const start = async (url: Redacted.Redacted, options: ServerOptions = {}) => {
       disableListenLog: true,
     }).pipe(
       Layer.provideMerge(NodeHttpServer.layer(createServer, { port: 0, host: "127.0.0.1" })),
+      // As on the server, the start finishes every deletion the ledger accepted before serving.
+      Layer.provide(Layer.effectDiscard(readyToServe)),
       Layer.provide(servicesOf(url, options)),
     ),
   );
@@ -246,6 +250,93 @@ const activity = (title: string, audience = "everyone") => ({
   fingerprint: null,
   importBatchId: null,
 });
+
+const nothingLeft = (rows: Record<string, number>) =>
+  Object.values(rows).every((count) => count === 0);
+
+/** A receipt the phone would send with a deletion, unique to the test. */
+const receiptFor = (name: string) => `receipt_${name}_${accounts}`.padEnd(43, "0");
+
+/** A directory sync that fails the first time, after `count` counts it. */
+const failsOnce = (count: () => number) => async () => {
+  if (count() === 1) throw new Error("The disk did not sync the directory.");
+};
+
+/** The receipt hashes the database's ledger holds a final file for. */
+const ledgerReceipts = async (url: Redacted.Redacted) =>
+  (await readdir(join(ledgerDirs.get(Redacted.value(url))!, LEDGER_DIR)))
+    .filter((name) => name !== LEDGER_ID_FILE && !name.startsWith(TEMPORARY_PREFIX))
+    .map((name) => name.split(".")[1]);
+
+const sessionsEnded = async (url: Redacted.Redacted, id: string) =>
+  (
+    await query<{ sessions_ended: boolean }>(
+      url,
+      `select sessions_ended from deleted_account where id = '${id}'`,
+    )
+  )[0]?.sessions_ended;
+
+/** Makes every commit that marks `id` deleted fail, as a database that fails at the commit. */
+const failCommits = async (url: Redacted.Redacted, id: string) => {
+  await query(
+    url,
+    `create or replace function fail_commit() returns trigger language plpgsql as $$
+     begin raise exception 'The commit failed.'; end $$`,
+  );
+  await query(
+    url,
+    `create constraint trigger fail_commit after insert on deleted_account
+     deferrable initially deferred for each row when (new.id = '${id}')
+     execute function fail_commit()`,
+  );
+};
+
+const commitAgain = (url: Redacted.Redacted) =>
+  query(url, "drop trigger fail_commit on deleted_account");
+
+/** Waits up to 30 seconds for `check` to hold. */
+const eventually = async (
+  check: () => Promise<boolean>,
+  deadline = Date.now() + 30_000,
+): Promise<void> => {
+  if (await check()) return;
+  if (Date.now() > deadline) throw new Error("It never happened.");
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  return eventually(check, deadline);
+};
+
+/** Checks the account's still-valid token reads and writes nothing, and changes no row. */
+const expectRefused = async (
+  api: ReturnType<typeof client>,
+  held: { readonly token: string },
+  url: Redacted.Redacted,
+  id: string,
+) => {
+  const before = await rowsNaming(url, id);
+  const answers = await Promise.all([
+    api.call(held, "GET", "/v1/me"),
+    api.call(held, "GET", "/v1/rows"),
+    api.call(held, "PUT", "/v1/rows", { rows: [{ table: "activity", row: activity("New") }] }),
+    api.call(held, "PUT", "/v1/profile", { username: `p${accounts}`, private: false }),
+  ]);
+  expect(answers.map(({ status, body }) => [status, body.error])).toEqual(
+    answers.map(() => [410, "account_deleted"]),
+  );
+  expect(await rowsNaming(url, id)).toEqual(before);
+};
+
+/** Checks the receipt lookup and a deletion sent again both say the account is deleted. */
+const expectDeleted = async (
+  api: ReturnType<typeof client>,
+  held: { readonly token: string },
+  receipt: string,
+) => {
+  expect((await api.call(held, "GET", `/v1/deletions/${receipt}`)).body).toEqual({
+    deleted: true,
+  });
+  expect((await api.call(held, "DELETE", "/v1/me", { receipt })).body).toEqual({ deleted: true });
+  expect((await api.call(held, "GET", "/v1/me")).status).toBe(410);
+};
 
 const schemaTables = async (url: Redacted.Redacted) =>
   (
@@ -791,6 +882,94 @@ describe("deleting an account", { timeout: 60_000 }, () => {
 
     expect(await api.ok(anna, "DELETE", "/v1/me")).toEqual({ deleted: true });
     expect(issuer.deletedUsers()).toContain(anna);
+  });
+
+  it("finishes a deletion whose directory sync failed after the rename, on the next start once Clerk answers", async () => {
+    const url = await freshDatabase();
+    const anna = account("anna");
+    const receipt = receiptFor("sync");
+    let syncs = 0;
+    const server = await start(url, { ledger: { syncDirectory: failsOnce(() => ++syncs) } });
+    const api = client(server.base);
+    await api.write(anna, [activity("Gone")]);
+    const held = { token: await issuer.sessionToken(anna) };
+
+    issuer.failBackendApi(503);
+    const answer = await api.call(held, "DELETE", "/v1/me", { receipt });
+    await server.stop();
+    issuer.failBackendApi(undefined);
+
+    expect(syncs).toBe(1);
+    expect(answer.body.error).toBe("session_end_failed");
+    expect(nothingLeft(await rowsNaming(url, anna))).toBe(true);
+    expect(issuer.deletedUsers()).not.toContain(anna);
+    expect(await ledgerReceipts(url)).toEqual([receiptHash(receipt)]);
+
+    const restarted = client((await start(url)).base);
+
+    expect(issuer.deletedUsers()).toContain(anna);
+    expect(await sessionsEnded(url, anna)).toBe(true);
+    await expectDeleted(restarted, held, receipt);
+  });
+
+  it("refuses the account at once when the commit fails after the rename, and finishes the deletion in the background", async () => {
+    const url = await freshDatabase();
+    const anna = account("anna");
+    const receipt = receiptFor("commit");
+    const { base } = await start(url);
+    const api = client(base);
+    await api.write(anna, [activity("Gone")]);
+    const held = { token: await issuer.sessionToken(anna) };
+    await failCommits(url, anna);
+
+    const answer = await api.call(held, "DELETE", "/v1/me", { receipt });
+
+    expect(answer.status).toBe(500);
+    expect(await rowsNaming(url, anna)).toMatchObject({ account: 1, account_row: 1 });
+    expect(await query(url, "select id from deleted_account")).toEqual([]);
+    expect(await ledgerReceipts(url)).toEqual([receiptHash(receipt)]);
+    await expectRefused(api, held, url, anna);
+    expect((await api.call(held, "GET", `/v1/deletions/${receipt}`)).body).toEqual({
+      deleted: true,
+    });
+
+    await commitAgain(url);
+    await eventually(async () => (await sessionsEnded(url, anna)) === true);
+
+    expect(nothingLeft(await rowsNaming(url, anna))).toBe(true);
+    expect(issuer.deletedUsers()).toContain(anna);
+    await expectDeleted(api, held, receipt);
+  });
+
+  it("keeps trying Clerk for an accepted deletion, and refuses the account meanwhile", async () => {
+    const url = await freshDatabase();
+    const anna = account("anna");
+    const receipt = receiptFor("clerk");
+    const { base } = await start(url);
+    const api = client(base);
+    await api.write(anna, [activity("Gone")]);
+    const held = { token: await issuer.sessionToken(anna) };
+    await failCommits(url, anna);
+    issuer.failBackendApi(503);
+
+    try {
+      expect((await api.call(held, "DELETE", "/v1/me", { receipt })).status).toBe(500);
+      await commitAgain(url);
+      // The background finishes the database's part, and Clerk keeps failing.
+      await eventually(async () => nothingLeft(await rowsNaming(url, anna)));
+      await new Promise((resolve) => setTimeout(resolve, 2_500));
+      expect(await sessionsEnded(url, anna)).toBe(false);
+      await expectRefused(api, held, url, anna);
+      expect((await api.call(held, "GET", `/v1/deletions/${receipt}`)).body).toEqual({
+        deleted: true,
+      });
+    } finally {
+      issuer.failBackendApi(undefined);
+    }
+    await eventually(async () => (await sessionsEnded(url, anna)) === true);
+
+    expect(issuer.deletedUsers()).toContain(anna);
+    await expectDeleted(api, held, receipt);
   });
 
   it("keeps the account when the ledger's write stalls, and leaves nothing in the ledger", async () => {
