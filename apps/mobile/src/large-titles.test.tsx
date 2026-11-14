@@ -145,10 +145,11 @@ const largeTitleScreens = () => {
 };
 
 describe("screens under a native large title", () => {
-  // UIKit collapses a large title, and on iOS 26 and later blurs the content under
-  // the bar, only for the scroll view it finds by following each first subview
-  // down from the screen. A large title makes the header translucent, so a screen
-  // whose first view is not that scroll view draws its content under the title.
+  // A large title makes the header translucent, so a screen's content starts under
+  // the bar and a plain View draws under the title. The title collapses, and what
+  // scrolls under the bar blurs, only for the scroll view UIKit tracks. It tracks
+  // a scroll view that is the screen's first view, as in the design gallery, but
+  // not a list inside a View, as on Progress.
   it("start with a scroll view that insets itself below the bar", () => {
     const found = largeTitleScreens();
     expect(found.map((screen) => screen.name).sort()).toEqual(
