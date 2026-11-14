@@ -76,6 +76,11 @@ CREATE TABLE import_change (${row}, import_batch_id TEXT NOT NULL, change TEXT N
 CREATE INDEX import_change_batch ON import_change (import_batch_id);
 `;
 
+const exerciseAliases = `
+CREATE TABLE exercise_alias (${row}, source TEXT NOT NULL, name TEXT NOT NULL, exercise_id TEXT NOT NULL) STRICT;
+CREATE INDEX exercise_alias_name ON exercise_alias (source, name);
+`;
+
 // A recorded route is one line per stretch between pauses. Earlier location samples
 // came from one stretch.
 const sampleSegment = `
@@ -87,7 +92,8 @@ UPDATE activity_sample SET segment = 0 WHERE kind = 'location';
 export const MIGRATIONS: ReadonlyArray<Migration> = [
   { version: 1, name: "initial", sql: initial },
   { version: 2, name: "import changes", sql: importChanges },
-  { version: 3, name: "sample segment", sql: sampleSegment },
+  { version: 3, name: "exercise aliases", sql: exerciseAliases },
+  { version: 4, name: "sample segment", sql: sampleSegment },
 ];
 
 export class DatabaseTooNewError extends Data.TaggedError("DatabaseTooNewError")<{

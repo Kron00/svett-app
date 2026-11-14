@@ -55,6 +55,7 @@ SVETT_METRO=host:port ~/svett-app/scripts/devbook-build.sh <branch> # Debug buil
 ~/svett-app/scripts/sim/progress.sh [--release] [out-dir]         # Progress charts on the 300-workout fixture
 ~/svett-app/scripts/sim/history.sh [--release] [out-dir]          # History proof on the 300-workout fixture
 ~/svett-app/scripts/sim/data.sh [--release] [out-dir]             # Export, wipe, import, import again and undo
+~/svett-app/scripts/sim/hevy.sh [--release] [out-dir]             # Hevy import, name match, repeat, changes and undo
 ```
 
 `devbook-build.sh` syncs `~/svett-app` to the branch, installs packages, builds the app for the simulator, installs it and opens it. It signs the simulator app to run locally, with no team, so the app carries its entitlements. The Keychain and Apple Health refuse an app without them. Metro's log is `~/svett-app/metro.log`. The first run needs the clone, so run it from a copy of the script or clone the repo to `~/svett-app` first.
@@ -143,6 +144,8 @@ The data layer lives in `packages/core`. Follow these patterns so every table st
 
 **Export and import.** `TransferRepository` writes a svett file's whole rows with their own IDs, and puts back what an import replaced, so it is the one writer that spans every table. Phase 6 sync will apply rows the same way. A new table also needs its parent in `PARENT` in `packages/core/src/transfer.ts`, or the type check fails, and the round-trip test in `repositories/transfer.test.ts` fails until it puts a row in the table. A file's version is `SVETT_FILE_VERSION`. Raise it with any change to the file's shape. A file holds every row, deleted ones too, so a deletion survives the round trip. An import only adds or replaces the rows the file holds. It never removes a row the file leaves out. Every import records each record it added or replaced in `import_change`, with the IDs of the rows it wrote and the versions they replaced, and Undo works from those rows. Library exercises share the time `LIBRARY_UPDATED_AT` until edited, so every install holds the same library rows.
 
+**Hevy import.** Another app's file goes through the same `planImport`, `applyImport` and Undo as a svett file, as an `ImportInput` whose `read` builds its rows from the rows here. `hevyImport` in `packages/core/src/hevy-import.ts` does that for Hevy's workout CSV, which `decodeHevyFile` reads. A Hevy workout's identity is its start time as the file writes it, which has no time zone. A workout whose Hevy content has the same `fingerprint` as when it was imported comes back as it is here, so edits made in svett never show as changes. Hevy's exercise names map to the library through `HEVY_LIBRARY` in `hevy-exercises.ts`. The match screen asks for the rest, and `exercise_alias` remembers each choice. A name kept as new becomes a custom exercise with the ID `hevyExerciseId(name)`.
+
 **IDs and time.** A new row's ID comes from its `Origin`. Rows made in svett get a UUIDv7 from the `Ids` service. Imported rows get a UUIDv5 of their source and source identity through `importedId`, and their children add a path such as `/exercise/0/set/2`. Library exercises use `libraryExerciseId`. Read time from Effect's `Clock`, never `Date.now()`, and never use `Math.random()` for IDs.
 
 **Routes.** A recorded route is one line per stretch between pauses, kept in each location sample's `segment`. Distance, splits, climb, the map and the elevation chart never join two stretches. Anyone but the owner, such as the feed or an export for someone else, reads a track only through `sharedTrack` in `packages/core/src/cardio.ts`, which leaves out the hidden start and end. Only the owner's own screens read the samples.
@@ -162,6 +165,8 @@ The data layer lives in `packages/core`. Follow these patterns so every table st
 ```
 
 It generates the fixture into `<out-dir>`, copies it into the app's data container, and screenshots the Progress tab's counts twice. `01-anonymous.png` is a plain launch. `02-fixture.png` is a relaunch through `launch.sh` with `-svettFixture <absolute path>`.
+
+`scripts/sim/hevy.sh` proves the Hevy import with the synthetic samples in `packages/core/test-data`, which follow Hevy's column layout. On a new empty database it imports the sample through `svett://import?file=<name>&kind=hevy`, matches one unknown name, presses Done, opens the sample again and expects nothing new, takes the changed sample's changed and renamed workouts, and undoes that import, checking the database after each step. `summary.txt` and the screenshots go to `<out-dir>`, by default `~/svett-proof/<branch>/hevy/`.
 
 `scripts/sim/data.sh` proves export and import on the fixture. It exports through the share sheet, launches on a new empty database file, imports the export through `svett://import?file=<name>`, and checks the result equals the fixture row for row, deleted rows included, with `scripts/compare-databases.ts`. It imports the same file again and expects nothing new, then undoes the import from Your data. The export, both comparisons, `summary.txt` and the screenshots go to `<out-dir>`, by default `~/svett-proof/<branch>/data/`.
 

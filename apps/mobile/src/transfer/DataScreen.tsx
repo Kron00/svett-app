@@ -7,7 +7,7 @@ import type { RootNavigation } from "../navigation";
 import { AppText } from "../ui/AppText";
 import { Button } from "../ui/Button";
 import { ListRow, ListSection, SectionHeader } from "../ui/List";
-import { exportAndShare, pickImportFile, withTransfers } from "./files";
+import { exportAndShare, type ImportKind, pickImportFile, withTransfers } from "./files";
 import { formatDay } from "./format";
 
 type ExportState =
@@ -43,10 +43,10 @@ export function DataScreen() {
     );
   };
 
-  const runImport = () => {
+  const runImport = (kind: ImportKind) => {
     setPickProblem(undefined);
-    pickImportFile().then(
-      (source) => source && navigation.navigate("ImportPreview", source),
+    pickImportFile(kind).then(
+      (source) => source && navigation.navigate("ImportPreview", { ...source, kind }),
       (error: unknown) => setPickProblem(String(error)),
     );
   };
@@ -102,7 +102,21 @@ export function DataScreen() {
             symbol="square.and.arrow.down"
             variant="secondary"
             testID="import-button"
-            onPress={runImport}
+            onPress={() => runImport("svett")}
+          />
+        </View>
+        <AppText tone="secondary" className="px-gutter">
+          Or bring your history from Hevy. In Hevy, open Settings, then Export & Import Data, and
+          export your workouts. Import the file again later to add new workouts. svett skips the
+          ones it already has.
+        </AppText>
+        <View className="flex-row px-gutter">
+          <Button
+            label="Import from Hevy"
+            symbol="square.and.arrow.down"
+            variant="secondary"
+            testID="hevy-import-button"
+            onPress={() => runImport("hevy")}
           />
         </View>
         {pickProblem === undefined ? null : (

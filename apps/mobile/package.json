@@ -47,6 +47,7 @@
   "devDependencies": {
     "@babel/core": "^7.29.7",
     "@expo/fingerprint": "~0.21.10",
+    "@react-navigation/core": "7.24.0",
     "@types/node": "catalog:",
     "@types/react": "catalog:",
     "@types/react-test-renderer": "19.3.1",

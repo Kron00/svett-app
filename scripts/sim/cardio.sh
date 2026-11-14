@@ -105,7 +105,7 @@ centre_of() {
 
 # Below this line a press lands on the screen's bottom edge, where iOS 27 keeps the
 # home indicator, so a control merely peeking up from there takes no press.
-safe_bottom=${SVETT_SAFE_BOTTOM:-840}
+safe_bottom=${SVETT_SAFE_BOTTOM:-880}
 
 # Brings the element $1 on screen, drags it up clear of the bottom edge and presses its centre.
 tap() {

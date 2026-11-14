@@ -1,0 +1,26 @@
+"title","start_time","end_time","description","exercise_title","superset_id","exercise_notes","set_index","set_type","weight_kg","reps","distance_km","duration_seconds","rpe"
+"Push Day","3 Nov 2026, 18:30","3 Nov 2026, 19:35","Felt strong","Bench Press (Barbell)",,"Pause each rep",0,"warmup",60,10,,,
+"Push Day","3 Nov 2026, 18:30","3 Nov 2026, 19:35","Felt strong","Bench Press (Barbell)",,"Pause each rep",1,"normal",100,5,,,8
+"Push Day","3 Nov 2026, 18:30","3 Nov 2026, 19:35","Felt strong","Bench Press (Barbell)",,"Pause each rep",2,"normal",100,5,,,8.5
+"Push Day","3 Nov 2026, 18:30","3 Nov 2026, 19:35","Felt strong","Triceps Rope Pushdown",,"",0,"normal",30,12,,,
+"Push Day","3 Nov 2026, 18:30","3 Nov 2026, 19:35","Felt strong","Triceps Rope Pushdown",,"",1,"normal",30,12,,,
+"Push Day","3 Nov 2026, 18:30","3 Nov 2026, 19:35","Felt strong","Triceps Rope Pushdown",,"",2,"failure",30,10,,,
+"Push Day","3 Nov 2026, 18:30","3 Nov 2026, 19:35","Felt strong","Landmine Press",,"",0,"normal",40,10,,,
+"Push Day","3 Nov 2026, 18:30","3 Nov 2026, 19:35","Felt strong","Landmine Press",,"",1,"normal",40,10,,,
+"Pull Day","5 Nov 2026, 07:15","5 Nov 2026, 08:20","","Deadlift (Barbell)",,"",0,"normal",140,5,,,
+"Pull Day","5 Nov 2026, 07:15","5 Nov 2026, 08:20","","Deadlift (Barbell)",,"",1,"failure",160,3,,,9.5
+"Pull Day","5 Nov 2026, 07:15","5 Nov 2026, 08:20","","Lat Pulldown (Cable)",0,"",0,"normal",65,10,,,
+"Pull Day","5 Nov 2026, 07:15","5 Nov 2026, 08:20","","Lat Pulldown (Cable)",0,"",1,"normal",65,10,,,
+"Pull Day","5 Nov 2026, 07:15","5 Nov 2026, 08:20","","Lat Pulldown (Cable)",0,"",2,"normal",65,9,,,
+"Pull Day","5 Nov 2026, 07:15","5 Nov 2026, 08:20","","Chest Supported Machine Row",0,"Seat at 4",0,"normal",50,12,,,
+"Pull Day","5 Nov 2026, 07:15","5 Nov 2026, 08:20","","Chest Supported Machine Row",0,"Seat at 4",1,"normal",50,12,,,
+"Pull Day","5 Nov 2026, 07:15","5 Nov 2026, 08:20","","Chest Supported Machine Row",0,"Seat at 4",2,"normal",50,11,,,
+"Legs","7 Nov 2026, 17:00","7 Nov 2026, 18:10","Knee felt fine, ""finally""","Squat (Barbell)",,"",0,"warmup",60,8,,,
+"Legs","7 Nov 2026, 17:00","7 Nov 2026, 18:10","Knee felt fine, ""finally""","Squat (Barbell)",,"",1,"normal",120,5,,,7.5
+"Legs","7 Nov 2026, 17:00","7 Nov 2026, 18:10","Knee felt fine, ""finally""","Squat (Barbell)",,"",2,"normal",120,5,,,8
+"Legs","7 Nov 2026, 17:00","7 Nov 2026, 18:10","Knee felt fine, ""finally""","Squat (Barbell)",,"",3,"normal",120,5,,,9
+"Legs","7 Nov 2026, 17:00","7 Nov 2026, 18:10","Knee felt fine, ""finally""","Squat (Barbell)",,"",4,"dropset",90,8,,,
+"Legs","7 Nov 2026, 17:00","7 Nov 2026, 18:10","Knee felt fine, ""finally""","Seated Leg Curl (Machine)",,"",0,"normal",45,12,,,
+"Legs","7 Nov 2026, 17:00","7 Nov 2026, 18:10","Knee felt fine, ""finally""","Seated Leg Curl (Machine)",,"",1,"normal",45,12,,,
+"Legs","7 Nov 2026, 17:00","7 Nov 2026, 18:10","Knee felt fine, ""finally""","Seated Leg Curl (Machine)",,"",2,"normal",45,10,,,
+"Legs","7 Nov 2026, 17:00","7 Nov 2026, 18:10","Knee felt fine, ""finally""","Treadmill",,"Cool down",0,"normal",,,2,900,
