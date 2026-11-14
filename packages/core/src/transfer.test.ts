@@ -197,26 +197,27 @@ describe("outcome text", () => {
   });
 });
 
-describe("undoSelection", () => {
-  const id = (n: number) => ImportChangeId.make(`01900000-0000-7000-8000-00000000000${n}`);
-  const entry = (
-    n: number,
-    change: ImportChange["change"],
-    edited: boolean,
-    usedBy: ReadonlyArray<ReadonlyArray<number>> = [],
-  ): UndoEntry => ({
-    change: { id: id(n), change } as ImportChange,
-    edited,
-    usedBy: usedBy.map((removers) => removers.map(id)),
-  });
-  const selected = (entries: ReadonlyArray<UndoEntry>, alsoEdited: ReadonlyArray<number> = []) => {
-    const { undone, ...counts } = undoSelection(entries, alsoEdited.map(id));
-    return { undone: undone.map(({ change }) => change.id), ...counts };
-  };
+const changeId = (n: number) => ImportChangeId.make(`01900000-0000-7000-8000-00000000000${n}`);
 
+const entry = (
+  n: number,
+  change: ImportChange["change"],
+  edited: boolean,
+  usedBy: ReadonlyArray<ReadonlyArray<number>> = [],
+): UndoEntry => ({
+  change: { id: changeId(n), change } as ImportChange,
+  edited,
+  usedBy: usedBy.map((removers) => removers.map(changeId)),
+});
+const selected = (entries: ReadonlyArray<UndoEntry>, alsoEdited: ReadonlyArray<number> = []) => {
+  const { undone, ...counts } = undoSelection(entries, alsoEdited.map(changeId));
+  return { undone: undone.map(({ change }) => change.id), ...counts };
+};
+
+describe("undoSelection", () => {
   it("keeps a record a row outside the import uses", () => {
     expect(selected([entry(1, "added", false, [[]]), entry(2, "added", false)])).toEqual({
-      undone: [id(2)],
+      undone: [changeId(2)],
       removing: 1,
       restoring: 0,
       keeping: 1,
@@ -228,7 +229,7 @@ describe("undoSelection", () => {
     const entries = [entry(1, "replaced", false, [[2]]), entry(2, "added", true)];
     expect(selected(entries)).toMatchObject({ undone: [], keeping: 1, leaving: 1 });
     expect(selected(entries, [2])).toMatchObject({
-      undone: [id(1), id(2)],
+      undone: [changeId(1), changeId(2)],
       removing: 1,
       restoring: 1,
       keeping: 0,
@@ -251,6 +252,10 @@ describe("undoSelection", () => {
       entry(2, "added", true),
       entry(3, "added", false),
     ];
-    expect(selected(entries)).toMatchObject({ undone: [id(1), id(3)], keeping: 0, leaving: 1 });
+    expect(selected(entries)).toMatchObject({
+      undone: [changeId(1), changeId(3)],
+      keeping: 0,
+      leaving: 1,
+    });
   });
 });
