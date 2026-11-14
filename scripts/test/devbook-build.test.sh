@@ -764,16 +764,18 @@ check "progress.sh stops after 40 pages when a screen's closing rule never shows
 # Stands in for the bound command on the large-title screens. A screenshot shows
 # the screen in front, the one the last press or open brought up, and how far it
 # has scrolled since then. FAKE_STUCK names a press or open whose screen never
-# scrolls. A wait for FAKE_MISSING times out.
+# scrolls. A wait for FAKE_MISSING times out. The Progress tab counts FAKE_COUNTS,
+# by default the fixture's.
 cat >"$fake/headers-device" <<EOF
 #!/usr/bin/env bash
 echo "\$*" >>"$root/bound-calls"
 case "\$*" in
   *" wait "*) [[ -z "\${FAKE_MISSING:-}" || "\$*" != *"\$FAKE_MISSING"* ]] ;;
+  *' get text id="workout-counts"') echo "\${FAKE_COUNTS:-300 workouts, 6,012 sets}" ;;
   *" screenshot "*)
     awk -v stuck="\${FAKE_STUCK:-}" '
       / (press|open) / { screen = \$0; n = 0 }
-      / scroll down 0[.]4$/ && (stuck == "" || index(screen, stuck) == 0) { n++ }
+      / scroll down 0[.]6$/ && (stuck == "" || index(screen, stuck) == 0) { n++ }
       END { print screen, "scrolled", n }' "$root/bound-calls" >"\${@: -1}" ;;
 esac
 EOF
@@ -786,7 +788,7 @@ run_headers() {
     vars+=("$1")
     shift
   done
-  rm -f "$root/simctl-calls" "$root/bound-calls"
+  rm -f "$root/simctl-calls" "$root/bound-calls" "$container_fixture"
   headers_status=0
   env PATH="$fake:$PATH" SVETT_DEVICE_CMD="headers-device --session 't3-test session' --device FAKE-UDID" \
     "${vars[@]}" "$repo/scripts/sim/headers.sh" "$@" >"$output" 2>&1 || headers_status=$?
@@ -811,41 +813,46 @@ for screen in home train progress coach you exercises data gallery; do
   done
 done
 
+fixture_launch="--launch-args=-svettFixture --launch-args=$container_fixture"
+
 case_name="headers.sh Debug with SVETT_DEVICE_CMD"
 run_headers "$root/proof headers"
 [[ "$headers_status" == 0 ]] || fail "headers.sh failed"
-check "headers.sh relaunches into the dev client on Metro, then opens each pushed large-title screen's link" \
-  only_open "$debug_open" "${header_links[@]}"
+check "headers.sh copies the generated fixture into the app's data container" \
+  grep -qxF "fake fixture" "$container_fixture"
+check "headers.sh relaunches into the dev client on the fixture, then opens each pushed large-title screen's link" \
+  only_open "$debug_open $fixture_launch" "${header_links[@]}"
 check "headers.sh shoots at the largest text size and restores the default" \
   only_calls "settings" "$largest_text" "settings text-size large"
 check "headers.sh presses only the five tab buttons, since agent-device refuses presses in screen content" \
   only_calls "press" "${header_tabs[@]}"
-check "headers.sh shoots every large-title screen at rest and after scrolling part way" \
+check "headers.sh shoots every large-title screen at rest and after scrolling 60% of the screen" \
   only_calls "screenshot|scroll" \
-  "${header_shots[0]}" "scroll down 0.4" "${header_shots[1]}" \
-  "${header_shots[2]}" "scroll down 0.4" "${header_shots[3]}" \
-  "${header_shots[4]}" "scroll down 0.4" "${header_shots[5]}" \
-  "${header_shots[6]}" "scroll down 0.4" "${header_shots[7]}" \
-  "${header_shots[8]}" "scroll down 0.4" "${header_shots[9]}" \
-  "${header_shots[10]}" "scroll down 0.4" "${header_shots[11]}" \
-  "${header_shots[12]}" "scroll down 0.4" "${header_shots[13]}" \
-  "${header_shots[14]}" "scroll down 0.4" "${header_shots[15]}"
-check "headers.sh waits for each tab to be selected and each screen to show" \
-  only_calls 'wait (label|id)' \
+  "${header_shots[0]}" "scroll down 0.6" "${header_shots[1]}" \
+  "${header_shots[2]}" "scroll down 0.6" "${header_shots[3]}" \
+  "${header_shots[4]}" "scroll down 0.6" "${header_shots[5]}" \
+  "${header_shots[6]}" "scroll down 0.6" "${header_shots[7]}" \
+  "${header_shots[8]}" "scroll down 0.6" "${header_shots[9]}" \
+  "${header_shots[10]}" "scroll down 0.6" "${header_shots[11]}" \
+  "${header_shots[12]}" "scroll down 0.6" "${header_shots[13]}" \
+  "${header_shots[14]}" "scroll down 0.6" "${header_shots[15]}"
+check "headers.sh waits for each tab to be selected and each screen to show its fixture content" \
+  only_calls 'wait (absent )?(label|id)' \
   'wait label="Home, tab, 1 of 5" selected=true 120000' \
   'wait label="Home, tab, 1 of 5" selected=true 10000' \
-  'wait label="Train, tab, 2 of 5" selected=true 10000' \
+  'wait label="Train, tab, 2 of 5" selected=true 10000' 'wait id="routine-list" 30000' \
   'wait label="Progress, tab, 3 of 5" selected=true 10000' 'wait id="progress" 10000' \
+  'wait absent id="workout-counts" label="Opening the database" 30000' \
   'wait label="Coach, tab, 4 of 5" selected=true 10000' \
   'wait label="You, tab, 5 of 5" selected=true 10000' \
   'wait id="exercise-library" 10000' 'wait id="data" 10000' 'wait id="gallery" 10000'
-check "headers.sh with SVETT_DEVICE_CMD never calls simctl" test ! -e "$root/simctl-calls"
+check "headers.sh with SVETT_DEVICE_CMD calls neither simctl launch nor openurl" no_simctl_launch_or_openurl
 
 case_name="headers.sh Release with SVETT_DEVICE_CMD"
 run_headers --release "$root/proof-headers-release"
 [[ "$headers_status" == 0 ]] || fail "headers.sh --release failed"
-check "headers.sh Release relaunches the installed app without Metro" \
-  only_open "com.kron00.svett --relaunch" "${header_links[@]}"
+check "headers.sh Release relaunches the installed app on the fixture without Metro" \
+  only_open "com.kron00.svett --relaunch $fixture_launch" "${header_links[@]}"
 
 case_name="headers.sh when a short tab does not scroll"
 run_headers FAKE_STUCK="Home, tab" "$root/proof-headers-short"
@@ -858,6 +865,27 @@ check "headers.sh names the screen that did not scroll" \
   grep -qxF "data: the scrolled screenshot matches the one at rest, so the screen did not scroll" "$output"
 check "headers.sh restores the default text size after a failure" \
   only_calls "settings" "$largest_text" "settings text-size large"
+
+case_name="headers.sh when the Train tab does not scroll"
+run_headers FAKE_STUCK="Train, tab" "$root/proof-headers-train"
+check "headers.sh fails when the Train tab's routines do not move under the title" \
+  grep -qxF "train: the scrolled screenshot matches the one at rest, so the screen did not scroll" "$output"
+
+case_name="headers.sh when the fixture does not open"
+run_headers FAKE_COUNTS="0 workouts, 0 sets" "$root/proof-headers-empty"
+check "headers.sh fails when the Progress tab does not show the fixture's 300 workouts" \
+  grep -qxF "The Progress tab did not show the fixture's 300 workouts: 0 workouts, 0 sets" "$output"
+check "headers.sh shoots nothing on Progress when the fixture did not open" \
+  only_calls "screenshot" "$(printf "screenshot $root/proof-headers-empty/%02d-%s.png\n" \
+    1 home-top 2 home-scrolled 3 train-top 4 train-scrolled)"
+
+case_name="headers.sh when the routines do not show"
+run_headers FAKE_MISSING='id="routine-list"' "$root/proof-headers-routines"
+check "headers.sh fails when the Train tab does not list the fixture's routines" \
+  test "$headers_status" -ne 0
+check "headers.sh shoots nothing on Train when its routines do not show" \
+  only_calls "screenshot" "$(printf "screenshot $root/proof-headers-routines/%02d-%s.png\n" \
+    1 home-top 2 home-scrolled)"
 
 case_name="headers.sh when a screen does not show"
 run_headers FAKE_MISSING='id="exercise-library"' "$root/proof-headers-missing"
