@@ -10,7 +10,10 @@ import { restoreForUse } from "./restore.ts";
 const USAGE = `Usage:
   node src/cli.ts backup                      Back up DATABASE_URL to BACKUP_DIR now.
   node src/cli.ts restore <file>              Restore <file> into RESTORE_DATABASE_URL, which must be empty,
-                                              then delete again every account the deletion ledger holds.`;
+                                              then delete again every account the deletion ledger holds.
+                                              A backup that holds accounts and names no ledger is refused
+                                              when BACKUP_DIR has no ledger, unless NEW_DELETION_LEDGER=true
+                                              says every account in it should exist.`;
 
 const [command, file] = process.argv.slice(2);
 

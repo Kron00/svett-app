@@ -11,7 +11,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vite-plus/
 
 import { prepareDatabase } from "./account-deletion.ts";
 import { databaseLayer } from "./database.ts";
-import { DeletionLedger, LEDGER_FILE, readLedger } from "./deletion-ledger.ts";
+import { DeletionLedger, LEDGER_FILE, type LedgerOptions, readLedger } from "./deletion-ledger.ts";
 import { MIGRATIONS } from "./migrations.ts";
 import { PgTools } from "./pg-tools.ts";
 import { restoreBackup, restoreForUse } from "./restore.ts";
@@ -161,19 +161,36 @@ describe("the production server", { timeout: 90_000 }, () => {
 const pgTools = () => PgTools.layer(postgres.tools);
 
 /** Readies `url` the way the server does on start, with the ledger in `dir`. */
-const start = (url: Redacted.Redacted, dir: string) =>
+const start = (url: Redacted.Redacted, dir: string, options?: LedgerOptions) =>
   Effect.runPromise(
     prepareDatabase.pipe(
-      Effect.provide(Layer.merge(databaseLayer(url), DeletionLedger.layer(dir))),
+      Effect.provide(Layer.merge(databaseLayer(url), DeletionLedger.layer(dir, options))),
     ),
   );
 
-const restore = async (backup: string, dir: string) =>
+const restore = async (backup: string, dir: string, options?: LedgerOptions) =>
   Effect.runPromise(
     restoreForUse(backup, await postgres.createDatabase(`main_${++databases}`)).pipe(
-      Effect.provide(Layer.merge(pgTools(), DeletionLedger.layer(dir))),
+      Effect.provide(Layer.merge(pgTools(), DeletionLedger.layer(dir, options))),
     ),
   );
+
+/** A database with only main's migrations, as the deployed server has, holding `accounts`. */
+const deployedDatabase = async (accounts: ReadonlyArray<string>) => {
+  const url = await postgres.createDatabase(`main_${++databases}`);
+  await Effect.runPromise(
+    Migrator.make({})({
+      loader: Migrator.fromRecord({ "1_accounts": MIGRATIONS["1_accounts"]! }),
+    }).pipe(Effect.provide(databaseLayer(url))),
+  );
+  if (accounts.length > 0) {
+    await query(
+      url,
+      `insert into account (id) values ${accounts.map((account) => `('${account}')`).join(", ")}`,
+    );
+  }
+  return url;
+};
 
 const backUp = async (url: Redacted.Redacted, dir: string) => {
   const backup = join(dir, `backup-${++databases}.dump`);
@@ -313,22 +330,68 @@ describe("the deletion ledger", { timeout: 120_000 }, () => {
     expect(await ledgerId(dir)).toBe(id);
   });
 
-  it("makes a ledger on the deployed server's first start after the ledger had an ID", async () => {
-    const url = await postgres.createDatabase(`main_${++databases}`);
+  it("makes a ledger on the deployed server's first start, as it holds no accounts", async () => {
+    const url = await deployedDatabase([]);
     const dir = await mkdtemp(join(tmpdir(), "svett-main-"));
-    // The deployed server has only main's migrations, and no ledger.
-    await Effect.runPromise(
-      Migrator.make({})({
-        loader: Migrator.fromRecord({ "1_accounts": MIGRATIONS["1_accounts"]! }),
-      }).pipe(Effect.provide(databaseLayer(url))),
-    );
-    await query(url, "insert into account (id) values ('user_deployed')");
 
     expect(await start(url, dir)).toBe(0);
 
     const id = await ledgerId(dir);
+    expect(id).toEqual(expect.any(String));
     expect(await query(url, "select id from deletion_ledger")).toEqual([{ id }]);
-    expect(await query(url, "select id from account")).toEqual([{ id: "user_deployed" }]);
+  });
+
+  it("refuses a start and a restore of a database with accounts and no ledger when the file is missing", async () => {
+    const url = await deployedDatabase(["user_kept", "user_deleted_later"]);
+    const backupDir = await mkdtemp(join(tmpdir(), "svett-main-"));
+    const backup = await backUp(url, backupDir);
+    const dir = await mkdtemp(join(tmpdir(), "svett-main-"));
+
+    const refused = `The database holds 2 accounts and names no deletion ledger, and ${join(dir, LEDGER_FILE)} is missing. A new ledger would let every account deleted after this database's backup come back. Check that BACKUP_DIR is the backup volume and that it is mounted. Only if the ledger is lost for good and every account in this database should exist, start or restore once with NEW_DELETION_LEDGER=true.`;
+    await expect(start(url, dir)).rejects.toThrow(refused);
+    await expect(restore(backup, dir)).rejects.toThrow(refused);
+    const server = startServer({ DATABASE_URL: Redacted.value(url), BACKUP_DIR: dir });
+    await expect(server).rejects.toThrow("names no deletion ledger");
+    expect(await ledgerId(dir).catch(() => "no file")).toBe("no file");
+    expect(await query(url, "select id from deletion_ledger")).toEqual([]);
+  });
+
+  it("makes a ledger over accounts only with NEW_DELETION_LEDGER, and says so loudly", async () => {
+    const url = await deployedDatabase(["user_kept"]);
+    const dir = await mkdtemp(join(tmpdir(), "svett-main-"));
+    const server = await startServer({
+      DATABASE_URL: Redacted.value(url),
+      BACKUP_DIR: dir,
+      NEW_DELETION_LEDGER: "true",
+    });
+    server.stop();
+
+    const id = await ledgerId(dir);
+    expect(id).toEqual(expect.any(String));
+    expect(await query(url, "select id from deletion_ledger")).toEqual([{ id }]);
+    expect(server.output()).toContain("NEW_DELETION_LEDGER is set, so made a new deletion ledger");
+    expect(server.output()).toContain("for a database that holds 1 accounts");
+
+    const restoreDir = await mkdtemp(join(tmpdir(), "svett-main-"));
+    const backup = await backUp(await deployedDatabase(["user_kept"]), restoreDir);
+    expect(await restore(backup, restoreDir, { newLedgerOverAccounts: true })).toBe(0);
+    expect(await ledgerId(restoreDir)).toEqual(expect.any(String));
+  });
+
+  it("adopts the ledger on the volume for a database with accounts and no ledger, and deletes its accounts again", async () => {
+    const live = await postgres.createDatabase(`main_${++databases}`);
+    const dir = await mkdtemp(join(tmpdir(), "svett-main-"));
+    await start(live, dir);
+    await recordDeletion(live, dir, "user_deleted_later");
+    const id = await ledgerId(dir);
+    const old = await deployedDatabase(["user_kept", "user_deleted_later"]);
+
+    expect(await start(old, dir)).toBe(1);
+
+    expect(await query(old, "select id from deletion_ledger")).toEqual([{ id }]);
+    expect(await query(old, "select id from account")).toEqual([{ id: "user_kept" }]);
+    const backup = await backUp(await deployedDatabase(["user_kept", "user_deleted_later"]), dir);
+    expect(await restore(backup, dir)).toBe(1);
   });
 
   it("refuses a start and a restore without the ledger the database names", async () => {

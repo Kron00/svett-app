@@ -48,6 +48,7 @@ const serve = (url: Redacted.Redacted, backupDir: string, clerk: ClerkConfigShap
       backupDir,
       backupKeep: 14,
       backupCron: "0 3 * * *",
+      newDeletionLedger: false,
     }),
   );
   const services = Layer.mergeAll(

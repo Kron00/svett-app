@@ -75,11 +75,29 @@ const namedLedger = (sql: PgClient.PgClient) =>
     Option.fromNullishOr(rows[0]?.id),
   );
 
+/** Selects every account ID any row names, once per row, from every table in ACCOUNT_TABLES. */
+const NAMED_ACCOUNTS = Object.entries(ACCOUNT_TABLES)
+  .flatMap(([table, columns]) =>
+    columns.map((column) => `select "${column}" as account from "${table}"`),
+  )
+  .join(" union all ");
+
+/** How many accounts the database holds a row of, in any table that names an account. */
+const accountsHeld = (sql: PgClient.PgClient) =>
+  Effect.map(
+    sql.unsafe<{ readonly accounts: number }>(
+      `select count(distinct account)::int as accounts from (${NAMED_ACCOUNTS}) as named`,
+    ),
+    (rows) => rows[0]?.accounts ?? 0,
+  );
+
 /**
  * The ledger this database belongs with. A database that names no ledger, a new server or one
- * from before the ledger had an ID, takes the ledger in BACKUP_DIR, and makes one when there is
- * none. A database that names a ledger refuses a missing ledger or another one, since serving
- * from it would bring back every account the lost ledger deleted.
+ * from before the ledger had an ID, takes the ledger in BACKUP_DIR. It makes one when there is
+ * none only when it holds no account, as no deleted account can then come back, or when
+ * NEW_DELETION_LEDGER says every account it holds should exist. A database that names a ledger
+ * refuses a missing ledger or another one, since serving from it would bring back every
+ * account the lost ledger deleted.
  */
 const checkLedger = (sql: PgClient.PgClient) =>
   Effect.gen(function* () {
@@ -89,8 +107,18 @@ const checkLedger = (sql: PgClient.PgClient) =>
     const found = yield* ledger.read;
     if (Option.isNone(named)) {
       if (Option.isNone(found)) {
+        const accounts = yield* accountsHeld(sql);
+        if (accounts > 0 && !ledger.newLedgerOverAccounts) {
+          return yield* new LedgerError({
+            message: `The database holds ${accounts} accounts and names no deletion ledger, and ${ledger.path} is missing. A new ledger would let every account deleted after this database's backup come back. Check that BACKUP_DIR is the backup volume and that it is mounted. Only if the ledger is lost for good and every account in this database should exist, start or restore once with NEW_DELETION_LEDGER=true.`,
+          });
+        }
         yield* ledger.create;
-        yield* Effect.logInfo(`Made the deletion ledger ${ledger.path}`);
+        yield* accounts > 0
+          ? Effect.logWarning(
+              `NEW_DELETION_LEDGER is set, so made a new deletion ledger ${ledger.path} for a database that holds ${accounts} accounts. Every one of them now counts as an account that should exist, including any deleted after its backup. Unset NEW_DELETION_LEDGER now.`,
+            )
+          : Effect.logInfo(`Made the deletion ledger ${ledger.path}`);
       }
       const taken = Option.isSome(found) ? found : yield* ledger.read;
       if (Option.isNone(taken)) {
