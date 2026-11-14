@@ -223,6 +223,7 @@ const fillEveryTable = async (database: Database) => {
             {
               kind: "location",
               recordedAt: EpochMillis.make(T0 - 86_000_000),
+              segment: 0,
               latitude: 59.33,
               longitude: 18.06,
               altitudeM: 12,

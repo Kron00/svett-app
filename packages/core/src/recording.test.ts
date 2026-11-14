@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 
 import { describe, expect, it } from "vite-plus/test";
 
-import { summarize } from "./cardio.ts";
+import { summarizeRecording } from "./cardio.ts";
 import { type LatLng, pathLengthM } from "./geo.ts";
 import { seededRandom } from "./ids.ts";
 import {
@@ -194,7 +194,7 @@ const play = (kind: CardioKind, events: ReadonlyArray<RecordingEvent>) => {
 /** The distance saved when finishing a second after the last event. */
 const savedM = (recording: Recording, lastEvent: RecordingEvent) => {
   const end = T + (secondsOf(lastEvent) + 1) * 1000;
-  return summarize(applyEvent(recording, { type: "pause", at: end })!, end).distanceM;
+  return summarizeRecording(applyEvent(recording, { type: "pause", at: end })!, end).distanceM;
 };
 
 const run300 = along([point(0, 0), point(0, 300)], 3);
