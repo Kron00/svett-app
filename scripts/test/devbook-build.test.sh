@@ -1699,9 +1699,9 @@ node -e '
     CREATE TABLE exercise (id TEXT PRIMARY KEY, name TEXT);
     CREATE TABLE activity (id TEXT PRIMARY KEY, deleted_at INTEGER, title TEXT, status TEXT, notes TEXT, started_at INTEGER);
     CREATE TABLE activity_exercise (id TEXT PRIMARY KEY, deleted_at INTEGER, activity_id TEXT, exercise_id TEXT,
-      position INTEGER, set_fields TEXT, notes TEXT);
+      position INTEGER, set_fields TEXT, notes TEXT, superset_group INTEGER);
     CREATE TABLE activity_set (id TEXT PRIMARY KEY, deleted_at INTEGER, activity_exercise_id TEXT, position INTEGER,
-      set_type TEXT, weight_kg REAL, reps INTEGER, duration_s REAL, distance_m REAL, done INTEGER);
+      set_type TEXT, weight_kg REAL, reps INTEGER, duration_s REAL, distance_m REAL, done INTEGER, rpe REAL);
     INSERT INTO routine VALUES ('\''push-routine'\'', NULL, '\''Push'\'', 0), ('\''legs-routine'\'', NULL, '\''Legs'\'', 2);
   `);
 ' "$3"
@@ -1727,9 +1727,9 @@ const save = () => {
     database.prepare("INSERT INTO activity VALUES (?, NULL, ?, ?, '', ?)").run(`a${w}`, workout.title, workout.status, w);
     workout.exercises.forEach((exercise, e) => {
       database.prepare("INSERT OR IGNORE INTO exercise VALUES (?, ?)").run(exercise.name, exercise.name);
-      database.prepare("INSERT INTO activity_exercise VALUES (?, NULL, ?, ?, ?, ?, '')").run(`a${w}e${e}`, `a${w}`, exercise.name, e, exercise.fields);
+      database.prepare("INSERT INTO activity_exercise VALUES (?, NULL, ?, ?, ?, ?, '', NULL)").run(`a${w}e${e}`, `a${w}`, exercise.name, e, exercise.fields);
       exercise.sets.forEach((set, s) => {
-        database.prepare("INSERT INTO activity_set VALUES (?, NULL, ?, ?, ?, ?, ?, ?, NULL, ?)")
+        database.prepare("INSERT INTO activity_set VALUES (?, NULL, ?, ?, ?, ?, ?, ?, NULL, ?, NULL)")
           .run(`a${w}e${e}s${s}`, `a${w}e${e}`, s, set.type, set.weight, set.reps, set.time, set.done ? 1 : 0);
       });
     });

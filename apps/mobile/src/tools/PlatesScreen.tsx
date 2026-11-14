@@ -117,7 +117,7 @@ export function PlatesScreen({ route, navigation }: Props) {
         </AppText>
       ) : result.kind === "exact" ? (
         <Load
-          title={`${wanted} on the ${bar.name.toLowerCase()}`}
+          title={`On the ${bar.name.toLowerCase()}`}
           load={result.load}
           unit={unit}
           testID="plates-result"

@@ -17,6 +17,7 @@ export function RestTimerBar({
   onLess,
   onMore,
   onSkip,
+  atBottom = true,
   testID,
 }: {
   /** The time left, already formatted, such as "1:23". */
@@ -29,6 +30,8 @@ export function RestTimerBar({
   readonly onLess: () => void;
   readonly onMore: () => void;
   readonly onSkip: () => void;
+  /** Whether it is the last thing on screen, above the home indicator. */
+  readonly atBottom?: boolean;
   readonly testID?: string;
 }) {
   const stacked = useIsAccessibilityTextSize();
@@ -59,7 +62,7 @@ export function RestTimerBar({
   return (
     <View
       testID={testID}
-      className="gap-2 border-t border-separator bg-surface px-gutter pt-3 pb-8"
+      className={`gap-2 border-t border-separator bg-surface px-gutter pt-3 ${atBottom ? "pb-8" : "pb-3"}`}
     >
       <View className="h-1 overflow-hidden rounded-full bg-control">
         <View

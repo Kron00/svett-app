@@ -71,7 +71,7 @@ function Timing() {
 }
 
 /** The running rest, counting down each second. It goes when it reaches zero. */
-function Rest({ timer }: { readonly timer: RestTimer }) {
+function Rest({ timer, atBottom }: { readonly timer: RestTimer; readonly atBottom: boolean }) {
   const [now, setNow] = useState(Date.now);
   useEffect(() => {
     const tick = setInterval(() => setNow(Date.now()), 250);
@@ -90,6 +90,7 @@ function Rest({ timer }: { readonly timer: RestTimer }) {
       onLess={() => adjustRestTimer(-REST_ADJUST_S)}
       onMore={() => adjustRestTimer(REST_ADJUST_S)}
       onSkip={skipRestTimer}
+      atBottom={atBottom}
       testID="rest-timer"
     />
   );
@@ -322,6 +323,8 @@ function Logger({
           {showTiming() ? <Timing /> : null}
         </View>
       </ScrollView>
+      {/* The rest stays in view above the keypad, as the next set is typed. */}
+      {rest !== null ? <Rest timer={rest} atBottom={focus === null} /> : null}
       {focus !== null ? (
         <View
           className="gap-2 border-t border-separator bg-surface px-gutter pt-3 pb-8"
@@ -342,8 +345,6 @@ function Logger({
             </View>
           </View>
         </View>
-      ) : rest !== null ? (
-        <Rest timer={rest} />
       ) : null}
       <OptionSheet
         title={typeSheetTitle}
