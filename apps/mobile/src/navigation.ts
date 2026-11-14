@@ -43,6 +43,9 @@ export type RootStackParamList = {
   Profile: { username: string };
   /** `list` is followers or following, parsed by the screen. */
   Connections: { username: string; list: string };
+  /** A post in full, named by its owner's username and its post ID. */
+  Post: { username: string; postId: string };
+  Inbox: undefined;
 };
 
 export type RootNavigation = NativeStackNavigationProp<RootStackParamList>;

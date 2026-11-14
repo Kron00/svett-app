@@ -16,6 +16,8 @@ import {
 } from "./social/PeopleScreens";
 import { OwnProfileScreen, ProfileScreen } from "./social/ProfileScreens";
 import { useNavigationTheme } from "./design/hooks";
+import { InboxScreen } from "./feed/InboxScreen";
+import { PostScreen } from "./feed/PostScreen";
 import { ExerciseDetailScreen } from "./exercises/ExerciseDetailScreen";
 import { EditExerciseScreen, NewExerciseScreen } from "./exercises/ExerciseFormScreen";
 import { ExerciseLibraryScreen, NewExerciseButton } from "./exercises/ExerciseLibraryScreen";
@@ -107,6 +109,16 @@ export default function App() {
               headerShown: true,
               title: route.params.list === "following" ? "Following" : "Followers",
             })}
+          />
+          <Stack.Screen
+            name="Post"
+            component={PostScreen}
+            options={{ headerShown: true, title: "Post" }}
+          />
+          <Stack.Screen
+            name="Inbox"
+            component={InboxScreen}
+            options={{ headerShown: true, title: "Inbox", headerLargeTitle: true }}
           />
           <Stack.Screen
             name="Exercises"

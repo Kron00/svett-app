@@ -11,14 +11,15 @@ import type { RootStackParamList } from "./navigation";
 // svett://import?file=<name> and svett://imports/<id>/undo. scripts/sim/hevy.sh
 // adds &kind=hevy for a Hevy CSV. scripts/sim/social.sh opens svett://profile,
 // svett://profile/edit?username=<name>, svett://people?q=<prefix>, svett://people/<name>,
-// svett://people/<name>/followers and svett://profile/requests.
+// svett://people/<name>/followers and svett://profile/requests. scripts/sim/feed.sh opens
+// svett://feed, svett://post/<username>/<post id> and svett://inbox.
 export const linking: LinkingOptions<RootStackParamList> = {
   prefixes: ["svett://"],
   filter: (url) => !url.includes("expo-development-client"),
   config: {
     initialRouteName: "Tabs",
     screens: {
-      Tabs: { screens: { Progress: "progress" } },
+      Tabs: { screens: { Progress: "progress", Home: "feed" } },
       Gallery: "gallery",
       ChatGPT: "chatgpt",
       Account: "account",
@@ -42,6 +43,8 @@ export const linking: LinkingOptions<RootStackParamList> = {
       Connections: "people/:username/:list",
       Profile: "people/:username",
       People: "people",
+      Post: "post/:username/:postId",
+      Inbox: "inbox",
     },
   },
 };

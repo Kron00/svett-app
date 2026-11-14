@@ -1,5 +1,6 @@
 import { Data, Effect, Option, Schema } from "effect";
 
+import { FeedPage, InboxPage, Likes, PostComment, PostThread } from "./feed.ts";
 import { ActivityView, FollowState, type SocialActivityId } from "./privacy.ts";
 import { usernamePrefix } from "./username.ts";
 
@@ -78,6 +79,9 @@ const SERVER_PROBLEMS = [
   "username_required",
   "cannot_follow_self",
   "request_not_found",
+  "post_not_found",
+  "invalid_comment",
+  "invalid_cursor",
 ] as const;
 
 export type SocialProblem =
@@ -112,6 +116,12 @@ export const socialProblemMessage = (failed: SocialFailed): string => {
       return "You cannot follow yourself.";
     case "request_not_found":
       return "That request was already answered or taken back.";
+    case "post_not_found":
+      return "This post is not here. It may be deleted, or no longer shared with you.";
+    case "invalid_comment":
+      return failed.message;
+    case "invalid_cursor":
+      return "The feed changed while you scrolled. Pull to refresh.";
     case "server":
       return "The svett server had a problem. Try again soon.";
   }
@@ -135,6 +145,7 @@ const isServerProblem = (code: string): code is (typeof SERVER_PROBLEMS)[number]
   (SERVER_PROBLEMS as ReadonlyArray<string>).includes(code);
 
 const at = (username: string) => `/v1/profiles/${encodeURIComponent(username)}`;
+const postAt = (id: string) => `/v1/posts/${encodeURIComponent(id)}`;
 const page = (after: string | undefined) =>
   after === undefined ? "" : `?after=${encodeURIComponent(after)}`;
 
@@ -142,7 +153,7 @@ const page = (after: string | undefined) =>
 export const httpSocialApi = (options: HttpSocialOptions) => {
   const call = <A>(
     schema: Schema.Codec<A, unknown>,
-    method: "GET" | "PUT" | "DELETE",
+    method: "GET" | "PUT" | "POST" | "DELETE",
     path: string,
     body?: unknown,
   ) =>
@@ -222,6 +233,29 @@ export const httpSocialApi = (options: HttpSocialOptions) => {
     /** Declines the request with this `FollowRequest.id`. */
     decline: (request: string) =>
       call(Done, "DELETE", `/v1/follow-requests/${encodeURIComponent(request)}`),
+    /** Your posts and those of the accounts you follow, newest first, after `cursor`. */
+    feed: (cursor?: string) =>
+      call(
+        FeedPage,
+        "GET",
+        cursor === undefined ? "/v1/feed" : `/v1/feed?cursor=${encodeURIComponent(cursor)}`,
+      ),
+    /** A post by its social ID, with its comments. */
+    post: (id: string) => call(PostThread, "GET", postAt(id)),
+    like: (id: string) => call(Likes, "PUT", `${postAt(id)}/like`),
+    unlike: (id: string) => call(Likes, "DELETE", `${postAt(id)}/like`),
+    comment: (id: string, body: string) =>
+      call(PostComment, "POST", `${postAt(id)}/comments`, { body }),
+    deleteComment: (id: string, commentId: string) =>
+      call(Done, "DELETE", `${postAt(id)}/comments/${encodeURIComponent(commentId)}`),
+    inbox: (cursor?: string) =>
+      call(
+        InboxPage,
+        "GET",
+        cursor === undefined ? "/v1/inbox" : `/v1/inbox?cursor=${encodeURIComponent(cursor)}`,
+      ),
+    /** Marks every inbox item up to `until` read. */
+    markInboxRead: (until: number) => call(Done, "PUT", "/v1/inbox/read", { until }),
   };
 };
 

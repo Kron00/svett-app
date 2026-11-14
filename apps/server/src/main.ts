@@ -11,6 +11,8 @@ import { Backups, NightlyBackups } from "./backups.ts";
 import { ClerkConfig } from "./clerk-config.ts";
 import { ServerConfig } from "./config.ts";
 import { Database, migrate } from "./database.ts";
+import { FeedRoutes } from "./feed-routes.ts";
+import { FeedRows } from "./feed-rows.ts";
 import { Routes } from "./http.ts";
 import { PgTools } from "./pg-tools.ts";
 import { SocialRoutes } from "./social-routes.ts";
@@ -34,6 +36,7 @@ const Services = Layer.mergeAll(
   Backups.layer,
   AccountRows.layer,
   SocialRows.layer,
+  FeedRows.layer,
   Sessions.layer,
 ).pipe(
   Layer.provideMerge(Database),
@@ -44,7 +47,7 @@ const Services = Layer.mergeAll(
 );
 
 const App = Layer.mergeAll(
-  HttpRouter.serve(Layer.mergeAll(Routes, AccountRoutes, SocialRoutes)),
+  HttpRouter.serve(Layer.mergeAll(Routes, AccountRoutes, SocialRoutes, FeedRoutes)),
   NightlyBackups,
 ).pipe(Layer.provide(Migrated), Layer.provide(HttpServer), Layer.provide(Services));
 

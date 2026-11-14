@@ -195,6 +195,7 @@ function ProfileContent({
   readonly profile: ProfileView;
   readonly reload: () => void;
 }) {
+  const navigation = useNavigation<RootNavigation>();
   const notes = [
     profile.private ? "Private profile" : "Public profile",
     profile.followsYou ? "Follows you" : undefined,
@@ -227,6 +228,14 @@ function ProfileContent({
               title={activity.title}
               subtitle={activityLine(activity, formatDay)}
               testID={`activity-${activity.id}`}
+              trailing={{
+                type: "chevron",
+                onPress: () =>
+                  navigation.push("Post", {
+                    username: profile.username,
+                    postId: activity.id,
+                  }),
+              }}
             />
           ))}
         </ListSection>

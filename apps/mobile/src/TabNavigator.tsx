@@ -6,6 +6,7 @@ import { View } from "react-native";
 import { AccountRow } from "./account/AccountRow";
 import { ChatGPTRow } from "./chatgpt/ChatGPTRow";
 import { ExerciseLibraryRow } from "./exercises/ExerciseLibraryRow";
+import { FeedScreen } from "./feed/FeedScreen";
 import { DesignGalleryRow } from "./gallery/DesignGalleryRow";
 import type { TabParamList } from "./navigation";
 import { PhoneChecksRow } from "./PhoneChecksRow";
@@ -21,6 +22,7 @@ const TabStack = createNativeStackNavigator();
 
 function TabContent({ tab }: { readonly tab: Tab }) {
   if (tab.name === "Progress") return <ProgressScreen />;
+  if (tab.name === "Home") return <FeedScreen />;
   return (
     <PlaceholderScreen tab={tab}>
       {tab.name === "Train" ? (

@@ -2,12 +2,8 @@ import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import {
   ActivityId,
   formatVolumeKg,
-  formatWeightKg,
   formatWorkoutDuration,
   HistoryRepository,
-  MUSCLE_LABEL,
-  MUSCLE_SPLIT_RULE,
-  type MuscleShare,
   RECORD_RULES,
   type RecordKind,
   saveWorkoutAsRoutine,
@@ -28,6 +24,7 @@ import { Button } from "../ui/Button";
 import { EmptyState } from "../ui/EmptyState";
 import { Icon } from "../ui/Icon";
 import { SectionHeader } from "../ui/List";
+import { MuscleSplitCard } from "./MuscleSplitCard";
 import { StatTile } from "../ui/StatTile";
 import { formatDayAndTime } from "./dates";
 import { deleteWorkout } from "./deleted";
@@ -103,37 +100,6 @@ function ExerciseCard({
       {entry.sets.map((set) => (
         <SetLine key={set.id} set={set} onPress={() => onEditSet(set)} />
       ))}
-    </View>
-  );
-}
-
-function MuscleSplitCard({ split }: { readonly split: ReadonlyArray<MuscleShare> }) {
-  return (
-    <View testID="muscle-split" className="gap-2">
-      <SectionHeader title="Muscle split" />
-      <View className="mx-gutter gap-3 rounded-card bg-surface p-4">
-        {split.map((share) => (
-          <View
-            key={share.muscle}
-            accessible
-            accessibilityLabel={`${MUSCLE_LABEL[share.muscle]}, ${share.percent} percent, ${formatWeightKg(share.sets)} sets`}
-            className="gap-1"
-          >
-            <View className="flex-row flex-wrap justify-between gap-x-3">
-              <AppText variant="subheadline">{MUSCLE_LABEL[share.muscle]}</AppText>
-              <AppText variant="subheadline" tone="secondary" numeric>
-                {share.percent}% · {formatWeightKg(share.sets)} sets
-              </AppText>
-            </View>
-            <View className="h-2 overflow-hidden rounded-full bg-control">
-              <View className="h-2 rounded-full bg-accent" style={{ width: `${share.percent}%` }} />
-            </View>
-          </View>
-        ))}
-      </View>
-      <AppText variant="footnote" tone="secondary" className="px-8">
-        {MUSCLE_SPLIT_RULE}
-      </AppText>
     </View>
   );
 }

@@ -2164,4 +2164,197 @@ check "social.sh fails on a build without a Clerk key" test "$social_status" -ne
 check "social.sh says to build with the publishable key" \
   grep -qF "Build it with EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY set" "$output"
 
+feed_lift=1f2e3d4c5b6a79881f2e3d4c5b6a7988
+feed_run=0a1b2c3d4e5f60710a1b2c3d4e5f6071
+
+# Stands in for the bound command on the feed screens. It tracks the screen, the
+# sign-in step and who signed in: the lifter sees the run and the runner sees the
+# lifting session. Posts on Home and everything under a post's top show only after a
+# scroll since the screen last changed, so the test proves the script scrolls to
+# them. FAKE_LEAK shows the run's hidden heart rate, FAKE_NO_POSTS leaves Home empty.
+cat >"$fake/feed-device" <<EOF
+#!/usr/bin/env bash
+echo "\$*" >>"$root/bound-calls"
+state="$root/feed-state"
+get() { cat "\$state/\$1" 2>/dev/null || echo "\$2"; }
+put() { echo "\$2" >"\$state/\$1"; }
+mkdir -p "\$state"
+screen=\$(get screen tabs)
+step=\$(get step choose)
+scrolled=\$(get scrolled no)
+who=\$(get who nobody)
+show() { put screen "\$1"; put scrolled no; }
+id_of() { sed -nE 's/.*id="([^"]+)".*/\1/p' <<<"\$1"; }
+label_of() { sed -nE 's/.*label="([^"]+)".*/\1/p' <<<"\$1"; }
+lift=$feed_lift
+run=$feed_run
+# theirs is the post the signed-in account should see from the other one.
+if [[ "\$who" == svett-feed-a* ]]; then theirs=\$run; else theirs=\$lift; fi
+below() { [[ "\$scrolled" == yes ]]; }
+on_screen() {
+  case "\$screen:\$1" in
+    account:account) true ;;
+    account:*)
+      case "\$step:\$1" in
+        choose:sign-in-choose | email:sign-in-email | email:email-field | code:sign-in-code | \
+          code:code-field | signedin:signed-in) true ;;
+        choose:continue-with-email | email:send-code | code:check-code) below ;;
+        *) false ;;
+      esac ;;
+    feed:feed) true ;;
+    feed:post-\$theirs | feed:post-numbers-\$theirs) [[ -z "\${FAKE_NO_POSTS:-}" ]] && below ;;
+    feed:post-route-\$run) [[ "\$theirs" == "\$run" ]] && below ;;
+    feed:post-muscles-\$lift) [[ "\$theirs" == "\$lift" ]] && below ;;
+    post-\$run:post-title | post-\$run:post-route | post-\$run:post-line) true ;;
+    post-\$run:post-distance | post-\$run:post-pace | post-\$run:post-split-4 | post-\$run:post-hidden) below ;;
+    post-\$run:post-heart-rate) [[ -n "\${FAKE_LEAK:-}" ]] && below ;;
+    post-\$lift:post-title | post-\$lift:post-hidden) true ;;
+    post-\$lift:muscle-split | post-\$lift:post-exercises) below ;;
+    inbox:inbox | inbox:inbox-items) true ;;
+    *) false ;;
+  esac
+}
+label() {
+  case "\$screen:\$1" in
+    feed:post-numbers-\$run) echo "4.44 km · 5:38 /km" ;;
+    feed:post-numbers-\$lift) echo "2 exercises · 6 sets · 2,700 kg" ;;
+    feed:post-muscles-\$lift) echo "Quadriceps 60% · Chest 40%" ;;
+    post-\$run:post-title) echo "Feed proof, river loop" ;;
+    post-\$run:post-distance) echo "Distance, 4.44 km" ;;
+    post-\$run:post-pace) echo "Pace, 5:38 /km" ;;
+    post-\$run:post-line) echo "Run · 25 min · Start time hidden" ;;
+    post-\$run:post-hidden) echo "feed_proof_b hides heart rate and start time." ;;
+    post-\$lift:post-title) echo "Feed proof, legs and bench" ;;
+    post-\$lift:post-hidden) echo "feed_proof_a hides calories." ;;
+    *) echo "" ;;
+  esac
+}
+exists() { on_screen "\$1" || { scrolled=yes; on_screen "\$1"; }; }
+args=" \$* "
+target=\$(id_of "\$args")
+case "\$args" in
+  *" open com.kron00.svett svett://account "*) show account; put step choose ;;
+  *" open com.kron00.svett svett://feed "*) show feed ;;
+  *" open com.kron00.svett svett://post/feed_proof_b/\$run "*) show "post-\$run" ;;
+  *" open com.kron00.svett svett://post/feed_proof_a/\$lift "*) show "post-\$lift" ;;
+  *" open com.kron00.svett svett://inbox "*) show inbox ;;
+  *" open com.kron00.svett "*) show tabs ;;
+  *" scroll "*" --until "*) exists "\$target" && put scrolled yes ;;
+  *" scroll "*) put scrolled yes ;;
+  *" get attrs "*)
+    on_screen "\$target" || exit 1
+    put last "\$target"
+    echo '{"label": "Field", "rect": {"x": 20, "y": 300, "width": 120, "height": 40}}' ;;
+  *" fill 80 320 "*)
+    case "\$(get last)" in
+      email-field) put who "\$(sed -nE 's/.* fill 80 320 ([^ ]+) .*/\1/p' <<<"\$args")" ;;
+      code-field) ;;
+      *) exit 1 ;;
+    esac ;;
+  *" press 80 320 "*)
+    case "\$screen:\$step:\$(get last)" in
+      account:choose:continue-with-email) put step email ;;
+      account:email:send-code) put step code ;;
+      account:code:check-code) put step signedin ;;
+      *) echo "fake device: press on \$(get last) on \$screen" >&2; exit 1 ;;
+    esac ;;
+  *" get text "*) label "\$target" ;;
+  *" wait absent "*) ! on_screen "\$target" ;;
+  *" is visible "* | *" wait "*)
+    [[ -z "\$target" ]] && exit 0
+    on_screen "\$target" || exit 1
+    wanted=\$(label_of "\$args")
+    [[ -z "\$wanted" || "\$(label "\$target")" == "\$wanted" ]] ;;
+esac
+EOF
+chmod +x "$fake/feed-device"
+
+# run_feed [VAR=value...] [feed.sh args...] leaves the exit status in feed_status.
+run_feed() {
+  local -a vars=()
+  while [[ "${1:-}" == *=* ]]; do
+    vars+=("$1")
+    shift
+  done
+  rm -rf "$root/simctl-calls" "$root/bound-calls" "$root/feed-state"
+  feed_status=0
+  env PATH="$fake:$PATH" SVETT_DEVICE_CMD="feed-device --session 't3-test session' --device FAKE-UDID" \
+    SVETT_FEED_POSTS="$feed_lift $feed_run" "${vars[@]}" "$repo/scripts/sim/feed.sh" "$@" >"$output" 2>&1 ||
+    feed_status=$?
+}
+
+feed_reset=("simctl terminate FAKE-UDID com.kron00.svett" "simctl keychain FAKE-UDID reset"
+  "simctl get_app_container FAKE-UDID com.kron00.svett data")
+feed_links() {
+  printf '%s\n' "$1" "com.kron00.svett svett://account" "com.kron00.svett svett://feed" \
+    "com.kron00.svett svett://post/feed_proof_b/$feed_run" "com.kron00.svett svett://inbox" \
+    "$1" "com.kron00.svett svett://account" "com.kron00.svett svett://feed" \
+    "com.kron00.svett svett://post/feed_proof_a/$feed_lift" "com.kron00.svett svett://inbox"
+}
+
+case_name="feed.sh Debug with SVETT_DEVICE_CMD"
+echo stale >"$container_sqlite/svett-account-user_old.db"
+run_feed "$root/feed"
+[[ "$feed_status" == 0 ]] || fail "feed.sh failed"
+check "feed.sh drops svett's data and every Clerk session before each sign-in" \
+  only_simctl "simctl list devices available" "${feed_reset[@]}" "${feed_reset[@]}"
+check "feed.sh removes svett's databases" test -z "$(ls "$container_sqlite")"
+mapfile -t feed_debug_links < <(feed_links "$debug_open")
+check "feed.sh relaunches into the dev client for each account, then opens each screen by its link" \
+  only_open "${feed_debug_links[@]}"
+check "feed.sh signs in as the lifter, then as the runner, with the test code" \
+  only_calls "fill" "fill 80 320 svett-feed-a+clerk_test@example.com" "fill 80 320 $test_code" \
+  "fill 80 320 svett-feed-b+clerk_test@example.com" "fill 80 320 $test_code"
+check "feed.sh scrolls Home to the run before it checks it" \
+  bound_got "$bound_prefix scroll down --until id=\"post-$feed_run\""
+check "feed.sh scrolls the run's post to its distance below the fold" \
+  bound_got "$bound_prefix scroll down --until id=\"post-distance\""
+check "feed.sh scrolls the lifting post to its muscle split" \
+  bound_got "$bound_prefix scroll down --until id=\"muscle-split\""
+check "feed.sh shoots each screen at the largest text size, then restores the default" \
+  only_calls "settings text-size" \
+  "settings text-size accessibility-extra-extra-extra-large" "settings text-size large"
+check "feed.sh screenshots both feeds, both posts and both inboxes" \
+  only_calls "screenshot" \
+  "screenshot $root/feed/01-lifter-feed.png" "screenshot $root/feed/02-run-route.png" \
+  "screenshot $root/feed/03-run-detail.png" "screenshot $root/feed/04-lifter-inbox.png" \
+  "screenshot $root/feed/05-runner-feed.png" "screenshot $root/feed/06-lifting-split.png" \
+  "screenshot $root/feed/07-lifting-sets.png" "screenshot $root/feed/08-runner-inbox.png"
+check "feed.sh says the run shows its distance and pace in the lifter's feed" \
+  grep -qxF "The run's distance and pace on Home reads \"4.44 km · 5:38 /km\"" "$output"
+check "feed.sh says the lifting session shows its muscles in the runner's feed" \
+  grep -qxF "The lifting post's muscles on Home reads \"Quadriceps 60% · Chest 40%\"" "$output"
+check "feed.sh says the run's start time is hidden" \
+  grep -qxF "The line under the run's title reads \"Run · 25 min · Start time hidden\"" "$output"
+check "feed.sh says the run's heart rate does not show" \
+  grep -qxF "The run's heart rate does not show" "$output"
+check "feed.sh with SVETT_DEVICE_CMD calls neither simctl launch nor openurl" no_simctl_launch_or_openurl
+
+case_name="feed.sh Release with SVETT_DEVICE_CMD"
+run_feed --release "$root/feed-release"
+[[ "$feed_status" == 0 ]] || fail "feed.sh --release failed"
+mapfile -t feed_release_links < <(feed_links "com.kron00.svett --relaunch")
+check "feed.sh Release relaunches the installed app without Metro" only_open "${feed_release_links[@]}"
+
+case_name="feed.sh when a hidden field shows"
+run_feed FAKE_LEAK=1 "$root/feed-leak"
+check "feed.sh fails when the run shows its hidden heart rate" test "$feed_status" -ne 0
+check "feed.sh says the hidden heart rate showed" \
+  grep -qF "The run's heart rate shows, but the owner hid it" "$output"
+check "feed.sh restores the default text size after a failure" \
+  only_calls "settings text-size" \
+  "settings text-size accessibility-extra-extra-extra-large" "settings text-size large"
+
+case_name="feed.sh when Home has no posts"
+run_feed FAKE_NO_POSTS=1 "$root/feed-empty"
+check "feed.sh fails when Home lacks the other account's post" test "$feed_status" -ne 0
+check "feed.sh says to run the server proof first" \
+  grep -qF "Home has no run from feed_proof_b. Run SVETT_PROOF_KEEP=1 node apps/server/src/feed-proof.ts" "$output"
+
+case_name="feed.sh without post IDs or a Clerk key"
+run_feed SVETT_FEED_POSTS= CLERK_SECRET_KEY= "$root/feed-no-posts"
+check "feed.sh refuses to run without post IDs or a key to make them" test "$feed_status" -eq 64
+check "feed.sh says what to set" grep -qF "Set SVETT_FEED_POSTS to the two post IDs" "$output"
+check "feed.sh touches no simulator without post IDs" test ! -s "$root/simctl-calls"
+
 echo "$passed passed"

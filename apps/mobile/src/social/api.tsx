@@ -1,6 +1,12 @@
 import { useAuth } from "@clerk/expo";
 import { useFocusEffect, useNavigation } from "@react-navigation/native";
-import { httpSocialApi, type SocialApi, SocialFailed, socialProblemMessage } from "@svett/core";
+import {
+  httpSocialApi,
+  type SocialApi,
+  SocialFailed,
+  type SocialProblem,
+  socialProblemMessage,
+} from "@svett/core";
 import { Cause, Effect, Exit, Option } from "effect";
 import { type ReactNode, useCallback, useMemo, useState } from "react";
 import { ScrollView, View } from "react-native";
@@ -13,7 +19,7 @@ import { EmptyState } from "../ui/EmptyState";
 
 export type SocialResult<A> =
   | { readonly ok: true; readonly value: A }
-  | { readonly ok: false; readonly message: string };
+  | { readonly ok: false; readonly message: string; readonly problem: SocialProblem | undefined };
 
 /** Runs a request and turns its failure into the sentence the screen shows. */
 export const runSocial = async <A,>(
@@ -22,10 +28,9 @@ export const runSocial = async <A,>(
   const exit = await Effect.runPromiseExit(request);
   if (Exit.isSuccess(exit)) return { ok: true, value: exit.value };
   const error = Option.getOrUndefined(Cause.findErrorOption(exit.cause));
-  return {
-    ok: false,
-    message: error instanceof SocialFailed ? socialProblemMessage(error) : "Something went wrong.",
-  };
+  return error instanceof SocialFailed
+    ? { ok: false, message: socialProblemMessage(error), problem: error.problem }
+    : { ok: false, message: "Something went wrong.", problem: undefined };
 };
 
 export type SocialState<A> =
@@ -103,7 +108,21 @@ function Centered({ testID, children }: { readonly testID: string; readonly chil
   );
 }
 
-function SignedInApi({ children }: { readonly children: (api: SocialApi) => ReactNode }) {
+/** What a screen says to someone signed out. Profiles by default. */
+export type SignedOutText = { readonly title: string; readonly message: string };
+
+const PROFILES_SIGNED_OUT: SignedOutText = {
+  title: "Sign in to use profiles",
+  message: "Profiles, search and follows need a svett account. Everything else works without one.",
+};
+
+function SignedInApi({
+  signedOut,
+  children,
+}: {
+  readonly signedOut: SignedOutText;
+  readonly children: (api: SocialApi) => ReactNode;
+}) {
   const navigation = useNavigation<RootNavigation>();
   const { isLoaded, userId, getToken } = useAuth();
   const api = useMemo(
@@ -124,8 +143,8 @@ function SignedInApi({ children }: { readonly children: (api: SocialApi) => Reac
       <Centered testID="social-signed-out">
         <EmptyState
           symbol="person.crop.circle.badge.questionmark"
-          title="Sign in to use profiles"
-          message="Profiles, search and follows need a svett account. Everything else works without one."
+          title={signedOut.title}
+          message={signedOut.message}
           action={{ label: "Open Account", onPress: () => navigation.navigate("Account") }}
         />
       </Centered>
@@ -135,7 +154,13 @@ function SignedInApi({ children }: { readonly children: (api: SocialApi) => Reac
 }
 
 /** Gives `children` the social API for the signed-in account, or says why there is none. */
-export function SignedInOnly({ children }: { readonly children: (api: SocialApi) => ReactNode }) {
+export function SignedInOnly({
+  signedOut = PROFILES_SIGNED_OUT,
+  children,
+}: {
+  readonly signedOut?: SignedOutText;
+  readonly children: (api: SocialApi) => ReactNode;
+}) {
   if (CLERK_PUBLISHABLE_KEY === undefined) {
     return (
       <Centered testID="social-accounts-off">
@@ -147,5 +172,5 @@ export function SignedInOnly({ children }: { readonly children: (api: SocialApi)
       </Centered>
     );
   }
-  return <SignedInApi>{children}</SignedInApi>;
+  return <SignedInApi signedOut={signedOut}>{children}</SignedInApi>;
 }
