@@ -805,14 +805,25 @@ const twoHours = (() => {
   return { events, travelled };
 })();
 
-describe("a long recording", () => {
-  it("replays 7,200 readings within 100 ms, adding each without copying the ones before", () => {
-    const times = Array.from({ length: 3 }, () => {
+/** The fastest of five replays of the first `count` readings, in milliseconds. */
+const fastestReplay = (count: number) =>
+  Math.min(
+    ...Array.from({ length: 5 }, () => {
       const started = performance.now();
-      replay([start, ...twoHours.events]);
+      replay([start, ...twoHours.events.slice(0, count)]);
       return performance.now() - started;
-    });
-    expect(Math.min(...times)).toBeLessThan(100);
+    }),
+  );
+
+describe("a long recording", () => {
+  it("replays readings in time that grows with their number, adding each without copying the ones before", () => {
+    const quarter = fastestReplay(1800);
+    const all = fastestReplay(7200);
+    // Four times the readings take about four times as long. Copying the readings before
+    // each one would take sixteen. A shared CI runner can be a few times slower than a
+    // phone, so the bound on two hours is loose.
+    expect(all / Math.max(quarter, 1)).toBeLessThan(8);
+    expect(all).toBeLessThan(400);
   });
 
   it("comes within 1% of two hours of laps with a stop", () => {
