@@ -1,0 +1,10 @@
+**/node_modules
+.git
+apps/mobile
+research
+docs
+scripts
+assets
+build
+.fixtures
+**/*.test.ts
