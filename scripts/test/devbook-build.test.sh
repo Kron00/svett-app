@@ -2604,11 +2604,21 @@ check "startup.sh says what SVETT_LAUNCHES must be" \
 # the app's workouts in $FAKE_STATE and writes them to the database it was
 # launched on after every change, as the app saves each change. An element is
 # on screen only where the app shows it, and the exercises after the first and
-# the timing line sit below the fold until a scroll down reaches them. A press
-# acts on the element whose frame was read last. FAKE_LOSES_WORKOUT forgets the
-# workout when svett is killed, FAKE_DROPS_DONE forgets the last exercise's done
-# sets then, FAKE_KEEPS_UNDONE keeps the sets not done when it finishes, and
-# FAKE_NO_TIMING never times a set marked done.
+# the timing line sit below the fold until a scroll down reaches them. Elements
+# have frames on a 956 point screen. The first set's weight field starts at the
+# bottom edge. The open keypad covers the screen from y=524, with Next and Done
+# at its foot, and a running rest sits right above it, so a press there reaches
+# the keypad or the rest instead of the workout. A drag from inside the workout
+# brings the element it is for clear of them, gliding for two reads. A press
+# acts on the element whose frame was read last, if it lands on its centre.
+# Every set marked done starts a rest, and the first rest asks for notifications
+# with a system prompt that hides svett until alert accept answers it, unless
+# settings permission granted them ahead. FAKE_GRANT_FAILS refuses that grant.
+# FAKE_LAUNCH_PROMPT puts a system prompt over the first launch, and
+# FAKE_FIRST_LAUNCH_HANGS never shows the tabs on the first launch.
+# FAKE_LOSES_WORKOUT forgets the workout when svett is killed, FAKE_DROPS_DONE
+# forgets the last exercise's done sets then, FAKE_KEEPS_UNDONE keeps the sets
+# not done when it finishes, and FAKE_NO_TIMING never times a set marked done.
 logger_bin="$root/logger-bin"
 mkdir -p "$logger_bin"
 cat >"$logger_bin/pnpm" <<'EOF'
@@ -2639,7 +2649,8 @@ const command = args.slice(4);
 const stateFile = `${process.env.FAKE_STATE}/state.json`;
 const state = fs.existsSync(stateFile)
   ? JSON.parse(fs.readFileSync(stateFile, "utf8"))
-  : { screen: "home", workouts: [], scrolled: [], kills: 0, timing: null };
+  : { screen: "home", workouts: [], scrolled: [], kills: 0, launches: 0, timing: null, permission: "undetermined",
+    prompt: null, rest: false, focus: null, low: null, panned: false, glide: null };
 const save = () => {
   fs.mkdirSync(process.env.FAKE_STATE, { recursive: true });
   fs.writeFileSync(stateFile, JSON.stringify(state));
@@ -2692,8 +2703,8 @@ const doneLabel = (exercise, index) => {
 // Every element on the current screen, by id or label, with its label.
 const elements = () => {
   const found = [];
-  const add = (id, label = "") => found.push({ id, label });
-  if (state.screen === "home") return found;
+  const add = (id, label = "", extra = {}) => found.push({ id, label, selected: false, role: null, ...extra });
+  if (state.screen === "home" || state.screen === "launching") return found;
   add(null, "Train, tab, 2 of 5");
   const workout = current();
   if (["tabs", "train"].includes(state.screen) && workout) add("workout-bar", `Workout in progress, ${workout.title}, 12:34`);
@@ -2714,7 +2725,8 @@ const elements = () => {
     add("workout-title", workout.title);
     // The bar's Finish item has no identifier, so the script can only find it by label.
     add("bar-finish", "Finish");
-    if (state.alert) add("alert-finish", "Finish workout");
+    // iOS nests an alert's button in containers with the same label.
+    if (state.alert) add("alert-finish", "Finish workout", { role: "button" });
     add("set-done-timing", state.timing === null ? "No set marked done yet" : `Set shown done in ${state.timing} ms`);
     workout.exercises.forEach((exercise, e) => {
       add(`workout-exercise-${e}`, exercise.name);
@@ -2723,7 +2735,10 @@ const elements = () => {
       exercise.sets.forEach((_, s) => {
         add(`workout-set-${e}-${s}`, doneLabel(exercise, s));
         add(`workout-set-${e}-${s}-type`);
-        for (const column of exercise.fields === "time" ? ["time"] : ["weight", "reps"]) add(`set-${e}-${s}-${column}`);
+        for (const column of exercise.fields === "time" ? ["time"] : ["weight", "reps"]) {
+          const focus = state.focus;
+          add(`set-${e}-${s}-${column}`, "", { selected: focus?.e === e && focus.s === s && focus.column === column });
+        }
         const last = previous(exercise, s);
         if (last !== null && last.weight !== null) add(null, `Previous, ${last.weight} kg × ${last.reps}`);
       });
@@ -2733,20 +2748,25 @@ const elements = () => {
       add("keypad-next");
       add("keypad-done");
     }
+    if (state.rest) add("rest-timer");
   }
   return found;
 };
 const parse = (selector) => ({
   id: /id="([^"]*)"/.exec(selector)?.[1] ?? null,
   label: /label="([^"]*)"/.exec(selector)?.[1] ?? null,
+  selected: /selected=true/.test(selector),
+  role: /role="([^"]*)"/.exec(selector)?.[1] ?? null,
 });
 const findOne = (selector) => {
   const wanted = parse(selector);
   return elements().find((element) =>
-    (wanted.id === null || element.id === wanted.id) && (wanted.label === null || element.label === wanted.label)) ?? null;
+    (wanted.id === null || element.id === wanted.id) && (wanted.label === null || element.label === wanted.label) &&
+    (!wanted.selected || element.selected) && (element.role === null || wanted.role === element.role)) ?? null;
 };
 // A || fallback finds the first of its elements on screen, else the first anywhere.
 const find = (selector) => {
+  if (state.prompt !== null) return null;
   const found = selector.split(" || ").map(findOne).filter((element) => element !== null);
   return found.find(visible) ?? found[0] ?? null;
 };
@@ -2755,58 +2775,138 @@ const belowFold = (element) =>
   /^(workout-exercise|workout-set|set|move-exercise-down|add-workout-set)-[1-9]/.test(element.id ?? "") ||
   element.id === "set-done-timing" || element.id === "start-routine" || element.id === "routine-list";
 const visible = (element) => element !== null && (!belowFold(element) || state.scrolled.includes(element.id));
-const show = (screen) => { state.screen = screen; state.scrolled = []; state.focus = null; };
+
+// The screen is 956 points tall. The keypad covers it from y=524 down, with Next and Done at
+// its foot. A running rest sits right above the open keypad, or at the foot of the screen.
+const KEYPAD_TOP = 524;
+const KEY_ROWS = ["123", "456", "789", ".0<"];
+const KEY_COLUMNS = [16, 155, 294];
+const REST_HEIGHT = 196;
+// A press below this lands on the home indicator. On the Mac a press at y=880 still opened
+// the keypad on the first set's weight field.
+const HOME_INDICATOR = 900;
+const restTop = () => (state.focus ? KEYPAD_TOP : 956) - REST_HEIGHT;
+const keyFrame = (key) => {
+  const row = KEY_ROWS.findIndex((keys) => keys.includes(key));
+  return { x: KEY_COLUMNS[KEY_ROWS[row].indexOf(key)], y: KEYPAD_TOP + 12 + 75 * row, width: 130, height: 67 };
+};
+const fixed = {
+  "keypad-next": { x: 16, y: 836, width: 200, height: 88 },
+  "keypad-done": { x: 224, y: 836, width: 200, height: 88 },
+  "bar-finish": { x: 340, y: 62, width: 84, height: 44 },
+  "alert-finish": { x: 40, y: 480, width: 360, height: 50 },
+  "workout-bar": { x: 16, y: 700, width: 408, height: 60 },
+  "exercise-result-0": { x: 0, y: 200, width: 440, height: 80 },
+};
+const inFocusedSet = (id) => state.focus !== null &&
+  new RegExp(`^(set|workout-set)-${state.focus.e}-${state.focus.s}(-|$)`).test(id ?? "");
+// Where a content element is. The first set's weight field starts at the foot of the screen.
+// Opening the keypad scrolls the set being typed into near the top, and leaves the rest
+// below the keypad. A drag brings the element it was for, the next one read, to y=250, gliding
+// for its first two reads.
+const centreY = (id) => {
+  if (state.low === id) return 880;
+  if (state.panned) return 250 + (state.glide?.id === id ? 20 * Math.max(0, 2 - state.glide.reads) : 0);
+  if (inFocusedSet(id)) return /-weight$|-time$/.test(id) ? 336 : 420;
+  return 625;
+};
+const frame = (element) => {
+  const id = element.id ?? "";
+  const key = /^key-(\d)$/.exec(id);
+  if (key) return keyFrame(key[1]);
+  if (id === "rest-timer") return { x: 0, y: restTop(), width: 440, height: REST_HEIGHT };
+  return fixed[id] ?? { x: 16, y: centreY(id) - 25, width: 408, height: 50 };
+};
+const centre = (rect) => `${Math.round(rect.x + rect.width / 2)} ${Math.round(rect.y + rect.height / 2)}`;
+const show = (screen) => {
+  state.screen = screen; state.scrolled = []; state.focus = null; state.low = null; state.panned = false;
+};
 const startWorkout = (title, exercises) => {
   state.workouts.push({ title, status: "in_progress", exercises });
   show("workout");
 };
-const press = () => {
+const typeKey = (digit) => {
+  const workout = current();
+  const focus = state.focus;
+  focus.text = (focus.fresh ? "" : focus.text) + digit;
+  focus.fresh = false;
+  const digits = focus.text.padStart(6, "0");
+  workout.exercises[focus.e].sets[focus.s][focus.column] = focus.column === "time"
+    ? Number(digits.slice(0, 2)) * 3600 + Number(digits.slice(2, 4)) * 60 + Number(digits.slice(4))
+    : Number(focus.text);
+};
+// What a press at the point reaches: nothing under a system prompt or on the home indicator,
+// the keypad's key or button under it, nothing on the rest timer, and else the element whose
+// frame was read last, if the point is still its centre.
+const press = (x, y) => {
+  if (state.prompt !== null || y > HOME_INDICATOR) return;
+  if (state.screen === "workout" && state.focus) {
+    if (y >= KEYPAD_TOP) {
+      for (const digit of "0123456789") {
+        const rect = keyFrame(digit);
+        if (x >= rect.x && x < rect.x + rect.width && y >= rect.y && y < rect.y + rect.height) return typeKey(digit);
+      }
+      if (y >= 836 && x < 220) state.focus = { ...state.focus, column: "reps", text: "", fresh: true };
+      else if (y >= 836) state.focus = null;
+      return;
+    }
+  }
+  if (state.screen === "workout" && state.rest && y >= restTop() && y < restTop() + REST_HEIGHT) return;
+  if (state.alert && state.target !== "alert-finish") return;
   const target = state.target;
+  if (target === null || centre(frame({ id: target })) !== `${x} ${y}`) return;
+  act(target);
+};
+const act = (target) => {
   const workout = current();
   const at = (pattern) => pattern.exec(target)?.slice(1).map(Number) ?? null;
   let m;
   if (target === "workout-bar") show("workout");
-  else if (target === "start-routine")
+  else if (target === "start-routine") {
     startWorkout("Legs", ROUTINE.map(([name, min, max]) => ({ name, fields: "weight_reps", sets: [0, 1, 2].map(() => set("normal", min, max)) })));
-  else if (target === "start-empty-workout") startWorkout("Evening workout", []);
+    state.low = "set-0-0-weight";
+  } else if (target === "start-empty-workout") startWorkout("Evening workout", []);
   else if (target === "exercise-result-0") {
     const name = process.env.FAKE_LIBRARY ?? LIBRARY[state.query];
     const last = lastSets(name);
     workout.exercises.push({ name, fields: name === "Plank" ? "time" : "weight_reps",
       sets: (last ?? [set("normal", null, null), set("normal", null, null), set("normal", null, null)]).map((other) => set(other.type, null, null)) });
     show("workout");
-  } else if ((m = at(/^workout-set-(\d+)-(\d+)-type$/))) { state.sheet = m; show("sheet"); }
-  else if (target === "set-type-sheet-failure") {
+  } else if ((m = at(/^workout-set-(\d+)-(\d+)-type$/))) {
+    state.sheet = m;
+    const focus = state.focus;
+    show("sheet");
+    state.focus = focus;
+  } else if (target === "set-type-sheet-failure") {
     workout.exercises[state.sheet[0]].sets[state.sheet[1]].type = "failure";
+    const focus = state.focus;
     show("workout");
+    state.focus = focus;
   } else if ((m = at(/^workout-set-(\d+)-(\d+)$/))) {
     const exercise = workout.exercises[m[0]];
     const one = exercise.sets[m[1]];
     if (!one.done) {
       const last = previous(exercise, m[1]);
       if (last !== null) for (const key of ["weight", "reps", "time"]) one[key] ??= last[key];
+      // Every set marked done starts a rest, and the first rest asks for notifications.
+      state.rest = true;
+      if (state.permission === "undetermined") state.prompt = "notifications";
     }
     one.done = !one.done;
     if (process.env.FAKE_NO_TIMING === undefined) state.timing = 12;
   } else if ((m = /^set-(\d+)-(\d+)-(\w+)$/.exec(target))) {
     state.focus = { e: Number(m[1]), s: Number(m[2]), column: m[3], text: "", fresh: true };
-  } else if ((m = /^key-(\d)$/.exec(target))) {
-    const focus = state.focus;
-    focus.text = (focus.fresh ? "" : focus.text) + m[1];
-    focus.fresh = false;
-    const digits = focus.text.padStart(6, "0");
-    workout.exercises[focus.e].sets[focus.s][focus.column] = focus.column === "time"
-      ? Number(digits.slice(0, 2)) * 3600 + Number(digits.slice(2, 4)) * 60 + Number(digits.slice(4))
-      : Number(focus.text);
-  } else if (target === "keypad-next") state.focus = { ...state.focus, column: "reps", text: "", fresh: true };
-  else if (target === "keypad-done") state.focus = null;
-  else if ((m = at(/^add-workout-set-(\d+)$/))) {
+    state.low = null;
+    state.panned = false;
+  } else if ((m = at(/^add-workout-set-(\d+)$/))) {
     const sets = workout.exercises[m[0]].sets;
     sets.push({ ...sets.at(-1), done: false, min: null, max: null });
   } else if ((m = at(/^move-exercise-down-(\d+)$/))) {
     const [moved] = workout.exercises.splice(m[0], 1);
     workout.exercises.splice(m[0] + 1, 0, moved);
     state.scrolled = [];
+    if (state.focus?.e === m[0]) state.focus.e += 1;
+    else if (state.focus?.e === m[0] + 1) state.focus.e -= 1;
   } else if (target === "bar-finish") state.alert = true;
   else if (target === "alert-finish") {
     state.alert = false;
@@ -2816,13 +2916,22 @@ const press = () => {
       workout.exercises = workout.exercises.filter((exercise) => exercise.sets.length > 0);
     }
     workout.status = "finished";
+    state.rest = false;
     show("tabs");
-  } else process.exit(1);
+  }
 };
 const fail = () => process.exit(1);
 switch (command[0]) {
-  case "settings":
   case "screenshot":
+    break;
+  case "snapshot":
+    console.log(JSON.stringify({ screen: state.screen, prompt: state.prompt, elements: elements().length }));
+    break;
+  case "settings":
+    if (command[1] === "permission") {
+      if (process.env.FAKE_GRANT_FAILS) { console.error("Operation not permitted"); fail(); }
+      if (command[2] === "grant" && command[3] === "notifications") state.permission = "granted";
+    }
     break;
   case "open": {
     const url = command[2];
@@ -2835,7 +2944,15 @@ switch (command[0]) {
         if (process.env.FAKE_LOSES_WORKOUT) state.workouts = state.workouts.filter((workout) => workout.status !== "in_progress");
         if (process.env.FAKE_DROPS_DONE) for (const one of current()?.exercises.at(-1).sets ?? []) one.done = false;
       }
+      state.launches += 1;
+      state.alert = false;
+      state.prompt = null;
       show("tabs");
+      // A rest still running comes back, and asks for notifications if nobody answered yet.
+      state.rest = state.rest && current() !== null;
+      if (state.rest && state.permission === "undetermined") state.prompt = "notifications";
+      if (state.launches === 1 && process.env.FAKE_LAUNCH_PROMPT) state.prompt = "launch";
+      if (state.launches === 1 && process.env.FAKE_FIRST_LAUNCH_HANGS) state.screen = "launching";
     } else if (url === "svett://train") show("train");
     else if (url === "svett://routine/legs-routine") show("routine");
     else if (url.startsWith("svett://train/workout/exercises?q=")) {
@@ -2856,22 +2973,48 @@ switch (command[0]) {
     const element = find(command[3]);
     if (element === null || (command[1] === "up" && !visible(element))) fail();
     state.scrolled.push(element.id);
+    state.low = null;
+    state.panned = false;
+    break;
+  }
+  case "gesture": {
+    // A drag moves the workout only from inside it: below the navigation bar, above the
+    // keypad and the rest timer. agent-device reports it on stdout.
+    const y = Number(command[3]);
+    const bottom = Math.min(956, state.focus ? KEYPAD_TOP : 956, state.rest ? restTop() : 956);
+    if (state.prompt === null && state.screen === "workout" && y > 110 && y < bottom) {
+      state.panned = true;
+      state.low = null;
+      state.glide = { id: null, reads: 0 };
+    }
+    console.log(`Panned (${command[2]}, ${command[3]}) by (${command[4]}, ${command[5]})`);
     break;
   }
   case "get": {
     const element = find(command[2]);
     if (element === null) fail();
     state.target = element.id;
-    console.log(JSON.stringify({ label: element.label, rect: { x: 16, y: 600, width: 408, height: 50 } }));
+    // The first element read after a drag is the one it was for.
+    if (state.glide !== null && state.glide.id === null && !/^(key-|rest-timer)/.test(element.id)) state.glide.id = element.id;
+    const rect = frame(element);
+    if (state.glide?.id === element.id) state.glide.reads += 1;
+    console.log(JSON.stringify({ label: element.label, rect }));
     break;
   }
-  case "press":
-    press();
+  case "press": {
+    // A press at a point must get two numbers, as agent-device would demand.
+    if (!/^\d+ \d+$/.test(`${command[1]} ${command[2]}`)) fail();
+    press(Number(command[1]), Number(command[2]));
     break;
+  }
   case "alert":
-    if (command[1] === "wait" && !state.alert) fail();
-    // svett's own alerts have no button agent-device's alert accept can find.
-    if (command[1] === "accept") fail();
+    if (command[1] === "wait" && state.prompt === null && !state.alert) fail();
+    // agent-device answers system prompts only. svett's own alerts have no button it can find.
+    if (command[1] === "accept") {
+      if (state.prompt === null) fail();
+      if (state.prompt === "notifications") state.permission = "granted";
+      state.prompt = null;
+    }
     break;
   default:
     fail();
@@ -2895,6 +3038,11 @@ run_logger() {
     "${vars[@]}" "$repo/scripts/sim/logger.sh" "$@" >"$output" 2>&1 || logger_status=$?
 }
 
+# logger_presses_clear checks every press point sits above y=840.
+logger_presses_clear() {
+  ! grep -E "^$bound_prefix press " "$root/bound-calls" | awk '$NF > 840 { found = 1 } END { exit !found }'
+}
+
 logger_db="$root/data container/Documents/svett-logger.db"
 logger_args="--launch-args=-svettFixture --launch-args=$logger_db --launch-args=-svettTiming --launch-args=1"
 logger_links=("com.kron00.svett svett://routine/legs-routine"
@@ -2911,19 +3059,24 @@ check "logger.sh launches on the copied fixture with timing, kills svett, and la
 check "logger.sh kills svett mid-workout with simctl" \
   simctl_got "simctl terminate FAKE-UDID com.kron00.svett"
 check "logger.sh never launches or opens a link with simctl" no_simctl_launch_or_openurl
-check "logger.sh shoots at the largest text size, then restores the default" \
-  only_calls "settings" "settings text-size accessibility-extra-extra-extra-large" "settings text-size large"
-check "logger.sh types each set on the keypad, one press at each key's centre, with Next to the reps" \
-  only_calls 'get attrs id="(set-[0-9]+-[0-9]+-|key-|keypad-)' \
-  'get attrs id="set-0-0-weight"' 'get attrs id="key-1"' 'get attrs id="key-0"' 'get attrs id="key-0"' \
-  'get attrs id="keypad-next"' 'get attrs id="key-5"' 'get attrs id="keypad-done"' \
-  'get attrs id="set-0-1-weight"' 'get attrs id="key-1"' 'get attrs id="key-0"' 'get attrs id="key-0"' \
-  'get attrs id="keypad-next"' 'get attrs id="key-5"' 'get attrs id="keypad-done"' \
-  'get attrs id="set-0-2-weight"' 'get attrs id="key-1"' 'get attrs id="key-0"' 'get attrs id="key-0"' \
-  'get attrs id="keypad-next"' 'get attrs id="key-4"' 'get attrs id="keypad-done"' \
-  'get attrs id="set-0-0-weight"' 'get attrs id="key-8"' 'get attrs id="key-0"' 'get attrs id="keypad-done"' \
-  'get attrs id="set-5-0-time"' 'get attrs id="key-1"' 'get attrs id="key-0"' 'get attrs id="key-0"' \
-  'get attrs id="keypad-done"'
+check "logger.sh grants notifications ahead, and shoots at the largest text size, then restores the default" \
+  only_calls "settings" "settings permission grant notifications" \
+  "settings text-size accessibility-extra-extra-extra-large" "settings text-size large"
+check "logger.sh types each set by pressing its weight, then its reps, and waits until each is selected" \
+  only_calls 'wait id="set-[0-9]' \
+  'wait id="set-0-0-weight" selected=true 3000' 'wait id="set-0-0-reps" selected=true 3000' \
+  'wait id="set-0-1-weight" selected=true 3000' 'wait id="set-0-1-reps" selected=true 3000' \
+  'wait id="set-0-2-weight" selected=true 3000' 'wait id="set-0-2-reps" selected=true 3000' \
+  'wait id="set-0-0-weight" selected=true 3000' 'wait id="set-5-0-time" selected=true 3000'
+check "logger.sh never reads or presses the keypad's Next and Done at the bottom edge" \
+  test -z "$(grep -E 'keypad-(next|done)' "$root/bound-calls")"
+check "logger.sh drags the first set's weight field up from the bottom edge before it presses it" \
+  bound_got "$bound_prefix gesture pan 20 820 0 -395 400"
+check "logger.sh drags a set up from under the keypad and the rest, from just above them" \
+  bound_got "$bound_prefix gesture pan 20 298 0 -238 400"
+check "logger.sh presses nothing at the bottom edge" logger_presses_clear
+check "logger.sh leaves the first rest's prompt alone when notifications were granted ahead" \
+  only_calls "alert" "alert wait 3000" "alert wait 5000" "alert wait 5000"
 check "logger.sh scrolls down to a set below the fold before it checks it" \
   bound_got "--session t3-test session --device FAKE-UDID scroll down --until id=\"workout-set-1-0\" label=\"Set 1, 100 kg, 5 reps, Done\""
 check "logger.sh finds the restored Legs in the database exactly as logged" \
@@ -2951,13 +3104,43 @@ check "logger.sh Release launches the installed app on the fixture without Metro
 check "logger.sh Release says the time came from a Release build" \
   grep -qF "(Release, on the fixture database, timed in the app)" "$root/logger-release/set-done.txt"
 
+case_name="logger.sh when notifications cannot be granted ahead"
+run_logger FAKE_GRANT_FAILS=1 "$root/logger-ungranted"
+[[ "$logger_status" == 0 ]] || fail "logger.sh failed when it could not grant notifications ahead"
+check "logger.sh says it answers the prompt instead" \
+  grep -qxF "Could not grant notifications ahead, so the first set marked done answers the prompt" "$output"
+check "logger.sh answers the notification prompt right after the first set marked done" \
+  only_calls "alert" "alert wait 3000" "alert accept" "alert wait 5000" "alert wait 5000"
+check "logger.sh still finds the restored Legs in the database exactly as logged" \
+  diff "$root/logger-ungranted/restored-expected.txt" "$root/logger-ungranted/restored.txt"
+
+case_name="logger.sh when a system prompt covers the first launch"
+run_logger FAKE_LAUNCH_PROMPT=1 "$root/logger-prompt"
+[[ "$logger_status" == 0 ]] || fail "logger.sh failed with a prompt over the first launch"
+check "logger.sh keeps the screen of a launch that showed no tabs" \
+  bound_got "$bound_prefix screenshot $root/logger-prompt/launch-1.png"
+check "logger.sh answers the prompt and goes on without launching again" \
+  grep -qxF "Answered a system prompt over svett after launch 1" "$output"
+check "logger.sh launches only as often as without the prompt" \
+  only_open "$debug_open $logger_args" "com.kron00.svett svett://train" "${logger_links[@]}" \
+  "$debug_open $logger_args" "${empty_links[@]}"
+
+case_name="logger.sh when the first launch never shows the tabs"
+run_logger FAKE_FIRST_LAUNCH_HANGS=1 "$root/logger-hangs"
+[[ "$logger_status" == 0 ]] || fail "logger.sh failed when the first launch hung"
+check "logger.sh keeps the screen of the launch that hung" test -s "$root/logger-hangs/launch-1.txt"
+check "logger.sh launches once more when the tabs never show" \
+  only_open "$debug_open $logger_args" "$debug_open $logger_args" "com.kron00.svett svett://train" \
+  "${logger_links[@]}" "$debug_open $logger_args" "${empty_links[@]}"
+
 case_name="logger.sh when the workout does not survive the kill"
 run_logger FAKE_LOSES_WORKOUT=1 "$root/logger-loses"
 check "logger.sh fails when the workout is gone after the kill" test "$logger_status" -ne 0
 check "logger.sh says the workout did not come back" \
   grep -qxF "The workout in progress did not show above the tabs after the kill" "$output"
 check "logger.sh restores the default text size after a failure" \
-  only_calls "settings" "settings text-size accessibility-extra-extra-extra-large" "settings text-size large"
+  only_calls "settings" "settings permission grant notifications" \
+  "settings text-size accessibility-extra-extra-extra-large" "settings text-size large"
 
 case_name="logger.sh when a done set does not survive the kill"
 run_logger FAKE_DROPS_DONE=1 "$root/logger-drops"

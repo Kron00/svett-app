@@ -27,11 +27,25 @@
 # It fails when a screen, a set, a value or a database row is missing. It reads
 # the database from a copy of the file and its write-ahead log in out-dir.
 #
+# Every set marked done starts a rest, and the first rest asks for
+# notifications. So it grants them ahead, and answers the prompt after the first
+# set marked done if it shows anyway.
+#
 # Every step waits for a screen's top element and scrolls to anything below it,
 # because at the largest text size the workout is several screens tall. It
 # opens screens through svett:// links and presses an element at the centre of
 # its frame, because agent-device 0.21.37 refuses a selector press inside
-# screen content on iOS 27. Numbered screenshots go to out-dir, by default
+# screen content on iOS 27. It presses only where nothing covers the workout:
+# above the bottom edge, the open keypad and the running rest. An element below
+# that line is dragged up first, and its frame is read until two reads agree. So
+# it never presses the keypad's Next and Done, which sit at the bottom edge. It
+# moves to a set's reps by pressing the field, and leaves the keypad open. It
+# types only once the field it pressed is selected with the keypad open.
+#
+# When svett's tabs do not show after a launch, it saves a screenshot and the
+# screen's elements as launch-<n>.png and launch-<n>.txt, answers a system
+# prompt over svett if one shows, and launches once more before it fails.
+# Numbered screenshots go to out-dir, by default
 # ~/svett-proof/<branch>/logger/. Like tabs.sh, Debug opens the development
 # client on Metro at SVETT_METRO, --release opens the installed Release build,
 # and every step runs through SVETT_DEVICE_CMD when it is set. simctl only finds
@@ -58,6 +72,10 @@ bundle_id=com.kron00.svett
 # React Navigation labels each iOS tab button "<title>, tab, <n> of <count>".
 # The Train tab showing means the app has loaded and can take a link.
 train_tab='label="Train, tab, 2 of 5"'
+# A press lower than this lands on iOS 27's home indicator area.
+safe_bottom=${SVETT_SAFE_BOTTOM:-840}
+# Below the workout's navigation bar, where a drag moves the workout.
+safe_top=${SVETT_SAFE_TOP:-130}
 
 if command -v fnm >/dev/null; then
   eval "$(fnm env --shell bash)"
@@ -115,9 +133,25 @@ encode() {
   node -e 'process.stdout.write(encodeURIComponent(process.argv[1]))' "$1"
 }
 
+launches=0
+# relaunch: launches svett on the fixture and waits for its tabs. When they do not
+# show, it keeps what the screen held, answers a system prompt if one is over
+# svett, and launches once more.
 relaunch() {
-  agent_device open "$bundle_id" "${open_flags[@]}"
-  agent_device wait "$train_tab" 120000 || fail "svett did not show its tabs after the launch"
+  local attempt
+  for attempt in 1 2; do
+    launches=$((launches + 1))
+    agent_device open "$bundle_id" "${open_flags[@]}"
+    agent_device wait "$train_tab" 120000 >/dev/null 2>&1 && return 0
+    agent_device screenshot "$out/launch-$launches.png" >/dev/null 2>&1 || true
+    agent_device snapshot >"$out/launch-$launches.txt" 2>&1 || true
+    echo "svett did not show its tabs after launch $launches. The screen is in $out/launch-$launches.png and .txt" >&2
+    if agent_device alert wait 1000 >/dev/null 2>&1 && agent_device alert accept >/dev/null 2>&1; then
+      echo "Answered a system prompt over svett after launch $launches" >&2
+      agent_device wait "$train_tab" 30000 >/dev/null 2>&1 && return 0
+    fi
+  done
+  fail "svett did not show its tabs after the launch"
 }
 
 link() {
@@ -147,42 +181,146 @@ label_of() {
   node -e 'console.log(JSON.parse(process.argv[1]).label ?? "")' "$attrs"
 }
 
-# tap <selector> [what is missing]: brings the element on screen and presses the
-# centre of its frame.
-tap() {
-  local frame point
-  bring "$@"
-  frame=$(agent_device get attrs "$1") || fail "$1 is not on screen"
-  point=$(node -e '
+centre_of() {
+  local frame
+  frame=$(agent_device get attrs "$1") || return 1
+  node -e '
     const { x, y, width, height } = JSON.parse(process.argv[1]).rect;
     console.log(Math.round(x + width / 2), Math.round(y + height / 2));
-  ' "$frame")
+  ' "$frame"
+}
+
+# settled_centre <selector>: the centre of the element's frame once two reads in
+# a row agree, because the workout keeps gliding for a moment after a drag, and a
+# press at a frame read during the glide lands beside the element.
+settled_centre() {
+  local before after reads=0
+  before=$(centre_of "$1") || return 1
+  while ((reads < 10)); do
+    agent_device wait 250 >/dev/null
+    after=$(centre_of "$1") || return 1
+    if [[ "$after" == "$before" ]]; then
+      echo "$after"
+      return 0
+    fi
+    before=$after
+    reads=$((reads + 1))
+  done
+  return 1
+}
+
+# top_of <selector>: the top of the element's frame, or nothing when it is not on screen.
+top_of() {
+  local frame
+  agent_device is visible "$1" >/dev/null 2>&1 || return 0
+  frame=$(agent_device get attrs "$1" 2>/dev/null) || return 0
+  node -e 'console.log(Math.round(JSON.parse(process.argv[1]).rect.y))' "$frame"
+}
+
+# clear_bottom: the lowest point a press on the workout reaches it, above the
+# bottom edge, the open keypad and the running rest. At the largest text size
+# they leave little more than 200 points of the workout between them.
+clear_bottom() {
+  local bottom=$safe_bottom top
+  top=$(top_of 'id="key-1"')
+  [[ -z "$top" ]] || ((top - 20 >= bottom)) || bottom=$((top - 20))
+  top=$(top_of 'id="rest-timer"')
+  [[ -z "$top" ]] || ((top - 10 >= bottom)) || bottom=$((top - 10))
+  echo "$bottom"
+}
+
+# clear_point <selector> [settle]: prints the centre of the element's frame once
+# nothing covers it. An element below the clear bottom is dragged up from just
+# above that line toward the middle of the workout, and its frame is then read
+# until it settles. With settle it is read until it settles anyway. The frame is
+# read last, after any other element's, so the press goes where it was read.
+clear_point() {
+  local point bottom y start by drags=0 settle=${2:-}
+  while :; do
+    bottom=$(clear_bottom)
+    if [[ -n "$settle" ]]; then
+      point=$(settled_centre "$1") || fail "$1 kept moving on screen"
+    else
+      point=$(centre_of "$1") || fail "$1 is not on screen"
+    fi
+    y=${point#* }
+    ((y > bottom)) || break
+    ((drags < 4)) || fail "$1 stayed under the keypad, the rest timer or the bottom edge of the screen"
+    ((bottom - 20 > safe_top)) || fail "The keypad and the rest timer leave no room to drag $1 into"
+    start=$((bottom - 20))
+    by=$(((safe_top + bottom) / 2 - y))
+    ((start + by >= 60)) || by=$((60 - start))
+    agent_device gesture pan 20 "$start" 0 "$by" 400 >/dev/null
+    drags=$((drags + 1))
+    settle=true
+  done
+  echo "$point"
+}
+
+# tap <selector> [what is missing]: brings the element on screen and presses the
+# centre of its frame, once nothing covers it.
+tap() {
+  local point
+  bring "$@"
+  point=$(clear_point "$1")
   agent_device press "${point% *}" "${point#* }"
 }
 
-# type_into <field selector> <key>...: opens the keypad on a field and types.
-type_into() {
-  local field=$1 key
-  shift
-  tap "$field"
-  for key in "$@"; do
-    tap "id=\"key-$key\""
+# field <id> <name>: presses an entry field of the workout and waits until it is
+# selected with the keypad open, because keys pressed while the press missed go
+# to another field or nowhere. A press that missed is tried once more.
+field() {
+  local selector="id=\"$1\"" point attempt
+  for attempt in 1 2; do
+    bring "$selector" "$2 never came on screen"
+    point=$(clear_point "$selector" settle)
+    agent_device press "${point% *}" "${point#* }"
+    if agent_device wait "$selector selected=true" 3000 >/dev/null 2>&1 &&
+      agent_device wait 'id="key-1"' 3000 >/dev/null 2>&1; then
+      return 0
+    fi
+    echo "Pressing $2 did not select it with the keypad open, try $attempt of 2" >&2
+  done
+  fail "Pressing $2 ($selector) did not select it and open the keypad, after two presses"
+}
+
+# keys <digits>: presses each digit on the keypad, which stays open below the workout.
+keys() {
+  local digit point
+  for digit in $(echo "$1" | grep -o .); do
+    point=$(centre_of "id=\"key-$digit\"") || fail "The keypad has no $digit key on screen"
+    ((${point#* } <= safe_bottom)) || fail "The keypad's $digit key sits at the bottom edge of the screen"
+    agent_device press "${point% *}" "${point#* }"
   done
 }
 
-# log_set <exercise> <set> <weight keys> <reps keys>: types a set's weight, moves
-# to its reps with Next, types them, closes the keypad and marks the set done.
-log_set() {
-  local weight=$3 reps=$4
-  # shellcheck disable=SC2046 # one key per character
-  type_into "id=\"set-$1-$2-weight\"" $(echo "$weight" | grep -o .)
-  tap 'id="keypad-next"'
-  local key
-  for key in $(echo "$reps" | grep -o .); do
-    tap "id=\"key-$key\""
-  done
-  tap 'id="keypad-done"'
+# type_into <field id> <name> <digits>: opens the keypad on a field and types.
+type_into() {
+  field "$1" "$2"
+  keys "$3"
+}
+
+asked=false
+# mark_done <exercise> <set>: presses the set's done box. The first set marked
+# done starts the first rest, which asks for notifications unless they were
+# granted ahead. That prompt covers svett until it is answered.
+mark_done() {
   tap "id=\"workout-set-$1-$2\""
+  [[ "$asked" == false ]] || return 0
+  asked=true
+  if agent_device alert wait 3000 >/dev/null 2>&1; then
+    agent_device alert accept >/dev/null || fail "Could not answer the notification prompt of the first rest"
+    echo "Answered the notification prompt of the first rest"
+  fi
+}
+
+# log_set <exercise> <set> <weight digits> <reps digits>: types a set's weight and
+# reps, each by pressing its field, and marks the set done.
+log_set() {
+  local name="set $(($2 + 1)) of exercise $(($1 + 1))"
+  type_into "set-$1-$2-weight" "the weight of $name" "$3"
+  type_into "set-$1-$2-reps" "the reps of $name" "$4"
+  mark_done "$1" "$2"
 }
 
 # expect_set <exercise> <set> <label>: the set's done box reads its values and state.
@@ -240,11 +378,16 @@ finish_workout() {
   tap 'label="Finish"'
   agent_device alert wait 5000 >/dev/null || fail "Finish asked nothing"
   # The confirmation is svett's own alert, which agent-device's alert accept cannot
-  # answer, so its button is pressed by its label like any other control.
-  tap 'label="Finish workout"'
+  # answer, so its button is pressed by its label like any other control. The
+  # alert nests its button in containers with the same label, so ask for the button.
+  tap 'role="button" label="Finish workout"'
   agent_device wait absent 'id="workout-bar"' 10000 >/dev/null ||
     fail "The workout bar still shows after Finish"
 }
+
+# The first rest asks for notifications, and the prompt would cover svett mid-set.
+agent_device settings permission grant notifications ||
+  echo "Could not grant notifications ahead, so the first set marked done answers the prompt" >&2
 
 # Proof is at the largest text size. A running app adopts it only when it relaunches.
 agent_device settings text-size accessibility-extra-extra-extra-large
@@ -274,22 +417,21 @@ expect 'id="workout"' "Choosing a set type did not close the sheet"
 log_set 0 2 100 4
 expect_set 0 2 "Failure set, 100 kg, 4 reps, Done"
 tap 'id="add-workout-set-0"'
-tap 'id="workout-set-0-3"' "Add set added no set"
+bring 'id="workout-set-0-3"' "Add set added no set"
+mark_done 0 3
 expect_set 0 3 "Failure set, 100 kg, 4 reps, Done"
 screenshot squat-logged
 
 tap 'id="move-exercise-down-0"'
 expect_exercise 1 "Barbell Squat"
 expect_exercise 0 "Romanian Deadlift"
-type_into 'id="set-0-0-weight"' 8 0
-tap 'id="keypad-done"'
+type_into set-0-0-weight "the weight of Romanian Deadlift's first set" 80
 expect_set 0 0 "Set 1, 80 kg, 6 to 10 reps, To do"
 
 add_exercise plank Plank
 expect_exercise 5 "Plank"
-type_into 'id="set-5-0-time"' 1 0 0
-tap 'id="keypad-done"'
-tap 'id="workout-set-5-0"'
+type_into set-5-0-time "the time of Plank's first set" 100
+mark_done 5 0
 expect_set 5 0 "Set 1, 60 seconds, Done"
 screenshot before-kill
 
@@ -343,7 +485,7 @@ title=$(label_of 'id="workout-title"')
 add_exercise "barbell squat" "Barbell Squat"
 expect_exercise 0 "Barbell Squat"
 bring 'label="Previous, 100 kg × 5"' "The first set does not show last time's 100 kg × 5"
-tap 'id="workout-set-0-0"'
+mark_done 0 0
 expect_set 0 0 "Set 1, 100 kg, 5 reps, Done"
 timing=$(label_of 'id="set-done-timing"')
 [[ "$timing" =~ ^Set\ shown\ done\ in\ ([0-9]+)\ ms$ ]] || fail "The workout did not time the set marked done. It says \"$timing\""
