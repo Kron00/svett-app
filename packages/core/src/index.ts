@@ -27,6 +27,7 @@ export * from "./number-entry.ts";
 export * from "./chart-scale.ts";
 export * from "./axis-labels.ts";
 export * from "./phone-checks.ts";
+export * from "./chatgpt.ts";
 export * from "./exercise-search.ts";
 export * from "./exercise-format.ts";
 export * from "./performed-set.ts";

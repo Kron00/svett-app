@@ -3,6 +3,7 @@ import { createNativeStackNavigator } from "@react-navigation/native-stack";
 import { SymbolView } from "expo-symbols";
 import { View } from "react-native";
 
+import { ChatGPTRow } from "./chatgpt/ChatGPTRow";
 import { ExerciseLibraryRow } from "./exercises/ExerciseLibraryRow";
 import { DesignGalleryRow } from "./gallery/DesignGalleryRow";
 import type { TabParamList } from "./navigation";
@@ -30,6 +31,7 @@ function TabContent({ tab }: { readonly tab: Tab }) {
       {tab.name === "You" ? (
         <View className="mt-6 self-stretch">
           <ListSection>
+            <ChatGPTRow />
             <DataRow />
             <PhoneChecksRow />
             <DesignGalleryRow />

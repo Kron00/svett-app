@@ -8,6 +8,7 @@ import {
 import { createNativeStackNavigator } from "@react-navigation/native-stack";
 import { StatusBar } from "expo-status-bar";
 
+import { ChatGPTScreen } from "./chatgpt/ChatGPTScreen";
 import { PhoneChecksScreen } from "./checks/PhoneChecksScreen";
 import { useNavigationTheme } from "./design/hooks";
 import { ExerciseDetailScreen } from "./exercises/ExerciseDetailScreen";
@@ -30,7 +31,8 @@ import { UndoImportScreen } from "./transfer/UndoImportScreen";
 const Stack = createNativeStackNavigator<RootStackParamList>();
 
 // The scripts in scripts/sim/ open screens through these links, such as
-// svett://gallery?sheet=open, svett://exercises?q=bench and svett://progress/muscles,
+// svett://gallery?sheet=open, svett://exercises?q=bench, svett://progress/muscles and
+// svett://chatgpt,
 // because agent-device refuses taps in screen content on iOS 27. It reads UIKit's
 // touch-transparent floating bar containers as toolbars that cover the whole screen.
 // scripts/sim/data.sh reaches export and import the same way, through svett://data,
@@ -43,6 +45,7 @@ const linking: LinkingOptions<RootStackParamList> = {
     screens: {
       Tabs: { screens: { Progress: "progress" } },
       Gallery: "gallery",
+      ChatGPT: "chatgpt",
       NewExercise: "exercises/new",
       Exercises: "exercises",
       EditExercise: "exercise/:id/edit",
@@ -76,6 +79,11 @@ export default function App() {
           name="Gallery"
           component={GalleryScreen}
           options={{ headerShown: true, title: "Design gallery", headerLargeTitle: true }}
+        />
+        <Stack.Screen
+          name="ChatGPT"
+          component={ChatGPTScreen}
+          options={{ headerShown: true, title: "ChatGPT" }}
         />
         <Stack.Screen
           name="Exercises"
