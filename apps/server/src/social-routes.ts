@@ -47,7 +47,11 @@ const refuse = (error: string, status: number, message?: string) =>
 /** The answer for a failure the client caused or can act on, or undefined for any other. */
 export const refusal = (error: unknown) => {
   if (error instanceof AccountDeleted) {
-    return refuse("account_deleted", 410, "This account was deleted. svett keeps nothing it sends.");
+    return refuse(
+      "account_deleted",
+      410,
+      "This account was deleted. svett keeps nothing it sends.",
+    );
   }
   if (error instanceof RateLimited) {
     return HttpServerResponse.jsonUnsafe(
@@ -138,14 +142,15 @@ const saveProfile = route((account) =>
   }),
 );
 
-const search = route((account) =>
-  Effect.gen(function* () {
-    const { prefix } = yield* HttpServerRequest.schemaSearchParams(SearchQuery);
-    const valid = usernamePrefix(prefix);
-    return {
-      profiles: valid === undefined ? [] : yield* (yield* SocialRows).search(account, valid),
-    };
-  }),
+const search = route(
+  (account) =>
+    Effect.gen(function* () {
+      const { prefix } = yield* HttpServerRequest.schemaSearchParams(SearchQuery);
+      const valid = usernamePrefix(prefix);
+      return {
+        profiles: valid === undefined ? [] : yield* (yield* SocialRows).search(account, valid),
+      };
+    }),
   "search",
 );
 
@@ -155,17 +160,19 @@ const profile = route((account) =>
   }),
 );
 
-const follow = route((account) =>
-  Effect.gen(function* () {
-    return { follow: yield* (yield* SocialRows).follow(account, yield* username) };
-  }),
+const follow = route(
+  (account) =>
+    Effect.gen(function* () {
+      return { follow: yield* (yield* SocialRows).follow(account, yield* username) };
+    }),
   "follows",
 );
 
-const unfollow = route((account) =>
-  Effect.gen(function* () {
-    return { follow: yield* (yield* SocialRows).unfollow(account, yield* username) };
-  }),
+const unfollow = route(
+  (account) =>
+    Effect.gen(function* () {
+      return { follow: yield* (yield* SocialRows).unfollow(account, yield* username) };
+    }),
   "follows",
 );
 
@@ -203,19 +210,21 @@ const requests = route((account) =>
   }),
 );
 
-const approve = route((account) =>
-  Effect.gen(function* () {
-    yield* (yield* SocialRows).approve(account, yield* requestId);
-    return {};
-  }),
+const approve = route(
+  (account) =>
+    Effect.gen(function* () {
+      yield* (yield* SocialRows).approve(account, yield* requestId);
+      return {};
+    }),
   "follows",
 );
 
-const decline = route((account) =>
-  Effect.gen(function* () {
-    yield* (yield* SocialRows).decline(account, yield* requestId);
-    return {};
-  }),
+const decline = route(
+  (account) =>
+    Effect.gen(function* () {
+      yield* (yield* SocialRows).decline(account, yield* requestId);
+      return {};
+    }),
   "follows",
 );
 

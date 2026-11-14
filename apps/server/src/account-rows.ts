@@ -23,7 +23,7 @@ import {
   type TableKey,
   tableKeyOf,
 } from "@svett/core";
-import { Context, Data, Effect, Layer, Schema } from "effect";
+import { Context, Data, Effect, Layer, Option, Schema } from "effect";
 import type { SqlError } from "effect/sql/SqlError";
 
 export class InvalidRow extends Data.TaggedError("InvalidRow")<{
@@ -195,13 +195,15 @@ export class AccountRows extends Context.Service<AccountRows, AccountRowsShape>(
               order by table_name, row_id
             `;
             const tables: Record<TableKey, Array<AnyRow>> = Object.fromEntries(
-              TABLE_KEYS.map((key) => [key, []]),
+              TABLE_KEYS.map((name) => [name, []]),
             ) as unknown as Record<TableKey, Array<AnyRow>>;
             for (const { tableName, data } of stored) {
-              const key = tableKeyOf(tableName);
-              if (key === undefined) continue;
-              const row = Schema.decodeUnknownOption(TABLES[key].schema)(data);
-              if (row._tag === "Some") tables[key].push(row.value as AnyRow);
+              const table = tableKeyOf(tableName);
+              if (table === undefined) continue;
+              const row = Option.getOrUndefined(
+                Schema.decodeUnknownOption(TABLES[table].schema)(data),
+              );
+              if (row !== undefined) tables[table].push(row as AnyRow);
             }
             return encodeSvettFile(tables, EpochMillis.make(nowMillis));
           }),

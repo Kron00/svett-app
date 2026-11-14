@@ -54,10 +54,7 @@ const routes = async () => {
     SocialRows.layer,
     Sessions.layer,
     Safety.layer(),
-  ).pipe(
-    Layer.provide(databaseLayer(url)),
-    Layer.provide(clerk),
-  );
+  ).pipe(Layer.provide(databaseLayer(url)), Layer.provide(clerk));
   return HttpRouter.serve(Layer.mergeAll(AccountRoutes, SocialRoutes), {
     disableLogger: true,
     disableListenLog: true,

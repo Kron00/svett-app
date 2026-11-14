@@ -11,7 +11,11 @@ import {
 import { ProfileScreen } from "./ProfileScreens";
 
 type Answer = { readonly status: number; readonly body: unknown };
-type AlertButton = { readonly text: string; readonly style?: string; readonly onPress?: () => void };
+type AlertButton = {
+  readonly text: string;
+  readonly style?: string;
+  readonly onPress?: () => void;
+};
 type HeaderItem = {
   readonly label: string;
   readonly accessibilityLabel: string;
@@ -420,11 +424,7 @@ describe("blocked accounts", () => {
 
   it("unblocks an account by its block's ID and reads the list again", async () => {
     app.route.params = {};
-    answer(
-      "GET /v1/blocks",
-      ok({ blocks: [{ id: BLOCK, username: "ben" }] }),
-      ok({ blocks: [] }),
-    );
+    answer("GET /v1/blocks", ok({ blocks: [{ id: BLOCK, username: "ben" }] }), ok({ blocks: [] }));
     answer(`DELETE /v1/blocks/${BLOCK}`, ok({}));
     const root = await render(<BlocksScreen />, "unblock-ben");
     await press(root, "unblock-ben");

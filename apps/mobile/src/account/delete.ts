@@ -1,9 +1,4 @@
-import {
-  type AccountId,
-  httpSocialApi,
-  SocialFailed,
-  socialProblemMessage,
-} from "@svett/core";
+import { type AccountId, httpSocialApi, SocialFailed, socialProblemMessage } from "@svett/core";
 import { Cause, Effect, Exit, Option } from "effect";
 
 import { leaveDeletedAccount } from "./move";

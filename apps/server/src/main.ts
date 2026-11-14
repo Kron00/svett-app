@@ -53,9 +53,7 @@ const Services = Layer.mergeAll(
 );
 
 const App = Layer.mergeAll(
-  HttpRouter.serve(
-    Layer.mergeAll(Routes, AccountRoutes, DeletionRoutes, SocialRoutes, FeedRoutes),
-  ),
+  HttpRouter.serve(Layer.mergeAll(Routes, AccountRoutes, DeletionRoutes, SocialRoutes, FeedRoutes)),
   NightlyBackups,
 ).pipe(Layer.provide(Migrated), Layer.provide(HttpServer), Layer.provide(Services));
 

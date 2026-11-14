@@ -26,34 +26,38 @@ const thread = route((account) =>
   }),
 );
 
-const like = route((account) =>
-  Effect.gen(function* () {
-    return yield* (yield* FeedRows).like(account, yield* post);
-  }),
+const like = route(
+  (account) =>
+    Effect.gen(function* () {
+      return yield* (yield* FeedRows).like(account, yield* post);
+    }),
   "likes",
 );
 
-const unlike = route((account) =>
-  Effect.gen(function* () {
-    return yield* (yield* FeedRows).unlike(account, yield* post);
-  }),
+const unlike = route(
+  (account) =>
+    Effect.gen(function* () {
+      return yield* (yield* FeedRows).unlike(account, yield* post);
+    }),
   "likes",
 );
 
-const comment = route((account) =>
-  Effect.gen(function* () {
-    const { body } = yield* HttpServerRequest.schemaBodyJson(NewComment);
-    return yield* (yield* FeedRows).comment(account, yield* post, body);
-  }),
+const comment = route(
+  (account) =>
+    Effect.gen(function* () {
+      const { body } = yield* HttpServerRequest.schemaBodyJson(NewComment);
+      return yield* (yield* FeedRows).comment(account, yield* post, body);
+    }),
   "comments",
 );
 
-const deleteComment = route((account) =>
-  Effect.gen(function* () {
-    const path = yield* HttpRouter.schemaPathParams(CommentPath);
-    yield* (yield* FeedRows).deleteComment(account, path.post, path.comment);
-    return {};
-  }),
+const deleteComment = route(
+  (account) =>
+    Effect.gen(function* () {
+      const path = yield* HttpRouter.schemaPathParams(CommentPath);
+      yield* (yield* FeedRows).deleteComment(account, path.post, path.comment);
+      return {};
+    }),
   "comments",
 );
 

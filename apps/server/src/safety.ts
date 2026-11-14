@@ -56,11 +56,10 @@ export class Safety extends Context.Service<Safety, SafetyShape>()("svett/server
       Safety,
       Effect.gen(function* () {
         const sql = yield* PgClient.PgClient;
-        const limitOf = (group: RateLimitGroup) => limits[group] ?? RATE_LIMITS[group];
 
         const take = (account: AccountId, group: RateLimitGroup) =>
           Effect.gen(function* () {
-            const limit = limitOf(group);
+            const limit = limits[group] ?? RATE_LIMITS[group];
             const now = yield* Clock.currentTimeMillis;
             yield* sql`
               insert into rate_limit (account_id, route_group, tokens, at_ms)
@@ -90,19 +89,21 @@ export class Safety extends Context.Service<Safety, SafetyShape>()("svett/server
 
         return Safety.of({
           asAccount: (account, group, effect) =>
-            sql.withTransaction(
-              Effect.gen(function* () {
-                yield* sql`
+            sql
+              .withTransaction(
+                Effect.gen(function* () {
+                  yield* sql`
                   select pg_advisory_xact_lock_shared(${ACCOUNT_LOCK_SPACE}, hashtext(${account}))
                 `;
-                const [deleted] = yield* sql`select 1 from deleted_account where id = ${account}`;
-                if (deleted !== undefined) return yield* new AccountDeleted();
-                if (group !== undefined) yield* take(account, group);
-                // A refused request still spent its token, so the transaction commits whatever
-                // the request answers. Each write that spans several rows has its own savepoint.
-                return yield* Effect.exit(effect);
-              }),
-            ).pipe(Effect.flatMap((exit) => exit)),
+                  const [deleted] = yield* sql`select 1 from deleted_account where id = ${account}`;
+                  if (deleted !== undefined) return yield* new AccountDeleted();
+                  if (group !== undefined) yield* take(account, group);
+                  // A refused request still spent its token, so the transaction commits whatever
+                  // the request answers. Each write that spans several rows has its own savepoint.
+                  return yield* Effect.exit(effect);
+                }),
+              )
+              .pipe(Effect.flatMap((exit) => exit)),
           exclusively: (account, effect) =>
             sql.withTransaction(
               Effect.andThen(

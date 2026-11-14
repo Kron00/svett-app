@@ -142,7 +142,10 @@ export interface SocialRowsShape {
   /** The accounts `viewer` blocked, newest first. */
   readonly blocks: (viewer: AccountId) => Effect.Effect<ReadonlyArray<Block>, SqlError>;
   /** Ends the block with this ID, when `viewer` made it. A follow it ended stays ended. */
-  readonly unblock: (viewer: AccountId, block: string) => Effect.Effect<void, SqlError | BlockNotFound>;
+  readonly unblock: (
+    viewer: AccountId,
+    block: string,
+  ) => Effect.Effect<void, SqlError | BlockNotFound>;
   /** Ends the follow of `viewer` by the account with this username, without blocking it. */
   readonly removeFollower: (
     viewer: AccountId,

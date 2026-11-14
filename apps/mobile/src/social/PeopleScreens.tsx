@@ -558,8 +558,7 @@ function BlocksRead({ api }: { readonly api: SocialApi }) {
       {({ blocks }) =>
         blocks.length === 0 ? (
           <AppText tone="secondary" className="mx-gutter" testID="blocks-empty">
-            You have not blocked anyone. Block someone from the button at the top of their
-            profile.
+            You have not blocked anyone. Block someone from the button at the top of their profile.
           </AppText>
         ) : (
           <View className="gap-3">

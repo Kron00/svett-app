@@ -16,7 +16,18 @@ import {
   TransferRepository,
 } from "@svett/core";
 import { legDay, openTestDatabase, syncedRows } from "@svett/core/node";
-import { Cause, Deferred, Effect, Exit, Fiber, Layer, ManagedRuntime, Option, Redacted, Result } from "effect";
+import {
+  Cause,
+  Deferred,
+  Effect,
+  Exit,
+  Fiber,
+  Layer,
+  ManagedRuntime,
+  Option,
+  Redacted,
+  Result,
+} from "effect";
 import { HttpRouter, HttpServer } from "effect/http";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 
@@ -80,9 +91,7 @@ const servicesOf = (url: Redacted.Redacted, options: ServerOptions = {}) => {
   const users = ClerkUsers.layer({
     apiUrl: issuer.apiUrl,
     secretKey:
-      options.secretKey === null
-        ? undefined
-        : Redacted.make(options.secretKey ?? issuer.secretKey),
+      options.secretKey === null ? undefined : Redacted.make(options.secretKey ?? issuer.secretKey),
   });
   return Layer.mergeAll(
     AccountRows.layer,
@@ -152,12 +161,18 @@ const send = async (
 
 /** A client for one server that expects 200 from `ok` and gives back any answer from `call`. */
 const client = (base: string) => {
-  const call = (who: string | { readonly token: string }, method: string, path: string, body?: unknown) =>
-    send(base, who, method, path, body);
+  const call = (
+    who: string | { readonly token: string },
+    method: string,
+    path: string,
+    body?: unknown,
+  ) => send(base, who, method, path, body);
   const ok = async (who: string, method: string, path: string, body?: unknown) => {
     const answer = await call(who, method, path, body);
     if (answer.status !== 200) {
-      throw new Error(`${method} ${path} answered ${answer.status}: ${JSON.stringify(answer.body)}`);
+      throw new Error(
+        `${method} ${path} answered ${answer.status}: ${JSON.stringify(answer.body)}`,
+      );
     }
     return answer.body;
   };
@@ -217,17 +232,19 @@ const rowsNaming = async (url: Redacted.Redacted, id: string) => {
   for (const { table_name, column_name } of columns) {
     tables.set(table_name, [...(tables.get(table_name) ?? []), column_name]);
   }
-  const counts: Record<string, number> = {};
-  for (const [table, names] of tables) {
-    if (table in KEPT_TABLES) continue;
-    const where = names.map((column) => `"${column}" = '${id}'`).join(" or ");
-    const [row] = await query<{ n: number }>(
-      url,
-      `select count(*)::int as n from "${table}" where ${where}`,
-    );
-    counts[table] = row?.n ?? 0;
-  }
-  return counts;
+  const counted = await Promise.all(
+    [...tables]
+      .filter(([table]) => !(table in KEPT_TABLES))
+      .map(async ([table, names]) => {
+        const where = names.map((column) => `"${column}" = '${id}'`).join(" or ");
+        const [row] = await query<{ n: number }>(
+          url,
+          `select count(*)::int as n from "${table}" where ${where}`,
+        );
+        return [table, row?.n ?? 0] as const;
+      }),
+  );
+  return Object.fromEntries(counted) as Record<string, number>;
 };
 
 const schemaTables = async (url: Redacted.Redacted) =>
@@ -258,9 +275,9 @@ describe("blocking", { timeout: 60_000 }, () => {
     const post = await api.postId(ben, "anna", annasRun.title);
     await api.ok(ben, "PUT", `/v1/posts/${post}/like`);
     await api.ok(ben, "POST", `/v1/posts/${post}/comments`, { body: "Strong pace" });
-    expect((await api.ok(ben, "GET", "/v1/feed")).posts.map((each: any) => each.username)).toContain(
-      "anna",
-    );
+    expect(
+      (await api.ok(ben, "GET", "/v1/feed")).posts.map((each: any) => each.username),
+    ).toContain("anna");
 
     await api.ok(anna, "PUT", "/v1/profiles/ben/block");
 
@@ -272,9 +289,9 @@ describe("blocking", { timeout: 60_000 }, () => {
         (each: any) => each.username,
       ),
     ).toEqual([]);
-    expect((await api.ok(ben, "GET", "/v1/feed")).posts.map((each: any) => each.username)).toEqual(
-      ["ben"],
-    );
+    expect((await api.ok(ben, "GET", "/v1/feed")).posts.map((each: any) => each.username)).toEqual([
+      "ben",
+    ]);
     expect((await api.call(ben, "GET", `/v1/posts/${post}`)).body).toEqual({
       error: "post_not_found",
     });
@@ -304,9 +321,9 @@ describe("blocking", { timeout: 60_000 }, () => {
 
     // Each side can keep the other out, whoever blocked first.
     await api.ok(ben, "PUT", "/v1/profiles/anna/block");
-    expect((await api.ok(ben, "GET", "/v1/blocks")).blocks.map((each: any) => each.username)).toEqual(
-      ["anna"],
-    );
+    expect(
+      (await api.ok(ben, "GET", "/v1/blocks")).blocks.map((each: any) => each.username),
+    ).toEqual(["anna"]);
   });
 
   it("ends a block by its ID only for the account that made it, and leaves the follow ended", async () => {
@@ -389,9 +406,9 @@ describe("rate limits", { timeout: 60_000 }, () => {
     expect(retryAfter(refused)).toBeLessThanOrEqual(60);
     expect(refused.body.retryAfter).toBe(retryAfter(refused));
     expect((await api.call(cara, "PUT", `/v1/posts/${post}/like`)).status).toBe(200);
-    expect((await api.call(ben, "POST", `/v1/posts/${post}/comments`, { body: "Nice" })).status).toBe(
-      200,
-    );
+    expect(
+      (await api.call(ben, "POST", `/v1/posts/${post}/comments`, { body: "Nice" })).status,
+    ).toBe(200);
   });
 
   it("counts a refused request too", async () => {
@@ -484,8 +501,8 @@ describe("the server-side export", { timeout: 60_000 }, () => {
       /^attachment; filename="svett-export-\d{4}-\d{2}-\d{2}\.json"$/,
     );
     const file = Result.getOrThrow(decodeSvettFile(JSON.stringify(answer.body)));
-    expect(file.tables.activity?.map((row) => row.id).sort()).toEqual(
-      [kept, dropped].sort(),
+    expect(file.tables.activity?.map((row) => row.id).toSorted()).toEqual(
+      [kept, dropped].toSorted(),
     );
 
     const fresh = openTestDatabase(2);
@@ -508,7 +525,7 @@ describe("deleting an account", { timeout: 60_000 }, () => {
   it("covers every table in the schema", async () => {
     const tables = await schemaTables(await freshDatabase());
     expect(tables).toEqual(
-      [...Object.keys(ACCOUNT_TABLES), ...Object.keys(KEPT_TABLES)].sort(),
+      [...Object.keys(ACCOUNT_TABLES), ...Object.keys(KEPT_TABLES)].toSorted(),
     );
   });
 
@@ -523,15 +540,17 @@ describe("deleting an account", { timeout: 60_000 }, () => {
       string,
       string,
     ];
-    for (const [who, username] of [
-      [anna, "anna"],
-      [ben, "ben"],
-      [cara, "cara"],
-      [dan, "dan"],
-      [eve, "eve"],
-    ] as const) {
-      await api.name(who, username);
-    }
+    await Promise.all(
+      (
+        [
+          [anna, "anna"],
+          [ben, "ben"],
+          [cara, "cara"],
+          [dan, "dan"],
+          [eve, "eve"],
+        ] as const
+      ).map(([who, username]) => api.name(who, username)),
+    );
     const annasRun = activity("Anna's run");
     const bensRun = activity("Ben's run");
     await api.write(anna, [annasRun]);
@@ -556,7 +575,10 @@ describe("deleting an account", { timeout: 60_000 }, () => {
     expect(await api.ok(anna, "DELETE", "/v1/me")).toEqual({ deleted: true });
 
     const after = await rowsNaming(url, anna);
-    expect(Object.values(after).every((count) => count === 0), JSON.stringify(after)).toBe(true);
+    expect(
+      Object.values(after).every((count) => count === 0),
+      JSON.stringify(after),
+    ).toBe(true);
     const othersAfter = await rowsNaming(url, ben);
     expect(othersAfter).toMatchObject({
       account: 1,
@@ -582,20 +604,22 @@ describe("deleting an account", { timeout: 60_000 }, () => {
 
     expect(issuer.deletedUsers()).toContain(anna);
     await expect(issuer.sessionToken(anna)).rejects.toThrow("ended every session");
-    for (const [method, path] of [
+    const paths = [
       ["GET", "/v1/me"],
       ["GET", "/v1/feed"],
       ["GET", "/v1/export"],
       ["PUT", "/v1/profile"],
-    ] as const) {
-      const body = method === "PUT" ? { username: "anna", private: false } : undefined;
-      const answer = await api.call(held, method, path, body);
-      expect({ path, status: answer.status, error: answer.body.error }).toEqual({
-        path,
-        status: 410,
-        error: "account_deleted",
-      });
-    }
+    ] as const;
+    const answers = await Promise.all(
+      paths.map(async ([method, path]) => {
+        const body = method === "PUT" ? { username: "anna", private: false } : undefined;
+        const answer = await api.call(held, method, path, body);
+        return { path, status: answer.status, error: answer.body.error };
+      }),
+    );
+    expect(answers).toEqual(
+      paths.map(([, path]) => ({ path, status: 410, error: "account_deleted" })),
+    );
     expect(await rowsNaming(url, anna)).toMatchObject({ account: 0, profile: 0 });
   });
 
@@ -701,16 +725,18 @@ describe("the safety proof script", { timeout: 60_000 }, () => {
     const owner = account("proof_owner");
     const blocked = account("proof_blocked");
     const lines: Array<string> = [];
-    for (const run of [1, 2]) {
-      const leaver = account(`proof_leaver_${run}`);
-      const names = { owner, blocked, leaver };
-      await safetyProof({
+    const proof = (run: number) => {
+      const names = { owner, blocked, leaver: account(`proof_leaver_${run}`) };
+      return safetyProof({
         server: base,
         token: (who) => issuer.sessionToken(names[who]),
         usernames: { owner: "safety_a", blocked: "safety_b" },
         log: (line) => lines.push(line),
       });
-    }
+    };
+    await proof(1);
+    // A second run starts from where the first one left both accounts.
+    await proof(2);
     expect(lines.slice(0, 4)).toEqual([
       "safety_b follows safety_a and sees the everyone activity",
       "Blocked: safety_b finds no profile, search result, feed post or post of safety_a, and cannot follow, like or comment",
