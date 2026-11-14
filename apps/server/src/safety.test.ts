@@ -1,5 +1,7 @@
 import { createServer } from "node:http";
 import { mkdtempSync } from "node:fs";
+import { readdir, readFile, utimes } from "node:fs/promises";
+import type { FileHandle } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -48,7 +50,15 @@ import { Sessions } from "./auth.ts";
 import { ClerkConfig } from "./clerk-config.ts";
 import { ClerkUsers } from "./clerk-users.ts";
 import { databaseLayer } from "./database.ts";
-import { DeletionLedger } from "./deletion-ledger.ts";
+import {
+  DeletionLedger,
+  LEDGER_DIR,
+  LEDGER_ID_FILE,
+  LEFTOVER_AGE_MS,
+  type LedgerOptions,
+  type LedgerWrite,
+  TEMPORARY_PREFIX,
+} from "./deletion-ledger.ts";
 import { FeedRoutes } from "./feed-routes.ts";
 import { FeedRows } from "./feed-rows.ts";
 import { Safety } from "./safety.ts";
@@ -96,6 +106,7 @@ interface ServerOptions {
   readonly limits?: Partial<Record<RateLimitGroup, RateLimit>>;
   /** Null starts the server without a Clerk secret key. */
   readonly secretKey?: string | null;
+  readonly ledger?: LedgerOptions;
 }
 
 const servicesOf = (url: Redacted.Redacted, options: ServerOptions = {}) => {
@@ -122,7 +133,7 @@ const servicesOf = (url: Redacted.Redacted, options: ServerOptions = {}) => {
     AccountDeletion.layer,
   ).pipe(
     Layer.provideMerge(Safety.layer(options.limits)),
-    Layer.provideMerge(DeletionLedger.layer(ledgerDirs.get(Redacted.value(url))!)),
+    Layer.provideMerge(DeletionLedger.layer(ledgerDirs.get(Redacted.value(url))!, options.ledger)),
     Layer.provideMerge(databaseLayer(url)),
     Layer.provide(users),
     Layer.provide(clerk),
@@ -780,6 +791,82 @@ describe("deleting an account", { timeout: 60_000 }, () => {
 
     expect(await api.ok(anna, "DELETE", "/v1/me")).toEqual({ deleted: true });
     expect(issuer.deletedUsers()).toContain(anna);
+  });
+
+  it("keeps the account when the ledger's write stalls, and leaves nothing in the ledger", async () => {
+    const url = await freshDatabase();
+    let calls = 0;
+    const stalls: LedgerWrite = (file, bytes, offset, length) =>
+      ++calls === 1
+        ? file.write(bytes, offset, Math.min(length, 10))
+        : Promise.resolve({ bytesWritten: 0 });
+    const { base } = await start(url, { ledger: { write: stalls } });
+    const api = client(base);
+    const anna = account("anna");
+    await api.write(anna, [activity("Kept")]);
+
+    const refused = await api.call(anna, "DELETE", "/v1/me");
+
+    expect(refused.status).toBeGreaterThanOrEqual(500);
+    expect((await api.ok(anna, "GET", "/v1/rows")).rows).toHaveLength(1);
+    expect(await rowsNaming(url, anna)).toMatchObject({ account: 1, account_row: 1 });
+    expect(await query(url, "select id from deleted_account")).toEqual([]);
+    expect(issuer.deletedUsers()).not.toContain(anna);
+    expect(await readdir(join(ledgerDirs.get(Redacted.value(url))!, LEDGER_DIR))).toEqual([
+      LEDGER_ID_FILE,
+    ]);
+  });
+
+  it("commits nothing when the server dies after the ledger's temporary write and before its rename", async () => {
+    const url = await freshDatabase();
+    const ledgerDir = join(ledgerDirs.get(Redacted.value(url))!, LEDGER_DIR);
+    const anna = AccountId.make(account("anna"));
+    let written!: () => void;
+    const wrote = new Promise<void>((resolve) => (written = resolve));
+    const open: Array<FileHandle> = [];
+    // Stores the whole entry, then never returns, as a server that dies there.
+    const dies: LedgerWrite = async (file, bytes, offset, length) => {
+      await file.write(bytes, offset, length);
+      open.push(file);
+      written();
+      return new Promise(() => {});
+    };
+    const server = await start(url);
+    await client(server.base).write(anna, [activity("Kept")]);
+    await server.stop();
+    const runtime = ManagedRuntime.make(servicesOf(url, { ledger: { write: dies } }));
+
+    const deleting = runtime.runFork(
+      Effect.flatMap(Effect.service(AccountDeletion), (deletion) => deletion.remove(anna)),
+    );
+    await wrote;
+    const [temporary] = await readdir(ledgerDir).then((names) =>
+      names.filter((name) => name.startsWith(TEMPORARY_PREFIX)),
+    );
+    expect(await readFile(join(ledgerDir, temporary!), "utf8")).toContain(anna);
+    expect(await rowsNaming(url, anna)).toMatchObject({ account: 1, account_row: 1 });
+    // The server dies: its connections drop and the transaction is gone.
+    await runtime.runPromise(Fiber.interrupt(deleting));
+    await runtime.dispose();
+    await Promise.all(open.map((file) => file.close()));
+
+    expect(await rowsNaming(url, anna)).toMatchObject({ account: 1, account_row: 1 });
+    expect(await query(url, "select id from deleted_account")).toEqual([]);
+    expect(issuer.deletedUsers()).not.toContain(anna);
+
+    // The next start reads no entry from it, and once it is a day old removes it.
+    const ledger = DeletionLedger.layer(ledgerDirs.get(Redacted.value(url))!);
+    const startUp = () =>
+      Effect.runPromise(
+        prepareDatabase.pipe(Effect.provide(Layer.merge(databaseLayer(url), ledger))),
+      );
+    expect(await startUp()).toBe(0);
+    expect(await readdir(ledgerDir)).toContain(temporary);
+    const old = new Date(Date.now() - LEFTOVER_AGE_MS - 60_000);
+    await utimes(join(ledgerDir, temporary!), old, old);
+    expect(await startUp()).toBe(0);
+    expect(await readdir(ledgerDir)).toEqual([LEDGER_ID_FILE]);
+    expect(await rowsNaming(url, anna)).toMatchObject({ account: 1, account_row: 1 });
   });
 
   it("waits for a request in flight, so nothing it writes outlives the deletion", async () => {

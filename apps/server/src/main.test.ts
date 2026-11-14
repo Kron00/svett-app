@@ -1,5 +1,5 @@
 import { type ChildProcess, spawn } from "node:child_process";
-import { appendFile, mkdtemp, readFile } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, utimes, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -11,7 +11,15 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vite-plus/
 
 import { prepareDatabase } from "./account-deletion.ts";
 import { databaseLayer } from "./database.ts";
-import { DeletionLedger, LEDGER_FILE, type LedgerOptions, readLedger } from "./deletion-ledger.ts";
+import {
+  DeletionLedger,
+  entryFileName,
+  LEDGER_DIR,
+  LEDGER_ID_FILE,
+  LEFTOVER_AGE_MS,
+  type LedgerOptions,
+  TEMPORARY_PREFIX,
+} from "./deletion-ledger.ts";
 import { MIGRATIONS } from "./migrations.ts";
 import { PgTools } from "./pg-tools.ts";
 import { restoreBackup, restoreForUse } from "./restore.ts";
@@ -211,16 +219,21 @@ const recordDeletion = (url: Redacted.Redacted, dir: string, account: string) =>
     ),
   );
 
-const ledgerId = async (dir: string) => {
-  const ledger = readLedger(await readFile(join(dir, LEDGER_FILE), "utf8"));
-  return "id" in ledger ? ledger.id : undefined;
-};
+const ledgerId = async (dir: string) =>
+  (JSON.parse(await readFile(join(dir, LEDGER_DIR, LEDGER_ID_FILE), "utf8")) as { ledger: string })
+    .ledger;
+
+/** The accounts the ledger in `dir` holds a final file for. */
+const ledgerAccounts = async (dir: string) =>
+  (await readdir(join(dir, LEDGER_DIR)))
+    .filter((name) => name !== LEDGER_ID_FILE && !name.startsWith(TEMPORARY_PREFIX))
+    .map((name) => name.split(".")[0]);
 
 const nothingLeft = (rows: Record<string, number>) =>
   Object.values(rows).every((count) => count === 0);
 
 describe("the deletion ledger", { timeout: 120_000 }, () => {
-  it("deletes an account again after a restore from a backup taken before its deletion, past a line a crash cut short", async () => {
+  it("deletes an account again after a restore from a backup taken before its deletion, and never one whose deletion a crash cut short", async () => {
     const n = ++databases;
     const live = await postgres.createDatabase(`main_${n}`);
     const backupDir = await mkdtemp(join(tmpdir(), "svett-main-"));
@@ -274,18 +287,19 @@ describe("the deletion ledger", { timeout: 120_000 }, () => {
         Effect.provide(tools),
       ),
     );
-    // A crash part way through an earlier append left the start of a line that never committed.
-    const ledgerFile = join(backupDir, LEDGER_FILE);
-    await appendFile(ledgerFile, '{"account":"user_never_deleted","at":1,"rec');
+    // A crash a day ago, after Ben's entry was written and before its rename, left his
+    // deletion in a temporary file. That deletion never committed.
+    const leftover = join(backupDir, LEDGER_DIR, `${TEMPORARY_PREFIX}crashed`);
+    await writeFile(leftover, `{"account":"${ben}","at":1,"receipt":null}\n`);
+    const old = new Date(Date.now() - LEFTOVER_AGE_MS - 60_000);
+    await utimes(leftover, old, old);
     const receipt = "c".repeat(64);
     expect(await first.call("DELETE", "/v1/me", held, { receipt })).toEqual({
       status: 200,
       body: { deleted: true },
     });
     first.stop();
-    expect(first.output()).toContain("Cut off the half-written last line");
-    const ledger = readLedger(await readFile(ledgerFile, "utf8"));
-    expect("entries" in ledger && ledger.entries.map(({ account }) => account)).toEqual([anna]);
+    expect(await ledgerAccounts(backupDir)).toEqual([anna]);
 
     // `cli.ts restore` deletes the account again as it restores.
     const restored = await postgres.createDatabase(`main_${++databases}`);
@@ -296,6 +310,8 @@ describe("the deletion ledger", { timeout: 120_000 }, () => {
     );
     expect(again).toBe(1);
     expect(nothingLeft(await rowsNaming(restored, anna))).toBe(true);
+    expect(nothingLeft(await rowsNaming(restored, ben))).toBe(false);
+    expect(await readdir(join(backupDir, LEDGER_DIR))).not.toContain(`${TEMPORARY_PREFIX}crashed`);
 
     // A restore by hand brings the account back, until the server starts on it.
     const byHand = await postgres.createDatabase(`main_${++databases}`);
@@ -347,7 +363,7 @@ describe("the deletion ledger", { timeout: 120_000 }, () => {
     const backup = await backUp(url, backupDir);
     const dir = await mkdtemp(join(tmpdir(), "svett-main-"));
 
-    const refused = `The database holds 2 accounts and names no deletion ledger, and ${join(dir, LEDGER_FILE)} is missing. A new ledger would let every account deleted after this database's backup come back. Check that BACKUP_DIR is the backup volume and that it is mounted. Only if the ledger is lost for good and every account in this database should exist, start or restore once with NEW_DELETION_LEDGER=true.`;
+    const refused = `The database holds 2 accounts and names no deletion ledger, and ${join(dir, LEDGER_DIR)} is missing. A new ledger would let every account deleted after this database's backup come back. Check that BACKUP_DIR is the backup volume and that it is mounted. Only if the ledger is lost for good and every account in this database should exist, start or restore once with NEW_DELETION_LEDGER=true.`;
     await expect(start(url, dir)).rejects.toThrow(refused);
     await expect(restore(backup, dir)).rejects.toThrow(refused);
     const server = startServer({ DATABASE_URL: Redacted.value(url), BACKUP_DIR: dir });
@@ -404,7 +420,7 @@ describe("the deletion ledger", { timeout: 120_000 }, () => {
     const id = await ledgerId(dir);
 
     const empty = await mkdtemp(join(tmpdir(), "svett-main-"));
-    const missing = `The database names deletion ledger ${id}, but ${join(empty, LEDGER_FILE)} is missing. Check that BACKUP_DIR is the backup volume and that it is mounted.`;
+    const missing = `The database names deletion ledger ${id}, but ${join(empty, LEDGER_DIR)} is missing. Check that BACKUP_DIR is the backup volume and that it is mounted.`;
     await expect(start(url, empty)).rejects.toThrow(missing);
     await expect(restore(backup, empty)).rejects.toThrow(missing);
     await expect(
@@ -413,7 +429,7 @@ describe("the deletion ledger", { timeout: 120_000 }, () => {
 
     const other = await mkdtemp(join(tmpdir(), "svett-main-"));
     await start(await postgres.createDatabase(`main_${++databases}`), other);
-    const another = `but ${join(other, LEDGER_FILE)} is ledger ${await ledgerId(other)}. Check that BACKUP_DIR is this server's backup volume.`;
+    const another = `but ${join(other, LEDGER_DIR)} is ledger ${await ledgerId(other)}. Check that BACKUP_DIR is this server's backup volume.`;
     await expect(start(url, other)).rejects.toThrow(another);
     await expect(restore(backup, other)).rejects.toThrow(another);
 
@@ -422,17 +438,15 @@ describe("the deletion ledger", { timeout: 120_000 }, () => {
     expect(await query(url, "select id from account")).toEqual([]);
   });
 
-  it("refuses a start and a restore when a line before the last is damaged", async () => {
+  it("refuses a start and a restore when a file under a final name is damaged", async () => {
     const url = await postgres.createDatabase(`main_${++databases}`);
     const dir = await mkdtemp(join(tmpdir(), "svett-main-"));
     await start(url, dir);
     const backup = await backUp(url, dir);
-    await appendFile(
-      join(dir, LEDGER_FILE),
-      '{"account":"user_a\n{"account":"user_b","at":2,"receipt":null}\n',
-    );
+    const name = entryFileName({ account: "user_a", at: 1, receipt: null });
+    await writeFile(join(dir, LEDGER_DIR, name), '{"account":"user_a","at');
 
-    const damaged = "is damaged. Line 2 is damaged. The server refuses to start, restore";
+    const damaged = `is damaged. ${name} is damaged. The server refuses to start or restore`;
     await expect(start(url, dir)).rejects.toThrow(damaged);
     await expect(restore(backup, dir)).rejects.toThrow(damaged);
   });

@@ -1,9 +1,18 @@
 import { randomUUID } from "node:crypto";
-import { constants } from "node:fs";
-import { type FileHandle, link, mkdir, open, readFile, rename, rm, stat } from "node:fs/promises";
-import { join } from "node:path";
+import {
+  type FileHandle,
+  link,
+  mkdir,
+  open,
+  readdir,
+  readFile,
+  rename,
+  rm,
+  stat,
+} from "node:fs/promises";
+import { dirname, join } from "node:path";
 
-import { Context, Data, Effect, Layer, Option, Schema } from "effect";
+import { Clock, Context, Data, Effect, Layer, Option, Schema } from "effect";
 
 import { ServerConfig } from "./config.ts";
 
@@ -11,17 +20,26 @@ export class LedgerError extends Data.TaggedError("LedgerError")<{
   readonly message: string;
 }> {}
 
-/** The ledger's name in BACKUP_DIR, the volume that outlives every deploy and every restore. */
-export const LEDGER_FILE = "deleted-accounts.jsonl";
+/** The ledger's directory in BACKUP_DIR, the volume that outlives every deploy and every restore. */
+export const LEDGER_DIR = "deleted-accounts";
 
-/** The ledger's first line, with the random ID the database records when the ledger is made. */
+/** The file in the ledger's directory that holds its random ID, written once. */
+export const LEDGER_ID_FILE = "ledger.json";
+
+/** Every file still being written starts with this, and no reader opens one. */
+export const TEMPORARY_PREFIX = ".tmp-";
+
+/** How old a temporary file must be before a start takes it as left by a crash and removes it. */
+export const LEFTOVER_AGE_MS = 24 * 60 * 60 * 1000;
+
+/** What LEDGER_ID_FILE holds, the random ID the database records when the ledger is made. */
 export const LedgerHeader = Schema.Struct({ ledger: Schema.String });
 
 /** One deleted account, with the hash of the receipt the phone sent with the deletion. */
 export const LedgerEntry = Schema.Struct({
-  account: Schema.String,
+  account: Schema.String.check(Schema.isPattern(/^[A-Za-z0-9_-]{1,128}$/)),
   at: Schema.Int,
-  receipt: Schema.NullOr(Schema.String),
+  receipt: Schema.NullOr(Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/))),
 });
 export type LedgerEntry = typeof LedgerEntry.Type;
 
@@ -30,41 +48,20 @@ const encodeHeader = Schema.encodeSync(Schema.fromJsonString(LedgerHeader));
 const decodeEntry = Schema.decodeUnknownOption(Schema.fromJsonString(LedgerEntry));
 const encodeEntry = Schema.encodeSync(Schema.fromJsonString(LedgerEntry));
 
+/**
+ * The file that holds `entry`. Each receipt gets its own, so a deletion sent again with another
+ * receipt keeps the first one's too.
+ */
+export const entryFileName = (entry: LedgerEntry) =>
+  `${entry.account}.${entry.receipt ?? "none"}.json`;
+
 export interface Ledger {
   readonly id: string;
   /** Every deletion, oldest first. */
   readonly entries: ReadonlyArray<LedgerEntry>;
-  /**
-   * The bytes of the complete lines. Anything after them is the start of a line a crash cut
-   * short, a deletion that never committed, because a deletion is on disk before it commits.
-   */
-  readonly complete: number;
 }
 
-/**
- * Reads a ledger's text. Gives back a description of the damage instead when a complete line
- * is not what the server wrote, as no reader can then tell which accounts were deleted.
- */
-export const readLedger = (text: string): Ledger | { readonly damaged: string } => {
-  const lines = text.split("\n");
-  const tail = lines.pop() ?? "";
-  const header = lines.length === 0 ? Option.none() : decodeHeader(lines[0]);
-  if (Option.isNone(header)) return { damaged: "Line 1 is not the ledger's header." };
-  const entries: Array<LedgerEntry> = [];
-  for (const [index, line] of lines.entries()) {
-    if (index === 0) continue;
-    const entry = decodeEntry(line);
-    if (Option.isNone(entry)) return { damaged: `Line ${index + 1} is damaged.` };
-    entries.push(entry.value);
-  }
-  return {
-    id: header.value.ledger,
-    entries,
-    complete: Buffer.byteLength(text) - Buffer.byteLength(tail),
-  };
-};
-
-/** Writes up to `length` bytes of `bytes` from `offset` at the ledger's end. */
+/** Writes up to `length` bytes of `bytes` from `offset` to a temporary file. */
 export type LedgerWrite = (
   file: FileHandle,
   bytes: Uint8Array,
@@ -75,50 +72,49 @@ export type LedgerWrite = (
 export interface LedgerOptions {
   /**
    * NEW_DELETION_LEDGER. Lets a database that holds accounts and names no ledger make a new
-   * one when the file is missing, which says every account it holds should exist.
+   * one when the ledger is missing, which says every account it holds should exist.
    */
   readonly newLedgerOverAccounts?: boolean;
-  /** How a line reaches the file. Tests pass one that stores less than it is asked to. */
+  /** How a file's bytes reach the disk. Tests pass one that stores less than it is asked to. */
   readonly write?: LedgerWrite;
 }
 
-/**
- * How long a lock file must be untouched before an append takes it as left by a crash. An
- * append holds it only to write and sync one line.
- */
-export const LEDGER_LOCK_STALE_MS = 60_000;
-
-const LOCK_RETRY_MS = 10;
-
 export interface DeletionLedgerShape {
-  /** Where the ledger lives, for messages. */
+  /** The ledger's directory, for messages. */
   readonly path: string;
   /** Whether NEW_DELETION_LEDGER is set. */
   readonly newLedgerOverAccounts: boolean;
   /**
-   * The ledger, or None when the file does not exist. Fails when it is damaged. A line a crash
-   * cut short at the end is left out.
+   * The ledger, or None when it has no ID file. Fails when a file under its final name is
+   * damaged. Temporary files are never read.
    */
   readonly read: Effect.Effect<Option.Option<Ledger>, LedgerError>;
   /**
-   * Makes a ledger with a new random ID, unless a ledger exists already, and gives back the ID
-   * of the ledger the file holds then.
+   * Makes a ledger with a new random ID, unless one exists already, and gives back the ID of
+   * the ledger the directory holds then.
    */
   readonly create: Effect.Effect<string, LedgerError>;
   /**
-   * Appends `entry` to ledger `id` and waits until it is on disk. A deletion records itself
-   * here before it commits, so no deletion the database holds is missing from the ledger. It
-   * first cuts off a line a crash cut short, so the new line never joins it. It holds the
-   * lock file beside the ledger throughout, so no append by any process on the volume is part
-   * way through. Fails when the file is missing, damaged, or another ledger, or when a write
-   * stores nothing.
+   * Records `entry` in ledger `id` and waits until it is on disk. A deletion records itself
+   * here before it commits, so no deletion the database holds is missing from the ledger. The
+   * entry is written whole to a temporary file, synced, and only then renamed to its final
+   * name, so a reader sees all of it or none. Two deletions never touch the same file, so they
+   * need no lock. Fails when the ledger is missing or another ledger, or when a write stores
+   * nothing, and then leaves nothing behind.
    */
   readonly record: (id: string, entry: LedgerEntry) => Effect.Effect<void, LedgerError>;
+  /**
+   * Removes temporary files older than LEFTOVER_AGE_MS, which a crash left part way through a
+   * deletion that never committed. Gives back how many it removed.
+   */
+  readonly removeLeftovers: Effect.Effect<number, LedgerError>;
 }
 
 const isMissing = (error: unknown) => (error as NodeJS.ErrnoException)?.code === "ENOENT";
 
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+const isTaken = (error: unknown) => (error as NodeJS.ErrnoException)?.code === "EEXIST";
+
+const isTemporary = (name: string) => name.startsWith(TEMPORARY_PREFIX);
 
 const defaultWrite: LedgerWrite = (file, bytes, offset, length) =>
   file.write(bytes, offset, length);
@@ -138,77 +134,6 @@ const writeWhole = async (
   return writeWhole(write, file, bytes, offset + bytesWritten);
 };
 
-const isTaken = (error: unknown) => (error as NodeJS.ErrnoException)?.code === "EEXIST";
-
-/** Makes the lock file holding `token`, or gives back false when it exists. */
-const tryLock = (lockPath: string, token: string) =>
-  open(lockPath, "wx").then(
-    async (handle) => {
-      try {
-        await handle.writeFile(token);
-      } finally {
-        await handle.close();
-      }
-      return true;
-    },
-    (error: unknown) => {
-      if (isTaken(error)) return false;
-      throw error;
-    },
-  );
-
-/**
- * Moves aside the lock file when it is untouched for LEDGER_LOCK_STALE_MS, as a crash left it.
- * Renaming it lets only one waiter take it. A waiter that finds it moved a live lock made in
- * the meantime puts that one back.
- */
-const breakStaleLock = async (lockPath: string, token: string) => {
-  const held = await stat(lockPath).catch((error: unknown) => {
-    if (isMissing(error)) return undefined;
-    throw error;
-  });
-  if (held === undefined || Date.now() - held.mtimeMs <= LEDGER_LOCK_STALE_MS) return false;
-  const aside = `${lockPath}.${token}.stale`;
-  const moved = await rename(lockPath, aside).then(
-    () => true,
-    (error: unknown) => {
-      if (isMissing(error)) return false;
-      throw error;
-    },
-  );
-  if (!moved) return true;
-  const taken = await stat(aside);
-  if (taken.ino !== held.ino || taken.mtimeMs !== held.mtimeMs) {
-    await link(aside, lockPath).catch((error: unknown) => {
-      if (!isTaken(error)) throw error;
-    });
-  }
-  await rm(aside, { force: true });
-  return true;
-};
-
-/** Waits until this process makes the lock file holding `token`. */
-const takeLock = async (lockPath: string, token: string): Promise<void> => {
-  if (await tryLock(lockPath, token)) return;
-  if (!(await breakStaleLock(lockPath, token))) await sleep(LOCK_RETRY_MS);
-  return takeLock(lockPath, token);
-};
-
-/**
- * Holds the lock file `lockPath` while `task` runs. Making it is atomic for every process that
- * shares the volume, which the database's advisory lock is not across two databases.
- */
-const holdingLock = async <A>(lockPath: string, task: () => Promise<A>): Promise<A> => {
-  const token = randomUUID();
-  await takeLock(lockPath, token);
-  try {
-    return await task();
-  } finally {
-    const still = await readFile(lockPath, "utf8").catch(() => undefined);
-    if (still === token) await rm(lockPath, { force: true });
-  }
-};
-
 const syncDirectory = async (dir: string) => {
   const handle = await open(dir, "r");
   try {
@@ -219,6 +144,39 @@ const syncDirectory = async (dir: string) => {
 };
 
 /**
+ * Writes `text` whole to a new temporary file in `dir` and syncs it. Gives back its path. A
+ * write that fails removes the file.
+ */
+const writeTemporary = async (write: LedgerWrite, dir: string, text: string) => {
+  const temporary = join(dir, `${TEMPORARY_PREFIX}${randomUUID()}`);
+  const file = await open(temporary, "wx");
+  try {
+    await writeWhole(write, file, Buffer.from(text));
+    await file.sync();
+  } catch (error) {
+    await file.close().catch(() => undefined);
+    await rm(temporary, { force: true });
+    throw error;
+  }
+  await file.close();
+  return temporary;
+};
+
+/** The text of `path`, or None when it does not exist. */
+const readIfThere = (path: string) =>
+  readFile(path, "utf8").then(Option.some, (error: unknown) => {
+    if (isMissing(error)) return Option.none<string>();
+    throw error;
+  });
+
+/** The names in `dir`, or none when it does not exist. */
+const namesIn = (dir: string) =>
+  readdir(dir).catch((error: unknown) => {
+    if (isMissing(error)) return [] as Array<string>;
+    throw error;
+  });
+
+/**
  * The record of deleted accounts that outlives a restore. The database keeps its own record in
  * `deleted_account`, but a backup from before a deletion brings the account back without it,
  * so the server applies the ledger again after every restore and on every start.
@@ -226,16 +184,17 @@ const syncDirectory = async (dir: string) => {
 export class DeletionLedger extends Context.Service<DeletionLedger, DeletionLedgerShape>()(
   "svett/server/DeletionLedger",
 ) {
-  /** The ledger in `dir`. */
+  /** The ledger in the directory LEDGER_DIR inside `backupDir`. */
   static readonly layer = (
-    dir: string,
+    backupDir: string,
     options: LedgerOptions = {},
   ): Layer.Layer<DeletionLedger> => {
-    const path = join(dir, LEDGER_FILE);
+    const path = join(backupDir, LEDGER_DIR);
+    const idFile = join(path, LEDGER_ID_FILE);
     const write = options.write ?? defaultWrite;
     const damaged = (problem: string) =>
       new LedgerError({
-        message: `The deletion ledger ${path} is damaged. ${problem} The server refuses to start, restore or delete an account until the file is mended, as it cannot tell which accounts were deleted.`,
+        message: `The deletion ledger ${path} is damaged. ${problem} The server refuses to start or restore until it is mended, as it cannot tell which accounts were deleted.`,
       });
     const failed = (doing: string) => (error: unknown) =>
       error instanceof LedgerError
@@ -244,55 +203,62 @@ export class DeletionLedger extends Context.Service<DeletionLedger, DeletionLedg
             message: `Could not ${doing} the deletion ledger ${path}. ${String(error)}`,
           });
 
+    /** The ledger's ID, or None when it has none. Fails when the ID file is damaged. */
+    const readId = async () => {
+      const text = await readIfThere(idFile);
+      if (Option.isNone(text)) return Option.none<string>();
+      const header = decodeHeader(text.value);
+      if (Option.isNone(header)) throw damaged(`${LEDGER_ID_FILE} is not the ledger's ID.`);
+      return Option.some(header.value.ledger);
+    };
+
     const read = Effect.tryPromise({
-      try: () =>
-        readFile(path, "utf8").then(Option.some, (error: unknown) => {
-          if (isMissing(error)) return Option.none<string>();
-          throw error;
-        }),
+      try: async () => {
+        const id = await readId();
+        const names = (await namesIn(path)).filter(
+          (name) => !isTemporary(name) && name !== LEDGER_ID_FILE,
+        );
+        if (Option.isNone(id)) {
+          if (names.length > 0) {
+            throw damaged(`It holds ${names.length} deletions but no ${LEDGER_ID_FILE}.`);
+          }
+          return Option.none<Ledger>();
+        }
+        const entries = await Promise.all(
+          names.toSorted().map(async (name) => {
+            const entry = decodeEntry(await readFile(join(path, name), "utf8"));
+            if (Option.isNone(entry) || entryFileName(entry.value) !== name) {
+              throw damaged(`${name} is damaged.`);
+            }
+            return entry.value;
+          }),
+        );
+        return Option.some<Ledger>({
+          id: id.value,
+          entries: entries.toSorted((a, b) => a.at - b.at),
+        });
+      },
       catch: failed("read"),
-    }).pipe(
-      Effect.flatMap(
-        Option.match({
-          onNone: () => Effect.succeed(Option.none<Ledger>()),
-          onSome: (text) => {
-            const ledger = readLedger(text);
-            if ("damaged" in ledger) return Effect.fail(damaged(ledger.damaged));
-            const cut = Buffer.byteLength(text) > ledger.complete;
-            return Effect.as(
-              cut
-                ? Effect.logWarning(
-                    `Left out the half-written last line of ${path}, a deletion that never committed`,
-                  )
-                : Effect.void,
-              Option.some(ledger),
-            );
-          },
-        }),
-      ),
-    );
+    });
 
     const create = Effect.tryPromise({
       try: async () => {
-        await mkdir(dir, { recursive: true });
-        // The header goes in under its final name whole or not at all, and never over a ledger.
-        const id = randomUUID();
-        const temporary = join(dir, `.${LEDGER_FILE}.${id}`);
-        const file = await open(temporary, "wx");
+        await mkdir(path, { recursive: true });
+        await syncDirectory(dirname(path));
+        // The ID goes in under its final name whole or not at all, and never over another.
+        const temporary = await writeTemporary(
+          write,
+          path,
+          `${encodeHeader({ ledger: randomUUID() })}\n`,
+        );
         try {
-          await file.writeFile(`${encodeHeader({ ledger: id })}\n`);
-          await file.sync();
-        } finally {
-          await file.close();
-        }
-        try {
-          await link(temporary, path);
+          await link(temporary, idFile);
         } catch (error) {
-          if ((error as NodeJS.ErrnoException)?.code !== "EEXIST") throw error;
+          if (!isTaken(error)) throw error;
         } finally {
           await rm(temporary, { force: true });
         }
-        await syncDirectory(dir);
+        await syncDirectory(path);
       },
       catch: failed("create"),
     }).pipe(
@@ -307,47 +273,61 @@ export class DeletionLedger extends Context.Service<DeletionLedger, DeletionLedg
 
     const record = (id: string, entry: LedgerEntry) =>
       Effect.tryPromise({
-        try: () =>
-          holdingLock(`${path}.lock`, async () => {
-            // Appending only, so each write lands at the end whatever another process did.
-            const file = await open(path, constants.O_RDWR | constants.O_APPEND).catch(
-              (error: unknown) => {
-                if (isMissing(error)) {
-                  throw new LedgerError({
-                    message: `The deletion ledger ${path} is missing. Check that BACKUP_DIR is the backup volume and that it is mounted.`,
-                  });
-                }
-                throw error;
-              },
-            );
-            try {
-              const text = (await file.readFile()).toString("utf8");
-              const ledger = readLedger(text);
-              if ("damaged" in ledger) throw damaged(ledger.damaged);
-              if (ledger.id !== id) {
-                throw new LedgerError({
-                  message: `The database names deletion ledger ${id}, but ${path} is ledger ${ledger.id}. Check that BACKUP_DIR is this server's backup volume.`,
-                });
-              }
-              const cut = Buffer.byteLength(text) > ledger.complete;
-              if (cut) await file.truncate(ledger.complete);
-              await writeWhole(write, file, Buffer.from(`${encodeEntry(entry)}\n`));
-              await file.sync();
-              return cut;
-            } finally {
-              await file.close();
-            }
-          }),
+        try: async () => {
+          const found = await readId();
+          if (Option.isNone(found)) {
+            throw new LedgerError({
+              message: `The deletion ledger ${path} is missing. Check that BACKUP_DIR is the backup volume and that it is mounted.`,
+            });
+          }
+          if (found.value !== id) {
+            throw new LedgerError({
+              message: `The database names deletion ledger ${id}, but ${path} is ledger ${found.value}. Check that BACKUP_DIR is this server's backup volume.`,
+            });
+          }
+          const temporary = await writeTemporary(write, path, `${encodeEntry(entry)}\n`);
+          try {
+            await rename(temporary, join(path, entryFileName(entry)));
+          } catch (error) {
+            await rm(temporary, { force: true });
+            throw error;
+          }
+          await syncDirectory(path);
+        },
         catch: failed("write"),
-      }).pipe(
-        Effect.flatMap((cut) =>
-          cut
-            ? Effect.logWarning(
-                `Cut off the half-written last line of ${path}, a deletion that never committed`,
-              )
-            : Effect.void,
-        ),
-      );
+      });
+
+    const removeLeftovers = Effect.flatMap(Clock.currentTimeMillis, (now) =>
+      Effect.tryPromise({
+        try: async () => {
+          const removed = await Promise.all(
+            (await namesIn(path)).filter(isTemporary).map(async (name) => {
+              const file = join(path, name);
+              const age = await stat(file).then(
+                ({ mtimeMs }) => now - mtimeMs,
+                (error: unknown) => {
+                  if (isMissing(error)) return 0;
+                  throw error;
+                },
+              );
+              if (age <= LEFTOVER_AGE_MS) return false;
+              await rm(file, { force: true });
+              return true;
+            }),
+          );
+          return removed.filter(Boolean).length;
+        },
+        catch: failed("clean up"),
+      }),
+    ).pipe(
+      Effect.tap((removed) =>
+        removed > 0
+          ? Effect.logWarning(
+              `Removed ${removed} temporary files from ${path} that a crash left, deletions that never committed`,
+            )
+          : Effect.void,
+      ),
+    );
 
     return Layer.succeed(
       DeletionLedger,
@@ -357,6 +337,7 @@ export class DeletionLedger extends Context.Service<DeletionLedger, DeletionLedg
         read,
         create,
         record,
+        removeLeftovers,
       }),
     );
   };

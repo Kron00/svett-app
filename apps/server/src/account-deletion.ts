@@ -61,8 +61,9 @@ const eraseAccount = (sql: PgClient.PgClient, account: string, receipt: string |
   });
 
 /**
- * The key of the lock every append to the ledger and every check of it holds, inside its
- * transaction. Its first key is the account locks' space plus one, so it meets none of them.
+ * The key of the lock every check of the ledger holds inside its transaction, so two starts on
+ * one database never both record a ledger. Its first key is the account locks' space plus one,
+ * so it meets none of them.
  */
 const LEDGER_LOCK_SPACE = 5_151;
 
@@ -141,12 +142,13 @@ const checkLedger = (sql: PgClient.PgClient) =>
   });
 
 /**
- * Checks the database's ledger, then deletes again every account the ledger holds that the
- * database does not know as deleted, as after a restore from a backup taken before its
- * deletion. Gives back how many it deleted.
+ * Removes what a crash left in the ledger and checks the database's ledger, then deletes again
+ * every account the ledger holds that the database does not know as deleted, as after a
+ * restore from a backup taken before its deletion. Gives back how many it deleted.
  */
 export const applyLedger = Effect.gen(function* () {
   const sql = yield* PgClient.PgClient;
+  yield* (yield* DeletionLedger).removeLeftovers;
   const { entries } = yield* sql.withTransaction(checkLedger(sql));
   if (entries.length === 0) return 0;
   const deleted = new Set(
@@ -230,7 +232,6 @@ export class AccountDeletion extends Context.Service<AccountDeletion, AccountDel
               account,
               Effect.gen(function* () {
                 yield* eraseAccount(sql, account, hash);
-                yield* lockLedger(sql);
                 const named = yield* namedLedger(sql);
                 if (Option.isNone(named)) {
                   return yield* new LedgerError({

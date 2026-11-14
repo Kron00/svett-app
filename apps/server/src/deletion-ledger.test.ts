@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { access, appendFile, mkdtemp, readFile, rm, utimes, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -9,12 +9,14 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   DeletionLedger,
-  LEDGER_FILE,
-  LEDGER_LOCK_STALE_MS,
+  entryFileName,
+  LEDGER_DIR,
+  LEDGER_ID_FILE,
+  LEFTOVER_AGE_MS,
   type LedgerEntry,
   type LedgerOptions,
   type LedgerWrite,
-  readLedger,
+  TEMPORARY_PREFIX,
 } from "./deletion-ledger.ts";
 
 const newDir = () => mkdtemp(join(tmpdir(), "svett-ledger-"));
@@ -36,13 +38,37 @@ const failure = <A, E>(
   options?: LedgerOptions,
 ) => run(dir, (ledger) => Effect.flip(effect(ledger)), options);
 
-const entry = (account: string, at: number): LedgerEntry => ({ account, at, receipt: null });
+const entry = (account: string, at: number, receipt: string | null = null): LedgerEntry => ({
+  account,
+  at,
+  receipt,
+});
 
 const entriesIn = async (dir: string) =>
   Option.getOrThrow(await run(dir, (ledger) => ledger.read)).entries.map(({ account }) => account);
 
+/** The names of the files in the ledger's directory. */
+const filesIn = async (dir: string) => (await readdir(join(dir, LEDGER_DIR))).toSorted();
+
+const temporaryFiles = async (dir: string) =>
+  (await filesIn(dir)).filter((name) => name.startsWith(TEMPORARY_PREFIX));
+
+/** Runs test-ledger-writer.ts with `args`, and gives back its exit code and output. */
+const writer = (args: ReadonlyArray<string>) =>
+  new Promise<{ readonly code: number | null; readonly output: string }>((resolve, reject) => {
+    const script = fileURLToPath(new URL("./test-ledger-writer.ts", import.meta.url));
+    const child = spawn(process.execPath, [script, ...args], {
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let output = "";
+    child.stdout.on("data", (chunk) => (output += chunk));
+    child.stderr.on("data", (chunk) => (output += chunk));
+    child.once("error", reject);
+    child.once("exit", (code) => resolve({ code, output }));
+  });
+
 describe("the deletion ledger", () => {
-  it("starts with a header that holds its ID, and makes only one ledger", async () => {
+  it("keeps its ID in a file written once, and makes only one ledger", async () => {
     const dir = await newDir();
     expect(await run(dir, (ledger) => ledger.read)).toEqual(Option.none());
     const [first, second] = await Promise.all([
@@ -50,72 +76,79 @@ describe("the deletion ledger", () => {
       run(dir, (ledger) => ledger.create),
     ]);
     expect(second).toBe(first);
-    expect(await readFile(join(dir, LEDGER_FILE), "utf8")).toBe(`{"ledger":"${first}"}\n`);
+    expect(await readFile(join(dir, LEDGER_DIR, LEDGER_ID_FILE), "utf8")).toBe(
+      `{"ledger":"${first}"}\n`,
+    );
+    expect(await filesIn(dir)).toEqual([LEDGER_ID_FILE]);
   });
 
-  it("cuts off a half-written last line before the next deletion, and keeps both deletions around it", async () => {
+  it("keeps each deletion in its own file, and every receipt a deletion was sent with", async () => {
     const dir = await newDir();
     const id = await run(dir, (ledger) => ledger.create);
-    await run(dir, (ledger) => ledger.record(id, entry("user_anna", 1)));
-    // A crash part way through an append leaves the start of a line, a deletion that never committed.
-    await appendFile(join(dir, LEDGER_FILE), '{"account":"user_ben","at":2,"rec');
-    expect(await entriesIn(dir)).toEqual(["user_anna"]);
+    const [first, again] = ["a".repeat(64), "b".repeat(64)];
 
-    await run(dir, (ledger) => ledger.record(id, entry("user_cleo", 3)));
+    await run(dir, (ledger) => ledger.record(id, entry("user_anna", 1, first)));
+    await run(dir, (ledger) => ledger.record(id, entry("user_ben", 2)));
+    await run(dir, (ledger) => ledger.record(id, entry("user_anna", 3, again)));
+    await run(dir, (ledger) => ledger.record(id, entry("user_anna", 4, again)));
 
-    expect(await entriesIn(dir)).toEqual(["user_anna", "user_cleo"]);
-    const lines = (await readFile(join(dir, LEDGER_FILE), "utf8")).split("\n");
-    expect(lines).toHaveLength(4);
-    expect(lines.at(-1)).toBe("");
-    expect(lines.join("\n")).not.toContain("user_ben");
+    const found = Option.getOrThrow(await run(dir, (ledger) => ledger.read));
+    expect(found.entries).toEqual([
+      entry("user_anna", 1, first),
+      entry("user_ben", 2),
+      entry("user_anna", 4, again),
+    ]);
+    expect(await filesIn(dir)).toEqual(
+      [
+        LEDGER_ID_FILE,
+        entryFileName(entry("user_anna", 1, first)),
+        entryFileName(entry("user_anna", 1, again)),
+        entryFileName(entry("user_ben", 2)),
+      ].toSorted(),
+    );
   });
 
-  it("refuses a damaged line that is not the last, when it reads and when it appends", async () => {
+  it("keeps every deletion when two processes record at once", { timeout: 60_000 }, async () => {
     const dir = await newDir();
     const id = await run(dir, (ledger) => ledger.create);
-    await run(dir, (ledger) => ledger.record(id, entry("user_anna", 1)));
-    await appendFile(
-      join(dir, LEDGER_FILE),
-      '{"account":"user_ben","at\n{"account":"user_cleo","at":3,"receipt":null}\n',
-    );
-    const text = await readFile(join(dir, LEDGER_FILE), "utf8");
-    expect(readLedger(text)).toEqual({ damaged: "Line 3 is damaged." });
 
-    expect((await failure(dir, (ledger) => ledger.read)).message).toContain(
-      "is damaged. Line 3 is damaged. The server refuses to start, restore or delete an account",
+    const runs = await Promise.all([
+      writer(["record", dir, id, "user_first", "40"]),
+      writer(["record", dir, id, "user_second", "40"]),
+    ]);
+
+    expect(runs).toEqual([
+      { code: 0, output: "" },
+      { code: 0, output: "" },
+    ]);
+    const expected = ["user_first", "user_second"].flatMap((prefix) =>
+      Array.from({ length: 40 }, (_, n) => `${prefix}_${n}`),
     );
-    expect(
-      (await failure(dir, (ledger) => ledger.record(id, entry("user_dan", 4)))).message,
-    ).toContain("Line 3 is damaged.");
-    expect(await readFile(join(dir, LEDGER_FILE), "utf8")).toBe(text);
+    expect((await entriesIn(dir)).toSorted()).toEqual(expected.toSorted());
+    expect(await temporaryFiles(dir)).toEqual([]);
   });
 
-  it("refuses a file without its header", async () => {
+  it("leaves no entry when a process dies before the rename, and a start a day later removes what it left", async () => {
     const dir = await newDir();
-    await writeFile(join(dir, LEDGER_FILE), '{"account":"user_anna","at":1,"receipt":null}\n');
-    expect((await failure(dir, (ledger) => ledger.read)).message).toContain(
-      "Line 1 is not the ledger's header.",
-    );
-  });
-
-  it("appends only to the ledger the database names, and never makes one by appending", async () => {
-    const dir = await newDir();
-    expect(
-      (await failure(dir, (ledger) => ledger.record("some-ledger", entry("user_anna", 1)))).message,
-    ).toContain("is missing. Check that BACKUP_DIR is the backup volume");
-    expect(await run(dir, (ledger) => ledger.read)).toEqual(Option.none());
-
     const id = await run(dir, (ledger) => ledger.create);
-    expect(
-      (await failure(dir, (ledger) => ledger.record("another-ledger", entry("user_anna", 1))))
-        .message,
-    ).toContain(
-      `names deletion ledger another-ledger, but ${join(dir, LEDGER_FILE)} is ledger ${id}`,
-    );
+
+    const crashed = await writer(["crash", dir, id, "user_anna"]);
+
+    expect(crashed.code).toBe(9);
+    const [leftover] = await temporaryFiles(dir);
+    expect(await readFile(join(dir, LEDGER_DIR, leftover!), "utf8")).toContain("user_anna");
     expect(await entriesIn(dir)).toEqual([]);
+
+    // A temporary file this young may be a deletion still being written in another process.
+    expect(await run(dir, (ledger) => ledger.removeLeftovers)).toBe(0);
+    expect(await temporaryFiles(dir)).toEqual([leftover]);
+    const old = new Date(Date.now() - LEFTOVER_AGE_MS - 60_000);
+    await utimes(join(dir, LEDGER_DIR, leftover!), old, old);
+    expect(await run(dir, (ledger) => ledger.removeLeftovers)).toBe(1);
+    expect(await filesIn(dir)).toEqual([LEDGER_ID_FILE]);
   });
 
-  it("writes the whole line when each write stores only a few bytes of it", async () => {
+  it("writes the whole entry when each write stores only a few bytes of it", async () => {
     const dir = await newDir();
     const id = await run(dir, (ledger) => ledger.create);
     const pieces: Array<number> = [];
@@ -126,16 +159,15 @@ describe("the deletion ledger", () => {
     };
 
     await run(dir, (ledger) => ledger.record(id, entry("user_anna", 1)), { write: fewBytes });
-    await run(dir, (ledger) => ledger.record(id, entry("user_ben", 2)), { write: fewBytes });
 
-    expect(pieces.length).toBeGreaterThan(20);
-    expect(await entriesIn(dir)).toEqual(["user_anna", "user_ben"]);
-    expect(await readFile(join(dir, LEDGER_FILE), "utf8")).toBe(
-      `{"ledger":"${id}"}\n{"account":"user_anna","at":1,"receipt":null}\n{"account":"user_ben","at":2,"receipt":null}\n`,
-    );
+    expect(pieces.length).toBeGreaterThan(10);
+    expect(await entriesIn(dir)).toEqual(["user_anna"]);
+    expect(
+      await readFile(join(dir, LEDGER_DIR, entryFileName(entry("user_anna", 1))), "utf8"),
+    ).toBe(`{"account":"user_anna","at":1,"receipt":null}\n`);
   });
 
-  it("fails a deletion whose write stalls, and the next append cuts off the half line", async () => {
+  it("fails a deletion whose write stalls, and leaves nothing behind", async () => {
     const dir = await newDir();
     const id = await run(dir, (ledger) => ledger.create);
     let calls = 0;
@@ -149,72 +181,73 @@ describe("the deletion ledger", () => {
     });
 
     expect(stalled.message).toContain("A write stored nothing after 10 of");
-    expect(await entriesIn(dir)).toEqual([]);
-    await run(dir, (ledger) => ledger.record(id, entry("user_ben", 2)));
-    expect(await entriesIn(dir)).toEqual(["user_ben"]);
-    expect(await readFile(join(dir, LEDGER_FILE), "utf8")).not.toContain("user_anna");
+    expect(await filesIn(dir)).toEqual([LEDGER_ID_FILE]);
   });
 
-  it("waits for the lock file another append holds", async () => {
+  it("holds up no other deletion while one write hangs", async () => {
     const dir = await newDir();
     const id = await run(dir, (ledger) => ledger.create);
-    const lock = join(dir, `${LEDGER_FILE}.lock`);
-    await writeFile(lock, "another process");
+    let release!: () => void;
+    const released = new Promise<void>((resolve) => (release = resolve));
+    const hangs: LedgerWrite = (file, bytes, offset, length) =>
+      released.then(() => file.write(bytes, offset, length));
 
-    let done = false;
-    const appending = run(dir, (ledger) => ledger.record(id, entry("user_anna", 1))).then(() => {
-      done = true;
+    const hanging = run(dir, (ledger) => ledger.record(id, entry("user_anna", 1)), {
+      write: hangs,
     });
-    await new Promise((resolve) => setTimeout(resolve, 300));
-    expect(done).toBe(false);
-    expect(await entriesIn(dir)).toEqual([]);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    await run(dir, (ledger) => ledger.record(id, entry("user_ben", 2)));
 
-    await rm(lock);
-    await appending;
-    expect(await entriesIn(dir)).toEqual(["user_anna"]);
-    await expect(access(lock)).rejects.toThrow("ENOENT");
+    expect(await entriesIn(dir)).toEqual(["user_ben"]);
+    expect(await temporaryFiles(dir)).toHaveLength(1);
+    release();
+    await hanging;
+    expect(await entriesIn(dir)).toEqual(["user_anna", "user_ben"]);
+    expect(await temporaryFiles(dir)).toEqual([]);
   });
 
-  it("takes a lock file a crash left behind once it is older than the stale limit", async () => {
+  it("refuses a damaged file under a final name, and an entry without the ledger's ID", async () => {
     const dir = await newDir();
     const id = await run(dir, (ledger) => ledger.create);
-    const lock = join(dir, `${LEDGER_FILE}.lock`);
-    await writeFile(lock, "a process that crashed");
-    const old = new Date(Date.now() - LEDGER_LOCK_STALE_MS - 5_000);
-    await utimes(lock, old, old);
-
     await run(dir, (ledger) => ledger.record(id, entry("user_anna", 1)));
+    const refusal = async () => (await failure(dir, (ledger) => ledger.read)).message;
 
+    const ben = join(dir, LEDGER_DIR, entryFileName(entry("user_ben", 2)));
+    await writeFile(ben, '{"account":"user_ben","at');
+    expect(await refusal()).toBe(
+      `The deletion ledger ${join(dir, LEDGER_DIR)} is damaged. user_ben.none.json is damaged. The server refuses to start or restore until it is mended, as it cannot tell which accounts were deleted.`,
+    );
+
+    // An entry under another account's name would hide the account it names.
+    await writeFile(ben, '{"account":"user_cleo","at":2,"receipt":null}\n');
+    expect(await refusal()).toContain("user_ben.none.json is damaged.");
+    await rm(ben);
     expect(await entriesIn(dir)).toEqual(["user_anna"]);
-    await expect(access(lock)).rejects.toThrow("ENOENT");
+
+    await writeFile(join(dir, LEDGER_DIR, LEDGER_ID_FILE), "{");
+    expect(await refusal()).toContain(`${LEDGER_ID_FILE} is not the ledger's ID.`);
+    await rm(join(dir, LEDGER_DIR, LEDGER_ID_FILE));
+    expect(await refusal()).toContain(`It holds 1 deletions but no ${LEDGER_ID_FILE}.`);
   });
 
-  it("keeps every entry whole when two processes append at once", { timeout: 60_000 }, async () => {
+  it("records only in the ledger the database names, and never makes one by recording", async () => {
     const dir = await newDir();
+    expect(
+      (await failure(dir, (ledger) => ledger.record("some-ledger", entry("user_anna", 1)))).message,
+    ).toContain("is missing. Check that BACKUP_DIR is the backup volume");
+    await mkdir(join(dir, LEDGER_DIR));
+    expect(
+      (await failure(dir, (ledger) => ledger.record("some-ledger", entry("user_anna", 1)))).message,
+    ).toContain("is missing. Check that BACKUP_DIR is the backup volume");
+    expect(await run(dir, (ledger) => ledger.read)).toEqual(Option.none());
+
     const id = await run(dir, (ledger) => ledger.create);
-    const appender = fileURLToPath(new URL("./test-ledger-appender.ts", import.meta.url));
-    const append = (prefix: string) =>
-      new Promise<string>((resolve, reject) => {
-        const child = spawn(process.execPath, [appender, dir, id, prefix, "40"], {
-          stdio: ["ignore", "pipe", "pipe"],
-        });
-        let output = "";
-        child.stdout.on("data", (chunk) => (output += chunk));
-        child.stderr.on("data", (chunk) => (output += chunk));
-        child.once("error", reject);
-        child.once("exit", (code) =>
-          code === 0 ? resolve(output) : reject(new Error(`exit ${code}: ${output}`)),
-        );
-      });
-
-    const outputs = await Promise.all([append("user_first"), append("user_second")]);
-
-    expect(outputs.join("")).not.toContain("half-written");
-    const accounts = await entriesIn(dir);
-    const expected = ["user_first", "user_second"].flatMap((prefix) =>
-      Array.from({ length: 40 }, (_, n) => `${prefix}_${n}`),
+    expect(
+      (await failure(dir, (ledger) => ledger.record("another-ledger", entry("user_anna", 1))))
+        .message,
+    ).toContain(
+      `names deletion ledger another-ledger, but ${join(dir, LEDGER_DIR)} is ledger ${id}`,
     );
-    expect(accounts.toSorted()).toEqual(expected.toSorted());
-    expect((await readFile(join(dir, LEDGER_FILE), "utf8")).endsWith("}\n")).toBe(true);
+    expect(await filesIn(dir)).toEqual([LEDGER_ID_FILE]);
   });
 });
