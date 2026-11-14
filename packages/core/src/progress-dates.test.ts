@@ -24,6 +24,24 @@ describe("weeks", () => {
     expect(startOfWeek(local(2026, 0, 12, 0, 0))).toBe(local(2026, 0, 12, 0, 0));
   });
 
+  it("start at Monday's midnight in a week whose Sunday began at 01:00", () => {
+    // Santiago's clocks went forward at midnight on Sunday 6 September 2026.
+    const zone = process.env["TZ"];
+    process.env["TZ"] = "America/Santiago";
+    try {
+      const monday = new Date(2026, 7, 31).getTime();
+      expect(new Date(monday).getHours()).toBe(0);
+      expect(startOfWeek(new Date(2026, 8, 6, 12, 0).getTime())).toBe(monday);
+      expect(startOfWeek(new Date(2026, 7, 31, 0, 30).getTime())).toBe(monday);
+      expect(
+        new Date(addWeeks(startOfWeek(new Date(2026, 8, 7, 9, 0).getTime()), -1)).getHours(),
+      ).toBe(0);
+    } finally {
+      if (zone === undefined) delete process.env["TZ"];
+      else process.env["TZ"] = zone;
+    }
+  });
+
   it("move by calendar weeks, staying at midnight across a clock change", () => {
     const march = startOfWeek(local(2026, 2, 23, 9, 0));
     expect(new Date(addWeeks(march, 1)).getHours()).toBe(0);

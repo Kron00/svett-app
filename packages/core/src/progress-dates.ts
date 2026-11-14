@@ -22,16 +22,17 @@ const at = (date: Date) => EpochMillis.make(date.getTime());
 /** Midnight on the Monday that starts the week holding `time`. */
 export const startOfWeek = (time: number): EpochMillis => {
   const date = new Date(time);
-  date.setHours(0, 0, 0, 0);
-  date.setDate(date.getDate() - ((date.getDay() + 6) % 7));
-  return at(date);
+  // Built from the date alone, so an hour a midnight clock change added to one day is
+  // not carried to Monday.
+  return at(
+    new Date(date.getFullYear(), date.getMonth(), date.getDate() - ((date.getDay() + 6) % 7)),
+  );
 };
 
 /** The week start `count` weeks after `weekStart`. Calendar days, so a clock change keeps midnight. */
 export const addWeeks = (weekStart: number, count: number): EpochMillis => {
   const date = new Date(weekStart);
-  date.setDate(date.getDate() + 7 * count);
-  return at(date);
+  return at(new Date(date.getFullYear(), date.getMonth(), date.getDate() + 7 * count));
 };
 
 const pad = (value: number) => String(value).padStart(2, "0");
