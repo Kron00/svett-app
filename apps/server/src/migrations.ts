@@ -53,4 +53,30 @@ export const MIGRATIONS: Record<string, Effect.Effect<void, unknown, SqlClient>>
     yield* sql`alter table account_row alter column seq set not null`;
     yield* sql`create unique index account_row_seq on account_row (account_id, seq)`;
   }),
+  // Usernames are unique whatever their case, so the lower-case form carries the index that
+  // keeps them apart and serves searches by prefix. A follow is requested until the account
+  // followed approves it, or following at once when that profile is public.
+  "3_social": Effect.gen(function* () {
+    const sql = yield* SqlClient;
+    yield* sql`
+      create table profile (
+        account_id text primary key,
+        username text not null,
+        username_key text not null,
+        private boolean not null,
+        updated_at timestamptz not null default now()
+      )
+    `;
+    yield* sql`create unique index profile_username_key on profile (username_key text_pattern_ops)`;
+    yield* sql`
+      create table follow (
+        follower_id text not null,
+        followee_id text not null,
+        state text not null,
+        created_at timestamptz not null default now(),
+        primary key (follower_id, followee_id)
+      )
+    `;
+    yield* sql`create index follow_followee on follow (followee_id, state)`;
+  }),
 };
