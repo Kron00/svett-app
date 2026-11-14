@@ -24,6 +24,8 @@ export const linking: LinkingOptions<RootStackParamList> = {
         },
       },
       Gallery: "gallery",
+      RecordCardio: "record",
+      Activity: "activity/:id",
       ChatGPT: "chatgpt",
       NewExercise: "exercises/new",
       Exercises: "exercises",

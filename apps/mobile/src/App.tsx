@@ -4,6 +4,8 @@ import { getFocusedRouteNameFromRoute, NavigationContainer } from "@react-naviga
 import { createNativeStackNavigator } from "@react-navigation/native-stack";
 import { StatusBar } from "expo-status-bar";
 
+import { ActivityScreen } from "./cardio/ActivityScreen";
+import { RecordScreen } from "./cardio/RecordScreen";
 import { ChatGPTScreen } from "./chatgpt/ChatGPTScreen";
 import { PhoneChecksScreen } from "./checks/PhoneChecksScreen";
 import { markLaunchOnNextFrame } from "./data/launch-timing";
@@ -55,6 +57,16 @@ export default function App() {
           name="Gallery"
           component={GalleryScreen}
           options={{ headerShown: true, title: "Design gallery", headerLargeTitle: true }}
+        />
+        <Stack.Screen
+          name="RecordCardio"
+          component={RecordScreen}
+          options={{ headerShown: true, title: "Record" }}
+        />
+        <Stack.Screen
+          name="Activity"
+          component={ActivityScreen}
+          options={{ headerShown: true, title: "" }}
         />
         <Stack.Screen
           name="ChatGPT"

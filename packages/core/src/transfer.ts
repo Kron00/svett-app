@@ -137,6 +137,7 @@ const addedFields = (beside: RawRows): Partial<Record<TableKey, (row: Fields) =>
       setFields: (setFieldsOf ??= setFieldsBySets(beside.activitySet ?? []))(row["id"]),
     }),
     activitySet: () => ({ done: true, targetRepsMin: null, targetRepsMax: null }),
+    activitySample: (row) => (row["kind"] === "location" ? { segment: 0 } : {}),
   };
 };
 

@@ -14,10 +14,11 @@ import {
 /**
  * Raised by every change to the file's shape. An older svett refuses a newer file. Version 2
  * added a workout's status and routine and a set's done mark and target, and version 3 an
- * exercise's set fields. An older file reads with the values its rows had then, and an
- * exercise's set fields come from its sets.
+ * exercise's set fields, and version 4 a location sample's segment. An older file reads with
+ * the values its rows had then, an exercise's set fields come from its sets, and a location
+ * sample is in segment 0, its route's only stretch.
  */
-export const SVETT_FILE_VERSION = 3;
+export const SVETT_FILE_VERSION = 4;
 
 export interface SvettFile {
   readonly version: number;
