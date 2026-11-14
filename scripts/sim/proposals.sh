@@ -233,7 +233,7 @@ ask() {
 
 open_train() {
   open_link "svett://train"
-  expect 'id="routine-list"' "The Train tab's routines"
+  train_routines "${timeout:-15000}" || fail "The Train tab's routines did not show."
 }
 
 # preview <title>: opens the proposal's preview from its card in the chat.
