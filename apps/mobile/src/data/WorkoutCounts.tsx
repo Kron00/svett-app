@@ -3,16 +3,13 @@ import { Effect } from "effect";
 import { useEffect, useState } from "react";
 
 import { AppText } from "../ui/AppText";
-import { launchTarget, openDatabase } from "./database";
-
-let database: ReturnType<typeof openDatabase> | undefined;
+import { appDatabase } from "./database";
 
 /** Proof that the data layer runs in the app. P1 replaces it with the history screen. */
 export function WorkoutCounts() {
   const [text, setText] = useState("Opening the database");
   useEffect(() => {
-    database ??= openDatabase(launchTarget());
-    database
+    appDatabase()
       .runPromise(Effect.flatMap(Effect.service(ActivityRepository), (repo) => repo.counts))
       .then(
         ({ activities, sets }) => setText(`${activities} workouts, ${sets} sets`),
