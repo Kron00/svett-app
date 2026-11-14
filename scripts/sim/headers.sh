@@ -16,8 +16,8 @@
 # again. Scrolled, the title should sit collapsed in the bar with the content
 # blurred under it, not drawn over the content. It fails when a screen does not
 # show, when the fixture did not open, or when a screen longer than the phone
-# looks the same after the scroll. Home and Coach show only a short summary, so
-# they have nothing to scroll. Screenshots are NN-<screen>-<top|scrolled>.png in
+# looks the same after the scroll. Home and the signed-out Coach tab are shorter
+# than the phone, so they need not move. Screenshots are NN-<screen>-<top|scrolled>.png in
 # out-dir, by default ~/svett-proof/<branch>/headers/. Like tabs.sh, Debug opens
 # the development client on Metro at SVETT_METRO, --release opens the installed
 # Release build, and every step runs through SVETT_DEVICE_CMD when it is set.

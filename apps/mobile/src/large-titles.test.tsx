@@ -53,6 +53,8 @@ vi.mock("react-native", async () => {
     AccessibilityInfo: { announceForAccessibility: () => {} },
     ActionSheetIOS: { showActionSheetWithOptions: () => {} },
     Alert: { alert: () => {} },
+    KeyboardAvoidingView: "KeyboardAvoidingView",
+    Linking: { openURL: () => Promise.resolve() },
     AppState: { addEventListener: () => ({ remove: () => {} }) },
     Platform: { OS: "ios", select: (choices: { readonly ios?: unknown }) => choices.ios },
     Pressable: "Pressable",
@@ -79,11 +81,17 @@ vi.mock("@legendapp/list/react-native", async () => {
 });
 vi.mock("../global.css", () => ({}));
 vi.mock("../modules/svett-native", () => ({ default: { launchedAt: 0 } }));
+vi.mock("expo", () => ({ uuid: { v4: () => "00000000-0000-4000-8000-000000000000" } }));
+// The coach stays on "Opening the coach" while its sign-in status is unread.
+vi.mock("./chatgpt/native", () => ({ chatGPTStatus: () => new Promise(() => {}) }));
+vi.mock("./coach/native", () => ({ swiftTransport: {} }));
 vi.mock("expo-status-bar", () => ({ StatusBar: "StatusBar" }));
 vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 vi.mock("uniwind", () => ({ useCSSVariable: () => "#000000" }));
 vi.mock("./data/store", () => ({ useQuery: () => ({ status: "loading" }) }));
-vi.mock("./data/database", () => ({ appDatabase: () => undefined }));
+vi.mock("./data/database", () => ({
+  appDatabase: () => ({ runPromise: () => new Promise(() => {}) }),
+}));
 vi.mock("./transfer/files", () => ({
   exportAndShare: () => Promise.resolve(),
   pickImportFile: () => Promise.resolve(undefined),

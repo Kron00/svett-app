@@ -10,6 +10,7 @@
   "dependencies": {
     "@expo/plist": "0.10.2",
     "@svett/core": "workspace:*",
+    "@svett/tools": "workspace:*",
     "effect": "catalog:"
   },
   "devDependencies": {

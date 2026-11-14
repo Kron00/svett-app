@@ -1707,6 +1707,128 @@ check "chatgpt.sh --live signs out an earlier sign-in, then waits 10 minutes for
   'get attrs id="chatgpt-sign-out"' 'get attrs id="chatgpt-continue"' \
   'wait id="chatgpt-state-signedIn" 600000' 'get attrs id="chatgpt-sign-out"'
 
+# Stands in for the bound command on the coach. The question field is two lines tall at
+# the largest text size, or FAKE_FIELD_HEIGHT, with Send under it above the tab bar. Every
+# other element has the same frame, every wait succeeds except one containing
+# FAKE_MISSING, the coach's answer is on screen, and opening the ask link writes
+# FAKE_RECORDING, as a live run would.
+cat >"$fake/coach-device" <<EOF
+#!/usr/bin/env bash
+echo "\$*" >>"$root/bound-calls"
+args=" \$* "
+case "\$args" in
+  *" get attrs id=\"coach-input\" "*)
+    echo "{\"rect\": {\"x\": 16, \"y\": 560, \"width\": 408, \"height\": \${FAKE_FIELD_HEIGHT:-172}}}" ;;
+  *" get attrs id=\"coach-send\" "*) echo '{"rect": {"x": 16, "y": 740, "width": 408, "height": 86}}' ;;
+  *" get attrs label=\"You, tab, 5 of 5\" "*) echo '{"rect": {"x": 352, "y": 874, "width": 88, "height": 48}}' ;;
+  *" get attrs "*) echo '{"rect": {"x": 20, "y": 300, "width": 120, "height": 40}}' ;;
+  *" open "*"svett://coach?ask="*) [[ -z "\${FAKE_RECORDING:-}" ]] || echo '{"source": "live"}' >"\$FAKE_RECORDING" ;;
+  *" is visible "*) [[ "\$args" == *coach-answer* ]] ;;
+  *" wait "*) [[ -z "\${FAKE_MISSING:-}" || "\$args" != *"\$FAKE_MISSING"* ]] ;;
+esac
+EOF
+chmod +x "$fake/coach-device"
+
+# run_coach [VAR=value...] [coach.sh args...] leaves the exit status in coach_status.
+run_coach() {
+  local -a vars=()
+  while [[ "${1:-}" == *=* ]]; do
+    vars+=("$1")
+    shift
+  done
+  rm -f "$root/simctl-calls" "$root/bound-calls" "$root/swift-calls"
+  coach_status=0
+  env PATH="$fake:$PATH" HOME="$root/home" \
+    SVETT_DEVICE_CMD="coach-device --session 't3-test session' --device FAKE-UDID" \
+    "${vars[@]}" "$repo/scripts/sim/coach.sh" "$@" >"$output" 2>&1 || coach_status=$?
+}
+
+documents="$root/data container/Documents"
+coach_fixture="--launch-args=-svettFixture --launch-args=$documents/svett-fixture.db"
+coach_signed_in="--launch-args=-svettChatGPTStub --launch-args=signedIn"
+ask_link="com.kron00.svett svett://coach?ask=What%20was%20my%20best%20squat%20set%20last%20month%3F"
+
+case_name="coach.sh Debug with SVETT_DEVICE_CMD"
+run_coach "$root/coach"
+[[ "$coach_status" == 0 ]] || fail "coach.sh failed"
+check "coach.sh runs the Swift tests and saves their output" \
+  grep -qxF "fake swift test output" "$root/coach/swift-test.txt"
+check "coach.sh copies the generated fixture and both stand-ins into the app's data container" \
+  test "$(cat "$documents/svett-fixture.db")" == "fake fixture" -a \
+  -s "$documents/coach-best-squat.json" -a -s "$documents/coach-plan-limit.json"
+check "coach.sh relaunches on the fixture once per state, then opens the coach or asks by link" \
+  only_open \
+  "$debug_open $coach_fixture --launch-args=-svettChatGPTStub --launch-args=signedOut" \
+  "com.kron00.svett svett://coach" \
+  "$debug_open $coach_fixture --launch-args=-svettChatGPTStub --launch-args=noPlanUsage" \
+  "com.kron00.svett svett://coach" \
+  "$debug_open $coach_fixture $coach_signed_in --launch-args=-svettCoachStub --launch-args=$documents/coach-best-squat.json" \
+  "$ask_link" \
+  "$debug_open $coach_fixture $coach_signed_in --launch-args=-svettCoachStub --launch-args=$documents/coach-plan-limit.json" \
+  "$ask_link"
+check "coach.sh checks the answer names the best set and the data the tools read" \
+  only_calls "wait text" \
+  "wait text Go, Plus, Pro and Business 15000" "wait text 117.5 kg for 8 reps 15000" \
+  "wait text Best sets of Barbell Squat, 2026-10-01 to 2026-10-31 15000" \
+  "wait text reached your ChatGPT plan's limit 15000"
+check "coach.sh shoots at the largest text size, then restores the default" \
+  only_calls "settings text-size" \
+  "settings text-size accessibility-extra-extra-extra-large" "settings text-size large"
+check "coach.sh screenshots each state" \
+  only_calls "screenshot" \
+  "screenshot $root/coach/01-signed-out.png" "screenshot $root/coach/02-no-plan-usage.png" \
+  "screenshot $root/coach/03-answer.png" "screenshot $root/coach/04-composer.png" \
+  "screenshot $root/coach/05-plan-limit.png"
+check "coach.sh measures the question field, Send and the tab bar under the answer" \
+  only_calls "get attrs" \
+  'get attrs id="coach-input"' 'get attrs id="coach-send"' 'get attrs label="You, tab, 5 of 5"'
+check "coach.sh with SVETT_DEVICE_CMD calls neither simctl launch nor openurl" no_simctl_launch_or_openurl
+
+case_name="coach.sh Release with SVETT_DEVICE_CMD"
+run_coach --release "$root/coach-release"
+[[ "$coach_status" == 0 ]] || fail "coach.sh --release failed"
+check "coach.sh Release relaunches the installed app without Metro" \
+  bound_got "$bound_prefix open com.kron00.svett --relaunch $coach_fixture --launch-args=-svettChatGPTStub --launch-args=signedOut"
+
+case_name="coach.sh when the answer does not show what it read"
+run_coach FAKE_MISSING="Best sets of Barbell Squat" "$root/coach-missing"
+check "coach.sh fails when the answer's data does not show" test "$coach_status" -ne 0
+check "coach.sh names what did not show" \
+  grep -qF "Expected the best sets the tools read from the fixture, which did not show" "$output"
+check "coach.sh restores the default text size after a failure" \
+  only_calls "settings text-size" \
+  "settings text-size accessibility-extra-extra-extra-large" "settings text-size large"
+
+case_name="coach.sh when the question field is clipped"
+run_coach FAKE_FIELD_HEIGHT=44 "$root/coach-clipped"
+check "coach.sh fails when the question field stays at its minimum height" test "$coach_status" -ne 0
+check "coach.sh says the question field is clipped" \
+  grep -qF "The composer is not whole: the question field is 44 points tall, so its text is clipped" "$output"
+check "coach.sh keeps the composer screenshot of a clipped field and stops before the plan's limit" \
+  only_calls "screenshot" \
+  "screenshot $root/coach-clipped/01-signed-out.png" "screenshot $root/coach-clipped/02-no-plan-usage.png" \
+  "screenshot $root/coach-clipped/03-answer.png" "screenshot $root/coach-clipped/04-composer.png"
+
+case_name="coach.sh when the Swift tests fail"
+run_coach FAKE_SWIFT_FAIL=1 "$root/coach-swift"
+check "coach.sh fails when the Swift tests fail" test "$coach_status" -ne 0
+check "coach.sh opens nothing when the Swift tests fail" test ! -e "$root/bound-calls"
+
+case_name="coach.sh --live"
+run_coach FAKE_RECORDING="$documents/coach-live.json" --release --live "$root/coach-live"
+[[ "$coach_status" == 0 ]] || fail "coach.sh --live failed"
+check "coach.sh --live skips the Swift tests" test ! -e "$root/swift-calls"
+check "coach.sh --live records against OpenAI with no stand-in, then asks by link" \
+  only_open \
+  "com.kron00.svett --relaunch $coach_fixture --launch-args=-svettCoachRecord --launch-args=$documents/coach-live.json" \
+  "com.kron00.svett svett://coach" "$ask_link"
+check "coach.sh --live saves the recorded exchange in out-dir" \
+  grep -qF '"source": "live"' "$root/coach-live/coach-live.json"
+
+case_name="coach.sh --live when svett recorded nothing"
+run_coach --release --live "$root/coach-live-empty"
+check "coach.sh --live fails without a recording" test "$coach_status" -ne 0
+check "coach.sh --live says nothing was recorded" grep -qF "svett recorded no exchange" "$output"
 
 # Stands in for the bound command while routines.sh builds and starts a routine.
 # It keeps the screen in front, the routine being edited, the saved routine and

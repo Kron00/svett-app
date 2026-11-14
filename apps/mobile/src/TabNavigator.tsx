@@ -4,6 +4,7 @@ import { SymbolView } from "expo-symbols";
 import { View } from "react-native";
 
 import { ChatGPTRow } from "./chatgpt/ChatGPTRow";
+import { CoachScreen } from "./coach/CoachScreen";
 import { DesignGalleryRow } from "./gallery/DesignGalleryRow";
 import type { TabParamList } from "./navigation";
 import { PhoneChecksRow } from "./PhoneChecksRow";
@@ -20,6 +21,7 @@ const TabStack = createNativeStackNavigator();
 
 function TabContent({ tab }: { readonly tab: Tab }) {
   if (tab.name === "Progress") return <ProgressScreen />;
+  if (tab.name === "Coach") return <CoachScreen />;
   if (tab.name === "Train") return <TrainScreen />;
   return (
     <PlaceholderScreen tab={tab}>

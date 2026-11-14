@@ -17,6 +17,7 @@
     "@react-navigation/native": "7.5.1",
     "@react-navigation/native-stack": "7.21.0",
     "@svett/core": "workspace:*",
+    "@svett/tools": "workspace:*",
     "effect": "catalog:",
     "expo": "58.0.23",
     "expo-application": "~58.1.2",
