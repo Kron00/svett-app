@@ -100,4 +100,43 @@ describe("startWorkoutFromRoutine", () => {
       ),
     ).toEqual(Option.none());
   });
+  it("keeps a started routine out of history and counts, and counts only its done sets once finished", async () => {
+    const database = openTestDatabase();
+    const seen = await database.runtime.runPromise(
+      Effect.gen(function* () {
+        const routines = yield* RoutineRepository;
+        const activities = yield* ActivityRepository;
+        const routineId = yield* routines.createRoutine({
+          folderId: null,
+          title: "Push",
+          notes: "",
+          position: 0,
+          exercises: [
+            {
+              exerciseId: bench,
+              supersetGroup: null,
+              restS: null,
+              notes: "",
+              sets: [
+                { ...EMPTY_TARGET, weightKg: 80, repsMin: 5, repsMax: 8 },
+                { ...EMPTY_TARGET, weightKg: 80, repsMin: 5, repsMax: 8 },
+                { ...EMPTY_TARGET, weightKg: 80, repsMin: 5, repsMax: 8 },
+              ],
+            },
+          ],
+        });
+        const id = yield* startWorkoutFromRoutine(routineId);
+        const current = Option.getOrThrow(yield* activities.inProgress);
+        yield* activities.updateSet(current.exercises[0]!.sets[0]!.id, { done: true, reps: 6 });
+        const during = { list: yield* activities.list(), counts: yield* activities.counts };
+        yield* activities.update(id, { status: "finished" });
+        const after = { list: yield* activities.list(), counts: yield* activities.counts };
+        return { id, during, after };
+      }),
+    );
+
+    expect(seen.during).toEqual({ list: [], counts: { activities: 0, sets: 0 } });
+    expect(seen.after.list.map((row) => row.id)).toEqual([seen.id]);
+    expect(seen.after.counts).toEqual({ activities: 1, sets: 1 });
+  });
 });

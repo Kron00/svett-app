@@ -142,6 +142,20 @@ const insertExercises = (
     }
   });
 
+/** Fails when a live workout other than `id` is in progress. */
+const noOtherInProgress = (id: ActivityId) =>
+  Effect.gen(function* () {
+    const [other] = yield* selectRows(
+      TABLES.activity,
+      "status = 'in_progress' AND id <> ?",
+      [id],
+      "started_at DESC, id DESC LIMIT 1",
+    );
+    if (other !== undefined) {
+      return yield* new WorkoutInProgressError({ activityId: other.id });
+    }
+  });
+
 const makeActivityRepository = Effect.gen(function* () {
   const sql = yield* Sql;
   const ids = yield* Ids;
@@ -287,7 +301,10 @@ const makeActivityRepository = Effect.gen(function* () {
       ),
     );
 
-  /** Undo for `remove`: brings back the activity and exactly the children that delete took. */
+  /**
+   * Undo for `remove`: brings back the activity and exactly the children that delete took.
+   * A workout in progress comes back only while no other workout is in progress.
+   */
   const restore = (id: ActivityId) =>
     run(
       sql.transaction(
@@ -300,6 +317,10 @@ const makeActivityRepository = Effect.gen(function* () {
           const deletedAt = row["deleted_at"] as EpochMillis;
           const at = yield* currentTime;
           yield* restoreRows(TABLES.activity, "id = ?", [id], deletedAt, at);
+          const restored = yield* selectById(TABLES.activity, id);
+          if (Option.isSome(restored) && restored.value.status === "in_progress") {
+            yield* noOtherInProgress(id);
+          }
           yield* restoreRows(TABLES.activityExercise, childrenOf.exercises, [id], deletedAt, at);
           yield* restoreRows(TABLES.activitySet, childrenOf.sets, [id], deletedAt, at);
           yield* restoreRows(TABLES.activityTrack, childrenOf.tracks, [id], deletedAt, at);
@@ -321,10 +342,20 @@ const makeActivityRepository = Effect.gen(function* () {
     list,
     remove,
     restore,
+    /** Fails with WorkoutInProgressError when it would put a second workout in progress. */
     update: (
       id: ActivityId,
       patch: Omit<Patch<Activity>, "source" | "sourceId" | "fingerprint" | "importBatchId">,
-    ) => run(updateRow(TABLES.activity, id, patch)),
+    ) =>
+      run(
+        sql.transaction(
+          Effect.gen(function* () {
+            const next = yield* updateRow(TABLES.activity, id, patch);
+            if (next.status === "in_progress") yield* noOtherInProgress(id);
+            return next;
+          }),
+        ),
+      ),
     updateSet: (id: ActivitySetId, patch: Omit<Patch<ActivitySet>, "activityExerciseId">) =>
       run(updateRow(TABLES.activitySet, id, patch)),
     samples: (trackId: ActivityTrackId) =>
@@ -334,7 +365,7 @@ const makeActivityRepository = Effect.gen(function* () {
         activities: countRows(TABLES.activity, "status = 'finished'"),
         sets: countRows(
           TABLES.activitySet,
-          `activity_exercise_id IN (SELECT e.id FROM activity_exercise e JOIN activity a ON a.id = e.activity_id
+          `done = 1 AND activity_exercise_id IN (SELECT e.id FROM activity_exercise e JOIN activity a ON a.id = e.activity_id
             WHERE e.deleted_at IS NULL AND a.deleted_at IS NULL AND a.status = 'finished')`,
         ),
       }),

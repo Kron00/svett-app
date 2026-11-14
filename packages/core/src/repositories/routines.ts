@@ -18,6 +18,7 @@ import {
   currentTime,
   insertRows,
   type Patch,
+  restoreRows,
   RowNotFoundError,
   selectById,
   selectRows,
@@ -61,6 +62,20 @@ const removeRoutines = (column: "id" | "folder_id", id: string, at: EpochMillis)
     yield* softDeleteRows(TABLES.routineSet, scope.sets, [id], at);
     yield* softDeleteRows(TABLES.routineExercise, scope.exercises, [id], at);
     return yield* softDeleteRows(TABLES.routine, scope.routines, [id], at);
+  });
+
+/** Brings back the routines that `column` selects and their children, as one delete took them. */
+const restoreRoutines = (
+  column: "id" | "folder_id",
+  id: string,
+  deletedAt: EpochMillis,
+  at: EpochMillis,
+) =>
+  Effect.gen(function* () {
+    const scope = routinesIn(column);
+    yield* restoreRows(TABLES.routine, scope.routines, [id], deletedAt, at);
+    yield* restoreRows(TABLES.routineExercise, scope.exercises, [id], deletedAt, at);
+    yield* restoreRows(TABLES.routineSet, scope.sets, [id], deletedAt, at);
   });
 
 const routinesInFolder = (folderId: FolderId | null) =>
@@ -163,6 +178,38 @@ const makeRoutineRepository = Effect.gen(function* () {
       ),
     );
 
+  const deletedAt = (table: string, id: string) =>
+    Effect.gen(function* () {
+      const [row] = yield* sql.all(
+        `SELECT deleted_at FROM ${table} WHERE id = ? AND deleted_at IS NOT NULL`,
+        [id],
+      );
+      if (row === undefined) return yield* new RowNotFoundError({ table, id });
+      return row["deleted_at"] as EpochMillis;
+    });
+
+  /**
+   * Undo for `removeRoutine`: brings back the routine and exactly the exercises and sets that
+   * delete took. A routine deleted with its folder comes back with the folder instead.
+   */
+  const restoreRoutine = (id: RoutineId) =>
+    run(
+      sql.transaction(
+        Effect.gen(function* () {
+          const removedAt = yield* deletedAt("routine", id);
+          const [row] = yield* sql.all(
+            `SELECT r.folder_id FROM routine r JOIN folder f ON f.id = r.folder_id
+             WHERE r.id = ? AND f.deleted_at IS NOT NULL`,
+            [id],
+          );
+          if (row !== undefined) {
+            return yield* new RowNotFoundError({ table: "folder", id: String(row["folder_id"]) });
+          }
+          yield* restoreRoutines("id", id, removedAt, yield* currentTime);
+        }),
+      ),
+    );
+
   /** Copies a routine with its exercises and targets to the end of the same folder. */
   const duplicateRoutine = (id: RoutineId) =>
     run(
@@ -256,6 +303,22 @@ const makeRoutineRepository = Effect.gen(function* () {
       ),
     );
 
+  /**
+   * Undo for `removeFolder`: brings back the folder and the routines that delete took. A
+   * routine deleted on its own before stays deleted.
+   */
+  const restoreFolder = (id: FolderId) =>
+    run(
+      sql.transaction(
+        Effect.gen(function* () {
+          const removedAt = yield* deletedAt("folder", id);
+          const at = yield* currentTime;
+          yield* restoreRows(TABLES.folder, "id = ?", [id], removedAt, at);
+          yield* restoreRoutines("folder_id", id, removedAt, at);
+        }),
+      ),
+    );
+
   return {
     createRoutine,
     saveRoutine,
@@ -267,8 +330,10 @@ const makeRoutineRepository = Effect.gen(function* () {
     orderFolders: order(TABLES.folder, selectRows(TABLES.folder)),
     getRoutine,
     removeRoutine,
+    restoreRoutine,
     createFolder,
     removeFolder,
+    restoreFolder,
     listRoutines: run(selectRows(TABLES.routine, "1 = 1", [], "position, id")),
     updateRoutine: (id: RoutineId, patch: Patch<Routine>) =>
       run(updateRow(TABLES.routine, id, patch)),
