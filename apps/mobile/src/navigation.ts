@@ -41,8 +41,12 @@ export type RootStackParamList = {
   FollowRequests: undefined;
   People: { q?: string } | undefined;
   Profile: { username: string };
-  /** `list` is followers or following, parsed by the screen. */
-  Connections: { username: string; list: string };
+  /**
+   * `list` is followers or following, parsed by the screen. `own` is set by your own profile,
+   * whose followers can be removed.
+   */
+  Connections: { username: string; list: string; own?: string };
+  Blocks: undefined;
   /** A post in full, named by its activity's social ID. */
   Post: { id: string };
   Inbox: undefined;

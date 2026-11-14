@@ -1,4 +1,10 @@
-import { AccountId, ANONYMOUS, anonymousDataLocked, type DatabaseOwner } from "@svett/core";
+import {
+  AccountId,
+  ANONYMOUS,
+  anonymousDataLocked,
+  type DatabaseOwner,
+  leavingAccount,
+} from "@svett/core";
 import { Option, Schema } from "effect";
 import Storage from "expo-sqlite/kv-store";
 import { useSyncExternalStore } from "react";
@@ -54,12 +60,17 @@ const sameTarget = (a: DatabaseTarget, b: DatabaseTarget) => {
 /**
  * The file to open for `owner`. While a move into an account is unfinished, the anonymous
  * rows already belong to that account, so someone signed out sees an empty database instead.
+ * A deleted account's file stays closed while its data leaves the phone.
  */
-const targetOf = (owner: DatabaseOwner): DatabaseTarget =>
-  fixture ??
-  (owner.kind === "anonymous" && anonymousDataLocked(storedMoveJournal())
-    ? { kind: "empty" }
-    : { kind: "owner", owner });
+const targetOf = (owner: DatabaseOwner): DatabaseTarget => {
+  if (fixture !== undefined) return fixture;
+  const journal = storedMoveJournal();
+  const locked =
+    owner.kind === "anonymous"
+      ? anonymousDataLocked(journal)
+      : leavingAccount(journal) === owner.accountId;
+  return locked ? { kind: "empty" } : { kind: "owner", owner };
+};
 
 const closeLater = (handle: DatabaseHandle) => {
   // Signing in or out while an import is being applied closes its file only once it is done.
