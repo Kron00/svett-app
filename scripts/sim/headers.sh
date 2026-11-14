@@ -22,11 +22,14 @@
 # answering from coach-best-squat.json, as coach.sh does. It asks three
 # questions through svett://coach?ask=..., and fails when New chat at the top of
 # the chat still shows once the chat has scrolled to its end, since then the
-# chat fits on the screen. It shoots the chat from the top with the title
-# expanded, then scrolled with the title collapsed over the chat. Then it
-# presses the question field, types a few characters and fails unless the field
-# took them, the composer rose above the keyboard and stays whole on screen, and
-# the latest answer scrolls into view above the composer. It shoots that.
+# chat fits on the screen. The composer fills the bottom of the screen at the
+# largest text size, so the chat is dragged only inside its own frame, never
+# with scroll, whose swipe starts in the composer. It shoots the chat from the
+# top with the title expanded, then dragged with the title collapsed over the
+# chat. Then it presses the question field, types a few characters and fails
+# unless the field took them, the composer rose above the keyboard and stays
+# whole on screen, and the latest answer is dragged into view above the
+# composer. It shoots that.
 #
 # It fails when a screen does not show, when the fixture did not open, or when a
 # screen longer than the phone looks the same after the scroll. It presses screen
@@ -172,6 +175,24 @@ ask() {
   agent_device wait 'id="coach-answer"' 10000 >/dev/null || fail "The coach's answer to \"$1\" did not show."
 }
 
+# drag_chat <up|down> drags the chat to show what is above or below, with a pan that
+# starts and ends in the lower 60% of the chat's frame, below the large title and
+# above the composer, and clear of the bottom edge. It reads the frame each time,
+# because the chat shrinks when the keyboard rises.
+drag_chat() {
+  local x y height start travel
+  read -r x y _ height < <(frame 'id="coach"') || fail "The chat did not show."
+  start=$((y + height - height / 10))
+  travel=$((height * 45 / 100))
+  ((start <= safe_bottom)) ||
+    fail "The chat's drag would start at y=$start, on the screen's bottom edge, where a touch does not land."
+  if [[ "$1" == down ]]; then
+    agent_device gesture pan $((x + 8)) "$start" 0 "-$travel" 800
+  else
+    agent_device gesture pan $((x + 8)) $((start - travel)) 0 "$travel" 800
+  fi
+}
+
 # Proof is at the largest text size. A running app adopts it only when it relaunches.
 agent_device settings text-size accessibility-extra-extra-extra-large
 # relaunch [app-argument...] relaunches svett on the fixture and waits for its tabs.
@@ -228,11 +249,23 @@ ask "Once more, what was my best squat set last month?"
 if agent_device is visible 'id="coach-new"' >/dev/null 2>&1; then
   fail "The chat still fits on the screen after three answers, so the coach's title has nothing to collapse over."
 fi
-agent_device scroll up --until 'id="coach-new"' >/dev/null || fail "Scrolling up did not reach the top of the chat."
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  agent_device is visible 'id="coach-new"' >/dev/null 2>&1 && break
+  drag_chat up
+done
+agent_device is visible 'id="coach-new"' >/dev/null 2>&1 || fail "Dragging the chat did not reach its top."
 # One more drag pulls the chat fully down, so the title shows expanded.
-agent_device scroll up 0.6
-steady_frame 'id="coach-new"' >/dev/null || fail "The chat did not hold still at its top."
-shoot coach long
+drag_chat up
+read -r _ rest_y _ _ < <(steady_frame 'id="coach-new"') || fail "The chat did not hold still at its top."
+screenshot coach-top
+top=$last
+drag_chat down
+read -r _ dragged_y _ _ < <(steady_frame 'id="coach-new"') || fail "The chat did not hold still after the drag."
+screenshot coach-scrolled
+if cmp -s "$top" "$last"; then
+  fail "coach: the scrolled screenshot matches the one at rest, so the screen did not scroll"
+fi
+((dragged_y < rest_y)) || fail "coach: New chat stayed at y=$dragged_y after the drag, so the chat did not scroll"
 
 read -r input_x input_y input_width input_height < <(steady_frame 'id="coach-input"') ||
   fail "The question field did not hold still."
@@ -256,8 +289,11 @@ read -r _ raised_y _ raised_height < <(steady_frame 'id="coach-composer"') ||
   fail "The composer stayed at y=$raised_y under the keyboard instead of rising from y=$composer_y."
 ((raised_y >= 0 && raised_y + raised_height <= composer_y + composer_height)) ||
   fail "The composer at y=$raised_y, $raised_height points tall, is not whole on the screen above the keyboard."
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  agent_device is visible 'id="coach-answer"' >/dev/null 2>&1 && break
+  drag_chat down
+done
 agent_device is visible 'id="coach-answer"' >/dev/null 2>&1 ||
-  agent_device scroll down --until 'id="coach-answer"' >/dev/null ||
   fail "The latest answer did not scroll into view above the keyboard."
 read -r _ answer_y _ _ < <(steady_frame 'id="coach-answer"') || fail "The latest answer did not hold still."
 ((answer_y < raised_y)) ||

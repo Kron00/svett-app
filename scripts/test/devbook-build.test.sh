@@ -772,34 +772,55 @@ check "progress.sh stops after 40 pages when a screen's closing rule never shows
   progress_fails "01-progress: progress-end was not on screen after 40 pages"
 
 # Stands in for the bound command on the large-title screens. A screenshot shows
-# the screen in front, the one the last press or open brought up, and how far it
-# has scrolled since then. FAKE_STUCK names a press or open whose screen never
-# scrolls. A wait for FAKE_MISSING times out. The Progress tab counts FAKE_COUNTS,
-# by default the fixture's. On Coach, New chat stays on screen with FAKE_SHORT_CHAT,
-# the question field sits at y=FAKE_INPUT_Y, and once text is typed the composer
-# rises above the keyboard, unless FAKE_COVERED leaves it under the keyboard.
+# the screen in front, the one the last tab press or open brought up, and how far
+# it has scrolled since then. As on iOS, a swipe or pan scrolls only when it
+# starts inside the scrolling view: the whole screen, or on Coach the chat above
+# the composer, which ends at y=FAKE_CHAT_BOTTOM, by default 590, and at y=360
+# once the composer rises above the keyboard. So scroll down 0.6, which starts at
+# y=765, moves every screen but the chat. The chat opens scrolled to its end, New
+# chat shows within 200 points of its top and the latest answer within 300 of its
+# end. FAKE_STUCK names a press or open whose screen never scrolls down. A wait for
+# FAKE_MISSING times out. The Progress tab counts FAKE_COUNTS, by default the
+# fixture's. On Coach, New chat stays on screen with FAKE_SHORT_CHAT, the question
+# field sits at y=FAKE_INPUT_Y, and once text is typed the composer rises above
+# the keyboard, unless FAKE_COVERED leaves it under the keyboard.
 cat >"$fake/headers-device" <<EOF
 #!/usr/bin/env bash
 echo "\$*" >>"$root/bound-calls"
 typed() { grep -q ' type ' "$root/bound-calls"; }
 raised() { typed && [[ -z "\${FAKE_COVERED:-}" ]]; }
 rect() { printf '{"rect":{"x":%s,"y":%s,"width":%s,"height":%s}}\n' "\$@"; }
+offset() {
+  awk -v stuck="\${FAKE_STUCK:-}" -v bottom="\${FAKE_CHAT_BOTTOM:-590}" -v covered="\${FAKE_COVERED:-}" '
+    function drag(y, dy) {
+      if (y < 0 || y > (chat ? (typed && covered == "" ? 360 : bottom) : 956)) return
+      if (dy < 0 && stuck != "" && index(screen, stuck) > 0) return
+      n -= dy
+      n = n < 0 ? 0 : n > 1000 ? 1000 : n
+    }
+    / press label=| open / { screen = \$0; chat = index(screen, "svett://coach") > 0; n = chat ? 1000 : 0 }
+    / type / { typed = 1 }
+    / scroll down 0[.]6$/ { drag(765, -574) }
+    / scroll up 0[.]6$/ { drag(191, 574) }
+    / gesture pan / { drag(\$(NF - 3), \$(NF - 1)) }
+    END { print screen, "scrolled", n }' "$root/bound-calls"
+}
+scrolled() { local state; state=\$(offset); echo "\${state##* }"; }
 case "\$*" in
   *" wait "*) [[ -z "\${FAKE_MISSING:-}" || "\$*" != *"\$FAKE_MISSING"* ]] ;;
   *' get text id="workout-counts"') echo "\${FAKE_COUNTS:-300 workouts, 6,012 sets}" ;;
   *' get text id="coach-input"') if typed; then echo Bench; fi ;;
-  *' is visible id="coach-new"') [[ -n "\${FAKE_SHORT_CHAT:-}" ]] ;;
-  *' get attrs id="coach-new"') rect 20 160 400 60 ;;
+  *' is visible id="coach-new"') [[ -n "\${FAKE_SHORT_CHAT:-}" ]] || ((\$(scrolled) < 200)) ;;
+  *' is visible id="coach-answer"') ((\$(scrolled) > 700)) ;;
+  *' get attrs id="coach"')
+    if raised; then rect 0 0 440 360; else rect 0 0 440 "\${FAKE_CHAT_BOTTOM:-590}"; fi ;;
+  *' get attrs id="coach-new"') rect 20 \$((205 - \$(scrolled))) 400 60 ;;
   *' get attrs id="coach-answer"') rect 20 120 400 200 ;;
   *' get attrs id="coach-input"')
     if raised; then rect 20 370 400 80; else rect 20 "\${FAKE_INPUT_Y:-700}" 400 80; fi ;;
   *' get attrs id="coach-composer"')
     if raised; then rect 0 360 440 160; else rect 0 690 440 160; fi ;;
-  *" screenshot "*)
-    awk -v stuck="\${FAKE_STUCK:-}" '
-      / (press|open) / { screen = \$0; n = 0 }
-      / scroll down 0[.]6$/ && (stuck == "" || index(screen, stuck) == 0) { n++ }
-      END { print screen, "scrolled", n }' "$root/bound-calls" >"\${@: -1}" ;;
+  *" screenshot "*) offset >"\${@: -1}" ;;
 esac
 EOF
 chmod +x "$fake/headers-device"
@@ -866,8 +887,9 @@ check "headers.sh shoots at the largest text size and restores the default" \
   only_calls "settings" "$largest_text" "settings text-size large"
 check "headers.sh presses the tab buttons, then the question field at its centre" \
   only_calls "press" "${header_presses[@]}"
-check "headers.sh shoots every large-title screen at rest and after scrolling 60% of the screen, then the composer above the keyboard" \
-  only_calls "screenshot|scroll|type" \
+pull='gesture pan 8 266 0 265 800' push='gesture pan 8 531 0 -265 800' raised_push='gesture pan 8 324 0 -162 800'
+check "headers.sh shoots every large-title screen at rest and after scrolling 60% of the screen, then drags the chat inside its frame and shoots the composer above the keyboard" \
+  only_calls "screenshot|scroll|gesture|type" \
   "${header_shots[0]}" "scroll down 0.6" "${header_shots[1]}" \
   "${header_shots[2]}" "scroll down 0.6" "${header_shots[3]}" \
   "${header_shots[4]}" "scroll down 0.6" "${header_shots[5]}" \
@@ -875,9 +897,9 @@ check "headers.sh shoots every large-title screen at rest and after scrolling 60
   "${header_shots[8]}" "scroll down 0.6" "${header_shots[9]}" \
   "${header_shots[10]}" "scroll down 0.6" "${header_shots[11]}" \
   "${header_shots[12]}" "scroll down 0.6" "${header_shots[13]}" \
-  'scroll up --until id="coach-new"' "scroll up 0.6" \
-  "${header_shots[14]}" "scroll down 0.6" "${header_shots[15]}" \
-  "type Bench" "${header_shots[16]}"
+  "$pull" "$pull" "$pull" "$pull" "$pull" \
+  "${header_shots[14]}" "$push" "${header_shots[15]}" \
+  "type Bench" "$raised_push" "$raised_push" "$raised_push" "${header_shots[16]}"
 check "headers.sh waits for each tab to be selected, each screen's content and each answer" \
   only_calls 'wait (absent )?(label|id|text)' \
   'wait label="Home, tab, 1 of 5" selected=true 120000' \
@@ -897,7 +919,11 @@ check "headers.sh waits for each tab to be selected, each screen's content and e
   'wait absent id="coach-pending" 60000' 'wait id="coach-answer" 10000'
 check "headers.sh checks the chat is longer than the screen, the field took the text and the latest answer shows" \
   only_calls 'is visible|get text id="coach' \
-  'is visible id="coach-new"' 'get text id="coach-input"' 'is visible id="coach-answer"'
+  'is visible id="coach-new"' 'is visible id="coach-new"' 'is visible id="coach-new"' \
+  'is visible id="coach-new"' 'is visible id="coach-new"' 'is visible id="coach-new"' \
+  'is visible id="coach-new"' 'get text id="coach-input"' \
+  'is visible id="coach-answer"' 'is visible id="coach-answer"' 'is visible id="coach-answer"' \
+  'is visible id="coach-answer"' 'is visible id="coach-answer"'
 check "headers.sh with SVETT_DEVICE_CMD calls neither simctl launch nor openurl" no_simctl_launch_or_openurl
 
 case_name="headers.sh Release with SVETT_DEVICE_CMD"
@@ -915,6 +941,36 @@ case_name="headers.sh when the coach's title does not collapse"
 run_headers FAKE_STUCK=svett://coach "$root/proof-headers-coach-stuck"
 check "headers.sh fails when the long chat does not move under the title" \
   headers_fails "coach: the scrolled screenshot matches the one at rest, so the screen did not scroll"
+
+# Round 3 scrolled the chat with scroll down 0.6, whose swipe starts at y=765 in the
+# composer, so r3-15 and r3-16 came out the same. A copy of headers.sh that does
+# that again must fail the same way on the fake device.
+r3_repo="$root/r3-repo"
+mkdir -p "$r3_repo/scripts/sim" "$r3_repo/packages/tools/fixtures"
+cp "$repo/scripts/sim/simulator.sh" "$repo/scripts/sim/launch.sh" "$r3_repo/scripts/sim/"
+cp "$repo/packages/tools/fixtures/coach-best-squat.json" "$r3_repo/packages/tools/fixtures/"
+awk '{ if (after_top && $0 == "drag_chat down") $0 = "agent_device scroll down 0.6"; after_top = ($0 == "top=$last"); print }' \
+  "$repo/scripts/sim/headers.sh" >"$r3_repo/scripts/sim/headers.sh"
+chmod +x "$r3_repo/scripts/sim/headers.sh"
+case_name="headers.sh with round 3's scroll down on the chat"
+grep -qxF "agent_device scroll down 0.6" "$r3_repo/scripts/sim/headers.sh" ||
+  fail "the round 3 copy of headers.sh does not scroll down"
+rm -f "$root/simctl-calls" "$root/bound-calls" "$container_fixture"
+headers_status=0
+env PATH="$fake:$PATH" SVETT_DEVICE_CMD="headers-device --session 't3-test session' --device FAKE-UDID" \
+  "$r3_repo/scripts/sim/headers.sh" "$root/proof-headers-r3" >"$output" 2>&1 || headers_status=$?
+check "a scroll down that starts in the composer leaves the chat where it was, as in r3-15 and r3-16" \
+  headers_fails "coach: the scrolled screenshot matches the one at rest, so the screen did not scroll"
+check "the pan inside the chat's frame moves it, so headers.sh passes where round 3 failed" \
+  cmp -s <(printf 'scrolled 0\nscrolled 265\n') \
+  <(sed 's/.* scrolled /scrolled /' "$root/proof headers/15-coach-top.png" "$root/proof headers/16-coach-scrolled.png")
+
+case_name="headers.sh when the chat reaches the bottom edge"
+run_headers FAKE_CHAT_BOTTOM=950 "$root/proof-headers-coach-tall"
+check "headers.sh never drags the chat from the screen's bottom edge" \
+  headers_fails "The chat's drag would start at y=855, on the screen's bottom edge, where a touch does not land."
+check "headers.sh makes no drag when the chat reaches the bottom edge" \
+  only_calls "gesture" ""
 
 case_name="headers.sh when the chat fits on the screen"
 run_headers FAKE_SHORT_CHAT=1 "$root/proof-headers-coach-short"
