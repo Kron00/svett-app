@@ -6,11 +6,14 @@ import { AccountId } from "./database.ts";
  * What the phone did with its own data on the first sign-in. It lives outside every database,
  * so it survives the anonymous database being deleted. `copying` and `cleaning` name the
  * account the data is going to before any row moves, so a move cut short by a crash finishes
- * into that account and no other.
+ * into that account and no other. `keeping` and `erasing` name an account deleted on the
+ * server whose data is leaving the phone's account file, copied to the phone's own database
+ * first when the person kept a copy.
  */
 export const MoveJournal = Schema.Union([
   Schema.Struct({ state: Schema.Literal("declined") }),
   Schema.Struct({ state: Schema.Literals(["copying", "cleaning", "moved"]), account: AccountId }),
+  Schema.Struct({ state: Schema.Literals(["keeping", "erasing"]), account: AccountId }),
 ]);
 export type MoveJournal = typeof MoveJournal.Type;
 
@@ -35,7 +38,11 @@ export const encodeMoveJournal = Schema.encodeSync(MoveJournalJson);
  * may see them, not even someone signed out.
  */
 export const anonymousDataLocked = (journal: MoveJournal | undefined) =>
-  journal?.state === "copying" || journal?.state === "cleaning";
+  journal?.state === "copying" || journal?.state === "cleaning" || journal?.state === "keeping";
+
+/** The deleted account whose data is still leaving the phone, if any. Its file stays closed. */
+export const leavingAccount = (journal: MoveJournal | undefined): AccountId | undefined =>
+  journal?.state === "keeping" || journal?.state === "erasing" ? journal.account : undefined;
 
 export class MoveRefused extends Data.TaggedError("MoveRefused")<{
   readonly message: string;
@@ -86,4 +93,45 @@ export const startMove = <E>(steps: MoveSteps<E>, account: AccountId) =>
     }
     yield* steps.record({ state: "copying", account });
     return yield* finishMove(steps);
+  });
+
+/** What leaving a deleted account does to the phone. Each step must be safe to run again. */
+export interface LeaveSteps<E> {
+  readonly read: Effect.Effect<MoveJournal | undefined, E>;
+  readonly record: (journal: MoveJournal) => Effect.Effect<void, E>;
+  /** Forgets the journal, so the next sign-in offers to move the phone's own data again. */
+  readonly forget: Effect.Effect<void, E>;
+  /** Copies every row of the account's database into the anonymous one, all or none. */
+  readonly copyToAnonymous: (account: AccountId) => Effect.Effect<unknown, E>;
+  /** Deletes the account's database, and succeeds when it is already gone. */
+  readonly deleteAccountData: (account: AccountId) => Effect.Effect<void, E>;
+}
+
+/**
+ * Runs whatever the journal says is left of leaving a deleted account. Run at every launch,
+ * it finishes one a crash cut short. With nothing left it changes nothing.
+ */
+export const finishLeave = <E>(steps: LeaveSteps<E>) =>
+  Effect.gen(function* () {
+    const journal = yield* steps.read;
+    if (journal?.state === "keeping") {
+      yield* steps.copyToAnonymous(journal.account);
+      yield* steps.record({ state: "erasing", account: journal.account });
+    }
+    if (journal?.state === "keeping" || journal?.state === "erasing") {
+      yield* steps.deleteAccountData(journal.account);
+      yield* steps.forget;
+    }
+    return yield* steps.read;
+  });
+
+/**
+ * Takes a deleted account's data off the phone. With `keep` its rows become the phone's own,
+ * with no account, as if they had been logged signed out. Without it they are erased. The
+ * journal names the account first, so a crash part way finishes the same choice at launch.
+ */
+export const leaveAccount = <E>(steps: LeaveSteps<E>, account: AccountId, keep: boolean) =>
+  Effect.gen(function* () {
+    yield* steps.record({ state: keep ? "keeping" : "erasing", account });
+    return yield* finishLeave(steps);
   });

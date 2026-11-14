@@ -12,6 +12,10 @@ export type SyncProblem =
   | "sign_in_unavailable"
   /** The session belongs to another account than the open database. Nothing was sent. */
   | "wrong_account"
+  /** The account was deleted, so the server refuses every change and keeps nothing. */
+  | "account_deleted"
+  /** The account sent too many changes at once. Sync tries again later. */
+  | "rate_limited"
   | "server";
 
 export class SyncFailed extends Data.TaggedError("SyncFailed")<{
@@ -107,6 +111,13 @@ export const httpSyncApi = (options: HttpSyncOptions): SyncApi<SyncFailed> => {
         },
         catch: () => failed("offline", "Could not reach the svett server."),
       });
+      // A proxy in front of the server can answer these without JSON.
+      if (response.status === 410) {
+        return yield* failed("account_deleted", "The svett account was deleted.");
+      }
+      if (response.status === 429) {
+        return yield* failed("rate_limited", "Too many changes at once.");
+      }
       const body: unknown = yield* Effect.tryPromise({
         try: () => response.json(),
         catch: () => failed("server", `The server answered ${response.status} without JSON.`),
@@ -163,6 +174,10 @@ export const syncStatusMessage = (status: SyncStatus): string => {
           return "The svett server has no sign-in set up yet, so nothing syncs.";
         case "wrong_account":
           return "The session belongs to another account, so nothing was sent.";
+        case "account_deleted":
+          return "This account was deleted, so svett keeps nothing more from this phone.";
+        case "rate_limited":
+          return `svett got a lot of changes at once. ${changes(status.queued)} on this phone, and sync tries again soon.`;
         case "server":
           return "The svett server had a problem. Sync tries again soon.";
       }
