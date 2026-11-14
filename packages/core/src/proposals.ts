@@ -2,6 +2,7 @@ import { Data, Effect, Option, Schema } from "effect";
 
 import { DurationSeconds } from "./duration.ts";
 import { contentFingerprint } from "./ids.ts";
+import { ActivityRepository } from "./repositories/activities.ts";
 import { ExerciseRepository } from "./repositories/exercises.ts";
 import { ProposalRepository } from "./repositories/records.ts";
 import { type AppliedRows, RoutineRepository } from "./repositories/routines.ts";
@@ -296,12 +297,8 @@ export const undoProposal = (id: ProposalId) =>
         }
         // A workout started from one of these routines points at it, so deleting the routine
         // would leave that workout, in progress or finished, naming a deleted routine.
-        const marks = applied.routineIds.map(() => "?").join(", ");
-        const [used] = yield* sql.all(
-          `SELECT count(*) AS n FROM activity WHERE deleted_at IS NULL AND routine_id IN (${marks})`,
-          applied.routineIds,
-        );
-        if (Number(used?.["n"] ?? 0) > 0) {
+        const used = yield* (yield* ActivityRepository).countStartedFrom(applied.routineIds);
+        if (used > 0) {
           const what =
             payload.plan.kind === "program" ? "a routine of this program" : "this routine";
           return yield* new ProposalError({
