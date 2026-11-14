@@ -1991,9 +1991,12 @@ check "coach.sh --live says nothing was recorded" grep -qF "svett recorded no ex
 # routine unless FAKE_FORGETS is set. FAKE_NO_TARGETS starts a workout whose sets
 # are empty, and FAKE_LIBRARY names the picker's first result. It keeps the
 # screens a link opened in front of each other in stack, and writes the screen
-# under each new routine editor to editor-over. The Train tab shows svett's own
+# under each new routine editor to editor-over. The Train tab shows the
 # cold start time when the app was launched with -svettTiming 1, unless
-# FAKE_NO_TIMING is set. FAKE_TIMING_LABEL replaces its text.
+# FAKE_NO_TIMING is set. FAKE_TIMING_LABEL replaces its text. As at the largest
+# text size, the Train tab shows Start empty workout or the workout in progress
+# at its top and the routines and the time below the screen, until a scroll down
+# reaches them. It keeps its scroll until a relaunch, scroll top or a scroll up.
 cat >"$fake/routines-device" <<'EOF'
 #!/usr/bin/env bash
 echo "$*" >>"$FAKE_ROOT/bound-calls"
@@ -2026,6 +2029,7 @@ holds() {
     'id="routine-list"') [[ "$screen" == train ]] ;;
     'id="cold-start-timing"') [[ "$screen" == train && -f "$s/timing" && -z "${FAKE_NO_TIMING:-}" ]] ;;
     'id="workout-in-progress-row"') [[ "$screen" == train && -s "$s/workout" ]] ;;
+    'id="start-empty-workout"') [[ "$screen" == train && ! -s "$s/workout" ]] ;;
     'id="routine-row" label='*)
       [[ "$screen" == train && "$1" == "id=\"routine-row\" label=\"$(get saved_name), $(get saved_exercise)\"" ]] ;;
     'id="workout"') [[ "$screen" == workout ]] ;;
@@ -2049,6 +2053,26 @@ holds() {
     'id="routine-title" label='*) [[ "$screen" == detail && "$1" == "id=\"routine-title\" label=\"$(get saved_name)\"" ]] ;;
     *) return 1 ;;
   esac
+}
+# below <selector>: on the Train tab, the element sits below the screen until a scroll down.
+below() {
+  case "$1" in
+    'id="routine-list"' | 'id="routine-row"'* | 'id="cold-start-timing"') return 0 ;;
+    *) return 1 ;;
+  esac
+}
+# shows <selector>: the element, or one of a || fallback's, is on screen.
+shows() {
+  local one
+  while IFS= read -r one; do
+    holds "$one" || continue
+    [[ "$screen" == train ]] || return 0
+    case "$one" in
+      'id="start-empty-workout"' | 'id="workout-in-progress-row"') [[ ! -f "$s/down" ]] && return 0 ;;
+      *) { ! below "$one" || [[ -f "$s/down" ]]; } && return 0 ;;
+    esac
+  done < <(sed 's/ || /\n/g' <<<"$1")
+  return 1
 }
 press() {
   local target
@@ -2104,6 +2128,7 @@ case "$1" in
       --relaunch)
         put screen tabs
         put stack tabs
+        rm -f "$s/down"
         if [[ "$*" == *"--launch-args=-svettTiming --launch-args=1"* ]]; then touch "$s/timing"; else rm -f "$s/timing"; fi
         [[ -z "${FAKE_FORGETS:-}" ]] || rm -f "$s/saved_name" "$s/saved_exercise" "$s/saved_sets" ;;
       # A link to a tab pops every screen above the tabs.
@@ -2121,9 +2146,23 @@ case "$1" in
       svett://routines/new/exercises\?q=*) put screen picker ;;
       *) exit 1 ;;
     esac ;;
-  wait) [[ "$2" =~ ^[0-9]+$ ]] || holds "$2" ;;
-  is) holds "$3" ;;
-  scroll) holds "$4" ;;
+  wait) [[ "$2" =~ ^[0-9]+$ ]] || shows "$2" ;;
+  is) shows "$3" ;;
+  scroll)
+    if [[ "$2" == top ]]; then
+      rm -f "$s/down"
+    else
+      holds "$4" || exit 1
+      if [[ "$screen" == train ]]; then
+        if below "$4"; then
+          [[ "$2" == down || -f "$s/down" ]] || exit 1
+          touch "$s/down"
+        elif [[ "$4" == 'id="start-empty-workout"' || "$4" == 'id="workout-in-progress-row"' ]]; then
+          [[ "$2" == up || ! -f "$s/down" ]] || exit 1
+          rm -f "$s/down"
+        fi
+      fi
+    fi ;;
   get)
     holds "$3" || exit 1
     put target "$3"
@@ -2131,7 +2170,7 @@ case "$1" in
       printf '{"label": "%s, Quadriceps · Barbell", "rect": {"x": 0, "y": 200, "width": 440, "height": 80}}\n' \
         "${FAKE_LIBRARY:-Barbell Squat}"
     elif [[ "$3" == 'id="cold-start-timing"' ]]; then
-      label="svett's own cold start: 640 ms. Routine list drawn 1540 ms after launch, less 900 ms waiting for the Train tab."
+      label="Cold start: 1540 ms, from process start to the first frame with the Train tab's routine list. This launch opened on another tab first, so the number includes the time until the Train tab opened, and the 2 second target does not judge it."
       node -e 'console.log(JSON.stringify({ label: process.argv[1], rect: { x: 16, y: 800, width: 408, height: 120 } }))' \
         "${FAKE_TIMING_LABEL:-$label}"
     else
@@ -2177,7 +2216,7 @@ cold_start_lines=(
   "^agent-device's calls alone, against the running app: [0-9]+ ms$"
   "^The difference, an upper bound on svett's start-up that still includes the script's wait before it opens the Train tab: about -?[0-9]+ ms$"
 )
-fake_in_app="svett's own cold start: 640 ms. Routine list drawn 1540 ms after launch, less 900 ms waiting for the Train tab."
+fake_in_app="Cold start: 1540 ms, from process start to the first frame with the Train tab's routine list. This launch opened on another tab first, so the number includes the time until the Train tab opened, and the 2 second target does not judge it."
 
 # cold_start_says <file> <build>: the cold start's upper bound, the automation's
 # share, the difference, and the time the app measured itself, word for word as
@@ -2187,7 +2226,7 @@ cold_start_says() {
     sed -n 1p "$1" | grep -qE "^Cold start to the Train tab's routine list: [0-9]+ ms \($2, on the 300-workout fixture, an upper bound that includes agent-device's calls\)$" &&
     sed -n 2p "$1" | grep -qE "${cold_start_lines[0]}" &&
     sed -n 3p "$1" | grep -qE "${cold_start_lines[1]}" &&
-    [[ "$(sed -n 4p "$1")" == "Measured in the app, the number the plan's 2 second target is judged by: $fake_in_app" ]]
+    [[ "$(sed -n 4p "$1")" == "Measured in the app after the svett://train link, so startup.sh's time is the one the 2 second target judges: $fake_in_app" ]]
 }
 
 case_name="routines.sh Debug with SVETT_DEVICE_CMD"
@@ -2237,9 +2276,9 @@ check "routines.sh Release relaunches the installed app on the fixture without M
 check "routines.sh discards the earlier workout by pressing svett's own Discard button" \
   only_calls 'alert|get attrs (id="discard|label="Discard")' \
   'get attrs id="discard-workout"' "alert wait 5000" 'get attrs label="Discard"'
-check "routines.sh checks the Train tab no longer shows the discarded workout" \
-  only_calls 'is visible id="workout-in-progress-row"|wait label="No workout' \
-  'is visible id="workout-in-progress-row"'
+check "routines.sh scrolls to the top of the Train tab and waits for Start empty workout after the discard" \
+  only_calls 'scroll top|wait id="start-empty-workout" [0-9]|wait label="No workout' \
+  'scroll top' 'wait id="start-empty-workout" 10000' 'scroll top'
 check "routines.sh opens the new routine from the Train tab after discarding the workout" \
   grep -qx train "$root/routines-state/editor-over"
 check "routines.sh saves a Release build's cold start" \
@@ -2277,8 +2316,8 @@ case_name="routines.sh when the Train tab shows no cold start time"
 rm -rf "$root/routines-state"
 run_routines FAKE_NO_TIMING=1 "$root/routines-no-timing"
 check "routines.sh fails when svett shows no cold start time" test "$routines_status" -ne 0
-check "routines.sh says svett's own time is missing" \
-  grep -qxF "The Train tab did not show svett's own cold start time" "$output"
+check "routines.sh says the cold start time is missing" \
+  grep -qxF "The Train tab did not show the cold start time" "$output"
 check "routines.sh saves no cold start without svett's own time" \
   test ! -e "$root/routines-no-timing/cold-start.txt"
 
@@ -2302,6 +2341,263 @@ run_routines FAKE_LIBRARY="Barbell Squat Jump" "$root/routines-other"
 check "routines.sh fails when the first result is not the exercise it adds" test "$routines_status" -ne 0
 check "routines.sh names the result it found instead" \
   grep -qxF 'The first result was not "Barbell Squat". Its label is "Barbell Squat Jump, Quadriceps · Barbell".' "$output"
+
+# Stands in for the bound command while startup.sh times cold launches. It keeps
+# the screen in front, the number of relaunches and how far the Train tab is
+# scrolled under $FAKE_STATE. A relaunch with -svettLink svett://train opens on
+# the Train tab, and any other on the first tab. The Train tab is laid out as at
+# the largest text size, Start empty workout, Cardio, the routine list, Library
+# and the cold start time, of which two fit on the screen. wait and is visible
+# see only those on screen, and scroll down or up --until moves the screen until
+# the element is on it. The cold start time shows only when svett was launched
+# with -svettTiming 1. Launch n reports a cold start from the list 1600 1510
+# 1550 1520 1530, main() at 70 + 2n and JavaScript at 200 + n. Its database
+# opens after the first screen. Only the first launch stops a leftover location
+# task. FAKE_TIMING_LABEL replaces every launch's text, FAKE_NO_TIMING hides it,
+# FAKE_NO_ROUTINES leaves the Train tab without its routines, and FAKE_NO_LINK
+# ignores -svettLink, as a build from main before the launch marks does.
+cat >"$fake/startup-device" <<'EOF'
+#!/usr/bin/env bash
+echo "$*" >>"$FAKE_ROOT/bound-calls"
+shift 4
+s=$FAKE_STATE
+mkdir -p "$s"
+get() { cat "$s/$1" 2>/dev/null || true; }
+put() { printf '%s\n' "$2" >"$s/$1"; }
+screen=$(get screen)
+screen=${screen:-home}
+launch=$(get launch)
+launch=${launch:-0}
+top=$(get top)
+top=${top:-0}
+loaded() { [[ -z "${FAKE_NO_ROUTINES:-}" ]]; }
+# place <selector>: the element's row on the Train tab, top first.
+place() {
+  [[ "$screen" == train ]] || return 1
+  case "$1" in
+    'id="start-empty-workout"') loaded && echo 0 ;;
+    'label="Cardio"') echo 1 ;;
+    'id="routine-list"') loaded && echo 2 ;;
+    'label="Library"') echo 3 ;;
+    'id="cold-start-timing"') loaded && [[ -f "$s/timing" && -z "${FAKE_NO_TIMING:-}" ]] && echo 4 ;;
+    *) return 1 ;;
+  esac
+}
+# shows <selector>: the element, or one of a || fallback's, is on screen.
+shows() {
+  local one row
+  while IFS= read -r one; do
+    if [[ "$one" == 'label="Train, tab, 2 of 5"' ]]; then
+      [[ "$screen" != home ]] && return 0
+    elif row=$(place "$one"); then
+      ((row >= top && row < top + 2)) && return 0
+    fi
+  done < <(sed 's/ || /\n/g' <<<"$1")
+  return 1
+}
+label() {
+  local starts=(1600 1510 1550 1520 1530) ms leftover=""
+  ms=${starts[$(((launch - 1) % 5))]}
+  [[ "$launch" != 1 ]] || leftover=", leftover location task stopped 1700"
+  echo "Cold start: $ms ms, from process start to the first frame with the Train tab's routine list. The 2 second target judges this number, with nothing taken off. Timed from the process start, because iOS did not prewarm this launch. Steps since process start: process start 0, main() $((70 + launch * 2)), JavaScript started $((200 + launch)), Train tab opened 400, first screen drawn 420, database open 1100, routine list drawn $ms$leftover ms."
+}
+case "$1" in
+  settings) ;;
+  screenshot) echo "launch $launch" >"${@: -1}" ;;
+  open)
+    case "$3" in
+      --relaunch)
+        put launch $((launch + 1))
+        put top 0
+        if [[ "$*" == *"--launch-args=-svettLink --launch-args=svett://train"* && -z "${FAKE_NO_LINK:-}" ]]; then
+          put screen train
+        else
+          put screen tabs
+        fi
+        if [[ "$*" == *"--launch-args=-svettTiming --launch-args=1"* ]]; then touch "$s/timing"; else rm -f "$s/timing"; fi ;;
+      svett://train) put screen train ;;
+      *) exit 1 ;;
+    esac ;;
+  wait) [[ "$2" =~ ^[0-9]+$ ]] || shows "$2" ;;
+  is) shows "$3" ;;
+  scroll)
+    [[ "$3" == --until ]] && row=$(place "$4") || exit 1
+    case "$2" in
+      down) ((row >= top)) || exit 1; ((row < top + 2)) || put top $((row - 1)) ;;
+      up) ((row < top + 2)) || exit 1; ((row >= top)) || put top "$row" ;;
+      *) exit 1 ;;
+    esac ;;
+  get)
+    shows "$3" || exit 1
+    node -e 'console.log(JSON.stringify({ label: process.argv[1], rect: { x: 16, y: 600, width: 408, height: 300 } }))' \
+      "${FAKE_TIMING_LABEL:-$(label)}" ;;
+  *) exit 1 ;;
+esac
+EOF
+chmod +x "$fake/startup-device"
+
+# run_startup [VAR=value...] [startup.sh args...] leaves the exit status in startup_status.
+run_startup() {
+  local -a vars=()
+  while [[ "${1:-}" == *=* ]]; do
+    vars+=("$1")
+    shift
+  done
+  rm -rf "$root/startup-state"
+  rm -f "$root/simctl-calls" "$root/bound-calls" "$container_fixture"
+  startup_status=0
+  env PATH="$fake:$PATH" FAKE_ROOT="$root" FAKE_STATE="$root/startup-state" \
+    SVETT_DEVICE_CMD="startup-device --session 't3-test session' --device FAKE-UDID" \
+    "${vars[@]}" "$repo/scripts/sim/startup.sh" "$@" >"$output" 2>&1 || startup_status=$?
+}
+
+# startup_launches <times> <open> [link]: the opens of that many relaunches, each
+# followed by the link when one is given.
+startup_launches() {
+  local n
+  for ((n = 1; n <= $1; n++)); do
+    printf '%s\n' "$2"
+    [[ -z "${3:-}" ]] || printf '%s\n' "com.kron00.svett $3"
+  done
+}
+
+startup_report() {
+  local build=$1
+  cat <<EOF
+5 cold launches of a $build build, on the 300-workout fixture at the largest text size.
+Each launch opened straight into the Train tab, and its time runs to the first frame with the routine list, with nothing taken off.
+Launch 1: cold start 1600 ms, steps since process start: process start 0, main() 72, JavaScript started 201, Train tab opened 400, first screen drawn 420, database open 1100, routine list drawn 1600, leftover location task stopped 1700 ms.
+Launch 2: cold start 1510 ms, steps since process start: process start 0, main() 74, JavaScript started 202, Train tab opened 400, first screen drawn 420, database open 1100, routine list drawn 1510 ms.
+Launch 3: cold start 1550 ms, steps since process start: process start 0, main() 76, JavaScript started 203, Train tab opened 400, first screen drawn 420, database open 1100, routine list drawn 1550 ms.
+Launch 4: cold start 1520 ms, steps since process start: process start 0, main() 78, JavaScript started 204, Train tab opened 400, first screen drawn 420, database open 1100, routine list drawn 1520 ms.
+Launch 5: cold start 1530 ms, steps since process start: process start 0, main() 80, JavaScript started 205, Train tab opened 400, first screen drawn 420, database open 1100, routine list drawn 1530 ms.
+Median: cold start 1530 ms, which the plan's 2 second target judges.
+Median of each step since process start: process start 0, main() 76, JavaScript started 203, Train tab opened 400, first screen drawn 420, database open 1100, routine list drawn 1530, leftover location task stopped 1700 (1 of 5 launches) ms.
+EOF
+}
+
+link_args="--launch-args=-svettLink --launch-args=svett://train"
+train_loaded='id="start-empty-workout" || id="workout-in-progress-row" || id="routine-list" || id="cold-start-timing"'
+
+case_name="startup.sh Release with SVETT_DEVICE_CMD"
+run_startup --release "$root/startup"
+[[ "$startup_status" == 0 ]] || fail "startup.sh --release failed"
+mapfile -t release_launches < <(startup_launches 5 "com.kron00.svett --relaunch $fixture_args $link_args")
+check "startup.sh relaunches the installed app on the fixture with timing straight into the Train tab 5 times, with no later link" \
+  only_open "${release_launches[@]}"
+check "startup.sh copies the generated fixture into the app's data container" \
+  grep -qxF "fake fixture" "$container_fixture"
+check "startup.sh times at the largest text size, then restores the default" \
+  only_calls "settings" "settings text-size accessibility-extra-extra-extra-large" "settings text-size large"
+check "startup.sh scrolls down to the time below the routines on every launch" \
+  test "$(grep -cxF -- "$bound_prefix scroll down --until id=\"cold-start-timing\"" "$root/bound-calls")" -eq 5
+mapfile -t startup_moves < <(for n in 1 2 3 4 5; do
+  printf '%s\n' "wait $train_loaded 30000" "wait $train_loaded 10000" \
+    'scroll down --until id="routine-list"' 'scroll down --until id="cold-start-timing"'
+done)
+check "startup.sh waits for the loaded Train tab before it moves the screen, then scrolls to the routines and the time" \
+  only_calls 'wait id=|scroll' "${startup_moves[@]}"
+check "startup.sh saves each launch's text as the Train tab shows it" \
+  grep -qF "Cold start: 1550 ms, from process start to the first frame" "$root/startup/launch-3.txt"
+check "startup.sh screenshots every launch" \
+  only_calls "screenshot" "screenshot $root/startup/01-launch-1.png" "screenshot $root/startup/02-launch-2.png" \
+  "screenshot $root/startup/03-launch-3.png" "screenshot $root/startup/04-launch-4.png" \
+  "screenshot $root/startup/05-launch-5.png"
+check "startup.sh reports every step of every launch, with a database open after the first screen inside the cold start, then the medians" \
+  diff <(startup_report Release) "$root/startup/startup.txt"
+check "startup.sh prints the report" grep -qxF "Median: cold start 1530 ms, which the plan's 2 second target judges." "$output"
+check "startup.sh with SVETT_DEVICE_CMD calls neither simctl launch nor openurl" no_simctl_launch_or_openurl
+
+# startup_device <agent-device args...> calls the startup fake as the bound command would.
+startup_device() {
+  env FAKE_ROOT="$root" FAKE_STATE="$root/startup-state" "$fake/startup-device" \
+    --session 't3-test session' --device FAKE-UDID "$@" >/dev/null 2>&1
+}
+fails() { ! "$@"; }
+
+case_name="the startup fake at the largest text size"
+rm -rf "$root/startup-state"
+# shellcheck disable=SC2086 # Each launch argument is its own word.
+startup_device open com.kron00.svett --relaunch $timing_args $link_args
+check "the fake Train tab shows Start empty workout and Cardio on screen" \
+  startup_device is visible 'label="Cardio"'
+check "the fake Train tab starts its routine list below the screen, where the wait before this fix fails" \
+  fails startup_device wait 'id="routine-list"' 30000
+check "the fake Train tab's routine list is invisible to is visible below the screen" \
+  fails startup_device is visible 'id="routine-list"'
+check "the wait for the loaded Train tab passes without moving the screen" \
+  startup_device wait "$train_loaded" 30000
+check "a scroll down brings the fake routine list on screen" \
+  startup_device scroll down --until 'id="routine-list"'
+check "the fake routine list is on screen after the scroll" startup_device is visible 'id="routine-list"'
+check "Start empty workout is above the screen after the scroll" \
+  fails startup_device is visible 'id="start-empty-workout"'
+
+case_name="startup.sh Debug with SVETT_DEVICE_CMD"
+run_startup "$root/startup-debug"
+[[ "$startup_status" == 0 ]] || fail "startup.sh failed"
+mapfile -t debug_launches < <(startup_launches 5 "$debug_fixture_open $link_args")
+check "startup.sh Debug relaunches into the dev client on Metro, straight into the Train tab" only_open "${debug_launches[@]}"
+check "startup.sh says a Debug build's time is not the one the target judges" \
+  grep -qxF "5 cold launches of a Debug, loaded from Metro, which the 2 second target does not judge build, on the 300-workout fixture at the largest text size." \
+  "$root/startup-debug/startup.txt"
+
+case_name="startup.sh on a build from before the launch marks"
+main_label="svett's own cold start: 3367 ms. Routine list drawn 6014 ms after launch, less 2647 ms waiting for the Train tab. Steps since launch: JavaScript started 3018, database open 3287, first screen drawn 3354, routine list drawn 6014 ms."
+run_startup SVETT_LAUNCHES=3 SVETT_FIXTURE=/data/Documents/svett-fixture.db FAKE_NO_LINK=1 \
+  FAKE_TIMING_LABEL="$main_label" --release "$root/startup-main"
+[[ "$startup_status" == 0 ]] || fail "startup.sh failed on the older text"
+given_fixture_args="--launch-args=-svettFixture --launch-args=/data/Documents/svett-fixture.db $timing_args $link_args"
+mapfile -t given_launches < <(startup_launches 3 "com.kron00.svett --relaunch $given_fixture_args" svett://train)
+check "startup.sh relaunches SVETT_LAUNCHES times on SVETT_FIXTURE, and opens the Train link when the build ignores -svettLink" \
+  only_open "${given_launches[@]}"
+check "startup.sh with SVETT_FIXTURE neither generates nor copies a fixture" \
+  test ! -e "$container_fixture" -a ! -e "$root/startup-main/svett-fixture.db"
+check "startup.sh reads the steps of the older text, timed from the launch" \
+  grep -qxF "Median of each step since launch: JavaScript started 3018, database open 3287, first screen drawn 3354, routine list drawn 6014 ms." \
+  "$root/startup-main/startup.txt"
+check "startup.sh takes the older build's time to the routine list with nothing taken off, and says the target does not judge it" \
+  grep -qxF "Median: cold start 6014 ms, which the plan's 2 second target does not judge, because it includes the wait for svett://train." \
+  "$root/startup-main/startup.txt"
+check "startup.sh says the older build opened the Train tab through the link" \
+  grep -qxF "This build opens on another tab, so each launch opened the Train tab through svett://train after the tabs showed, and its time includes that wait." \
+  "$root/startup-main/startup.txt"
+
+case_name="startup.sh when a launch did not open straight into the Train tab"
+indirect_label="Cold start: 2500 ms, from process start to the first frame with the Train tab's routine list. This launch opened on another tab first, so the number includes the time until the Train tab opened, and the 2 second target does not judge it. Timed from the process start, because iOS did not prewarm this launch. Steps since process start: process start 0, first screen drawn 420, Train tab opened 2400, routine list drawn 2500 ms."
+run_startup FAKE_TIMING_LABEL="$indirect_label" --release "$root/startup-indirect"
+check "startup.sh fails on a launch that opened on another tab" test "$startup_status" -ne 0
+check "startup.sh says the launch did not open straight into the Train tab" \
+  grep -qxF "Launch 1: svett did not open straight into the Train tab, so its time includes the wait for it" "$output"
+check "startup.sh saves no report for a launch that opened on another tab" test ! -e "$root/startup-indirect/startup.txt"
+
+case_name="startup.sh when the Train tab shows no cold start time"
+run_startup FAKE_NO_TIMING=1 --release "$root/startup-no-timing"
+check "startup.sh fails when svett shows no cold start time" test "$startup_status" -ne 0
+check "startup.sh says which launch showed no time" \
+  grep -qxF "Launch 1: the Train tab did not show the cold start time" "$output"
+check "startup.sh saves no report without a cold start time" test ! -e "$root/startup-no-timing/startup.txt"
+check "startup.sh restores the default text size after a failure" \
+  only_calls "settings" "settings text-size accessibility-extra-extra-extra-large" "settings text-size large"
+
+case_name="startup.sh when the Train tab never gets its routines"
+run_startup FAKE_NO_ROUTINES=1 --release "$root/startup-no-routines"
+check "startup.sh fails a launch whose Train tab never got its routines" test "$startup_status" -ne 0
+check "startup.sh says the Train tab did not list the routines" \
+  grep -qxF "Launch 1: the Train tab did not list the routines" "$output"
+check "startup.sh saves no report without the routines" test ! -e "$root/startup-no-routines/startup.txt"
+
+case_name="startup.sh when the cold start time is not svett's"
+run_startup FAKE_TIMING_LABEL="Loading" --release "$root/startup-bad-timing"
+check "startup.sh fails on a cold start text it cannot read" test "$startup_status" -ne 0
+check "startup.sh quotes the text it found" \
+  grep -qxF "Launch 1: the Train tab shows \"Loading\", which is not a cold start time" "$output"
+
+case_name="startup.sh with no launches"
+run_startup SVETT_LAUNCHES=0 --release "$root/startup-none"
+check "startup.sh refuses a launch count below 1" test "$startup_status" -eq 64
+check "startup.sh says what SVETT_LAUNCHES must be" \
+  grep -qxF 'SVETT_LAUNCHES must be a whole number above 0, got "0"' "$output"
 
 # logger.sh runs against a fake fixture, a fake app and the real workout-rows.ts.
 # The fake pnpm writes a database with the Legs routine. The fake device keeps
@@ -2404,7 +2700,7 @@ const elements = () => {
   if (state.screen === "train") {
     add("train");
     add("routine-list");
-    if (!workout) add("start-empty-workout");
+    add(workout ? "workout-in-progress-row" : "start-empty-workout");
   }
   if (state.screen === "routine") { add("routine-detail"); add("start-routine"); }
   if (state.screen === "picker") {
@@ -2444,14 +2740,20 @@ const parse = (selector) => ({
   id: /id="([^"]*)"/.exec(selector)?.[1] ?? null,
   label: /label="([^"]*)"/.exec(selector)?.[1] ?? null,
 });
-const find = (selector) => {
+const findOne = (selector) => {
   const wanted = parse(selector);
   return elements().find((element) =>
     (wanted.id === null || element.id === wanted.id) && (wanted.label === null || element.label === wanted.label)) ?? null;
 };
+// A || fallback finds the first of its elements on screen, else the first anywhere.
+const find = (selector) => {
+  const found = selector.split(" || ").map(findOne).filter((element) => element !== null);
+  return found.find(visible) ?? found[0] ?? null;
+};
+// The routine list starts below the screen at the largest text size, under Start empty workout and Cardio.
 const belowFold = (element) =>
   /^(workout-exercise|workout-set|set|move-exercise-down|add-workout-set)-[1-9]/.test(element.id ?? "") ||
-  element.id === "set-done-timing" || element.id === "start-routine";
+  element.id === "set-done-timing" || element.id === "start-routine" || element.id === "routine-list";
 const visible = (element) => element !== null && (!belowFold(element) || state.scrolled.includes(element.id));
 const show = (screen) => { state.screen = screen; state.scrolled = []; state.focus = null; };
 const startWorkout = (title, exercises) => {
@@ -3314,6 +3616,7 @@ status_text() {
 holds() {
   case "$1" in
     'label="You, tab, 5 of 5"') [[ "$screen" != home ]] ;;
+    'id="start-empty-workout"') [[ "$screen" == train ]] ;;
     'id="coach"' | 'id="coach-answer"') [[ "$screen" == coach ]] ;;
     'role="button" label="Preview Upper body strength"') [[ "$screen" == coach && -f "$s/asked-routine" ]] ;;
     'role="button" label="Preview Coach 3-day split"') [[ "$screen" == coach && -f "$s/asked-program" ]] ;;
@@ -3329,10 +3632,19 @@ holds() {
     *) return 1 ;;
   esac
 }
-# below_fold <selector>: an element only a scroll brings on screen.
+# shows <selector>: the element, or one of a || fallback's, is on screen.
+shows() {
+  local one
+  while IFS= read -r one; do
+    holds "$one" && ! below_fold "$one" && [[ "$one" != 'id="coach-answer"' ]] && return 0
+  done < <(sed 's/ || /\n/g' <<<"$1")
+  return 1
+}
+# below_fold <selector>: an element only a scroll brings on screen. The routine
+# list starts below Start empty workout and Cardio at the largest text size.
 below_fold() {
   case "$1" in
-    'role="button" label="Preview '* | 'id="coach-proposal-error"' | 'id="routine-row"'* | 'id="folder-name"'* | \
+    'id="routine-list"' | 'role="button" label="Preview '* | 'id="coach-proposal-error"' | 'id="routine-row"'* | 'id="folder-name"'* | \
       'id="proposal-end"' | 'id="proposal-set-'* | 'id="proposal-routine-'*) return 0 ;;
     *) return 1 ;;
   esac
@@ -3371,8 +3683,8 @@ case "$1" in
       svett://train) put screen train ;;
       *) exit 1 ;;
     esac ;;
-  wait) [[ "$2" =~ ^[0-9]+$ ]] || { holds "$2" && ! below_fold "$2" && [[ "$2" != 'id="coach-answer"' ]]; } ;;
-  is) holds "$3" && ! below_fold "$3" && [[ "$3" != 'id="coach-answer"' ]] ;;
+  wait) [[ "$2" =~ ^[0-9]+$ ]] || shows "$2" ;;
+  is) shows "$3" ;;
   scroll)
     touch "$s/gliding"
     holds "$4" ;;

@@ -1,4 +1,11 @@
-import { coldStart, coldStartText, type LaunchStep } from "@svett/core";
+import {
+  coldStart,
+  coldStartText,
+  LAUNCH_STEPS,
+  type LaunchStep,
+  reactNativeSteps,
+  type ReactNativeStartupTiming,
+} from "@svett/core";
 import { useSyncExternalStore } from "react";
 import { Settings } from "react-native";
 
@@ -15,16 +22,38 @@ export const showTiming = (): boolean => {
   return value === "1" || value === 1 || value === true;
 };
 
-const marks = new Map<LaunchStep, number>([["script", scriptStartedAt]]);
+const isStep = (step: string): step is LaunchStep =>
+  (LAUNCH_STEPS as ReadonlyArray<string>).includes(step);
+
+const marks = new Map<LaunchStep, number>([
+  ["process", SvettNative.launchedAt],
+  ...Object.entries(SvettNative.launchMarks).flatMap(([step, at]) =>
+    isStep(step) ? [[step, at] as const] : [],
+  ),
+  ["script", scriptStartedAt],
+]);
 let text: string | null = null;
 const listeners = new Set<() => void>();
 
-/** Records the first time `step` happens in this process. Later ones are not a cold start. */
+// React Native finishes its startup timing when the bundle has run, long before the routine
+// list shows, so it is read then.
+const addReactNativeSteps = () => {
+  const timing = (performance as { rnStartupTiming?: ReactNativeStartupTiming }).rnStartupTiming;
+  for (const [step, at] of reactNativeSteps(timing, Date.now() - performance.now())) {
+    if (!marks.has(step)) marks.set(step, at);
+  }
+};
+
+/**
+ * Records the first time `step` happens in this process. Later ones are not a cold start. A
+ * step recorded after the routine list was drawn still joins the text.
+ */
 export const markLaunch = (step: LaunchStep) => {
   if (marks.has(step)) return;
   marks.set(step, Date.now());
-  const start = coldStart(SvettNative.launchedAt, marks);
-  if (start === null || text !== null) return;
+  if (step === "shown") addReactNativeSteps();
+  const start = coldStart(marks, SvettNative.prewarmed);
+  if (start === null) return;
   text = coldStartText(start);
   for (const listener of listeners) listener();
 };

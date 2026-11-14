@@ -66,3 +66,21 @@ agent_device() {
     npx --yes agent-device@0.21.37 "$@" --platform ios --udid "$udid" --session svett-proof
   fi
 }
+
+# The Train tab draws Start empty workout, or the workout in progress, in the
+# same render as its routine list, at the top of the screen. At the largest text
+# size the list starts below the screen, where agent-device's wait and is
+# visible cannot see it. The routine list and the cold start time, which shows
+# only once the list was drawn, cover a Train tab already scrolled down.
+train_loaded='id="start-empty-workout" || id="workout-in-progress-row" || id="routine-list" || id="cold-start-timing"'
+
+# train_routines <timeout ms>: waits until the Train tab has loaded its routines
+# without moving the screen, so a cold start's own marks stay as they are. Then
+# it scrolls until the routine list is on screen. It fails when either never
+# happens.
+train_routines() {
+  agent_device wait "$train_loaded" "$1" >/dev/null 2>&1 || return 1
+  agent_device is visible 'id="routine-list"' >/dev/null 2>&1 ||
+    agent_device scroll down --until 'id="routine-list"' >/dev/null 2>&1 ||
+    agent_device scroll up --until 'id="routine-list"' >/dev/null 2>&1
+}
