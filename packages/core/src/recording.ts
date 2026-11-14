@@ -74,8 +74,8 @@ export type RecordingEvent = typeof RecordingEvent.Type;
 /**
  * A stretch between start or resume and the next pause. `to` is null while it lasts.
  * `fixes` and `distanceM` hold the movement confirmed so far. `pending` is a reading
- * that moved away from the last one kept and waits for the next to show the movement
- * went on, so GPS drift back and forth while standing still adds nothing.
+ * that moved away from the last one kept and waits for a later one further on, so
+ * GPS drift back and forth while standing still adds nothing.
  */
 export interface Segment {
   readonly from: number;
@@ -124,10 +124,14 @@ const addFix = (segment: Segment, fix: Fix): Segment => {
   const step = distanceM(kept, fix);
   if (step / ((fix.at - kept.at) / 1000) > MAX_SPEED_MPS) return segment;
   const moved = step >= movementThresholdM(kept, fix);
-  if (segment.pending === null) return moved ? { ...segment, pending: fix } : segment;
+  const { pending } = segment;
+  if (pending === null) return moved ? { ...segment, pending: fix } : segment;
   // Back near the last reading kept, so the pending one was drift.
   if (!moved) return { ...segment, pending: null };
-  return addFix(confirm(segment, segment.pending), fix);
+  // Drift can sit at one spot for several readings, so only a reading further on
+  // than the pending one, by more than both could be off, shows the movement went on.
+  const further = step - distanceM(kept, pending) >= movementThresholdM(pending, fix);
+  return further ? addFix(confirm(segment, pending), fix) : segment;
 };
 
 /**

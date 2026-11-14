@@ -92,6 +92,35 @@ describe("a recording", () => {
     expect(recordedDistanceM(replay([start, ...drift, fix(60, 0), pause(61)])!)).toBe(0);
   });
 
+  it("adds next to nothing in ten minutes of drift that sits at each of two points in turn", () => {
+    const drift = Array.from({ length: 600 }, (_, second) =>
+      fix(second, Math.floor(second / 2) % 2 === 0 ? 0 : 10),
+    );
+    expect(recordedDistanceM(replay([start, ...drift, pause(600)])!)).toBeLessThan(20);
+  });
+
+  it("adds next to nothing in ten minutes of drift that lingers at spots around one place", () => {
+    // A fixed sequence of spots within 10 m of a place, each held for one to six seconds.
+    let seed = 7;
+    const next = () => (seed = (seed * 48_271) % 2_147_483_647) / 2_147_483_647;
+    const drift: RecordingEvent[] = [];
+    while (drift.length < 600) {
+      const angle = next() * 2 * Math.PI;
+      const radius = 10 * Math.sqrt(next());
+      const north = radius * Math.cos(angle);
+      const east = radius * Math.sin(angle);
+      for (let held = 1 + Math.floor(next() * 6); held > 0 && drift.length < 600; held--) {
+        drift.push(fix(drift.length, north, { longitude: east / DEGREE_M }));
+      }
+    }
+    expect(recordedDistanceM(replay([start, ...drift, pause(600)])!)).toBeLessThan(20);
+  });
+
+  it("counts ten minutes of walking at 1 m/s to within 3%, though each step is under the accuracy", () => {
+    const distance = recordedDistanceM(replay([start, ...moving(0, 600, 1), pause(600)])!);
+    expect(Math.abs(distance - 600) / 600).toBeLessThan(0.03);
+  });
+
   it("counts a slow walk whose every step is shorter than the readings' accuracy", () => {
     const recording = replay([start, ...moving(0, 100, 1.2), pause(100)])!;
     // Only the last few metres, too short to tell from drift, are left out.

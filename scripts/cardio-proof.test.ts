@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { pathLengthM } from "@svett/core";
+import { pathLengthM, recordedDistanceM, replay } from "@svett/core";
 import { afterAll, describe, expect, it } from "vite-plus/test";
 
 import { judge, legOf, legSeconds, readRoute, readSavedRecording } from "./cardio-proof.ts";
@@ -13,6 +13,7 @@ import { recordAlong, saveRecording } from "./test/cardio-recording.ts";
 const routePath = fileURLToPath(new URL("sim/cardio-route.json", import.meta.url));
 const script = fileURLToPath(new URL("cardio-proof.ts", import.meta.url));
 const route = readRoute(routePath);
+const T = 1_800_000_000_000;
 
 describe("the proof route", () => {
   it("is 2.4 km long, so it makes two full splits and a partial one", () => {
@@ -30,6 +31,12 @@ describe("the proof route", () => {
 
   it("gives each leg's time at the route's speed", () => {
     expect(legSeconds(route, 1)).toBe(Math.ceil(pathLengthM(legOf(route, 1)) / route.speedMps));
+  });
+
+  it("records to within 1% of its length at 6 m/s with 5 m accuracy", () => {
+    const length = pathLengthM(route.waypoints);
+    const recorded = recordedDistanceM(replay(recordAlong(route, T))!, true);
+    expect(Math.abs(recorded - length) / length).toBeLessThan(0.01);
   });
 
   it("prints a leg as the waypoints simctl location start takes", () => {
@@ -72,7 +79,6 @@ describe("judge", () => {
   });
 });
 
-const T = 1_800_000_000_000;
 const check = (path: string, after: number) =>
   spawnSync(process.execPath, [script, "check", routePath, path, String(after)], {
     encoding: "utf8",
