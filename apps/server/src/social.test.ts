@@ -807,10 +807,10 @@ describe("a profile's activities", { timeout: 60_000 }, () => {
               activity("everyone", [], { title: "After", startedAt: 1_790_000_100_000 }),
             ]);
             const first = yield* as(BEN, "GET", "/v1/profiles/anna");
-            const ids = (first.body as { activities: ReadonlyArray<{ id: string }> }).activities;
+            const listed = (first.body as { activities: ReadonlyArray<{ id: string }> }).activities;
             const answers = [
               first,
-              ...(yield* Effect.forEach(ids, ({ id }) =>
+              ...(yield* Effect.forEach(listed, ({ id }) =>
                 as(BEN, "GET", `/v1/profiles/anna/activities?cursor=${cursorFor(id)}`),
               )),
             ];
@@ -821,8 +821,8 @@ describe("a profile's activities", { timeout: 60_000 }, () => {
               ),
               after: answers
                 .slice(1)
-                .map(({ body }) =>
-                  (body as { activities: ReadonlyArray<Shown> }).activities.map(
+                .map((answer) =>
+                  (answer.body as { activities: ReadonlyArray<Shown> }).activities.map(
                     ({ title }) => title,
                   ),
                 ),
@@ -902,9 +902,9 @@ describe("a profile's activities", { timeout: 60_000 }, () => {
     expect(result.cursor).not.toContain("1790123");
     expect(result.owner.status).toBe(200);
     expect(
-      [result.madeOnlyYou, result.nothing, result.garbage].map(({ status, body }) => [
-        status,
-        body,
+      [result.madeOnlyYou, result.nothing, result.garbage].map((answer) => [
+        answer.status,
+        answer.body,
       ]),
     ).toEqual(Array.from({ length: 3 }, () => [400, { error: "invalid_cursor" }]));
   });

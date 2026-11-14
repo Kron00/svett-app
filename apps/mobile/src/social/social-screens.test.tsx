@@ -137,6 +137,18 @@ const profile = (overrides: Record<string, unknown>) => ({
   ...overrides,
 });
 
+/** A run on Anna's profile, numbered `n`. */
+const run = (n: number) => ({
+  id: `6f1c2a4e-93b0-4d5e-8a71-0c9e4b2d7f1${n}`,
+  kind: "run",
+  startedAt: 1_790_000_000_000,
+  durationS: 1800,
+  title: `Run ${n}`,
+  notes: "",
+  energyKcal: null,
+  hiddenFields: [],
+});
+
 describe("someone's profile", () => {
   beforeEach(() => {
     app.route.params = { username: "Anna.K" };
@@ -193,16 +205,6 @@ describe("someone's profile", () => {
   });
 
   it("shows more activities a page at a time until the last page", async () => {
-    const run = (n: number) => ({
-      id: `6f1c2a4e-93b0-4d5e-8a71-0c9e4b2d7f1${n}`,
-      kind: "run",
-      startedAt: 1_790_000_000_000,
-      durationS: 1800,
-      title: `Run ${n}`,
-      notes: "",
-      energyKcal: null,
-      hiddenFields: [],
-    });
     answer(
       "GET /v1/profiles/Anna.K",
       ok(profile({ follow: "following", activities: [run(1)], next: "after-1" })),

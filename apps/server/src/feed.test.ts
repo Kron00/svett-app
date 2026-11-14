@@ -295,16 +295,18 @@ describe("the feed", { timeout: 60_000 }, () => {
     const run = annaFeed.posts.find((post: any) => post.activity.title === PROOF_RUN_TITLE);
     expect(run.activity.startedAt).toBeNull();
     expect(run.activity.hiddenFields).toEqual(["heart_rate", "start_time"]);
+    // Its start is hidden, so its time and pace would date it.
+    expect(run.activity.durationS).toBeNull();
     const { route, ...rest } = run.detail;
     expect(rest).toEqual({
       type: "route",
       distanceM: 4440,
       elevationGainM: 18,
-      paceSPerKm: 1500 / 4.44,
-      splits: [330, 335, 340, 345].map((durationS, index) => ({
+      paceSPerKm: null,
+      splits: [0, 1, 2, 3].map((index) => ({
         distanceM: 1000,
         endM: 1000 * (index + 1),
-        durationS,
+        durationS: null,
       })),
       averageHeartRateBpm: null,
     });
@@ -542,6 +544,51 @@ describe("hidden fields", { timeout: 60_000 }, () => {
     // The owner sees every field of their own run.
     expect(answers.own.text).toContain("1790000600000");
     expect(answers.own.body.post.detail.averageHeartRateBpm).toBe(PROOF_HIDDEN_BPM);
+  });
+});
+
+describe("a hidden start", { timeout: 60_000 }, () => {
+  it("withholds every duration and the pace, as they would date it, and shows the rest", async () => {
+    const answers = await withServer(
+      Effect.gen(function* () {
+        yield* name(ANNA, "anna");
+        yield* name(BEN, "ben");
+        yield* follow(ANNA, "ben");
+        yield* write(
+          BEN,
+          runRows(1_790_000_600_000, 1, { hiddenFields: JSON.stringify(["start_time"]) }),
+        );
+        const post = `/v1/posts/${yield* idOf(BEN, "ben", PROOF_RUN_TITLE)}`;
+        return {
+          feed: yield* ok(ANNA, "GET", "/v1/feed"),
+          post: yield* ok(ANNA, "GET", post),
+          profile: yield* ok(ANNA, "GET", "/v1/profiles/ben"),
+          own: yield* ok(BEN, "GET", post),
+        };
+      }),
+    );
+    for (const answer of [answers.feed, answers.post, answers.profile]) {
+      expect(answer.text).not.toContain("1790000600000");
+      expect(answer.text).not.toContain(":1500");
+      for (const split of [330, 335, 340, 345]) expect(answer.text).not.toContain(`:${split}`);
+    }
+    expect(answers.profile.body.activities[0]).toMatchObject({ startedAt: null, durationS: null });
+    const [inFeed] = answers.feed.body.posts;
+    for (const shown of [inFeed, answers.post.body.post]) {
+      expect(shown.activity).toMatchObject({ startedAt: null, durationS: null });
+      expect(shown.detail).toMatchObject({
+        distanceM: 4440,
+        elevationGainM: 18,
+        paceSPerKm: null,
+        averageHeartRateBpm: PROOF_HIDDEN_BPM,
+      });
+      expect(shown.detail.splits.map((split: any) => [split.distanceM, split.durationS])).toEqual(
+        Array.from({ length: 4 }, () => [1000, null]),
+      );
+      expect(shown.detail.route[0].length).toBeGreaterThan(0);
+    }
+    expect(answers.own.body.post.activity.durationS).toBe(1500);
+    expect(Math.round(answers.own.body.post.detail.paceSPerKm)).toBe(338);
   });
 });
 
