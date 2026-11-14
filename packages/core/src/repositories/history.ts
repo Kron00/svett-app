@@ -22,9 +22,6 @@ const groupBy = <A, K>(items: ReadonlyArray<A>, key: (item: A) => K) => {
   return groups;
 };
 
-/** A page of history starts after this activity, newest first. */
-export type HistoryCursor = Pick<Activity, "startedAt" | "id">;
-
 /** What the calendar and the streak need of every workout. */
 export type WorkoutStart = Pick<Activity, "id" | "startedAt" | "title" | "kind">;
 
@@ -66,18 +63,17 @@ const makeHistoryRepository = Effect.gen(function* () {
   const run = <A, E>(effect: Effect.Effect<A, E, Sql>) => Effect.provideService(effect, Sql, sql);
 
   return {
-    /** A page of workouts, newest first, each with what its history row shows. */
-    page: (options: { readonly limit: number; readonly after?: HistoryCursor | undefined }) =>
+    /**
+     * The newest `limit` workouts, newest first, each with what its history row
+     * shows. The history list asks for more as it nears its end.
+     */
+    page: (options: { readonly limit: number }) =>
       run(
         Effect.gen(function* () {
           const activities = yield* selectRows(
             TABLES.activity,
-            "(started_at, id) < (?, ?)",
-            [
-              options.after?.startedAt ?? Number.MAX_SAFE_INTEGER,
-              options.after?.id ?? "",
-              options.limit,
-            ],
+            "1 = 1",
+            [options.limit],
             "started_at DESC, id DESC LIMIT ?",
           );
           const { library, details: page } = yield* details(activities);

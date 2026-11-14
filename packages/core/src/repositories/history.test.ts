@@ -12,7 +12,7 @@ import { type ActivityId, EpochMillis } from "../schema.ts";
 import { personalRecords } from "../records.ts";
 import { openTestDatabase, T0 } from "../test-database.ts";
 import { type ActivityDraft, ActivityRepository, type SetDraft } from "./activities.ts";
-import { type HistoryCursor, HistoryRepository, saveWorkoutAsRoutine } from "./history.ts";
+import { HistoryRepository, saveWorkoutAsRoutine } from "./history.ts";
 import { MADE_HERE } from "./origin.ts";
 import { ProgressRepository } from "./progress.ts";
 import { RoutineRepository } from "./routines.ts";
@@ -44,16 +44,12 @@ const workout = (daysAgo: number, title: string, lifts: ReadonlyArray<Lift>): Ac
   exercises: lifts.map((lift) => ({ ...lift, supersetGroup: null, notes: "" })),
 });
 
-/** Every workout in history, read a page at a time the way the history screen does. */
-const allPages = (history: typeof HistoryRepository.Service, limit: number) =>
+/** Every workout in history, asking for `step` more each time, as the history list does. */
+const loadAll = (history: typeof HistoryRepository.Service, step: number) =>
   Effect.gen(function* () {
-    const rows: Array<WorkoutSummary> = [];
-    let after: HistoryCursor | undefined;
-    for (;;) {
-      const page = yield* history.page({ limit, after });
-      if (page.length === 0) return rows;
-      rows.push(...page);
-      after = page.at(-1)?.activity;
+    for (let limit = step; ; limit += step) {
+      const rows: ReadonlyArray<WorkoutSummary> = yield* history.page({ limit });
+      if (rows.length < limit) return rows;
     }
   });
 
@@ -101,14 +97,14 @@ describe("HistoryRepository.page", () => {
     });
   });
 
-  it("continues after a cursor without repeating or skipping a workout", async () => {
+  it("keeps the same order as the limit grows, without repeating or skipping a workout", async () => {
     const { run } = open();
     await run(({ activities }) =>
       Effect.forEach([0, 1, 2, 3, 4, 5, 6], (day) =>
         activities.create(workout(day, `Day ${day}`, [{ exerciseId: SQUAT, sets: [set(100, 5)] }])),
       ),
     );
-    const rows = await run(({ history }) => allPages(history, 3));
+    const rows = await run(({ history }) => loadAll(history, 3));
     expect(rows.map((row) => row.activity.title)).toEqual([
       "Day 0",
       "Day 1",
@@ -273,13 +269,13 @@ describe("save as routine after a deletion", () => {
 });
 
 describe("the 300-workout fixture", () => {
-  it("pages through every workout once and describes the newest", async () => {
+  it("loads every workout once and describes the newest", async () => {
     const { driver } = openNodeDatabase();
     await buildFixture(driver);
     const runtime = ManagedRuntime.make(databaseLayer(driver, Ids.layerSeeded(1)));
     const history = await runtime.runPromise(Effect.service(HistoryRepository));
 
-    const ids = (await runtime.runPromise(allPages(history, 60))).map((row) => row.activity.id);
+    const ids = (await runtime.runPromise(loadAll(history, 60))).map((row) => row.activity.id);
     expect(ids).toHaveLength(300);
     expect(new Set(ids).size).toBe(300);
 

@@ -5,8 +5,9 @@
 # Usage: scripts/sim/history.sh [--release] [out-dir]
 #
 # At the largest text size it generates the fixture, copies it into the app's data
-# container and relaunches on it. Then it scrolls the history list 30 screens down
-# and fails when a screen shows no row, opens the newest workout, edits its first
+# container and relaunches on it. Then it scrolls the history list down until the
+# oldest workout's row is on screen, failing when a screen shows no row or after
+# 600 screens, opens the newest workout, edits its first
 # set to 222.5 kg and fails unless the detail shows the new weight, saves the
 # workout as a routine, deletes it and checks the count drops to 299, undoes and
 # checks it is back at 300, and opens the calendar for October 2026. It reaches
@@ -38,7 +39,8 @@ bundle_id=com.kron00.svett
 # React Navigation labels each iOS tab button "<title>, tab, <n> of <count>".
 progress_tab='label="Progress, tab, 3 of 5"'
 edited_weight=222.5
-scrolls=30
+# Stops a list that never reaches its oldest workout.
+max_scrolls=600
 
 if command -v fnm >/dev/null; then
   eval "$(fnm env --shell bash)"
@@ -124,23 +126,23 @@ rm -f "$fixture-wal" "$fixture-shm"
 cp "$out/svett-fixture.db" "$fixture"
 echo "Copied the fixture to $fixture"
 
-# The newest workout, and the first normal set with reps in it.
-read -r workout set_id reps < <(node -e '
+# The newest and oldest workouts, and the newest one's first normal set with reps in it.
+read -r workout set_id reps oldest < <(node -e '
   const { DatabaseSync } = require("node:sqlite");
   const database = new DatabaseSync(process.argv[1], { readOnly: true });
-  const workout = database
-    .prepare("SELECT id FROM activity WHERE deleted_at IS NULL ORDER BY started_at DESC, id DESC LIMIT 1")
-    .get();
+  const live = "SELECT id FROM activity WHERE deleted_at IS NULL ORDER BY started_at";
+  const workout = database.prepare(`${live} DESC, id DESC LIMIT 1`).get();
+  const oldest = database.prepare(`${live}, id LIMIT 1`).get();
   const set = database
     .prepare(`SELECT s.id, s.reps FROM activity_set s
       JOIN activity_exercise e ON e.id = s.activity_exercise_id
       WHERE e.activity_id = ? AND s.set_type = ? AND s.reps IS NOT NULL AND s.deleted_at IS NULL
       ORDER BY e.position, s.position LIMIT 1`)
     .get(workout.id, "normal");
-  console.log(workout.id, set.id, set.reps);
+  console.log(workout.id, set.id, set.reps, oldest.id);
 ' "$out/svett-fixture.db" 2>/dev/null)
-[[ -n "${reps:-}" ]] || fail "The fixture has no workout with a normal set"
-echo "Newest workout $workout, set $set_id with $reps reps"
+[[ -n "${oldest:-}" ]] || fail "The fixture has no workout with a normal set"
+echo "Newest workout $workout, set $set_id with $reps reps, oldest workout $oldest"
 
 # Proof is at the largest text size. A running app adopts it only when it relaunches.
 agent_device settings text-size accessibility-extra-extra-extra-large
@@ -157,17 +159,25 @@ agent_device wait 'id="history-row"' 30000
 expect_text 'id="workout-counts"' "300 workouts"
 screenshot history
 
-# Legend List draws rows ahead of the scroll, so every screen of a long scroll has rows.
-for scroll in $(seq "$scrolls"); do
+# The list loads 60 workouts at a time as it nears its end, and Legend List draws
+# rows ahead of the scroll, so every screen down to the oldest workout has rows.
+scroll=0
+until agent_device is visible "id=\"workout-$oldest\"" >/dev/null 2>&1; do
+  ((scroll < max_scrolls)) || {
+    screenshot "history-no-end"
+    fail "The oldest workout was not on screen after $max_scrolls scrolls"
+  }
   agent_device scroll down
+  scroll=$((scroll + 1))
   agent_device is visible 'id="history-row"' >/dev/null 2>&1 ||
     {
       screenshot "blank-after-scroll-$scroll"
       fail "The history list showed no row after scroll $scroll"
     }
-  ((scroll % 10 != 0)) || screenshot "history-scroll-$scroll"
+  ((scroll % 50 != 0)) || screenshot "history-scroll-$scroll"
 done
-echo "The history list showed rows on all $scrolls screens"
+screenshot history-oldest
+echo "The history list showed rows on all $scroll screens down to the oldest workout"
 
 open_link "svett://workout/$workout"
 agent_device wait 'id="workout-detail"' 10000

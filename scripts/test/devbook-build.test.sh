@@ -906,8 +906,9 @@ node "$root/history-fixture.cjs" "$history_fixture" 2>/dev/null
 # Stands in for the bound command on the Progress screens. It counts 300 workouts,
 # 299 after a press on Delete workout and 300 again after Undo, unless
 # FAKE_UNDO_BROKEN. The set reads its new weight after Save unless FAKE_EDIT_LOST.
-# The history list shows no row after FAKE_BLANK_AFTER scrolls. Every element has
-# the same frame.
+# The history list shows no row after FAKE_BLANK_AFTER scrolls, and shows the
+# oldest workout after FAKE_OLDEST_AFTER scrolls, by default 120, or never when it
+# is "never". Every element has the same frame.
 cat >"$fake/history-device" <<EOF
 #!/usr/bin/env bash
 echo "\$*" >>"$root/bound-calls"
@@ -937,6 +938,10 @@ case "\$args" in
   *' is visible id="history-row" '*)
     scrolls=\$(grep -c ' scroll down\$' "$root/bound-calls" || true)
     [[ -z "\${FAKE_BLANK_AFTER:-}" ]] || ((scrolls < FAKE_BLANK_AFTER)) ;;
+  *' is visible id="workout-older" '*)
+    scrolls=\$(grep -c ' scroll down\$' "$root/bound-calls" || true)
+    oldest_after=\${FAKE_OLDEST_AFTER:-120}
+    [[ "\$oldest_after" != never ]] && ((scrolls >= oldest_after)) ;;
   *' wait id="undo-delete-banner" '*) flag deleted ;;
   *' wait absent id="undo-delete-banner" '*) flag undone ;;
   *' wait id="routine-saved" '*) flag routine ;;
@@ -991,8 +996,10 @@ check "history.sh relaunches into the dev client on the fixture, then opens the 
   only_open "$debug_open $history_fixture_args" "${history_links[@]}"
 check "history.sh shoots at the largest text size, then restores the default" \
   only_calls "settings" "settings text-size accessibility-extra-extra-extra-large" "settings text-size large"
-check "history.sh scrolls the history list 30 screens and looks for rows after each" \
-  test "$(grep -cxF -- "$bound_prefix scroll down" "$root/bound-calls")" -eq 30
+check "history.sh scrolls the history list until the oldest workout's row is on screen" \
+  test "$(grep -cxF -- "$bound_prefix scroll down" "$root/bound-calls")" -eq 120
+check "history.sh looks for rows after each scroll" \
+  test "$(grep -cxF -- "$bound_prefix is visible id=\"history-row\"" "$root/bound-calls")" -eq 120
 check "history.sh clears the weight and types 222.5 on the keypad" \
   only_calls "get attrs label" \
   'get attrs label="Delete"' 'get attrs label="Delete"' 'get attrs label="Delete"' 'get attrs label="Delete"' \
@@ -1007,8 +1014,8 @@ check "history.sh presses tabs by selector and screen content only at an element
   only_screen_presses_at_centres
 check "history.sh screenshots each step of the proof" \
   only_calls "screenshot" \
-  "screenshot $root/history/01-history.png" "screenshot $root/history/02-history-scroll-10.png" \
-  "screenshot $root/history/03-history-scroll-20.png" "screenshot $root/history/04-history-scroll-30.png" \
+  "screenshot $root/history/01-history.png" "screenshot $root/history/02-history-scroll-50.png" \
+  "screenshot $root/history/03-history-scroll-100.png" "screenshot $root/history/04-history-oldest.png" \
   "screenshot $root/history/05-workout.png" "screenshot $root/history/06-muscle-split.png" \
   "screenshot $root/history/07-set-before-edit.png" "screenshot $root/history/08-set-edit.png" \
   "screenshot $root/history/09-set-typed.png" "screenshot $root/history/10-set-edited.png" \
@@ -1027,9 +1034,16 @@ run_history FAKE_BLANK_AFTER=12 "$root/history-blank"
 check "history.sh fails on a screen of the history list with no row" \
   history_failed "The history list showed no row after scroll 12"
 check "history.sh screenshots the blank screen" \
-  bound_got "$bound_prefix screenshot $root/history-blank/03-blank-after-scroll-12.png"
+  bound_got "$bound_prefix screenshot $root/history-blank/02-blank-after-scroll-12.png"
 check "history.sh restores the default text size after a failure" \
   only_calls "settings" "settings text-size accessibility-extra-extra-extra-large" "settings text-size large"
+
+case_name="history.sh when the oldest workout never shows"
+run_history FAKE_OLDEST_AFTER=never "$root/history-endless"
+check "history.sh fails after 600 scrolls without the oldest workout" \
+  history_failed "The oldest workout was not on screen after 600 scrolls"
+check "history.sh screenshots where the list stopped" \
+  bound_got "$bound_prefix screenshot $root/history-endless/14-history-no-end.png"
 
 case_name="history.sh when the edit does not show"
 run_history FAKE_EDIT_LOST=1 "$root/history-edit"
