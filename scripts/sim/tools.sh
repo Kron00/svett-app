@@ -12,19 +12,22 @@
 #      weights to pounds.
 #   2. It starts an empty workout and adds Barbell Squat and Romanian Deadlift.
 #      It sets Barbell Squat's rest to 0:30 from the exercise's options, types
-#      225 lb for 5 into its first working set and marks it done. It checks the
-#      set reads 225 lb, the rest timer runs, and the database holds 225 lb as
-#      kilograms.
-#   3. It goes to the Home Screen and waits for the rest timer's notification,
-#      "Rest is over", to show while svett is in the background.
-#   4. It relaunches svett, reopens the workout, and joins Barbell Squat with
-#      Romanian Deadlift in a superset from the options. It checks both read
-#      Superset A, that Barbell Squat's warm-up set starts no rest, and that a
-#      set of Romanian Deadlift, the last of the round, does.
-#   5. It opens the plate calculator from Barbell Squat's options and checks
+#      225 lb for 5 into its first working set and marks it done, which starts
+#      the rest.
+#   3. In the very next call it goes to the Home Screen, before any screenshot
+#      or database check, so the rest runs out with svett in the background. It
+#      waits on SpringBoard for the rest timer's notification, "Rest is over".
+#   4. It relaunches svett, reopens the workout, checks the set reads 225 lb
+#      and done, and that the database holds 225 lb as kilograms. It joins
+#      Barbell Squat with Romanian Deadlift in a superset from the options. It
+#      checks both read Superset A, that Barbell Squat's warm-up set starts no
+#      rest, and that a set of Romanian Deadlift, the last of the round, does.
+#   5. It kills and relaunches svett while that rest runs, and checks the rest
+#      timer is back on the workout.
+#   6. It opens the plate calculator from Barbell Squat's options and checks
 #      225 lb loads two 45 lb plates a side. It opens svett://tools/plates?kg=100
 #      and checks 220.46 lb shows the nearest loads either side.
-#   6. It finishes the workout and checks the database holds the superset and
+#   7. It finishes the workout and checks the database holds the superset and
 #      the 225 lb set.
 #
 # It fails when a screen, a value, the notification or a database row is
@@ -299,21 +302,13 @@ tap 'id="set-0-1-reps"'
 key 5
 expect_set 0 1 "Set 1, 225 lb, 5 reps, To do"
 screenshot pounds-typed
+# Marking the set done starts the 30 second rest. svett leaves in the very next
+# call, before any screenshot or database check, so the rest runs out with svett
+# in the background and its notification shows on the Home Screen.
 tap 'id="workout-set-0-1"'
 [[ "$ask_permission" == false ]] || {
   agent_device alert wait 5000 >/dev/null 2>&1 && agent_device alert accept || true
 }
-expect_set 0 1 "Set 1, 225 lb, 5 reps, Done"
-rest=$(label_of 'id="rest-timer-left"')
-if [[ ! "$rest" =~ ^Rest,\ ([0-9]+)\ seconds?\ left$ ]] || ((BASH_REMATCH[1] > 30)); then
-  fail "Marking the set done did not start a 30 second rest. The timer reads \"$rest\""
-fi
-screenshot rest-timer
-check_rows pounds "$title" "Exercise 1: Barbell Squat, by weight_reps" \
-  "Set 1.2: normal, $squat_kg kg, 5 reps, done"
-
-# svett leaves in the call right after the rest starts, so its notification shows
-# on the Home Screen, with svett in the background.
 agent_device home
 agent_device open com.apple.springboard
 agent_device wait text "$banner" 60000 ||
@@ -324,6 +319,10 @@ relaunch
 link "svett://train/workout"
 expect 'id="workout"' "The workout did not open after the relaunch"
 expect 'id="workout-title"' "The workout in progress did not come back after the relaunch"
+expect_set 0 1 "Set 1, 225 lb, 5 reps, Done"
+screenshot set-done
+check_rows pounds "$title" "Exercise 1: Barbell Squat, by weight_reps" \
+  "Set 1.2: normal, $squat_kg kg, 5 reps, done"
 option 0 "Superset with next exercise"
 bring 'id="workout-superset-0" label="Superset A"' "Barbell Squat is not in Superset A"
 bring 'id="workout-superset-1" label="Superset A"' "Romanian Deadlift is not in Superset A"
@@ -336,6 +335,13 @@ agent_device wait 1500
 tap 'id="workout-set-1-0"'
 bring 'id="rest-timer"' "A set of Romanian Deadlift, last in its superset, started no rest"
 screenshot superset
+
+# A rest outlives a killed svett.
+relaunch
+link "svett://train/workout"
+expect 'id="workout"' "The workout did not open after the relaunch"
+bring 'id="rest-timer"' "The rest did not come back after svett was killed"
+screenshot rest-restored
 
 option 0 "Plate calculator"
 expect 'id="plates"' "The plate calculator did not open"
@@ -368,4 +374,4 @@ check_rows finished "$title" "$title: finished" \
   "Set 1.2: normal, $squat_kg kg, 5 reps, done" \
   "Exercise 2: Romanian Deadlift, by weight_reps, superset 0"
 
-echo "Typed 225 lb and stored $squat_kg kg, saw the rest notification with svett in the background, rested only after a superset's round, and loaded plates in pounds. Screenshots are in $out"
+echo "Typed 225 lb and stored $squat_kg kg, saw the rest notification with svett in the background, rested only after a superset's round, kept a rest through a relaunch, and loaded plates in pounds. Screenshots are in $out"

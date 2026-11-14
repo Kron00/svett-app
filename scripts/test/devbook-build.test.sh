@@ -2054,9 +2054,10 @@ check "logger.sh says what the timing line showed" \
 # change. Romanian Deadlift's elements and the plate calculator's heavier load
 # sit below the fold until a scroll down reaches them. A press acts on the
 # element whose frame was read last. The rest notification shows on the Home
-# Screen while a rest runs, unless FAKE_NO_NOTIFICATION. FAKE_REST_IN_SUPERSET
-# rests after the first exercise of a superset, and FAKE_STORES_LB stores a
-# weight typed in pounds as kilograms without converting it.
+# Screen while a rest runs, unless FAKE_NO_NOTIFICATION, and the rest has run out
+# once it shows. A relaunch keeps a running rest, unless FAKE_FORGETS_REST.
+# FAKE_REST_IN_SUPERSET rests after the first exercise of a superset, and
+# FAKE_STORES_LB stores a weight typed in pounds as kilograms without converting it.
 cat >"$fake/tools-device" <<'EOF'
 #!/usr/bin/env node
 const fs = require("node:fs");
@@ -2253,7 +2254,7 @@ switch (command[0]) {
     if (url === "springboard") show("springboard");
     else if (url === "--relaunch") {
       state.db = command.find((arg) => arg.endsWith(".db"))?.replace("--launch-args=", "") ?? state.db;
-      state.rest = null;
+      if (process.env.FAKE_FORGETS_REST) state.rest = null;
       state.focus = null;
       show("tabs");
     } else if (url === "svett://settings/workout") show("settings");
@@ -2268,7 +2269,11 @@ switch (command[0]) {
   }
   case "wait":
     if (/^\d+$/.test(command[1])) break;
-    if (command[1] === "text") { if (find(`label="${command[2]}"`) === null) fail(); break; }
+    if (command[1] === "text") {
+      if (find(`label="${command[2]}"`) === null) fail();
+      if (command[2] === "Rest is over") state.rest = null;
+      break;
+    }
     if (command[1] === "absent") { if (find(command[2]) !== null) fail(); break; }
     if (!visible(find(command[1]))) fail();
     break;
@@ -2327,21 +2332,22 @@ squat_kg=$(node -e 'console.log(225 * 0.45359237)')
 case_name="tools.sh Debug with SVETT_DEVICE_CMD"
 run_tools "$root/tools"
 [[ "$tools_status" == 0 ]] || fail "tools.sh failed"
-check "tools.sh launches on the copied fixture, goes to the Home Screen for the rest, and launches again" \
+check "tools.sh launches on the copied fixture, goes to the Home Screen for the rest, and launches again during the next" \
   only_open "$debug_open $tools_args" "${tools_links[@]}" "$debug_open $tools_args" \
+  "com.kron00.svett svett://train/workout" "$debug_open $tools_args" \
   "com.kron00.svett svett://train/workout" "com.kron00.svett svett://tools/plates?kg=100" \
   "com.kron00.svett svett://train/workout"
 check "tools.sh never launches or opens a link with simctl" no_simctl_launch_or_openurl
 check "tools.sh grants notifications ahead, and shoots at the largest text size, then restores the default" \
   only_calls "settings" "settings permission grant notifications" \
   "settings text-size accessibility-extra-extra-extra-large" "settings text-size large"
-# rest_then_home checks the only call between reading the running rest and the
-# Home Screen is its screenshot, so the rest is still running when svett leaves.
-rest_then_home() {
-  grep -A2 -F 'get attrs id="rest-timer-left"' "$root/bound-calls" | sed 's/^.*FAKE-UDID //' |
-    tail -2 | tr '\n' '|' | grep -qxF "screenshot $root/tools/03-rest-timer.png|home|"
+# done_then_home checks the call right after the press that marks the set done,
+# which starts the rest, is the Home Screen, before any screenshot or database check.
+done_then_home() {
+  grep -A2 -F 'get attrs id="workout-set-0-1"' "$root/bound-calls" | sed 's/^.*FAKE-UDID //' |
+    tail -2 | tr '\n' '|' | grep -qxE "press [0-9]+ [0-9]+\|home\|"
 }
-check "tools.sh leaves svett right after it reads the running rest and shoots it" rest_then_home
+check "tools.sh leaves svett in the call right after it marks the set done" done_then_home
 check "tools.sh waits on the Home Screen for the rest notification" \
   bound_got "--session t3-test session --device FAKE-UDID wait text Rest is over 60000"
 check "tools.sh types 225 lb on the keypad, then the reps, without the keypad's Next or Done" \
@@ -2357,15 +2363,17 @@ check "tools.sh finds the finished workout's superset in the database" \
 check "tools.sh screenshots each step" \
   only_calls "screenshot" \
   "screenshot $root/tools/01-pounds.png" "screenshot $root/tools/02-pounds-typed.png" \
-  "screenshot $root/tools/03-rest-timer.png" "screenshot $root/tools/04-rest-notification.png" \
-  "screenshot $root/tools/05-superset.png" "screenshot $root/tools/06-plates.png" \
-  "screenshot $root/tools/07-plates-nearest.png" "screenshot $root/tools/08-finished.png"
+  "screenshot $root/tools/03-rest-notification.png" "screenshot $root/tools/04-set-done.png" \
+  "screenshot $root/tools/05-superset.png" "screenshot $root/tools/06-rest-restored.png" \
+  "screenshot $root/tools/07-plates.png" "screenshot $root/tools/08-plates-nearest.png" \
+  "screenshot $root/tools/09-finished.png"
 
 case_name="tools.sh Release with SVETT_DEVICE_CMD"
 run_tools --release "$root/tools-release"
 [[ "$tools_status" == 0 ]] || fail "tools.sh --release failed"
 check "tools.sh Release launches the installed app on the fixture without Metro" \
   only_open "com.kron00.svett --relaunch $tools_args" "${tools_links[@]}" \
+  "com.kron00.svett --relaunch $tools_args" "com.kron00.svett svett://train/workout" \
   "com.kron00.svett --relaunch $tools_args" "com.kron00.svett svett://train/workout" \
   "com.kron00.svett svett://tools/plates?kg=100" "com.kron00.svett svett://train/workout"
 
@@ -2383,6 +2391,12 @@ run_tools FAKE_REST_IN_SUPERSET=1 "$root/tools-superset"
 check "tools.sh fails when a superset rests before its round ends" test "$tools_status" -ne 0
 check "tools.sh names the set that rested" \
   grep -qxF "A set of Barbell Squat, first in its superset, started a rest" "$output"
+
+case_name="tools.sh when a relaunch forgets the running rest"
+run_tools FAKE_FORGETS_REST=1 "$root/tools-forgets"
+check "tools.sh fails when the rest does not come back after svett is killed" test "$tools_status" -ne 0
+check "tools.sh says the rest did not come back" \
+  grep -qxF "The rest did not come back after svett was killed" "$output"
 
 case_name="tools.sh when a weight typed in pounds is stored unconverted"
 run_tools FAKE_STORES_LB=1 "$root/tools-unconverted"
