@@ -1,7 +1,7 @@
 import { Data, Effect, Schema } from "effect";
 
 import type { SyncApi } from "./repositories/sync.ts";
-import { type SyncedTable, SyncPull, SyncPushResult } from "./sync.ts";
+import { type PushedRow, SyncPull, SyncPushResult } from "./sync.ts";
 
 export type SyncProblem =
   /** The server did not answer, or the phone has no connection. */
@@ -127,7 +127,7 @@ export const httpSyncApi = (options: HttpSyncOptions): SyncApi<SyncFailed> => {
     });
 
   return {
-    push: (rows: ReadonlyArray<{ readonly table: SyncedTable; readonly row: unknown }>) =>
+    push: (rows: ReadonlyArray<PushedRow>) =>
       call(SyncPushResult, "/v1/rows", { method: "PUT", body: JSON.stringify({ rows }) }),
     pull: (after: number) => call(SyncPull, `/v1/rows?after=${after}`, { method: "GET" }),
   };

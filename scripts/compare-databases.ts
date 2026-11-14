@@ -27,7 +27,7 @@ const tablesOf = (database: DatabaseSync, schema: string) =>
   database
     .prepare(
       `SELECT name FROM ${schema}.sqlite_schema WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
-       AND name NOT IN ('schema_version', 'sync_aside', 'sync_outbox', 'sync_state') ORDER BY name`,
+       AND name NOT IN ('schema_version', 'sync_aside', 'sync_outbox', 'sync_restore', 'sync_state') ORDER BY name`,
     )
     .all()
     .map((row) => String(row["name"]));

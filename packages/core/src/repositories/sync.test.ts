@@ -22,6 +22,7 @@ import {
   checkSyncRow,
   type CheckedRow,
   isTooFarAhead,
+  type PushedRow,
   type SyncedTable,
   type SyncPushResult,
 } from "../sync.ts";
@@ -54,7 +55,7 @@ type Phone = ReturnType<typeof phone>;
  * server, it holds rows timed too far past its own clock, which reads `serverMillis`.
  */
 const standIn = (serverMillis: () => number) => {
-  const pushes: Array<ReadonlyArray<{ readonly table: SyncedTable; readonly row: unknown }>> = [];
+  const pushes: Array<ReadonlyArray<PushedRow>> = [];
   const api: SyncApi<never> = {
     push: (rows) =>
       Effect.sync((): SyncPushResult => {
@@ -203,6 +204,42 @@ describe("SyncRepository", () => {
     const left = await on.run(Effect.flatMap(sync, (repository) => repository.queued(undefined)));
     expect(left.map(({ id: rowId, row }) => [rowId, (row as ActivitySet).reps])).toEqual([
       [set.id, 6],
+    ]);
+  });
+
+  it("sends an Undo with the deletion it reverses, until the server confirms it", async () => {
+    const on = phone();
+    const id = await logLegDay(on);
+    const queued = () => on.run(Effect.flatMap(sync, (repository) => repository.queued(undefined)));
+    const confirmAll = async () => {
+      const rows = await queued();
+      await on.run(Effect.flatMap(sync, (repository) => repository.confirm(rows)));
+    };
+    await confirmAll();
+    await on.at(T0 + MINUTE);
+    await on.run(Effect.flatMap(activities, (repository) => repository.remove(id)));
+    const removed = await queued();
+    expect(removed).toHaveLength(7);
+    expect(removed.every(({ restores }) => restores === null)).toBe(true);
+    const deletedAt = (removed[0]?.row as { deletedAt: number }).deletedAt;
+    await confirmAll();
+
+    await on.at(T0 + 2 * MINUTE);
+    await on.run(Effect.flatMap(activities, (repository) => repository.restore(id)));
+    const set = await firstSet(on, id);
+    await on.run(
+      Effect.flatMap(activities, (repository) => repository.updateSet(set.id, { reps: 6 })),
+    );
+    const restored = await queued();
+    expect(restored).toHaveLength(7);
+    expect(restored.map(({ restores }) => restores)).toEqual(restored.map(() => deletedAt));
+
+    await confirmAll();
+    await on.run(
+      Effect.flatMap(activities, (repository) => repository.updateSet(set.id, { reps: 7 })),
+    );
+    expect((await queued()).map(({ id: rowId, restores }) => [rowId, restores])).toEqual([
+      [set.id, null],
     ]);
   });
 

@@ -8,6 +8,7 @@ import {
   isTooFarAhead,
   MAX_CLOCK_AHEAD_MS,
   mergeChange,
+  mergePushed,
   mergeRow,
   type RowCopy,
   type RowVersion,
@@ -155,6 +156,124 @@ describe("mergeChange", () => {
     expect(keptFirst).toEqual(remove);
     expect(keptSecond).toEqual(remove);
   });
+});
+
+describe("mergePushed", () => {
+  it.each([
+    {
+      case: "an edit to a deleted workout from a phone that never saw the delete",
+      table: "activity",
+      stored: deleted(3, "a"),
+      incoming: live(4, "b"),
+      restores: null,
+      deletedAbove: [],
+      result: "refuse",
+    },
+    {
+      case: "an Undo of the workout's current deletion",
+      table: "activity",
+      stored: deleted(3, "a"),
+      incoming: live(4, "b"),
+      restores: 3,
+      deletedAbove: [],
+      result: "take",
+    },
+    {
+      case: "an Undo of an older deletion",
+      table: "activity",
+      stored: deleted(5, "a"),
+      incoming: live(6, "b"),
+      restores: 3,
+      deletedAbove: [],
+      result: "refuse",
+    },
+    {
+      case: "a set added under a deleted workout",
+      table: "activity_set",
+      stored: undefined,
+      incoming: live(4, "b"),
+      restores: null,
+      deletedAbove: [3],
+      result: "refuse",
+    },
+    {
+      case: "a set added under a deleted workout before its delete",
+      table: "activity_set",
+      stored: undefined,
+      incoming: live(2, "b"),
+      restores: null,
+      deletedAbove: [3],
+      result: "refuse",
+    },
+    {
+      case: "a set the Undo brings back before the workout",
+      table: "activity_set",
+      stored: deleted(3, "a"),
+      incoming: live(4, "b"),
+      restores: 3,
+      deletedAbove: [3, 3],
+      result: "take",
+    },
+    {
+      case: "a set the Undo brings back under an exercise deleted before",
+      table: "activity_set",
+      stored: deleted(3, "a"),
+      incoming: live(4, "b"),
+      restores: 3,
+      deletedAbove: [2, 3],
+      result: "refuse",
+    },
+    {
+      case: "an edit older than the delete",
+      table: "activity_set",
+      stored: deleted(3, "a"),
+      incoming: live(2, "b"),
+      restores: null,
+      deletedAbove: [3],
+      result: "keep",
+    },
+    {
+      case: "a delete of a live set",
+      table: "activity_set",
+      stored: live(2, "a"),
+      incoming: deleted(3, "b"),
+      restores: null,
+      deletedAbove: [],
+      result: "take",
+    },
+    {
+      case: "an edit to a live workout",
+      table: "activity",
+      stored: live(2, "a"),
+      incoming: live(3, "b"),
+      restores: null,
+      deletedAbove: [],
+      result: "take",
+    },
+    {
+      case: "an edit to a deleted routine, which only workouts guard",
+      table: "routine",
+      stored: deleted(3, "a"),
+      incoming: live(4, "b"),
+      restores: null,
+      deletedAbove: [],
+      result: "take",
+    },
+    {
+      case: "an edit to a routine set after its routine was deleted",
+      table: "routine_set",
+      stored: deleted(3, "a"),
+      incoming: live(4, "b"),
+      restores: null,
+      deletedAbove: [3],
+      result: "refuse",
+    },
+  ] as const)(
+    "gives $result for $case",
+    ({ table, stored, incoming, restores, deletedAbove, result }) => {
+      expect(mergePushed(table, stored, incoming, restores, deletedAbove)).toBe(result);
+    },
+  );
 });
 
 const journal = (fields: object) => ({

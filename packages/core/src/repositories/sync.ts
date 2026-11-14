@@ -10,6 +10,7 @@ import {
   MAX_CLOCK_AHEAD_MS,
   MAX_SYNC_ROWS,
   mergeChange,
+  type PushedRow,
   staysOnPhone,
   SYNCED_TABLES,
   type SyncedTable,
@@ -35,6 +36,8 @@ export interface QueuedRow {
   readonly table: SyncedTable;
   readonly id: string;
   readonly row: unknown;
+  /** The deletion this change reverses, when it is an Undo here. See `PushedRow`. */
+  readonly restores: number | null;
 }
 
 const makeSyncRepository = Effect.gen(function* () {
@@ -48,9 +51,10 @@ const makeSyncRepository = Effect.gen(function* () {
   const queued = (after: QueuedRow | undefined, limit = MAX_SYNC_ROWS) =>
     Effect.gen(function* () {
       const entries = yield* sql.all(
-        `SELECT table_name, row_id, mark FROM sync_outbox
-         WHERE (mark, table_name, row_id) > (?, ?, ?)
-         ORDER BY mark, table_name, row_id LIMIT ?`,
+        `SELECT o.table_name, o.row_id, o.mark, r.deleted_at AS restores FROM sync_outbox o
+         LEFT JOIN sync_restore r ON r.table_name = o.table_name AND r.row_id = o.row_id
+         WHERE (o.mark, o.table_name, o.row_id) > (?, ?, ?)
+         ORDER BY o.mark, o.table_name, o.row_id LIMIT ?`,
         [after?.mark ?? -1, after?.table ?? "", after?.id ?? "", limit],
       );
       const byTable = new Map<SyncedTable, Array<string>>();
@@ -71,21 +75,38 @@ const makeSyncRepository = Effect.gen(function* () {
         const row = stored.get(table)?.get(String(entry["row_id"]));
         return row === undefined
           ? []
-          : [{ mark: Number(entry["mark"]), table, id: row.id, row: row.encoded }];
+          : [
+              {
+                mark: Number(entry["mark"]),
+                table,
+                id: row.id,
+                row: row.encoded,
+                restores: entry["restores"] == null ? null : Number(entry["restores"]),
+              },
+            ];
       });
     });
 
-  /** Drops the rows the server confirmed, unless they changed again since they were read. */
+  /**
+   * Drops the rows the server confirmed, unless they changed again since they were read, and
+   * with them the deletions they reversed.
+   */
   const confirm = (rows: ReadonlyArray<QueuedRow>) =>
     sql.transaction(
       Effect.forEach(
         rows,
         ({ table, id, mark }) =>
-          sql.run("DELETE FROM sync_outbox WHERE table_name = ? AND row_id = ? AND mark = ?", [
-            table,
-            id,
-            mark,
-          ]),
+          Effect.gen(function* () {
+            yield* sql.run(
+              "DELETE FROM sync_outbox WHERE table_name = ? AND row_id = ? AND mark = ?",
+              [table, id, mark],
+            );
+            yield* sql.run(
+              `DELETE FROM sync_restore WHERE table_name = ? AND row_id = ?
+                 AND NOT EXISTS (SELECT 1 FROM sync_outbox WHERE table_name = ? AND row_id = ?)`,
+              [table, id, table, id],
+            );
+          }),
         { discard: true },
       ),
     );
@@ -267,9 +288,7 @@ export class SyncRepository extends Context.Service<
 
 /** Pushes and pulls a sync. Both sides are the server's HTTP API, or a stand-in in tests. */
 export interface SyncApi<E> {
-  readonly push: (
-    rows: ReadonlyArray<{ readonly table: SyncedTable; readonly row: unknown }>,
-  ) => Effect.Effect<SyncPushResult, E>;
+  readonly push: (rows: ReadonlyArray<PushedRow>) => Effect.Effect<SyncPushResult, E>;
   readonly pull: (after: number) => Effect.Effect<SyncPull, E>;
 }
 
@@ -298,7 +317,11 @@ export const syncOnce = <E>(api: SyncApi<E>) =>
         const page = yield* repository.queued(after);
         const last = page.at(-1);
         if (last === undefined) break;
-        const result = yield* api.push(page.map(({ table, row }) => ({ table, row })));
+        const result = yield* api.push(
+          page.map(({ table, row, restores }) =>
+            restores === null ? { table, row } : { table, row, restores },
+          ),
+        );
         const ahead = new Set(result.ahead.map(({ table, id }) => `${table}/${id}`));
         const confirmed = page.filter(({ table, id }) => !ahead.has(`${table}/${id}`));
         yield* repository.confirm(confirmed);

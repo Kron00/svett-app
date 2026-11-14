@@ -368,6 +368,26 @@ ${Object.entries(inDraft)
   .join("\n")}
 `;
 
+// An Undo on this phone, or any write here that brings back a deleted workout row, records the
+// deletion it reverses, so the server can tell it from a change made by a phone that never saw
+// that delete. The first one since the row was last sent stays, since that is the deletion
+// the server knows. Writes sync applies run quietly and record nothing.
+const syncRestores = `
+CREATE TABLE sync_restore (table_name TEXT NOT NULL, row_id TEXT NOT NULL,
+  deleted_at INTEGER NOT NULL, PRIMARY KEY (table_name, row_id)) STRICT;
+${Object.keys(workoutColumns)
+  .map(
+    (table) => `CREATE TRIGGER ${table}_restore AFTER UPDATE OF deleted_at ON ${table}
+WHEN (SELECT quiet FROM sync_state) = 0 AND OLD.deleted_at IS NOT NULL AND NEW.deleted_at IS NULL
+BEGIN
+  INSERT INTO sync_restore (table_name, row_id, deleted_at)
+    SELECT '${table}', NEW.id, OLD.deleted_at
+    WHERE NOT EXISTS (SELECT 1 FROM sync_restore WHERE table_name = '${table}' AND row_id = NEW.id);
+END;`,
+  )
+  .join("\n")}
+`;
+
 /** Applied in order and never edited once released. A change to the schema is a new migration. */
 export const MIGRATIONS: ReadonlyArray<Migration> = [
   { version: 1, name: "initial", sql: initial },
@@ -380,6 +400,7 @@ export const MIGRATIONS: ReadonlyArray<Migration> = [
   { version: 8, name: "sample segment", sql: sampleSegment },
   { version: 9, name: "sync", sql: sync },
   { version: 10, name: "workout drafts stay on the phone", sql: localDrafts },
+  { version: 11, name: "sync restores", sql: syncRestores },
 ];
 
 export class DatabaseTooNewError extends Data.TaggedError("DatabaseTooNewError")<{

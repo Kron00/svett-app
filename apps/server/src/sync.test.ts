@@ -208,6 +208,15 @@ const sharedLegDay = async (phone: Phone, others: ReadonlyArray<Phone>) => {
   return id;
 };
 
+const queuedCount = (phone: Phone) =>
+  phone.run(Effect.flatMap(Effect.service(SyncRepository), (sync) => sync.queuedCount));
+
+const remove = (phone: Phone, id: ActivityId) =>
+  phone.run(Effect.flatMap(activities, (repository) => repository.remove(id)));
+
+const undo = (phone: Phone, id: ActivityId) =>
+  phone.run(Effect.flatMap(activities, (repository) => repository.restore(id)));
+
 /** The change ID of the copy of `set` that `phone` would send. */
 const queuedChangeId = async (phone: Phone, setId: string) => {
   const queued = await phone.run(
@@ -929,5 +938,160 @@ describe("sync", { timeout: 120_000 }, () => {
     expect((await firstSet(a, id)).reps).toBe(3);
     expect((await setsOf(a, id)).some(({ setId }) => setId === fromA)).toBe(false);
     expect(await counts(a)).toEqual(await counts(b));
+  });
+
+  it.each(["a", "b"] as const)(
+    "keeps a workout deleted that another phone finished before it pulled the delete, and Undo on %s brings back only what it had",
+    async (undoOn) => {
+      const server = await startServer();
+      const a = openPhone(server, ALICE, 1);
+      const b = openPhone(server, ALICE, 2);
+      const id = await sharedLegDay(a, [b]);
+      const before = await setsOf(a, id);
+      const edited = before[1];
+      if (edited === undefined) throw new Error("The workout has one set");
+
+      await b.at(T0 + MINUTE);
+      await reopen(b, id);
+      await a.at(T0 + 2 * MINUTE);
+      await remove(a, id);
+      await a.sync();
+
+      await b.at(T0 + 3 * MINUTE);
+      const added = await addDoneSet(b, id, 77);
+      await b.run(
+        Effect.flatMap(activities, (repository) =>
+          repository.updateWorkoutSet(edited.setId, { reps: 66 }),
+        ),
+      );
+      await finish(b, id);
+      await syncAll([b, a]);
+      expect(await a.rows()).toEqual(await b.rows());
+      expect(await detail(a, id)).toEqual(Option.none());
+      expect(await detail(b, id)).toEqual(Option.none());
+      expect(await counts(b)).toEqual({ activities: 0, sets: 0 });
+      expect(await queuedCount(b)).toBe(0);
+
+      const undoing = undoOn === "a" ? a : b;
+      await undoing.at(T0 + 4 * MINUTE);
+      await undo(undoing, id);
+      await syncAll([a, b]);
+      expect(await a.rows()).toEqual(await b.rows());
+      expect(await setsOf(a, id)).toEqual(before);
+      expect(await setsOf(b, id)).toEqual(before);
+      expect((await setsOf(b, id)).some(({ setId }) => setId === added)).toBe(false);
+      expect(await counts(a)).toEqual({ activities: 1, sets: before.length });
+    },
+  );
+
+  it("keeps an exercise deleted that another phone changed before it pulled the delete", async () => {
+    const server = await startServer();
+    const a = openPhone(server, ALICE, 1);
+    const b = openPhone(server, ALICE, 2);
+    const id = await sharedLegDay(a, [b]);
+    const workout = Option.getOrThrow(await detail(a, id));
+    const [removed, rest] = workout.exercises;
+    const edited = removed?.sets[1];
+    if (removed === undefined || rest === undefined || edited === undefined) {
+      throw new Error("The workout needs two exercises and two sets in the first");
+    }
+
+    await b.at(T0 + MINUTE);
+    await reopen(b, id);
+    await a.at(T0 + 2 * MINUTE);
+    await reopen(a, id);
+    await a.run(
+      Effect.flatMap(activities, (repository) => repository.removeExercise(removed.exercise.id)),
+    );
+    await finish(a, id);
+    await a.sync();
+
+    await b.at(T0 + 3 * MINUTE);
+    const added = await addDoneSet(b, id, 77);
+    await b.run(
+      Effect.flatMap(activities, (repository) =>
+        repository.updateWorkoutSet(edited.id, { reps: 66 }),
+      ),
+    );
+    await finish(b, id);
+    await syncAll([b, a]);
+
+    expect(await a.rows()).toEqual(await b.rows());
+    expect(await queuedCount(b)).toBe(0);
+    const rows = await b.rows();
+    const exercise = (rows["activity_exercise"] as ReadonlyArray<Record<string, unknown>>).find(
+      (row) => row["id"] === removed.exercise.id,
+    );
+    expect(exercise?.["deleted_at"]).not.toBeNull();
+    const underRemoved = (rows["activity_set"] as ReadonlyArray<Record<string, unknown>>).filter(
+      (set) => set["activity_exercise_id"] === removed.exercise.id,
+    );
+    expect(underRemoved.map((set) => set["id"])).toContain(added);
+    expect(underRemoved.every((set) => set["deleted_at"] !== null)).toBe(true);
+    expect(
+      underRemoved.filter((set) => set["id"] !== added).map((set) => [set["id"], set["reps"]]),
+    ).toEqual(removed.sets.map((set) => [set.id, 5]).sort());
+    const [onA, onB] = await Promise.all([detail(a, id), detail(b, id)]);
+    expect(onA).toEqual(onB);
+    expect(Option.getOrThrow(onB).exercises.map(({ exercise: { id: kept } }) => kept)).toEqual([
+      rest.exercise.id,
+    ]);
+  });
+
+  it("takes an Undo from a phone that pulled the delete, and drops a stale edit from one that had not", async () => {
+    const server = await startServer();
+    const a = openPhone(server, ALICE, 1);
+    const b = openPhone(server, ALICE, 2);
+    const c = openPhone(server, ALICE, 3);
+    const id = await sharedLegDay(a, [b, c]);
+    const before = await setsOf(a, id);
+
+    await a.at(T0 + MINUTE);
+    await remove(a, id);
+    await a.sync();
+    await b.at(T0 + 2 * MINUTE);
+    await b.sync();
+    expect(await detail(b, id)).toEqual(Option.none());
+    await undo(b, id);
+
+    await c.at(T0 + 3 * MINUTE);
+    await c.run(Effect.flatMap(activities, (repository) => repository.update(id, { title: "C" })));
+    await editFirstSet(c, id, 3);
+    await syncAll([c, b, a]);
+
+    const all = await Promise.all([a, b, c].map((phone) => phone.rows()));
+    expect(all[1]).toEqual(all[0]);
+    expect(all[2]).toEqual(all[0]);
+    for (const phone of [a, b, c]) {
+      expect(Option.getOrThrow(await detail(phone, id)).activity.title).toBe("Legs");
+      expect(await setsOf(phone, id)).toEqual(before);
+      expect(await queuedCount(phone)).toBe(0);
+    }
+  });
+
+  it("drops a change that would bring back a deleted workout without an Undo, and the queue drains", async () => {
+    const server = await startServer();
+    const a = openPhone(server, ALICE, 1);
+    const b = openPhone(server, ALICE, 2);
+    const id = await sharedLegDay(a, [b]);
+
+    await a.at(T0 + MINUTE);
+    await remove(a, id);
+    await a.sync();
+    await b.at(T0 + 2 * MINUTE);
+    await b.run(
+      Effect.flatMap(activities, (repository) => repository.update(id, { title: "Stale" })),
+    );
+    await editFirstSet(b, id, 3);
+    const first = await b.sync();
+    expect(first.pushed).toBe(2);
+    expect(await queuedCount(b)).toBe(0);
+    expect(await detail(b, id)).toEqual(Option.none());
+
+    await a.sync();
+    expect(await a.rows()).toEqual(await b.rows());
+    expect(await detail(a, id)).toEqual(Option.none());
+    expect((await b.sync()).pushed).toBe(0);
+    expect(await queuedCount(b)).toBe(0);
   });
 });

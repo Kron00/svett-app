@@ -15,7 +15,13 @@ const NEXT: Migration = {
 };
 
 // Tables only this phone uses, which never sync or export.
-const SYNC_BOOKKEEPING = ["schema_version", "sync_aside", "sync_outbox", "sync_state"];
+const SYNC_BOOKKEEPING = [
+  "schema_version",
+  "sync_aside",
+  "sync_outbox",
+  "sync_restore",
+  "sync_state",
+];
 
 const open = () => {
   const { database, driver } = openNodeDatabase();

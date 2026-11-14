@@ -130,9 +130,31 @@ export const parentOf = (
 };
 
 /**
- * The earliest `deletedAt` of the deleted rows above `row`, read through `lookup`, which
- * gives a stored row in its encoded form. A row above that is missing ends the walk.
+ * The `deletedAt` of each deleted row above `row`, nearest first, read through `lookup`,
+ * which gives a stored row in its encoded form. A row above that is missing ends the walk.
  */
+export const deletionsAboveOf = <E, R>(
+  table: SyncedTable,
+  row: Readonly<Record<string, unknown>>,
+  lookup: (
+    table: SyncedTable,
+    id: string,
+  ) => Effect.Effect<Readonly<Record<string, unknown>> | undefined, E, R>,
+): Effect.Effect<ReadonlyArray<number>, E, R> =>
+  Effect.gen(function* () {
+    const deletions: Array<number> = [];
+    let above = parentOf(table, row);
+    for (let depth = 0; above !== undefined && depth < 8; depth++) {
+      const found = yield* lookup(above.table, above.id);
+      if (found === undefined) break;
+      const deletedAt = found["deletedAt"];
+      if (typeof deletedAt === "number") deletions.push(deletedAt);
+      above = parentOf(above.table, found);
+    }
+    return deletions;
+  });
+
+/** The earliest `deletedAt` of the deleted rows above `row`, or null. See `deletionsAboveOf`. */
 export const deletedAboveOf = <E, R>(
   table: SyncedTable,
   row: Readonly<Record<string, unknown>>,
@@ -141,20 +163,70 @@ export const deletedAboveOf = <E, R>(
     id: string,
   ) => Effect.Effect<Readonly<Record<string, unknown>> | undefined, E, R>,
 ): Effect.Effect<number | null, E, R> =>
-  Effect.gen(function* () {
-    let earliest: number | null = null;
-    let above = parentOf(table, row);
-    for (let depth = 0; above !== undefined && depth < 8; depth++) {
-      const found = yield* lookup(above.table, above.id);
-      if (found === undefined) break;
-      const deletedAt = found["deletedAt"];
-      if (typeof deletedAt === "number") {
-        earliest = earliest === null ? deletedAt : Math.min(earliest, deletedAt);
-      }
-      above = parentOf(above.table, found);
+  Effect.map(deletionsAboveOf(table, row, lookup), (deletions) =>
+    deletions.length === 0 ? null : Math.min(...deletions),
+  );
+
+/** The tables of a workout, whose deletes only an Undo on a phone that saw them reverses. */
+export const WORKOUT_TABLES: ReadonlySet<SyncedTable> = new Set([
+  TABLES.activity.name,
+  TABLES.activityExercise.name,
+  TABLES.activitySet.name,
+  TABLES.activityTrack.name,
+  TABLES.activitySample.name,
+]);
+
+/**
+ * True when the server must read the deletions above a pushed row before `mergePushed`
+ * decides: a live copy of a workout row that wins the plain merge, or a copy whose merge a
+ * delete above it can overturn.
+ */
+export const needsDeletionsAbove = (
+  table: SyncedTable,
+  stored: RowCopy | undefined,
+  incoming: RowCopy,
+): boolean =>
+  (WORKOUT_TABLES.has(table) &&
+    incoming.deletedAt === null &&
+    mergeRow(stored, incoming) === "take") ||
+  deletionMatters(stored, incoming);
+
+/**
+ * The server's rule for a pushed change, where every phone's changes meet. Deleting a workout
+ * deletes its exercises, sets and route with it, and a later change to one of those from a
+ * phone that had not seen the delete is dropped. So a live copy of a workout row that would
+ * bring back a deleted copy, or that sits under a deleted row, is taken only as an Undo of
+ * that very deletion: `restores` names the `deletedAt` it reverses, and it must be the stored
+ * copy's and every deleted row's above it. Otherwise the change is refused. Every other
+ * change follows `mergeChange`. `deletedAbove` lists the `deletedAt` of each deleted row
+ * above, from `deletionsAboveOf`, and only matters when `needsDeletionsAbove` is true.
+ *
+ * "refuse" means the change would win the plain merge but loses. The server then hands the
+ * phone that sent it the stored copy, or a deleted one when it has none.
+ */
+export const mergePushed = (
+  table: SyncedTable,
+  stored: RowCopy | undefined,
+  incoming: RowCopy,
+  restores: number | null,
+  deletedAbove: ReadonlyArray<number>,
+): "take" | "keep" | "refuse" => {
+  const plain = mergeRow(stored, incoming);
+  if (WORKOUT_TABLES.has(table) && incoming.deletedAt === null) {
+    if (plain === "keep") return "keep";
+    const reverses = (deletedAt: number) => restores === deletedAt;
+    if (stored !== undefined && stored.deletedAt !== null && !reverses(stored.deletedAt)) {
+      return "refuse";
     }
-    return earliest;
-  });
+    return deletedAbove.every(reverses) ? "take" : "refuse";
+  }
+  const merged = mergeChange(
+    stored,
+    incoming,
+    deletedAbove.length === 0 ? null : Math.min(...deletedAbove),
+  );
+  return merged === "keep" && plain === "take" ? "refuse" : merged;
+};
 
 /**
  * The ID of the workout in progress that `row` is, or sits under, such as a set of its
@@ -205,10 +277,19 @@ const RowRef = Schema.Struct({ table: SyncedTable, id: Schema.String });
 export type RowRef = typeof RowRef.Type;
 
 /** What a phone sends. Any owner it names is ignored: the server takes it from the session. */
+/**
+ * A changed row a phone sends. `restores` marks an Undo on the phone: the `deletedAt` of the
+ * deletion that the change reverses, which the phone had when it was undone.
+ */
+export const PushedRow = Schema.Struct({
+  table: SyncedTable,
+  row: Schema.Unknown,
+  restores: Schema.optional(Schema.Int),
+});
+export type PushedRow = typeof PushedRow.Type;
+
 export const SyncPush = Schema.Struct({
-  rows: Schema.Array(Schema.Struct({ table: SyncedTable, row: Schema.Unknown })).check(
-    Schema.isMaxLength(MAX_SYNC_ROWS),
-  ),
+  rows: Schema.Array(PushedRow).check(Schema.isMaxLength(MAX_SYNC_ROWS)),
 });
 export type SyncPush = typeof SyncPush.Type;
 

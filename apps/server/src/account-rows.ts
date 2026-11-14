@@ -2,15 +2,15 @@ import { PgClient } from "@effect/sql-pg";
 import {
   type AccountId,
   type CheckedRow,
+  changeIdOf,
   checkSyncRow,
-  deletedAboveOf,
-  deletionMatters,
+  deletionsAboveOf,
   DRAFT_MESSAGE,
   inDraftWorkout,
   isTooFarAhead,
   MAX_SYNC_ROWS,
-  mergeChange,
-  mergeRow,
+  mergePushed,
+  needsDeletionsAbove,
   type RowCopy,
   type SyncedTable,
   type SyncPull,
@@ -50,26 +50,56 @@ export const checkRows = (push: SyncPush) =>
         return yield* new InvalidRow({ table, index, message: DRAFT_MESSAGE });
       }
     }
-    return yield* Effect.forEach(push.rows, ({ table, row }, index) =>
+    return yield* Effect.forEach(push.rows, ({ table, row, restores }, index) =>
       checkSyncRow(table, row).pipe(
+        Effect.map((checked): CheckedPush => ({ ...checked, restores: restores ?? null })),
         Effect.mapError((invalid) => new InvalidRow({ table, index, message: invalid.message })),
       ),
     );
   });
 
+/** A pushed row checked against its table, with the deletion it reverses when it is an Undo. */
+export interface CheckedPush extends CheckedRow {
+  readonly restores: number | null;
+}
+
+/**
+ * The deleted copy the server keeps of a row it refused to add under a deleted row, so the
+ * phone that added it removes it too. It takes the row's own time, never the time of a
+ * deletion above it, so an Undo of that deletion leaves it deleted.
+ */
+const refusedCopy = (row: CheckedRow, deletedAbove: ReadonlyArray<number>): CheckedRow => {
+  let at = row.updatedAt;
+  while (deletedAbove.includes(at)) at++;
+  const encoded = {
+    ...(row.encoded as Readonly<Record<string, unknown>>),
+    updatedAt: at,
+    deletedAt: at,
+  };
+  return {
+    ...row,
+    updatedAt: at,
+    deletedAt: at,
+    encoded,
+    changeId: changeIdOf(row.table, encoded),
+  };
+};
+
 export interface AccountRowsShape {
   /** Records that the account exists. Safe to call on every request. */
   readonly ensureAccount: (account: AccountId) => Effect.Effect<void, SqlError>;
   /**
-   * Stores `rows` under `account` by the sync merge rule with deletes, and gives each row it
-   * applies the account's next change number. When it drops an edit to a row under a deleted
-   * workout, the deleted copy it keeps gets the next number too, so the phone that made the
-   * edit pulls that copy again. A row another account holds under the same ID is a different
-   * row and stays as it was. Rows timed too far past `nowMillis` are refused.
+   * Stores `rows` under `account` by `mergePushed`, and gives each row it applies the
+   * account's next change number. When it refuses a change, such as an edit to a deleted
+   * workout from a phone that had not seen the delete, the copy it keeps gets the next number
+   * too, so that phone pulls it again. A row it refuses to add under a deleted row is kept as
+   * a deleted copy, for the same reason. Either way the change counts as stored, so the phone
+   * stops sending it. A row another account holds under the same ID is a different row and
+   * stays as it was. Rows timed too far past `nowMillis` are refused.
    */
   readonly write: (
     account: AccountId,
-    rows: ReadonlyArray<CheckedRow>,
+    rows: ReadonlyArray<CheckedPush>,
     nowMillis: number,
   ) => Effect.Effect<SyncPushResult, SqlError>;
   /** Up to `limit` of the account's rows with a change number after `after`, in order. */
@@ -134,26 +164,33 @@ export class AccountRows extends Context.Service<AccountRows, AccountRowsShape>(
                   `,
                   ([row]) => row?.data,
                 );
-              for (const row of timely) {
-                const current = stored.get(key(row.table, row.id));
-                const deletedAbove = deletionMatters(current, row)
-                  ? yield* deletedAboveOf(
-                      row.table,
-                      row.encoded as Readonly<Record<string, unknown>>,
+              for (const pushed of timely) {
+                const current = stored.get(key(pushed.table, pushed.id));
+                const deletedAbove = needsDeletionsAbove(pushed.table, current, pushed)
+                  ? yield* deletionsAboveOf(
+                      pushed.table,
+                      pushed.encoded as Readonly<Record<string, unknown>>,
                       lookup,
                     )
-                  : null;
-                if (mergeChange(current, row, deletedAbove) === "keep") {
-                  if (mergeRow(current, row) === "take") {
-                    seq++;
-                    yield* sql`
-                      update account_row set seq = ${seq}
-                      where account_id = ${account} and table_name = ${row.table}
-                        and row_id = ${row.id}
-                    `;
-                  }
+                  : [];
+                const merged = mergePushed(
+                  pushed.table,
+                  current,
+                  pushed,
+                  pushed.restores,
+                  deletedAbove,
+                );
+                if (merged === "keep") continue;
+                if (merged === "refuse" && current !== undefined) {
+                  seq++;
+                  yield* sql`
+                    update account_row set seq = ${seq}
+                    where account_id = ${account} and table_name = ${pushed.table}
+                      and row_id = ${pushed.id}
+                  `;
                   continue;
                 }
+                const row = merged === "refuse" ? refusedCopy(pushed, deletedAbove) : pushed;
                 seq++;
                 yield* sql`
                   insert into account_row
