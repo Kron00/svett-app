@@ -53,3 +53,8 @@ export const launchTarget = (): DatabaseTarget => {
     ? { kind: "file", path: fixture }
     : { kind: "owner", owner: ANONYMOUS };
 };
+
+let opened: ReturnType<typeof openDatabase> | undefined;
+
+/** The database this launch opened, shared by every screen. */
+export const appDatabase = () => (opened ??= openDatabase(launchTarget()));

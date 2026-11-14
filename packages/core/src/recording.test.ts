@@ -3,6 +3,7 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   encodeRecordingEvent,
   type Fix,
+  fixOf,
   isPaused,
   MAX_ACCURACY_M,
   MIN_STEP_M,
@@ -113,6 +114,28 @@ describe("a recording", () => {
         ...moving(20, 30, 3),
       ]),
     ).toEqual(replay(events));
+  });
+});
+
+describe("fixOf", () => {
+  const reading = {
+    timestamp: T + 0.6,
+    coords: { latitude: 59.3, longitude: 18.1, altitude: 21, accuracy: 4, altitudeAccuracy: 3 },
+  };
+
+  it("keeps the position, its accuracy and the altitude, to the whole millisecond", () => {
+    expect(fixOf(reading)).toEqual({
+      at: T + 1,
+      latitude: 59.3,
+      longitude: 18.1,
+      altitudeM: 21,
+      accuracyM: 4,
+    });
+  });
+
+  it("drops an altitude iOS could not measure", () => {
+    const unmeasured = { ...reading, coords: { ...reading.coords, altitudeAccuracy: -1 } };
+    expect(fixOf(unmeasured).altitudeM).toBeNull();
   });
 });
 

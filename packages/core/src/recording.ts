@@ -18,6 +18,30 @@ export const Fix = Schema.Struct({
 });
 export type Fix = typeof Fix.Type;
 
+/** A position as expo-location reports it. */
+export interface LocationReading {
+  readonly timestamp: number;
+  readonly coords: {
+    readonly latitude: number;
+    readonly longitude: number;
+    readonly altitude: number | null;
+    readonly accuracy: number | null;
+    readonly altitudeAccuracy: number | null;
+  };
+}
+
+/** iOS reports an altitude it could not measure with a negative accuracy. */
+export const fixOf = ({ timestamp, coords }: LocationReading): Fix => ({
+  at: Math.round(timestamp),
+  latitude: coords.latitude,
+  longitude: coords.longitude,
+  altitudeM:
+    coords.altitude !== null && coords.altitudeAccuracy !== null && coords.altitudeAccuracy >= 0
+      ? coords.altitude
+      : null,
+  accuracyM: coords.accuracy,
+});
+
 /**
  * What a recording is made of, in the order it happened. The phone keeps these in
  * a journal while recording, so a recording survives svett being closed or reloaded.

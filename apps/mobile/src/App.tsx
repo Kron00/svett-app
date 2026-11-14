@@ -7,6 +7,9 @@ import { StatusBar } from "expo-status-bar";
 import { SymbolView } from "expo-symbols";
 import { View } from "react-native";
 
+import { ActivityScreen } from "./cardio/ActivityScreen";
+import { RecordCardioRow } from "./cardio/RecordCardioRow";
+import { RecordScreen } from "./cardio/RecordScreen";
 import { WorkoutCounts } from "./data/WorkoutCounts";
 import { PhoneChecksScreen } from "./checks/PhoneChecksScreen";
 import { useNavigationTheme } from "./design/hooks";
@@ -28,7 +31,10 @@ const Tabs = createBottomTabNavigator();
 const linking: LinkingOptions<RootStackParamList> = {
   prefixes: ["svett://"],
   filter: (url) => !url.includes("expo-development-client"),
-  config: { initialRouteName: "Tabs", screens: { Gallery: "gallery" } },
+  config: {
+    initialRouteName: "Tabs",
+    screens: { Gallery: "gallery", RecordCardio: "record", Activity: "activity/:id" },
+  },
 };
 
 function TabNavigator() {
@@ -46,6 +52,13 @@ function TabNavigator() {
         >
           {() => (
             <PlaceholderScreen tab={tab}>
+              {tab.name === "Train" ? (
+                <View className="mt-6 self-stretch">
+                  <ListSection>
+                    <RecordCardioRow />
+                  </ListSection>
+                </View>
+              ) : null}
               {tab.name === "Progress" ? <WorkoutCounts /> : null}
               {tab.name === "You" ? (
                 <View className="mt-6 self-stretch">
@@ -73,6 +86,16 @@ export default function App() {
           name="Gallery"
           component={GalleryScreen}
           options={{ headerShown: true, title: "Design gallery", headerLargeTitle: true }}
+        />
+        <Stack.Screen
+          name="RecordCardio"
+          component={RecordScreen}
+          options={{ headerShown: true, title: "Record" }}
+        />
+        <Stack.Screen
+          name="Activity"
+          component={ActivityScreen}
+          options={{ headerShown: true, title: "" }}
         />
         <Stack.Screen
           name="PhoneChecks"
