@@ -48,8 +48,7 @@ const sum = (values: ReadonlyArray<number>) => values.reduce((total, value) => t
 
 describe("splitsOf", () => {
   it("cuts a steady 4 m/s run of 2.5 km into two 250 s kilometres and a 125 s half", () => {
-    // One reading more, to confirm the one at 2.5 km.
-    const recording = replay([start, ...moving(0, 626, 4)])!;
+    const recording = replay([start, ...moving(0, 625, 4)])!;
     const splits = splitsOf(recording, at(625));
     expect(splits.map((split) => split.distanceM)).toEqual([1000, 1000, expect.closeTo(500, 1)]);
     expect(splits.map((split) => split.durationS)).toEqual([
@@ -88,9 +87,8 @@ describe("splitsOf", () => {
       ...Array.from({ length: 130 }, (_, index) => fix(471 + index, 604 + index * 4)),
     ])!;
     const [first] = splitsOf(recording, at(600));
-    // 150 s to 596 m, since nothing came after the reading at 600 m to confirm it, the
-    // 20 s wait, then 101 s for the last 404 m.
-    expect(first!.durationS).toBeCloseTo(271, 1);
+    // 150 s to 600 m, the 20 s wait, then 100 s for the last 400 m.
+    expect(first!.durationS).toBeCloseTo(270, 1);
   });
 
   it("adds up to the recording's whole distance and moving time", () => {
@@ -108,7 +106,7 @@ describe("splitsOf", () => {
   });
 
   it("gives a recording that went nowhere one split with its time", () => {
-    const recording = replay([start, fix(0, 0), fix(30, 1)])!;
+    const recording = replay([start, fix(0, 0), fix(30, 0)])!;
     expect(splitsOf(recording, at(60))).toEqual([{ distanceM: 0, durationS: 60, endedAt: at(60) }]);
   });
 });
@@ -210,9 +208,8 @@ describe("cardioTitle", () => {
 describe("a finished recording saved as an activity", () => {
   const recording = replay([
     start,
-    // Up 29 m and straight back down, every minute, and one reading more to confirm
-    // the one at 1200 m.
-    ...Array.from({ length: 302 }, (_, index) =>
+    // Up 29 m and straight back down, every minute.
+    ...Array.from({ length: 301 }, (_, index) =>
       fix(index, index * 4, 20 + (index % 60 < 30 ? index % 30 : 0)),
     ),
     { type: "pause", at: at(301) },
@@ -276,16 +273,15 @@ const save = async (summary: CardioSummary, hideM = DEFAULT_HIDE_M) => {
 
 describe("a recording moved while paused", () => {
   // 100 m on the flat, a pause, 900 m and 100 m up by car, then another 100 m up there.
-  // Each stretch has one reading more, to confirm the one at its end.
   const recording = replay([
     start,
-    ...Array.from({ length: 27 }, (_, index) => fix(index, index * 4, 0)),
-    { type: "pause", at: at(26) },
+    ...Array.from({ length: 26 }, (_, index) => fix(index, index * 4, 0)),
+    { type: "pause", at: at(25) },
     { type: "resume", at: at(600) },
-    ...Array.from({ length: 27 }, (_, index) => fix(600 + index, 1000 + index * 4, 100)),
-    { type: "pause", at: at(626) },
+    ...Array.from({ length: 26 }, (_, index) => fix(600 + index, 1000 + index * 4, 100)),
+    { type: "pause", at: at(625) },
   ])!;
-  const summary = summarize(recording, at(626));
+  const summary = summarize(recording, at(625));
 
   it("counts 200 m and no climb", () => {
     expect(summary.distanceM).toBeCloseTo(200, 0);
@@ -304,10 +300,9 @@ describe("a recording moved while paused", () => {
 });
 
 describe("sharedTrack", () => {
-  // One reading more than 1200 m, to confirm the one at 1200 m.
   const recording = replay([
     start,
-    ...Array.from({ length: 302 }, (_, index) => fix(index, index * 4, 20 + index / 10)),
+    ...Array.from({ length: 301 }, (_, index) => fix(index, index * 4, 20 + index / 10)),
     { type: "pause", at: at(301) },
   ])!;
   const summary = summarize(recording, at(301));
@@ -349,7 +344,7 @@ const fixes = (events: ReadonlyArray<RecordingEvent>): Fix[] =>
   events.flatMap((event) => (event.type === "fix" ? [event.fix] : []));
 
 describe("summarize", () => {
-  it("keeps every confirmed reading, near where it was read, one list for each stretch", () => {
+  it("keeps every reading, near where it was read, one list for each stretch", () => {
     const first = moving(0, 20, 4);
     const second = moving(30, 50, 4);
     const summary = summarize(
@@ -362,8 +357,8 @@ describe("summarize", () => {
       ])!,
       at(50),
     );
-    // The last reading of each stretch has nothing after it to confirm it.
-    const expected = [fixes(first).slice(0, -1), fixes(second).slice(0, -1)];
+    // The last reading of each stretch counts once the stretch ends.
+    const expected = [fixes(first), fixes(second)];
     expect(summary.segments.map((kept) => kept.map((point) => point.at))).toEqual(
       expected.map((read) => read.map((reading) => reading.at)),
     );

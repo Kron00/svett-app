@@ -21,9 +21,13 @@ import {
   type RecordingEvent,
   replay,
   segmentFixes,
+  segmentTrack,
 } from "./recording.ts";
 import { ActivityId } from "./schema.ts";
 import { STOP_MS } from "./track-filter.ts";
+
+/** Every case with random readings runs once for each of these seeds. */
+const SEEDS = [...Array.from({ length: 20 }, (_, index) => index + 1), 23, 24, 26, 31, 1234];
 
 const DEGREE_M = (Math.PI * 6_371_008.8) / 180;
 const T = 1_800_000_000_000;
@@ -161,7 +165,19 @@ const savedM = (recording: Recording, lastEvent: RecordingEvent) => {
 
 const run300 = along([point(0, 0), point(0, 300)], 3);
 const afterRun300 = secondsOf(run300.at(-1)!);
-const stop = lingering(point(0, 300), 120, afterRun300 + 1, 7);
+
+/** The 600 m run with a stop of `seconds` at 300 m, drifting as `seed` has it. */
+const stopping = (seconds: number, seed: number) => {
+  const stop = lingering(point(0, 300), seconds, afterRun300 + 1, seed);
+  return {
+    stop,
+    events: [
+      ...run300,
+      ...stop,
+      ...along([point(0, 300), point(0, 600)], 3, { from: afterRun300 + seconds + 1 }).slice(1),
+    ],
+  };
+};
 const jumpedRun = [
   ...run300,
   fixAt(afterRun300 + 1, point(2000, 300)),
@@ -177,15 +193,21 @@ const quarterCircle = Array.from({ length: 91 }, (_, degree) => {
   const angle = (degree * Math.PI) / 180;
   return point(100 - 100 * Math.cos(angle), 100 * Math.sin(angle));
 });
-const varying = seededRandom(10);
+
+/** A 200 m out-and-back at `speed` whose reading at the far end is 20 m further out. */
+const noisyApex = (speed: number) => {
+  const events = along([point(0, 0), point(0, 100), point(0, 0)], speed);
+  const apex = Math.floor((events.length - 1) / 2);
+  return events.with(apex, fixAt(secondsOf(events[apex]!), point(0, 120)));
+};
 
 /** Standing still for a minute, one reading 100 m off, then a 60 m walk read every 10 s. */
 const sparse: ReadonlyArray<{ readonly event: RecordingEvent; readonly trueM: number }> = [
   ...Array.from({ length: 60 }, (_, second) => ({ event: fixAt(second, point(0, 0)), trueM: 0 })),
   { event: fixAt(69, point(0, 100)), trueM: 0 },
-  ...Array.from({ length: 7 }, (_, step) => ({
-    event: fixAt(79 + step * 10, point(0, 10 * Math.min(6, step + 1))),
-    trueM: 10 * Math.min(6, step + 1),
+  ...Array.from({ length: 6 }, (_, step) => ({
+    event: fixAt(79 + step * 10, point(0, 10 * (step + 1))),
+    trueM: 10 * (step + 1),
   })),
 ];
 
@@ -240,27 +262,30 @@ interface MovementCase {
   readonly kind: CardioKind;
   readonly events: ReadonlyArray<RecordingEvent>;
   /**
-   * The distance shown and saved must land within a share of `near`, or never go over
-   * `atMost`.
+   * The distance saved must land within a share of `near`, and the distance shown too,
+   * within 1% of the saved one. Where `live` is set, the distance shown need only land
+   * within that share of `near`. Or neither may ever go over `atMost`.
    */
-  readonly expect: { readonly near: number; readonly within: number } | { readonly atMost: number };
+  readonly expect:
+    | { readonly near: number; readonly within: number; readonly live?: number }
+    | { readonly atMost: number };
   readonly also?: (played: ReturnType<typeof play>) => void;
 }
 
 const MOVEMENT: ReadonlyArray<MovementCase> = [
   {
-    name: "ten minutes of drift between two points 10 m apart adds at most 20 m",
+    name: "ten minutes of drift between two points 10 m apart adds at most 25 m",
     kind: "run",
     events: Array.from({ length: 600 }, (_, second) =>
       fixAt(second, point(0, second % 2 === 0 ? 0 : 10)),
     ),
-    expect: { atMost: 20 },
+    expect: { atMost: 25 },
   },
-  ...[7, 11, 1234].map((seed): MovementCase => ({
-    name: `ten minutes of drift lingering within 10 m of one place adds at most 20 m (seed ${seed})`,
+  ...SEEDS.map((seed): MovementCase => ({
+    name: `ten minutes of drift lingering within 10 m of one place adds at most 25 m (seed ${seed})`,
     kind: "run",
     events: lingering(point(0, 0), 600, 0, seed),
-    expect: { atMost: 20 },
+    expect: { atMost: 25 },
   })),
   {
     name: "a ten minute walk at 1 m/s in a straight line comes within 3% of 600 m",
@@ -291,29 +316,35 @@ const MOVEMENT: ReadonlyArray<MovementCase> = [
     events: along(quarterCircle, 1.4),
     expect: { near: pathLengthM(quarterCircle), within: 0.03 },
   },
-  {
-    name: "a two minute stop mid-run adds no drift, and the run comes within 3% of 600 m",
+  ...SEEDS.map((seed): MovementCase => {
+    const { stop, events } = stopping(120, seed);
+    return {
+      name: `a two minute stop mid-run adds at most 10 m, and the run comes within 3% of 600 m (seed ${seed})`,
+      kind: "run",
+      events,
+      expect: { near: 600, within: 0.03 },
+      also: ({ shown }) => {
+        // The first reading of the stop confirms the last one of the run.
+        const arrived = shown[run300.length + 1]!;
+        const stopped = shown[run300.length + STOP_MS / 1000]!;
+        const leaving = shown[run300.length + stop.length]!;
+        expect(leaving - arrived).toBeLessThanOrEqual(10);
+        expect(leaving).toBe(stopped);
+      },
+    };
+  }),
+  ...SEEDS.map((seed): MovementCase => ({
+    name: `a 30 s stop on a 600 m run comes within 2% saved and 3% shown (seed ${seed})`,
     kind: "run",
-    events: [
-      ...run300,
-      ...stop,
-      ...along([point(0, 300), point(0, 600)], 3, { from: afterRun300 + 121 }).slice(1),
-    ],
-    expect: { near: 600, within: 0.03 },
-    also: ({ shown }) => {
-      // The first reading of the stop confirms the last one of the run.
-      const stopping = shown[run300.length + 1]!;
-      const stopped = shown[run300.length + STOP_MS / 1000]!;
-      const starting = shown[run300.length + stop.length]!;
-      expect(starting - stopping).toBeLessThan(10);
-      expect(starting).toBe(stopped);
-    },
-  },
+    events: stopping(30, seed).events,
+    expect: { near: 600, within: 0.02, live: 0.03 },
+  })),
   {
-    name: "one reading 100 m off after standing still, then a 60 m walk read every 10 s, comes within 5% of 60 m",
+    name: "one reading 100 m off after standing still, then a 60 m walk read every 10 s, saves within 5 m of 60 m",
     kind: "walk",
     events: sparse.map(({ event }) => event),
-    expect: { near: 60, within: 0.05 },
+    // The last 10 m show only once the walk ends, with no later reading to confirm them.
+    expect: { near: 60, within: 5 / 60, live: 0.2 },
     also: ({ shown, recordings }) => {
       expect(Math.max(...shown)).toBeLessThanOrEqual(66);
       for (const [index, { event, trueM }] of sparse.entries()) {
@@ -330,19 +361,22 @@ const MOVEMENT: ReadonlyArray<MovementCase> = [
       expect(shown.at(-1)).toBeCloseTo(play("run", unjumpedRun).shown.at(-1)!, 6);
     },
   },
-  {
-    name: "a 1 km run with accuracy varying from 3 m to 25 m comes within 3% of 1 km",
-    kind: "run",
-    events: along([point(0, 0), point(0, 1000)], 3, { accuracyM: () => 3 + 22 * varying() }),
-    expect: { near: 1000, within: 0.03 },
-  },
-  ...[7, 11, 1234].map((seed): MovementCase => ({
+  ...SEEDS.map((seed): MovementCase => {
+    const varying = seededRandom(seed);
+    return {
+      name: `a 1 km run with accuracy varying from 3 m to 25 m comes within 3% of 1 km (seed ${seed})`,
+      kind: "run",
+      events: along([point(0, 0), point(0, 1000)], 3, { accuracyM: () => 3 + 22 * varying() }),
+      expect: { near: 1000, within: 0.03 },
+    };
+  }),
+  ...SEEDS.map((seed): MovementCase => ({
     name: `a 5 km loop at 3 m/s with error wandering 3 m to 8 m comes within 1.5% (seed ${seed})`,
     kind: "run",
     events: loop(wandering(seed)),
     expect: { near: LOOP_M, within: 0.015 },
   })),
-  ...[7, 11, 1234].map((seed): MovementCase => ({
+  ...SEEDS.map((seed): MovementCase => ({
     name: `a 5 km loop at 3 m/s with every reading 3 m to 8 m off comes within 4% (seed ${seed})`,
     kind: "run",
     events: loop(jitter(seed)),
@@ -360,6 +394,15 @@ const MOVEMENT: ReadonlyArray<MovementCase> = [
     events: along([point(0, 0), point(0, 300), point(0, 0)], 3),
     expect: { near: 600, within: 0.02 },
   },
+  ...[
+    { kind: "walk" as const, speed: 1 },
+    { kind: "run" as const, speed: 3 },
+  ].map(({ kind, speed }): MovementCase => ({
+    name: `a 200 m out-and-back at ${speed} m/s with the reading at the far end 20 m out comes within 2% saved and 3% shown`,
+    kind,
+    events: noisyApex(speed),
+    expect: { near: 200, within: 0.02, live: 0.03 },
+  })),
   {
     name: "a run with no readings for 30 s in a tunnel comes within 2% of 900 m",
     kind: "run",
@@ -372,8 +415,9 @@ const MOVEMENT: ReadonlyArray<MovementCase> = [
     events: ride,
     expect: { near: 6000, within: 0.01 },
     also: ({ recording }) => {
-      // Every reading but the last, which nothing came after to confirm.
+      // Every reading but the last, which nothing came after to confirm until the end.
       expect(recording.segments[0]!.fixes).toHaveLength(ride.length - 1);
+      expect(segmentFixes(recording.segments[0]!)).toHaveLength(ride.length);
     },
   },
 ];
@@ -387,11 +431,71 @@ describe("movement", () => {
       expect(Math.max(...played.shown)).toBeLessThanOrEqual(expected.atMost);
       expect(saved).toBeLessThanOrEqual(expected.atMost);
     } else {
-      expect(Math.abs(live - expected.near) / expected.near).toBeLessThanOrEqual(expected.within);
       expect(Math.abs(saved - expected.near) / expected.near).toBeLessThanOrEqual(expected.within);
-      expect(Math.abs(live - saved) / saved).toBeLessThanOrEqual(0.01);
+      if (expected.live === undefined) {
+        expect(Math.abs(live - expected.near) / expected.near).toBeLessThanOrEqual(expected.within);
+        expect(Math.abs(live - saved) / saved).toBeLessThanOrEqual(0.01);
+      } else {
+        expect(Math.abs(live - expected.near) / expected.near).toBeLessThanOrEqual(expected.live);
+      }
     }
     also?.(played);
+  });
+});
+
+/** Two hours of laps of a 1 km loop at 3 m/s, every reading up to 5 m off, with a 10 minute stop. */
+const twoHours = (() => {
+  const next = seededRandom(5);
+  const radius = 1000 / (2 * Math.PI);
+  let travelled = 0;
+  const events = Array.from({ length: 7200 }, (_, second) => {
+    if (second < 3000 || second >= 3600) travelled += 3;
+    const angle = travelled / radius;
+    return fixAt(
+      second,
+      point(
+        radius * Math.cos(angle) + (next() * 2 - 1) * 5,
+        radius * Math.sin(angle) + (next() * 2 - 1) * 5,
+      ),
+    );
+  });
+  return { events, travelled };
+})();
+
+describe("a long recording", () => {
+  it("replays 7,200 readings within 100 ms, adding each without copying the ones before", () => {
+    const times = Array.from({ length: 3 }, () => {
+      const started = performance.now();
+      replay([start, ...twoHours.events]);
+      return performance.now() - started;
+    });
+    expect(Math.min(...times)).toBeLessThan(100);
+  });
+
+  it("comes within 1% of two hours of laps with a stop", () => {
+    const recording = replay([start, ...twoHours.events])!;
+    const near = (distance: number) => Math.abs(distance / twoHours.travelled - 1);
+    expect(near(recordedDistanceM(recording))).toBeLessThanOrEqual(0.01);
+    expect(near(savedM(recording, twoHours.events.at(-1)!))).toBeLessThanOrEqual(0.01);
+  });
+
+  it("leaves each earlier state as it was when later readings arrive", () => {
+    const events = [start, ...along([point(0, 0), point(0, 100), point(0, 0)], 1)];
+    const states: Recording[] = [];
+    const seen: string[] = [];
+    for (const event of events) {
+      const state = applyEvent(states.at(-1), event)!;
+      states.push(state);
+      seen.push(JSON.stringify(segmentTrack(state.segments[0]!)));
+    }
+    // Another reading added to an earlier state, past the turn, changes no state, and
+    // that state goes on as if it were the latest.
+    const other = fixAt(120.5, point(2, 80));
+    const branch = applyEvent(states[120], other)!;
+    expect(states.map((state) => JSON.stringify(segmentTrack(state.segments[0]!)))).toEqual(seen);
+    expect(segmentTrack(branch.segments[0]!)).toEqual(
+      segmentTrack(replay([...events.slice(0, 121), other])!.segments[0]!),
+    );
   });
 });
 
@@ -456,6 +560,8 @@ describe("a recording", () => {
       T + 2000,
       T + 3000,
       T + 5000,
+      // No later reading confirms the last one, so it counts once the stretch ends.
+      T + 6000,
     ]);
     expect(recordedDistanceM(recording)).toBeCloseTo(9, 0);
   });

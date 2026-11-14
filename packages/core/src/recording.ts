@@ -1,7 +1,14 @@
 import { Option, Schema } from "effect";
 
 import { ActivityId } from "./schema.ts";
-import { addReading, emptyTrack, type Motion, smoothTrack, type Track } from "./track-filter.ts";
+import {
+  addReading,
+  emptyTrack,
+  finishTrack,
+  type Motion,
+  smoothTrack,
+  type Track,
+} from "./track-filter.ts";
 
 export const CardioKind = Schema.Literals(["run", "walk", "hike", "ride"]);
 export type CardioKind = typeof CardioKind.Type;
@@ -123,11 +130,11 @@ export interface TrackPoint {
 }
 
 /**
- * The confirmed readings of a stretch at the positions the filter and its smoothing
- * pass give them. A reading still waiting for a later one to confirm it is left out.
+ * The readings of a stretch as it ends, at the positions the filter and its smoothing
+ * pass give them. The latest reading counts unless the filter's gate refuses it.
  */
 export const segmentTrack = (segment: Segment): ReadonlyArray<TrackPoint> =>
-  smoothTrack(segment).map(({ fix, position, alongM }) => ({
+  smoothTrack(finishTrack(segment)).map(({ fix, position, alongM }) => ({
     fix: { ...fix, latitude: position.latitude, longitude: position.longitude },
     alongM,
   }));
