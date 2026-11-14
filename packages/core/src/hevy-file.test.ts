@@ -200,9 +200,9 @@ describe("decodeHevyFile", () => {
       '"Again","1 Feb 2025, 10:00","1 Feb 2025, 10:30","","Squat (Barbell)",,"",0,"normal",100,5,,,',
     ].join("\n");
     const file = Result.getOrThrow(decode(text));
-    expect(file.workouts.map((workout) => [workout.title, workout.position])).toEqual([
-      ["Morning", 0],
-      ["Again", 1],
+    expect(file.workouts.map((workout) => [workout.title, workout.durationS])).toEqual([
+      ["Morning", 3_600],
+      ["Again", 1_800],
     ]);
   });
 

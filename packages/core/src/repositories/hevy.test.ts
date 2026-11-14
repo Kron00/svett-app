@@ -12,7 +12,7 @@ import { ActivityId, EpochMillis, ExerciseId, type ImportBatchId } from "../sche
 import { addExercisesToWorkout, loadWorkoutLog, startEmptyWorkout } from "../start-workout.ts";
 import { openTestDatabase, pointersToDeleted, T0 } from "../test-database.ts";
 import { decodeSvettFile } from "../svett-file.ts";
-import { isNothingToImport } from "../transfer.ts";
+import { type ImportInput, isNothingToImport } from "../transfer.ts";
 import { ActivityRepository } from "./activities.ts";
 import { ExerciseAliasRepository } from "./exercises.ts";
 import { MADE_HERE } from "./origin.ts";
@@ -559,6 +559,75 @@ describe("Hevy import", () => {
       { source_id: "2025-02-01T10:00:00#1" },
     ]);
     expect(isNothingToImport(await preview(database, file, keep))).toBe(true);
+  });
+
+  const twins = [
+    '"Morning","1 Feb 2025, 10:00","1 Feb 2025, 11:00","","Squat (Barbell)",,"",0,"normal",100,5,,,',
+    '"Again","1 Feb 2025, 10:00","1 Feb 2025, 10:30","","Squat (Barbell)",,"",0,"normal",80,5,,,',
+  ];
+  const newer =
+    '"Newer","8 Feb 2025, 10:00","8 Feb 2025, 11:00","","Squat (Barbell)",,"",0,"normal",90,5,,,';
+
+  it("knows a kept second workout again after Hevy writes a newer workout above it", async () => {
+    const database = openTestDatabase();
+    const keep = new Set(["hevy/2025-02-01T10:00:00#1"]);
+    await apply(database, hevy([HEADER, ...twins].join("\n")), [], keep);
+
+    const later = hevy([HEADER, newer, ...twins].join("\n"));
+    const plan = await preview(database, later);
+    expect(plan.duplicates).toEqual([]);
+    expect(plan.added).toEqual([{ table: "activity", count: 1 }]);
+    await apply(database, later);
+    expect(workouts(database).map(({ title }) => title)).toEqual(["Morning", "Again", "Newer"]);
+  });
+
+  it("knows a second workout kept under its place in the whole file, as earlier versions did", async () => {
+    const database = openTestDatabase();
+    const start = "2025-02-01T10:00:00";
+    // Earlier versions identified the second workout at a start by its place in the file, so
+    // one imported from a file with another workout above the two was #2.
+    const legacy = (from: string, to: string): ImportInput => {
+      const input = hevyImport(hevy([HEADER, ...twins].join("\n")), new Set([`hevy/${from}`]));
+      const moved = new Map([
+        [importedId("activity", "hevy", from), importedId("activity", "hevy", to)],
+        [
+          importedId("activity_exercise", "hevy", `${from}/exercise/0`),
+          importedId("activity_exercise", "hevy", `${to}/exercise/0`),
+        ],
+        [
+          importedId("activity_set", "hevy", `${from}/exercise/0/set/0`),
+          importedId("activity_set", "hevy", `${to}/exercise/0/set/0`),
+        ],
+      ]);
+      const move = (value: unknown) =>
+        value === from ? to : typeof value === "string" ? (moved.get(value) ?? value) : value;
+      return {
+        source: input.source,
+        read: (local, at) => {
+          const read = input.read(local, at);
+          const tables = Object.fromEntries(
+            Object.entries(read.tables).map(([table, rows]) => [
+              table,
+              (rows as ReadonlyArray<Record<string, unknown>>).map((row) =>
+                Object.fromEntries(Object.entries(row).map(([key, value]) => [key, move(value)])),
+              ),
+            ]),
+          );
+          return { tables: tables as typeof read.tables, duplicates: read.duplicates };
+        },
+      };
+    };
+    await transfers(database, (repository) =>
+      repository.applyImport(legacy(`${start}#1`, `${start}#2`), []),
+    );
+    expect(query(database, "SELECT source_id FROM activity ORDER BY source_id")).toEqual([
+      { source_id: start },
+      { source_id: `${start}#2` },
+    ]);
+
+    const plan = await preview(database, hevy([HEADER, ...twins].join("\n")));
+    expect(plan.duplicates).toEqual([]);
+    expect(isNothingToImport(plan)).toBe(true);
   });
 
   it.each([
