@@ -2164,8 +2164,8 @@ check "social.sh fails on a build without a Clerk key" test "$social_status" -ne
 check "social.sh says to build with the publishable key" \
   grep -qF "Build it with EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY set" "$output"
 
-feed_lift=1f2e3d4c5b6a79881f2e3d4c5b6a7988
-feed_run=0a1b2c3d4e5f60710a1b2c3d4e5f6071
+feed_lift=0196f000-5e4f-4000-8000-0000000000a1
+feed_run=0196f000-5e4f-4000-8000-0000000000a2
 
 # Stands in for the bound command on the feed screens. It tracks the screen, the
 # sign-in step and who signed in: the lifter sees the run and the runner sees the
@@ -2235,8 +2235,8 @@ target=\$(id_of "\$args")
 case "\$args" in
   *" open com.kron00.svett svett://account "*) show account; put step choose ;;
   *" open com.kron00.svett svett://feed "*) show feed ;;
-  *" open com.kron00.svett svett://post/feed_proof_b/\$run "*) show "post-\$run" ;;
-  *" open com.kron00.svett svett://post/feed_proof_a/\$lift "*) show "post-\$lift" ;;
+  *" open com.kron00.svett svett://post/\$run "*) show "post-\$run" ;;
+  *" open com.kron00.svett svett://post/\$lift "*) show "post-\$lift" ;;
   *" open com.kron00.svett svett://inbox "*) show inbox ;;
   *" open com.kron00.svett "*) show tabs ;;
   *" scroll "*" --until "*) exists "\$target" && put scrolled yes ;;
@@ -2287,9 +2287,9 @@ feed_reset=("simctl terminate FAKE-UDID com.kron00.svett" "simctl keychain FAKE-
   "simctl get_app_container FAKE-UDID com.kron00.svett data")
 feed_links() {
   printf '%s\n' "$1" "com.kron00.svett svett://account" "com.kron00.svett svett://feed" \
-    "com.kron00.svett svett://post/feed_proof_b/$feed_run" "com.kron00.svett svett://inbox" \
+    "com.kron00.svett svett://post/$feed_run" "com.kron00.svett svett://inbox" \
     "$1" "com.kron00.svett svett://account" "com.kron00.svett svett://feed" \
-    "com.kron00.svett svett://post/feed_proof_a/$feed_lift" "com.kron00.svett svett://inbox"
+    "com.kron00.svett svett://post/$feed_lift" "com.kron00.svett svett://inbox"
 }
 
 case_name="feed.sh Debug with SVETT_DEVICE_CMD"
