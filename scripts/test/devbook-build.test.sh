@@ -2030,6 +2030,175 @@ check "routines.sh fails when the first result is not the exercise it adds" test
 check "routines.sh names the result it found instead" \
   grep -qxF 'The first result was not "Barbell Squat". Its label is "Barbell Squat Jump, Quadriceps · Barbell".' "$output"
 
+# Stands in for the bound command while startup.sh times cold launches. It keeps
+# the screen in front, the number of relaunches and whether the Train tab was
+# scrolled under $FAKE_STATE. The cold start time sits below the fold until a
+# scroll down reaches it, and shows only when svett was launched with
+# -svettTiming 1. Launch n reports svett's own time from the list 700 610 650
+# 620 630, main() at 70 + 2n, JavaScript at 200 + n and the routine list at
+# 900 ms past its own time. Only the first launch stops a leftover location
+# task. FAKE_TIMING_LABEL replaces every launch's text, and FAKE_NO_TIMING
+# hides it.
+cat >"$fake/startup-device" <<'EOF'
+#!/usr/bin/env bash
+echo "$*" >>"$FAKE_ROOT/bound-calls"
+shift 4
+s=$FAKE_STATE
+mkdir -p "$s"
+get() { cat "$s/$1" 2>/dev/null || true; }
+put() { printf '%s\n' "$2" >"$s/$1"; }
+screen=$(get screen)
+screen=${screen:-home}
+launch=$(get launch)
+launch=${launch:-0}
+timing() { [[ "$screen" == train && -f "$s/timing" && -z "${FAKE_NO_TIMING:-}" ]]; }
+holds() {
+  case "$1" in
+    'label="Train, tab, 2 of 5"') [[ "$screen" != home ]] ;;
+    'id="routine-list"') [[ "$screen" == train ]] ;;
+    'id="cold-start-timing"') timing && [[ -f "$s/scrolled" ]] ;;
+    *) return 1 ;;
+  esac
+}
+label() {
+  local owns=(700 610 650 620 630) own leftover=""
+  own=${owns[$(((launch - 1) % 5))]}
+  [[ "$launch" != 1 ]] || leftover=", leftover location task stopped 1700"
+  echo "svett's own cold start: $own ms. The 2 second target judges this number: from process start to the first frame with the Train tab's routine list, less 900 ms waiting for the Train tab, because a person opens that tab. Timed from the process start, because iOS did not prewarm this launch. Steps since process start: process start 0, main() $((70 + launch * 2)), JavaScript started $((200 + launch)), routine list drawn $((own + 900))$leftover ms."
+}
+case "$1" in
+  settings) ;;
+  screenshot) echo "launch $launch" >"${@: -1}" ;;
+  open)
+    case "$3" in
+      --relaunch)
+        put screen tabs
+        put launch $((launch + 1))
+        rm -f "$s/scrolled"
+        if [[ "$*" == *"--launch-args=-svettTiming --launch-args=1"* ]]; then touch "$s/timing"; else rm -f "$s/timing"; fi ;;
+      svett://train) put screen train ;;
+      *) exit 1 ;;
+    esac ;;
+  wait) [[ "$2" =~ ^[0-9]+$ ]] || holds "$2" ;;
+  is) holds "$3" ;;
+  scroll)
+    [[ "$2 $4" == 'down id="cold-start-timing"' ]] && timing || exit 1
+    touch "$s/scrolled" ;;
+  get)
+    holds "$3" || exit 1
+    node -e 'console.log(JSON.stringify({ label: process.argv[1], rect: { x: 16, y: 600, width: 408, height: 300 } }))' \
+      "${FAKE_TIMING_LABEL:-$(label)}" ;;
+  *) exit 1 ;;
+esac
+EOF
+chmod +x "$fake/startup-device"
+
+# run_startup [VAR=value...] [startup.sh args...] leaves the exit status in startup_status.
+run_startup() {
+  local -a vars=()
+  while [[ "${1:-}" == *=* ]]; do
+    vars+=("$1")
+    shift
+  done
+  rm -rf "$root/startup-state"
+  rm -f "$root/simctl-calls" "$root/bound-calls" "$container_fixture"
+  startup_status=0
+  env PATH="$fake:$PATH" FAKE_ROOT="$root" FAKE_STATE="$root/startup-state" \
+    SVETT_DEVICE_CMD="startup-device --session 't3-test session' --device FAKE-UDID" \
+    "${vars[@]}" "$repo/scripts/sim/startup.sh" "$@" >"$output" 2>&1 || startup_status=$?
+}
+
+# startup_launches <times> <open>: the opens of that many relaunches, each followed by the Train link.
+startup_launches() {
+  local n
+  for ((n = 1; n <= $1; n++)); do
+    printf '%s\n' "$2" "com.kron00.svett svett://train"
+  done
+}
+
+startup_report() {
+  local build=$1
+  cat <<EOF
+5 cold launches of a $build build, on the 300-workout fixture at the largest text size.
+Launch 1: svett's own cold start 700 ms, steps since process start: process start 0, main() 72, JavaScript started 201, routine list drawn 1600, leftover location task stopped 1700 ms.
+Launch 2: svett's own cold start 610 ms, steps since process start: process start 0, main() 74, JavaScript started 202, routine list drawn 1510 ms.
+Launch 3: svett's own cold start 650 ms, steps since process start: process start 0, main() 76, JavaScript started 203, routine list drawn 1550 ms.
+Launch 4: svett's own cold start 620 ms, steps since process start: process start 0, main() 78, JavaScript started 204, routine list drawn 1520 ms.
+Launch 5: svett's own cold start 630 ms, steps since process start: process start 0, main() 80, JavaScript started 205, routine list drawn 1530 ms.
+Median: svett's own cold start 630 ms, which the plan's 2 second target judges.
+Median of each step since process start: process start 0, main() 76, JavaScript started 203, routine list drawn 1530, leftover location task stopped 1700 (1 of 5 launches) ms.
+EOF
+}
+
+case_name="startup.sh Release with SVETT_DEVICE_CMD"
+run_startup --release "$root/startup"
+[[ "$startup_status" == 0 ]] || fail "startup.sh --release failed"
+mapfile -t release_launches < <(startup_launches 5 "com.kron00.svett --relaunch $fixture_args")
+check "startup.sh relaunches the installed app on the fixture with timing 5 times, opening the Train tab each time" \
+  only_open "${release_launches[@]}"
+check "startup.sh copies the generated fixture into the app's data container" \
+  grep -qxF "fake fixture" "$container_fixture"
+check "startup.sh times at the largest text size, then restores the default" \
+  only_calls "settings" "settings text-size accessibility-extra-extra-extra-large" "settings text-size large"
+check "startup.sh scrolls down to the time below the routines on every launch" \
+  test "$(grep -cxF -- "$bound_prefix scroll down --until id=\"cold-start-timing\"" "$root/bound-calls")" -eq 5
+check "startup.sh saves each launch's text as the Train tab shows it" \
+  grep -qF "svett's own cold start: 650 ms. The 2 second target judges this number" "$root/startup/launch-3.txt"
+check "startup.sh screenshots every launch" \
+  only_calls "screenshot" "screenshot $root/startup/01-launch-1.png" "screenshot $root/startup/02-launch-2.png" \
+  "screenshot $root/startup/03-launch-3.png" "screenshot $root/startup/04-launch-4.png" \
+  "screenshot $root/startup/05-launch-5.png"
+check "startup.sh reports every step of every launch, then the median of svett's own time and of each step" \
+  diff <(startup_report Release) "$root/startup/startup.txt"
+check "startup.sh prints the report" grep -qxF "Median: svett's own cold start 630 ms, which the plan's 2 second target judges." "$output"
+check "startup.sh with SVETT_DEVICE_CMD calls neither simctl launch nor openurl" no_simctl_launch_or_openurl
+
+case_name="startup.sh Debug with SVETT_DEVICE_CMD"
+run_startup "$root/startup-debug"
+[[ "$startup_status" == 0 ]] || fail "startup.sh failed"
+mapfile -t debug_launches < <(startup_launches 5 "$debug_fixture_open")
+check "startup.sh Debug relaunches into the dev client on Metro" only_open "${debug_launches[@]}"
+check "startup.sh says a Debug build's time is not the one the target judges" \
+  grep -qxF "5 cold launches of a Debug, loaded from Metro, which the 2 second target does not judge build, on the 300-workout fixture at the largest text size." \
+  "$root/startup-debug/startup.txt"
+
+case_name="startup.sh on a build from before the launch marks"
+main_label="svett's own cold start: 3367 ms. Routine list drawn 6014 ms after launch, less 2647 ms waiting for the Train tab. Steps since launch: JavaScript started 3018, database open 3287, first screen drawn 3354, routine list drawn 6014 ms."
+run_startup SVETT_LAUNCHES=3 SVETT_FIXTURE=/data/Documents/svett-fixture.db FAKE_TIMING_LABEL="$main_label" \
+  --release "$root/startup-main"
+[[ "$startup_status" == 0 ]] || fail "startup.sh failed on the older text"
+given_fixture_args="--launch-args=-svettFixture --launch-args=/data/Documents/svett-fixture.db $timing_args"
+mapfile -t given_launches < <(startup_launches 3 "com.kron00.svett --relaunch $given_fixture_args")
+check "startup.sh relaunches SVETT_LAUNCHES times on SVETT_FIXTURE" only_open "${given_launches[@]}"
+check "startup.sh with SVETT_FIXTURE neither generates nor copies a fixture" \
+  test ! -e "$container_fixture" -a ! -e "$root/startup-main/svett-fixture.db"
+check "startup.sh reads the steps of the older text, timed from the launch" \
+  grep -qxF "Median of each step since launch: JavaScript started 3018, database open 3287, first screen drawn 3354, routine list drawn 6014 ms." \
+  "$root/startup-main/startup.txt"
+check "startup.sh gives the median of the older text's own time" \
+  grep -qxF "Median: svett's own cold start 3367 ms, which the plan's 2 second target judges." "$root/startup-main/startup.txt"
+
+case_name="startup.sh when the Train tab shows no cold start time"
+run_startup FAKE_NO_TIMING=1 --release "$root/startup-no-timing"
+check "startup.sh fails when svett shows no cold start time" test "$startup_status" -ne 0
+check "startup.sh says which launch showed no time" \
+  grep -qxF "Launch 1: the Train tab did not show svett's own cold start time" "$output"
+check "startup.sh saves no report without svett's own time" test ! -e "$root/startup-no-timing/startup.txt"
+check "startup.sh restores the default text size after a failure" \
+  only_calls "settings" "settings text-size accessibility-extra-extra-extra-large" "settings text-size large"
+
+case_name="startup.sh when the cold start time is not svett's"
+run_startup FAKE_TIMING_LABEL="Loading" --release "$root/startup-bad-timing"
+check "startup.sh fails on a cold start text it cannot read" test "$startup_status" -ne 0
+check "startup.sh quotes the text it found" \
+  grep -qxF "Launch 1: the Train tab shows \"Loading\", which is not svett's own cold start time" "$output"
+
+case_name="startup.sh with no launches"
+run_startup SVETT_LAUNCHES=0 --release "$root/startup-none"
+check "startup.sh refuses a launch count below 1" test "$startup_status" -eq 64
+check "startup.sh says what SVETT_LAUNCHES must be" \
+  grep -qxF 'SVETT_LAUNCHES must be a whole number above 0, got "0"' "$output"
+
 # logger.sh runs against a fake fixture, a fake app and the real workout-rows.ts.
 # The fake pnpm writes a database with the Legs routine. The fake device keeps
 # the app's workouts in $FAKE_STATE and writes them to the database it was

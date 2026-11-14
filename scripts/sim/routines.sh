@@ -26,11 +26,12 @@
 # against the running app, which shows the automation's own share. Their
 # difference still includes the script's wait before it opens the Train tab, so
 # it is an upper bound too. svett is launched with -svettTiming 1, so the Train
-# tab also shows the time svett measured itself, from the process start to the
-# first frame with the routine list, without the wait for the svett://train link,
-# and each step on the way. That in-app time is the number the plan's 2 second
-# target is judged by, and only on a Release build. All of it goes to
-# cold-start.txt.
+# tab also shows the time svett measured itself, from the process start, or
+# main() when iOS prewarmed the launch, to the first frame with the routine list,
+# without the wait for the svett://train link, and each step on the way. That
+# in-app time is the number the plan's 2 second target is judged by, and only on
+# a Release build. All of it goes to cold-start.txt. startup.sh times it alone
+# over 5 launches.
 #
 # It opens screens through svett:// links and presses an element at the centre
 # of its frame, because agent-device 0.21.37 refuses a selector press inside
