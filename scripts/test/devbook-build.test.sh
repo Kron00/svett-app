@@ -1786,4 +1786,106 @@ check "cardio.sh fails when the activity's last section never shows" test "$card
 check "cardio.sh stops paging after 15 pages" \
   grep -qF "The activity's hide setting was not on screen after 15 pages" "$output"
 
+# health.sh runs against the real proof files, the real seed and checks, and a fake
+# device that stands in for svett. Pressing Import imports the file the last link
+# opened into the database svett launched on, as svett does, and pressing Save
+# saves the manual ride. FAKE_DECLINE_SAVES makes Don't import import anyway,
+# FAKE_KEEP_BOTH imports the duplicate as its own workout instead of linking it,
+# and FAKE_NO_SOURCES never shows the linked workout's sources.
+cat >"$data_fake/health-device" <<EOF
+#!/usr/bin/env bash
+echo "\$*" >>"$root/bound-calls"
+documents="$root/data container/Documents"
+app() { node "$repo/scripts/test/health-app.ts" "\$@"; }
+args=" \$* "
+case "\$args" in
+  *" open com.kron00.svett svett://health-import?file="*)
+    echo "\${args##*file=}" | sed 's/ *$//' >"$root/health-file" ;;
+  *" get attrs "*)
+    echo "\$*" >"$root/last-attrs"
+    echo '{"rect": {"x": 20, "y": 300, "width": 120, "height": 40}}' ;;
+  *" press "[0-9]*)
+    file="\$documents/\$(cat "$root/health-file" 2>/dev/null)"
+    case "\$(cat "$root/last-attrs")" in
+      *health-apply*) app import "\$documents/svett-health.db" "\$file" \${FAKE_KEEP_BOTH:+--keep-both} ;;
+      *health-decline*) [[ -z "\${FAKE_DECLINE_SAVES:-}" ]] || app import "\$documents/svett-health.db" "\$file" ;;
+      *manual-save*) app manual "\$documents/svett-health.db" ;;
+    esac ;;
+  *' id="activity-sources"'*) [[ -z "\${FAKE_NO_SOURCES:-}" ]] ;;
+esac
+EOF
+chmod +x "$data_fake/health-device"
+
+# run_health [VAR=value...] [health.sh args...] leaves the exit status in health_status.
+run_health() {
+  local -a vars=()
+  while [[ "${1:-}" == *=* ]]; do
+    vars+=("$1")
+    shift
+  done
+  rm -rf "$root/simctl-calls" "$root/bound-calls" "$root/health-file" "$root/data container"
+  health_status=0
+  env PATH="$data_fake:$fake:$PATH" SVETT_DEVICE_CMD="health-device --session 't3-test session' --device FAKE-UDID" \
+    "${vars[@]}" "$repo/scripts/sim/health.sh" "$@" >"$output" 2>&1 || health_status=$?
+}
+
+health_args="--launch-args=-svettFixture --launch-args=$documents/svett-health.db"
+health_link="com.kron00.svett svett://health-import?file=svett-health-export.zip"
+gpx_link="com.kron00.svett svett://health-import?file=svett-ride.gpx"
+manual_link="com.kron00.svett $(node "$repo/scripts/health-proof.ts" manual-link)"
+
+case_name="health.sh Debug with SVETT_DEVICE_CMD"
+run_health "$root/health proof"
+[[ "$health_status" == 0 ]] || fail "health.sh failed"
+hevy_link=$(grep -oE 'svett://activity/[0-9a-f-]+' "$root/bound-calls" | head -1)
+check "health.sh previews and declines, imports, imports again, imports the GPX ride, opens the linked workout and enters a ride" \
+  only_open "$debug_open $health_args" "$health_link" "$health_link" "$health_link" "$gpx_link" \
+  "com.kron00.svett $hevy_link" "$manual_link"
+check "health.sh presses Don't import, Import, Done and Save at their centres" \
+  only_calls "get attrs" 'get attrs id="health-decline"' 'get attrs id="health-apply"' \
+  'get attrs label="Done"' 'get attrs label="Done"' 'get attrs id="health-apply"' \
+  'get attrs label="Done"' 'get attrs id="manual-save"'
+check "health.sh passes every database check, the duplicate link and the manual ride included" \
+  bash -c '! grep -q FAILED "$1" && grep -qF "PASSED: imported, the Hevy workout gained the Health heart rate" "$1" &&
+    grep -qF "PASSED: manual, the manual ride saved" "$1"' _ "$root/health proof/proof.txt"
+check "health.sh shoots at the largest text size, then restores the default" \
+  only_calls "settings text-size" \
+  "settings text-size accessibility-extra-extra-extra-large" "settings text-size large"
+check "health.sh screenshots every step" only_calls "screenshot" \
+  "screenshot $root/health proof/01-preview-01.png" "screenshot $root/health proof/02-declined.png" \
+  "screenshot $root/health proof/03-duplicate.png" "screenshot $root/health proof/04-imported.png" \
+  "screenshot $root/health proof/05-import-again.png" "screenshot $root/health proof/06-gpx-preview.png" \
+  "screenshot $root/health proof/07-gpx-imported.png" "screenshot $root/health proof/08-linked-workout-01.png" \
+  "screenshot $root/health proof/09-manual-01.png" "screenshot $root/health proof/10-manual-ride-01.png"
+check "health.sh puts the sample export and GPX ride in svett's Documents" \
+  test -s "$documents/svett-health-export.zip" -a -s "$documents/svett-ride.gpx"
+check "health.sh with SVETT_DEVICE_CMD calls neither simctl launch nor openurl" no_simctl_launch_or_openurl
+
+case_name="health.sh Release with SVETT_DEVICE_CMD"
+run_health --release "$root/health-release"
+[[ "$health_status" == 0 ]] || fail "health.sh --release failed"
+check "health.sh Release relaunches the installed app without Metro" \
+  bound_got "$bound_prefix open com.kron00.svett --relaunch $health_args"
+
+case_name="health.sh when Don't import saves the workouts"
+run_health FAKE_DECLINE_SAVES=1 "$root/health-decline"
+check "health.sh fails when declining imports anything" test "$health_status" -ne 0
+check "health.sh names the declined step" \
+  grep -qF "The database is not as the declined step leaves it" "$output"
+check "health.sh shows which check failed" grep -qF "FAILED: declined, 1 workout and 9 sets" "$output"
+check "health.sh restores the default text size after a failure" \
+  only_calls "settings text-size" \
+  "settings text-size accessibility-extra-extra-extra-large" "settings text-size large"
+
+case_name="health.sh when the duplicate is not linked"
+run_health FAKE_KEEP_BOTH=1 "$root/health-keep-both"
+check "health.sh fails when the Health copy of the Hevy workout is not linked" \
+  grep -qF "FAILED: imported, the Hevy workout records Apple Health as a linked source" "$output"
+
+case_name="health.sh when the linked workout never shows its sources"
+run_health FAKE_NO_SOURCES=1 "$root/health-no-sources"
+check "health.sh fails when the linked workout's sources never show" test "$health_status" -ne 0
+check "health.sh stops paging after 15 pages" \
+  grep -qF 'id="activity-sources" was not on screen after 15 pages' "$output"
+
 echo "$passed passed"
