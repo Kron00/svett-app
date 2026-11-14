@@ -53,6 +53,10 @@ jobs:
       - name: Bundle the app
         run: pnpm --filter @svett/mobile exec expo export --platform ios --output-dir "$RUNNER_TEMP/export"
 
+      # Coolify builds this image on each push to the branch it deploys.
+      - name: Build the server image
+        run: docker build --tag svett-server .
+
   ios:
     name: iOS simulator build
     runs-on: xcode-27
