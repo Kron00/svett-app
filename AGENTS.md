@@ -133,4 +133,6 @@ Screens build on the components in `apps/mobile/src/ui` and the tokens in `apps/
 
 **Controls.** Every control has an accessibility role and label, and a target of at least 44 points (`min-h-target`). Controls used mid-set, such as the keypad and stepper, use the larger `key` size. Native controls come from `@expo/ui` where one fits, such as the segmented control and the sheet.
 
+**Runtime.** The app runs on Hermes, which lacks ES2023's copying array methods (`toSorted`, `toReversed`, `toSpliced`). Tests run on Node, which has them, so lint refuses them in app code.
+
 **Logic.** Components show values and report presses. Formatting and input rules live in `packages/core` with tests, such as `setBadge`, `editNumberEntry` and `niceTicks`.
