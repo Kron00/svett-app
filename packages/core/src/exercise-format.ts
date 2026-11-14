@@ -61,8 +61,8 @@ export const CATEGORY_LABEL: Readonly<Record<Category, string>> = {
 };
 
 const byLabel = <K extends string>(keys: ReadonlyArray<K>, labels: Readonly<Record<K, string>>) =>
-  keys
-    .toSorted((a, b) => (a === "other" ? 1 : b === "other" ? -1 : labels[a] < labels[b] ? -1 : 1))
+  [...keys]
+    .sort((a, b) => (a === "other" ? 1 : b === "other" ? -1 : labels[a] < labels[b] ? -1 : 1))
     .map((value) => ({ value, label: labels[value] }));
 
 /** Picker options sorted by label, with Other last. */

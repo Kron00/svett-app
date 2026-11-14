@@ -73,7 +73,7 @@ export const searchExercises = <E extends Searchable>(
     if (rank !== null) ranked.push({ exercise, rank, name });
   }
   return ranked
-    .toSorted(
+    .sort(
       (a, b) =>
         a.rank - b.rank ||
         (query === "" ? 0 : a.name.length - b.name.length) ||
