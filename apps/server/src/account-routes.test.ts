@@ -113,7 +113,10 @@ describe("account ownership", { timeout: 60_000 }, () => {
         const stored = yield* call(
           yield* write(ALICE, { rows: [{ table: "activity", row: workout("Push", 1) }] }),
         );
-        expect(stored).toEqual({ status: 200, body: { stored: 1, ahead: [] } });
+        expect(stored).toEqual({
+          status: 200,
+          body: { stored: 1, ahead: [], serverMillis: expect.any(Number) },
+        });
         return [yield* pulled(yield* read(ALICE)), yield* pulled(yield* read(BOB))] as const;
       }),
     );
@@ -136,7 +139,10 @@ describe("account ownership", { timeout: 60_000 }, () => {
         const edit = yield* call(
           yield* write(BOB, { rows: [{ table: "activity", row: workout("Bob renamed it", 2) }] }),
         );
-        expect(edit).toEqual({ status: 200, body: { stored: 1, ahead: [] } });
+        expect(edit).toEqual({
+          status: 200,
+          body: { stored: 1, ahead: [], serverMillis: expect.any(Number) },
+        });
         return [yield* pulled(yield* read(ALICE)), yield* pulled(yield* read(BOB))] as const;
       }),
     );
@@ -161,7 +167,7 @@ describe("account ownership", { timeout: 60_000 }, () => {
         };
         expect(yield* call(yield* write(ALICE, forged))).toEqual({
           status: 200,
-          body: { stored: 1, ahead: [] },
+          body: { stored: 1, ahead: [], serverMillis: expect.any(Number) },
         });
         return [yield* pulled(yield* read(ALICE)), yield* pulled(yield* read(BOB))] as const;
       }),
