@@ -12,7 +12,7 @@ import { ActivityId, EpochMillis, ExerciseId, type ImportBatchId } from "../sche
 import { addExercisesToWorkout, loadWorkoutLog, startEmptyWorkout } from "../start-workout.ts";
 import { openTestDatabase, pointersToDeleted, T0 } from "../test-database.ts";
 import { decodeSvettFile } from "../svett-file.ts";
-import { isNothingToImport } from "../transfer.ts";
+import { type ImportInput, isNothingToImport } from "../transfer.ts";
 import { ActivityRepository } from "./activities.ts";
 import { ExerciseAliasRepository } from "./exercises.ts";
 import { MADE_HERE } from "./origin.ts";
@@ -95,6 +95,16 @@ const workouts = (database: Database) =>
       ).map((set) => Object.values(set).join(" ")),
     })),
   }));
+
+/** Every workout, exercise and set row, deleted ones too, keyed by table and ID. */
+const workoutRows = (database: Database) =>
+  new Map(
+    ["activity", "activity_exercise", "activity_set"].flatMap((table) =>
+      query(database, `SELECT * FROM ${table}`).map(
+        (row) => [`${table}/${String(row["id"])}`, row] as const,
+      ),
+    ),
+  );
 
 /** Live sets whose exercise is deleted or missing, which no screen could show. */
 const setsWithoutExercise = (database: Database) =>
@@ -559,6 +569,164 @@ describe("Hevy import", () => {
       { source_id: "2025-02-01T10:00:00#1" },
     ]);
     expect(isNothingToImport(await preview(database, file, keep))).toBe(true);
+  });
+
+  const twins = [
+    '"Morning","1 Feb 2025, 10:00","1 Feb 2025, 11:00","","Squat (Barbell)",,"",0,"normal",100,5,,,',
+    '"Again","1 Feb 2025, 10:00","1 Feb 2025, 10:30","","Squat (Barbell)",,"",0,"normal",80,5,,,',
+  ];
+  const newer =
+    '"Newer","8 Feb 2025, 10:00","8 Feb 2025, 11:00","","Squat (Barbell)",,"",0,"normal",90,5,,,';
+
+  it("knows a kept second workout again after Hevy writes a newer workout above it", async () => {
+    const database = openTestDatabase();
+    const keep = new Set(["hevy/2025-02-01T10:00:00#1"]);
+    await apply(database, hevy([HEADER, ...twins].join("\n")), [], keep);
+
+    const later = hevy([HEADER, newer, ...twins].join("\n"));
+    const plan = await preview(database, later);
+    expect(plan.duplicates).toEqual([]);
+    expect(plan.added).toEqual([{ table: "activity", count: 1 }]);
+    await apply(database, later);
+    expect(workouts(database).map(({ title }) => title)).toEqual(["Morning", "Again", "Newer"]);
+  });
+
+  const twinStart = "2025-02-01T10:00:00";
+
+  /**
+   * Earlier versions identified a second workout at a start by its place in the whole file, so
+   * one imported from a file with another workout above the twins was #2. This imports `lines`
+   * keeping each `from` twin, then moves its rows to the IDs `to` gave them.
+   */
+  const legacyImport = (
+    lines: ReadonlyArray<string>,
+    moves: ReadonlyArray<readonly [from: string, to: string]>,
+  ): ImportInput => {
+    const input = hevyImport(
+      hevy([HEADER, ...lines].join("\n")),
+      new Set(moves.map(([from]) => `hevy/${twinStart}${from}`)),
+    );
+    const moved = new Map<string, string>();
+    for (const [fromNumber, toNumber] of moves) {
+      const from = `${twinStart}${fromNumber}`;
+      const to = `${twinStart}${toNumber}`;
+      moved.set(from, to);
+      moved.set(importedId("activity", "hevy", from), importedId("activity", "hevy", to));
+      moved.set(
+        importedId("activity_exercise", "hevy", `${from}/exercise/0`),
+        importedId("activity_exercise", "hevy", `${to}/exercise/0`),
+      );
+      moved.set(
+        importedId("activity_set", "hevy", `${from}/exercise/0/set/0`),
+        importedId("activity_set", "hevy", `${to}/exercise/0/set/0`),
+      );
+    }
+    const move = (value: unknown) =>
+      typeof value === "string" ? (moved.get(value) ?? value) : value;
+    return {
+      source: input.source,
+      read: (local, at) => {
+        const read = input.read(local, at);
+        const tables = Object.fromEntries(
+          Object.entries(read.tables).map(([table, rows]) => [
+            table,
+            (rows as ReadonlyArray<Record<string, unknown>>).map((row) =>
+              Object.fromEntries(Object.entries(row).map(([key, value]) => [key, move(value)])),
+            ),
+          ]),
+        );
+        return { tables: tables as typeof read.tables, duplicates: read.duplicates };
+      },
+    };
+  };
+
+  it("knows a second workout kept under its place in the whole file, as earlier versions did", async () => {
+    const database = openTestDatabase();
+    await transfers(database, (repository) =>
+      repository.applyImport(legacyImport(twins, [["#1", "#2"]]), []),
+    );
+    expect(query(database, "SELECT source_id FROM activity ORDER BY source_id")).toEqual([
+      { source_id: twinStart },
+      { source_id: `${twinStart}#2` },
+    ]);
+
+    const plan = await preview(database, hevy([HEADER, ...twins].join("\n")));
+    expect(plan.duplicates).toEqual([]);
+    expect(isNothingToImport(plan)).toBe(true);
+  });
+
+  it("asks again about twins edited in Hevy, and never writes one over another twin", async () => {
+    const database = openTestDatabase();
+    const third =
+      '"Third","1 Feb 2025, 10:00","1 Feb 2025, 10:20","","Squat (Barbell)",,"",0,"normal",60,5,,,';
+    await transfers(database, (repository) =>
+      repository.applyImport(
+        legacyImport(
+          [...twins, third],
+          [
+            ["#1", "#2"],
+            ["#2", "#3"],
+          ],
+        ),
+        [],
+      ),
+    );
+    expect(query(database, "SELECT source_id, title FROM activity ORDER BY source_id")).toEqual([
+      { source_id: twinStart, title: "Morning" },
+      { source_id: `${twinStart}#2`, title: "Again" },
+      { source_id: `${twinStart}#3`, title: "Third" },
+    ]);
+    const before = workoutRows(database);
+    const workoutsBefore = workouts(database);
+
+    const edited = hevy(
+      [
+        HEADER,
+        twins[0]!,
+        twins[1]!.replace('"Again"', '"Again edited"').replace(",80,", ",82.5,"),
+        third.replace('"Third"', '"Third edited"').replace(",60,", ",62.5,"),
+      ].join("\n"),
+    );
+    const plan = await preview(database, edited);
+    expect(plan.changed).toEqual([]);
+    expect(plan.added).toEqual([]);
+    expect(plan.duplicates).toEqual([
+      expect.objectContaining({
+        key: `hevy/${twinStart}#1`,
+        reason: "same_start",
+        summary: expect.objectContaining({ title: "Again edited" }),
+      }),
+      expect.objectContaining({
+        key: `hevy/${twinStart}#4`,
+        reason: "same_start",
+        summary: expect.objectContaining({ title: "Third edited" }),
+      }),
+    ]);
+
+    const keep = new Set(plan.duplicates.map(({ key }) => key));
+    const taken = await apply(database, edited, [], keep);
+    expect(taken).toMatchObject({ added: 2, replaced: 0 });
+    const earlier = (rows: ReturnType<typeof workoutRows>) =>
+      new Map([...rows].filter(([key]) => before.has(key)));
+    expect(earlier(workoutRows(database))).toEqual(before);
+    expect(query(database, "SELECT source_id, title FROM activity ORDER BY source_id")).toEqual([
+      { source_id: twinStart, title: "Morning" },
+      { source_id: `${twinStart}#1`, title: "Again edited" },
+      { source_id: `${twinStart}#2`, title: "Again" },
+      { source_id: `${twinStart}#3`, title: "Third" },
+      { source_id: `${twinStart}#4`, title: "Third edited" },
+    ]);
+
+    expect(isNothingToImport(await preview(database, edited))).toBe(true);
+    expect(isNothingToImport(await preview(database, edited, keep))).toBe(true);
+
+    await undo(database, taken!.importBatchId);
+    expect(workouts(database)).toEqual(workoutsBefore);
+    const after = workoutRows(database);
+    expect(earlier(after)).toEqual(before);
+    expect(
+      [...after].filter(([key, row]) => !before.has(key) && row["deleted_at"] === null),
+    ).toEqual([]);
   });
 
   it.each([

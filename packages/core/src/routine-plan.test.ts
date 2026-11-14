@@ -107,6 +107,21 @@ describe("routine order", () => {
     expect(second).toBe(`${"x".repeat(ROUTINE_TITLE_MAX_LENGTH - 7)} copy 2`);
     expect(second).toHaveLength(ROUTINE_TITLE_MAX_LENGTH);
   });
+
+  it("never cuts an emoji in half when it shortens a title", () => {
+    // The emoji's two UTF-16 units straddle the last unit that fits beside " copy".
+    const title = `${"x".repeat(ROUTINE_TITLE_MAX_LENGTH - 6)}💪💪`;
+    const copy = copyTitle(title, [title]);
+    expect(copy).toBe(`${"x".repeat(ROUTINE_TITLE_MAX_LENGTH - 6)} copy`);
+    expect(copy.isWellFormed()).toBe(true);
+    const fits = `${"x".repeat(ROUTINE_TITLE_MAX_LENGTH - 7)}💪💪`;
+    expect(copyTitle(fits, [fits])).toBe(`${"x".repeat(ROUTINE_TITLE_MAX_LENGTH - 7)}💪 copy`);
+  });
+
+  it("never cuts an emoji in half when a routine's title is too long", () => {
+    const title = `${"x".repeat(ROUTINE_TITLE_MAX_LENGTH - 1)}💪`;
+    expect(routineFormFromParams({ title }).title).toBe("x".repeat(ROUTINE_TITLE_MAX_LENGTH - 1));
+  });
 });
 
 describe("routineSections", () => {
