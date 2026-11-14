@@ -21,8 +21,16 @@ import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
 import type { Focus } from "./focus";
 
-const app = vi.hoisted(() => ({ runtime: undefined as unknown }));
-vi.mock("../data/database", () => ({ appDatabase: () => app.runtime }));
+// One owner's database, open the whole time. The account switch tests cover the others.
+const app = vi.hoisted(() => ({ database: { handle: { runtime: undefined as unknown } } }));
+vi.mock("../data/current", () => ({
+  appDatabase: () => app.database.handle.runtime,
+  currentDatabase: () => app.database,
+  movePending: () => false,
+  sameDatabase: (a: unknown, b: unknown) => a === b,
+  stillOpen: (database: unknown) => database === app.database,
+  subscribeDatabase: () => () => {},
+}));
 const alert = vi.hoisted(() => vi.fn());
 vi.mock("react-native", () => ({
   Alert: { alert },
@@ -87,7 +95,7 @@ const openApp = (path: string) => {
 
 /** A fresh copy of the store and actions, as a launch of the app gets. */
 const launch = async (runtime: unknown) => {
-  app.runtime = runtime;
+  app.database = { handle: { runtime } };
   vi.resetModules();
   const store = await import("./store");
   const actions = await import("./actions");
@@ -143,7 +151,7 @@ const shownText = (running: Launched, field: Focus) =>
 const tempFile = () => join(mkdtempSync(join(tmpdir(), "svett-logger-")), "svett.db");
 
 afterEach(() => {
-  app.runtime = undefined;
+  app.database = { handle: { runtime: undefined } };
   alert.mockClear();
 });
 

@@ -21,6 +21,7 @@ import {
 } from "@svett/core";
 import { Effect } from "effect";
 
+import type { OpenDatabase } from "../data/current";
 import { skipRestTimer } from "./rest";
 import { changeSet, changeWorkout, currentWorkout, saveWorkout } from "./store";
 
@@ -28,13 +29,18 @@ const withActivities = <A, E>(
   body: (activities: typeof ActivityRepository.Service) => Effect.Effect<A, E>,
 ) => Effect.flatMap(Effect.service(ActivityRepository), body);
 
-/** Starts an empty workout. False when another workout is in progress. */
-export const startEmpty = () =>
+/**
+ * Starts an empty workout, in `database` when a screen read from it offers the button. False
+ * when another workout is in progress, and null when it was not saved.
+ */
+export const startEmpty = (database?: OpenDatabase) =>
   saveWorkout(
     startEmptyWorkout(new Date().getHours()).pipe(
       Effect.as(true),
       Effect.catchTag("WorkoutInProgressError", () => Effect.succeed(false)),
     ),
+    false,
+    database,
   );
 
 const inProgress = () => currentWorkout()?.activity.id ?? null;

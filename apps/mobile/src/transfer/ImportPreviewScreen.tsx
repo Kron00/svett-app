@@ -22,13 +22,16 @@ import { Option, Result } from "effect";
 import { useEffect, useState } from "react";
 import { ScrollView, View } from "react-native";
 
+import { type OpenDatabase, sameDatabase, stillOpen, useCurrentDatabase } from "../data/current";
 import type { RootNavigation, RootStackParamList } from "../navigation";
 import { AppText } from "../ui/AppText";
 import { Button } from "../ui/Button";
 import { EmptyState } from "../ui/EmptyState";
 import { ListRow, ListSection } from "../ui/List";
 import {
+  changeAliases,
   changeTransfers,
+  DATABASE_SWITCHED,
   type ImportFileSource,
   readImportFile,
   withAliases,
@@ -50,16 +53,44 @@ type State =
       readonly file: HevyFile;
       readonly names: ReadonlyArray<UnknownName>;
       readonly exercises: ReadonlyArray<MatchExercise>;
+      /** The data the names were looked up in, the only data the choices may be saved to. */
+      readonly database: OpenDatabase;
     }
   | {
       readonly kind: "ready";
       readonly loaded: Loaded;
       readonly plan: ImportPlan;
       readonly keep: ReadonlySet<string>;
+      /** The data the plan compares the file with, the only data Import may change. */
+      readonly database: OpenDatabase;
     }
   | { readonly kind: "importing" }
   | { readonly kind: "imported"; readonly result: Option.Option<ImportResult> }
   | { readonly kind: "failed"; readonly message: string };
+
+/** Before Import, a new preview replaces the old one when someone signs in or out. */
+const previewing = (state: State) =>
+  state.kind === "reading" ||
+  state.kind === "refused" ||
+  state.kind === "matching" ||
+  state.kind === "ready";
+
+/** The data a match screen or plan was read from, if it shows one. */
+const readFrom = (state: State) =>
+  state.kind === "matching" || state.kind === "ready" ? state.database : undefined;
+
+// Each open database gets its own key, so a match screen or plan read from other data starts
+// over instead of keeping choices made for it.
+const databaseKeys = new WeakMap<object, string>();
+let nextKey = 0;
+const keyOf = ({ handle }: OpenDatabase) => {
+  let key = databaseKeys.get(handle);
+  if (key === undefined) {
+    key = String(nextKey++);
+    databaseKeys.set(handle, key);
+  }
+  return key;
+};
 
 /** Hevy writes the phone's clock time with no zone, so svett reads it in this phone's zone. */
 const phoneClock: ToInstant = (time) =>
@@ -75,25 +106,39 @@ const sourceOf = (params: RootStackParamList["ImportPreview"]): ImportFileSource
 const inputOf = (loaded: Loaded, keep: ReadonlySet<string>) =>
   loaded.kind === "svett" ? loaded.file : hevyImport(loaded.file, keep);
 
-const plan = async (loaded: Loaded, keep: ReadonlySet<string> = new Set()): Promise<State> => ({
+const plan = async (
+  loaded: Loaded,
+  database: OpenDatabase,
+  keep: ReadonlySet<string> = new Set(),
+): Promise<State> => ({
   kind: "ready",
   loaded,
   keep,
-  plan: await withTransfers((transfers) => transfers.previewImport(inputOf(loaded, keep))),
+  plan: await withTransfers(
+    (transfers) => transfers.previewImport(inputOf(loaded, keep)),
+    database,
+  ),
+  database,
 });
 
 /**
  * The names no earlier choice, bundled match or earlier import accounts for, with every
  * exercise here to match them to.
  */
-async function unknownNames(file: HevyFile): Promise<{
+async function unknownNames(
+  file: HevyFile,
+  database: OpenDatabase,
+): Promise<{
   readonly names: ReadonlyArray<UnknownName>;
   readonly exercises: ReadonlyArray<MatchExercise>;
 }> {
-  const matches = await withAliases((aliases) => aliases.matchHevyNames(exerciseNames(file)));
+  const matches = await withAliases(
+    (aliases) => aliases.matchHevyNames(exerciseNames(file)),
+    database,
+  );
   const unknown = matches.filter((match) => match.exerciseId === null);
   if (unknown.length === 0) return { names: [], exercises: [] };
-  const exercises = await withExercises((repository) => repository.list);
+  const exercises = await withExercises((repository) => repository.list, database);
   return {
     names: unknown.map(({ name }) => ({ name, suggestions: suggestExercises(name, exercises) })),
     exercises,
@@ -101,13 +146,17 @@ async function unknownNames(file: HevyFile): Promise<{
 }
 
 /** Reads the file, then asks for unknown exercise names, then waits for Import. */
-async function preview(source: ImportFileSource | null, kind: "svett" | "hevy"): Promise<State> {
+async function preview(
+  source: ImportFileSource | null,
+  kind: "svett" | "hevy",
+  database: OpenDatabase,
+): Promise<State> {
   if (source === null) return { kind: "refused", message: "No file was chosen." };
   const text = await readImportFile(source);
   if (kind === "svett") {
     const decoded = decodeSvettFile(text);
     if (Result.isFailure(decoded)) return { kind: "refused", message: decoded.failure.message };
-    return plan({ kind: "svett", file: decoded.success });
+    return plan({ kind: "svett", file: decoded.success }, database);
   }
   const decoded = decodeHevyFile(text, phoneClock);
   if (Result.isFailure(decoded)) return { kind: "refused", message: decoded.failure.message };
@@ -115,10 +164,10 @@ async function preview(source: ImportFileSource | null, kind: "svett" | "hevy"):
   if (file.workouts.length === 0) {
     return { kind: "refused", message: "This Hevy export has no workouts." };
   }
-  const { names, exercises } = await unknownNames(file);
+  const { names, exercises } = await unknownNames(file, database);
   return names.length > 0
-    ? { kind: "matching", file, names, exercises }
-    : plan({ kind: "hevy", file });
+    ? { kind: "matching", file, names, exercises, database }
+    : plan({ kind: "hevy", file }, database);
 }
 
 const duplicateReason = ({ reason, other }: PossibleDuplicate) => {
@@ -295,50 +344,78 @@ export function ImportPreviewScreen() {
   });
   const state: State = shown.params === params ? shown.state : { kind: "reading" };
   const setState = (next: State) => show({ params, state: next });
+  const { owner, handle } = useCurrentDatabase();
 
+  // Reads the file again for whoever is signed in. A preview made for someone else never shows.
   useEffect(() => {
     let current = true;
-    preview(sourceOf(params), params.kind ?? "svett").then(
-      (next) => current && show({ params, state: next }),
+    const replace = (next: State) =>
+      current &&
+      show((before) =>
+        before.params === params && !previewing(before.state) ? before : { params, state: next },
+      );
+    preview(sourceOf(params), params.kind ?? "svett", { owner, handle }).then(
+      replace,
       (error: unknown) =>
-        current &&
-        show({
-          params,
-          state: { kind: "refused", message: `The file did not open. ${String(error)}` },
-        }),
+        replace({ kind: "refused", message: `The file did not open. ${String(error)}` }),
     );
     return () => {
       current = false;
     };
-  }, [params]);
+  }, [params, owner, handle]);
 
   const fail = (error: unknown) => setState({ kind: "failed", message: String(error) });
 
-  const matched = (file: HevyFile, choices: NameChoices) => {
-    setState({ kind: "reading" });
+  /**
+   * Runs the next preview step on `database`, the data the screen read. A step started after
+   * someone signed in or out refuses, and a result that comes back after it is dropped, since
+   * the screen has moved on to a preview of the data open now.
+   */
+  const nextStep = (database: OpenDatabase, step: () => Promise<State>) => {
+    if (!stillOpen(database)) return fail(new Error(DATABASE_SWITCHED));
+    step().then(
+      (next) => stillOpen(database) && setState(next),
+      (error: unknown) => stillOpen(database) && fail(error),
+    );
+  };
+
+  const matched = (file: HevyFile, database: OpenDatabase, choices: NameChoices) => {
     const chosen = [...choices].flatMap(([name, choice]) =>
       choice === "new" ? [] : [{ name, exerciseId: choice }],
     );
-    withAliases((aliases) => aliases.remember("hevy", chosen))
-      .then(() => plan({ kind: "hevy", file }))
-      .then(setState, fail);
+    nextStep(database, async () => {
+      setState({ kind: "reading" });
+      await changeAliases(database, (aliases) => aliases.remember("hevy", chosen));
+      return plan({ kind: "hevy", file }, database);
+    });
   };
 
-  const toggleDuplicate = (loaded: Loaded, keep: ReadonlySet<string>, key: string) => {
+  const toggleDuplicate = (
+    loaded: Loaded,
+    database: OpenDatabase,
+    keep: ReadonlySet<string>,
+    key: string,
+  ) => {
     const next = new Set(keep);
     if (!next.delete(key)) next.add(key);
-    plan(loaded, next).then(setState, fail);
+    nextStep(database, () => plan(loaded, database, next));
   };
 
-  const runImport = (loaded: Loaded, keep: ReadonlySet<string>, take: ReadonlyArray<string>) => {
+  const runImport = (
+    loaded: Loaded,
+    database: OpenDatabase,
+    keep: ReadonlySet<string>,
+    take: ReadonlyArray<string>,
+  ) => {
     setState({ kind: "importing" });
-    changeTransfers((transfers) => transfers.applyImport(inputOf(loaded, keep), take)).then(
-      (result) => setState({ kind: "imported", result }),
-      fail,
-    );
+    changeTransfers(database, (transfers) =>
+      transfers.applyImport(inputOf(loaded, keep), take),
+    ).then((result) => setState({ kind: "imported", result }), fail);
   };
 
   const done = () => (navigation.canGoBack() ? navigation.goBack() : navigation.navigate("Tabs"));
+  const shownFrom = readFrom(state);
+  const stale = shownFrom !== undefined && !sameDatabase(shownFrom, { owner, handle });
 
   return (
     <ScrollView
@@ -347,9 +424,9 @@ export function ImportPreviewScreen() {
       contentContainerClassName="gap-6 pt-4 pb-12"
       contentInsetAdjustmentBehavior="automatic"
     >
-      {state.kind === "reading" || state.kind === "importing" ? (
+      {state.kind === "reading" || state.kind === "importing" || stale ? (
         <AppText tone="secondary" className="px-gutter">
-          {state.kind === "reading" ? "Reading the file" : "Importing"}
+          {state.kind === "importing" ? "Importing" : "Reading the file"}
         </AppText>
       ) : null}
       {state.kind === "refused" || state.kind === "failed" ? (
@@ -364,19 +441,23 @@ export function ImportPreviewScreen() {
           />
         </View>
       ) : null}
-      {state.kind === "matching" ? (
+      {state.kind === "matching" && !stale ? (
         <HevyMatch
+          key={keyOf(state.database)}
           names={state.names}
           exercises={state.exercises}
-          onContinue={(choices) => matched(state.file, choices)}
+          onContinue={(choices) => matched(state.file, state.database, choices)}
         />
       ) : null}
-      {state.kind === "ready" ? (
+      {state.kind === "ready" && !stale ? (
         <Plan
+          key={keyOf(state.database)}
           loaded={state.loaded}
           plan={state.plan}
-          onToggleDuplicate={(key) => toggleDuplicate(state.loaded, state.keep, key)}
-          onImport={(take) => runImport(state.loaded, state.keep, take)}
+          onToggleDuplicate={(key) =>
+            toggleDuplicate(state.loaded, state.database, state.keep, key)
+          }
+          onImport={(take) => runImport(state.loaded, state.database, state.keep, take)}
         />
       ) : null}
       {state.kind === "imported" ? (

@@ -301,6 +301,24 @@ export function GalleryScreen() {
         </View>
       </Section>
 
+      <Section id="text-fields" title="Text fields">
+        <View className="gap-4 px-gutter">
+          <TextField
+            label="Email"
+            value="lifter@example.com"
+            note="Filled in from your ChatGPT sign-in."
+            onChangeText={noop}
+          />
+          <TextField
+            label="Code from the email"
+            value="4242"
+            problem="Enter the six-digit code from the email."
+            onChangeText={noop}
+          />
+          <TextField label="Email" placeholder="name@example.com" editable={false} />
+        </View>
+      </Section>
+
       <Section id="lists" title="Lists">
         <SectionHeader title="Recent workouts" action={{ label: "See all", onPress: noop }} />
         <ListSection

@@ -3,12 +3,14 @@ import { HttpMiddleware, HttpRouter, HttpServerResponse } from "effect/http";
 import { SqlClient } from "effect/sql/SqlClient";
 
 import { Backups } from "./backups.ts";
+import { ClerkConfig } from "./clerk-config.ts";
 
 const iso = (millis: number) => new Date(millis).toISOString();
 
 const health = Effect.gen(function* () {
   const sql = yield* SqlClient;
   const backups = yield* Backups;
+  const clerk = yield* ClerkConfig;
   const databaseUp = yield* sql`select 1`.pipe(
     Effect.timeout("3 seconds"),
     Effect.as(true),
@@ -20,6 +22,7 @@ const health = Effect.gen(function* () {
     {
       status: databaseUp ? "ok" : "error",
       database: databaseUp ? "ok" : "unreachable",
+      signIn: clerk.signIn,
       latestBackup: latest === undefined ? null : iso(latest.takenAt),
       restoreCheck:
         check === undefined

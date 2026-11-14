@@ -7,7 +7,8 @@ import {
 import { Effect } from "effect";
 import { Alert, View } from "react-native";
 
-import { type Query, useQuery, write } from "../data/store";
+import type { OpenDatabase } from "../data/current";
+import { type Query, useQuery, writeTo } from "../data/store";
 import { EmptyState } from "../ui/EmptyState";
 
 const readAll = () => Effect.flatMap(Effect.service(GearRepository), (gear) => gear.all);
@@ -19,14 +20,19 @@ export const useBarsAndPlates = (): Query<BarsAndPlatesByUnit> =>
 // Changes save one at a time, each worked out from the one before, so fast presses all count.
 let changes: Promise<unknown> = Promise.resolve();
 
-/** Saves a change to your plates and bars in `unit`, worked out from what is saved. */
+/**
+ * Saves a change to your plates and bars in `unit` into `database`, the one the screen read
+ * them from, worked out from what is saved there.
+ */
 export const changeBarsAndPlates = (
+  database: OpenDatabase,
   unit: WeightUnit,
   change: (gear: BarsAndPlates) => BarsAndPlates,
 ) => {
   changes = changes
     .then(() =>
-      write(
+      writeTo(
+        database,
         Effect.flatMap(Effect.service(GearRepository), (gear) =>
           Effect.flatMap(gear.all, (current) => gear.save(unit, change(current[unit]))),
         ),
