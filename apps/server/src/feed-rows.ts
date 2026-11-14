@@ -504,12 +504,16 @@ export class FeedRows extends Context.Service<FeedRows, FeedRowsShape>()("svett/
 
       const commentOrder = sql`(c.created_ms, c.id collate "C")`;
 
-      /** Where comment `comment` sits on the post, or undefined when it is not on the post. */
-      const anchorOf = (post: VisiblePost, comment: string) =>
+      /**
+       * Where comment `comment` sits on the post, or undefined when it is not on the post or
+       * its author is in a block with `viewer`.
+       */
+      const anchorOf = (post: VisiblePost, viewer: AccountId, comment: string) =>
         sql<CommentAnchor>`
           select c.created_ms as at, c.id from activity_comment c
           where c.id = ${comment} and c.owner_id = ${post.owner}
             and c.activity_id = ${post.activityId}
+            and not ${blockedWith(sql, viewer, "c.author_id")}
         `.pipe(Effect.map(([row]) => row));
 
       /**
@@ -530,6 +534,7 @@ export class FeedRows extends Context.Service<FeedRows, FeedRowsShape>()("svett/
           select c.id, p.username, c.body, c.created_ms as at, c.author_id as "authorId"
           from activity_comment c join profile p on p.account_id = c.author_id
           where c.owner_id = ${post.owner} and c.activity_id = ${post.activityId}
+            and not ${blockedWith(sql, viewer, "c.author_id")}
             ${bound.from === undefined ? sql`` : sql`and ${commentOrder} >= (${bound.from.at}::bigint, ${bound.from.id} collate "C")`}
             ${bound.after === undefined ? sql`` : sql`and ${commentOrder} > (${bound.after.at}::bigint, ${bound.after.id} collate "C")`}
             ${bound.before === undefined ? sql`` : sql`and ${commentOrder} < (${bound.before.at}::bigint, ${bound.before.id} collate "C")`}
@@ -608,7 +613,7 @@ export class FeedRows extends Context.Service<FeedRows, FeedRowsShape>()("svett/
           Effect.gen(function* () {
             const found = yield* visiblePost(viewer, id);
             const { owner, activityId } = found;
-            const target = comment === undefined ? undefined : yield* anchorOf(found, comment);
+            const target = comment === undefined ? undefined : yield* anchorOf(found, viewer, comment);
             // A comment within the first page opens the first page, so the thread reads from
             // its start whenever it can.
             const before =
@@ -617,6 +622,7 @@ export class FeedRows extends Context.Service<FeedRows, FeedRowsShape>()("svett/
                 : yield* sql<{ readonly count: number }>`
                     select count(*)::int as count from activity_comment c
                     where c.owner_id = ${owner} and c.activity_id = ${activityId}
+                      and not ${blockedWith(sql, viewer, "c.author_id")}
                       and ${commentOrder} < (${target.at}::bigint, ${target.id} collate "C")
                   `.pipe(Effect.map(([row]) => row?.count ?? 0));
             const from = target !== undefined && before >= COMMENT_PAGE ? target : undefined;
@@ -633,7 +639,7 @@ export class FeedRows extends Context.Service<FeedRows, FeedRowsShape>()("svett/
           Effect.gen(function* () {
             const found = yield* visiblePost(viewer, id);
             const cursor = "after" in from ? from.after : from.before;
-            const anchor = yield* anchorOf(found, yield* readIdCursor(cursor));
+            const anchor = yield* anchorOf(found, viewer, yield* readIdCursor(cursor));
             if (anchor === undefined) return yield* new InvalidCursor();
             if ("after" in from) {
               const rows = yield* commentRows(found, viewer, { after: anchor, ascending: true });

@@ -66,7 +66,8 @@ const routes = async () => {
     SocialRows.layer,
     FeedRows.layer,
     Sessions.layer,
-    Safety.layer(),
+    // A test that fills a page of the inbox writes more comments than one burst allows.
+    Safety.layer({ comments: { capacity: 1_000, perSecond: 1 } }),
   ).pipe(Layer.provideMerge(databaseLayer(url)), Layer.provide(clerk));
   return HttpRouter.serve(Layer.mergeAll(AccountRoutes, SocialRoutes, FeedRoutes), {
     disableLogger: true,
