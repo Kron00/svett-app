@@ -276,11 +276,13 @@ export function ImportPreviewScreen() {
   const navigation = useNavigation<RootNavigation>();
   const { params } = useRoute<RouteProp<RootStackParamList, "ImportPreview">>();
   const [state, setState] = useState<State>({ kind: "reading" });
-  const { uri, file: fileName, kind = "svett" } = params;
 
+  // A link to the file already on screen reuses this screen with a new params object, so each
+  // navigation here starts a fresh preview, also after an import of the same file.
   useEffect(() => {
     let current = true;
-    preview(sourceOf({ uri, file: fileName }), kind).then(
+    setState({ kind: "reading" });
+    preview(sourceOf(params), params.kind ?? "svett").then(
       (next) => current && setState(next),
       (error: unknown) =>
         current &&
@@ -289,7 +291,7 @@ export function ImportPreviewScreen() {
     return () => {
       current = false;
     };
-  }, [uri, fileName, kind]);
+  }, [params]);
 
   const fail = (error: unknown) => setState({ kind: "failed", message: String(error) });
 
@@ -367,7 +369,7 @@ export function ImportPreviewScreen() {
             {importOutcome(Option.getOrElse(state.result, () => ({ added: 0, replaced: 0 })))}
           </AppText>
           <View className="flex-row flex-wrap gap-3">
-            <Button label="Done" onPress={done} />
+            <Button label="Done" testID="import-close" onPress={done} />
             {Option.match(state.result, {
               onNone: () => null,
               onSome: ({ importBatchId }) => (
