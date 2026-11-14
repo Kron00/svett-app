@@ -6,7 +6,9 @@ import { useIsAccessibilityTextSize } from "../design/hooks";
 import { AppText } from "./AppText";
 import { Icon } from "./Icon";
 
-const Glass = withUniwind(GlassView);
+// The automatic mapping treats every prop ending in "Style" as a style, so it would
+// turn glassEffectStyle into a style array that the native view cannot read.
+const Glass = withUniwind(GlassView, { style: { fromClassName: "className" } });
 
 /**
  * The bar that keeps a workout in progress in view above the tabs. It is a

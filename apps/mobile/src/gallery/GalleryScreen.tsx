@@ -372,8 +372,17 @@ export function GalleryScreen() {
       </Section>
 
       <Section id="workout-bar" title="Workout in progress">
-        <View className="px-gutter">
-          <WorkoutBar title="Push day" elapsed="42:07" onPress={noop} />
+        {/* The bar floats over content in the app, so here it sits on a chart to show its glass. */}
+        <View className="mx-gutter">
+          <View className="rounded-card bg-surface p-4">
+            <Chart points={DAYS} includeZero accessibilityLabel="Sets per day this week">
+              <ChartGrid />
+              <ChartBars color="sport-run" />
+            </Chart>
+          </View>
+          <View className="absolute inset-x-3 bottom-16">
+            <WorkoutBar title="Push day" elapsed="42:07" onPress={noop} />
+          </View>
         </View>
       </Section>
 
