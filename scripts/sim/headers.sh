@@ -175,6 +175,10 @@ ask() {
   agent_device wait 'id="coach-answer"' 10000 >/dev/null || fail "The coach's answer to \"$1\" did not show."
 }
 
+# At the largest text size three answers make a chat of about 15 screens, and a drag
+# moves it about 240 points, or 160 with the keyboard up, so it takes many drags.
+chat_drags=80
+
 # drag_chat <up|down> drags the chat to show what is above or below, with a pan that
 # starts and ends in the lower 60% of the chat's frame, below the large title and
 # above the composer, and clear of the bottom edge. It reads the frame each time,
@@ -250,7 +254,7 @@ ask "Once more, what was my best squat set last month?"
 if agent_device is visible 'id="coach-new"' >/dev/null 2>&1; then
   fail "The chat still fits on the screen after three answers, so the coach's title has nothing to collapse over."
 fi
-for _ in 1 2 3 4 5 6 7 8 9 10; do
+for _ in $(seq "$chat_drags"); do
   agent_device is visible 'id="coach-new"' >/dev/null 2>&1 && break
   drag_chat up
 done
@@ -290,7 +294,7 @@ read -r _ raised_y _ raised_height < <(steady_frame 'id="coach-composer"') ||
   fail "The composer stayed at y=$raised_y under the keyboard instead of rising from y=$composer_y."
 ((raised_y >= 0 && raised_y + raised_height <= composer_y + composer_height)) ||
   fail "The composer at y=$raised_y, $raised_height points tall, is not whole on the screen above the keyboard."
-for _ in 1 2 3 4 5 6 7 8 9 10; do
+for _ in $(seq "$chat_drags"); do
   agent_device is visible 'id="coach-answer"' >/dev/null 2>&1 && break
   drag_chat down
 done
