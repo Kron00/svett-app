@@ -9,6 +9,8 @@ import {
   kgFrom,
   kgFromText,
   KG_PER_LB,
+  weightEntry,
+  weightEntryIn,
   weightIn,
 } from "./weight-unit.ts";
 
@@ -81,5 +83,25 @@ describe("kilograms and pounds", () => {
         "lb",
       ).text,
     ).toBe("132.28 lb × 8-12 reps");
+  });
+});
+
+describe("a weight being typed when the unit changes", () => {
+  it("keeps the weight on the bar, so 100 kg reads 220.46 lb and not 100 lb", () => {
+    const pounds = weightEntryIn(weightEntry(100, "kg"), "lb");
+    expect(pounds.text).toBe("220.46");
+    expect(pounds.unit).toBe("lb");
+    expect(weightEntryIn(pounds, "kg").text).toBe("100");
+  });
+
+  it("converts what was typed, not what the screen opened with", () => {
+    const typed = { ...weightEntry(100, "kg"), text: "60" };
+    expect(weightEntryIn(typed, "lb").text).toBe("132.28");
+  });
+
+  it("stays empty when nothing is typed, and as it is in the same unit", () => {
+    expect(weightEntryIn(weightEntry(null, "kg"), "lb")).toEqual(weightEntry(null, "lb"));
+    const entry = weightEntry(100, "kg");
+    expect(weightEntryIn(entry, "kg")).toBe(entry);
   });
 });

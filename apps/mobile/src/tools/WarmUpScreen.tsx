@@ -12,6 +12,7 @@ import { useState } from "react";
 import { ScrollView, View } from "react-native";
 
 import type { RootStackParamList } from "../navigation";
+import { GearNotReady, useBarsAndPlates } from "../settings/gear";
 import { useWorkoutSettings } from "../settings/store";
 import { AppText } from "../ui/AppText";
 import { Button } from "../ui/Button";
@@ -29,11 +30,10 @@ type Props = NativeStackScreenProps<RootStackParamList, "WarmUp">;
  */
 export function WarmUpScreen({ route, navigation }: Props) {
   const workout = useWorkout();
-  const { unit, barsAndPlates } = useWorkoutSettings();
-  const { bars, plates } = barsAndPlates[unit];
+  const { unit } = useWorkoutSettings();
+  const gear = useBarsAndPlates();
   const [barIndex, setBarIndex] = useState(0);
   const [adding, setAdding] = useState(false);
-  const bar = bars[Math.min(barIndex, bars.length - 1)]!;
 
   const log = workout.status === "ready" ? workout.log : null;
   const exercise = log?.exercises.find((entry) => entry.row.id === route.params.exercise);
@@ -69,6 +69,9 @@ export function WarmUpScreen({ route, navigation }: Props) {
       </View>
     );
   }
+  if (gear.status !== "ready") return <GearNotReady query={gear} />;
+  const { bars, plates } = gear.value[unit];
+  const bar = bars[Math.min(barIndex, bars.length - 1)]!;
   const working = Math.round(weightIn(workingKg, unit) * 100) / 100;
   const sets = warmUpSets(working, bar.weight, plates);
 

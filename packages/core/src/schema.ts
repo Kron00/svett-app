@@ -2,6 +2,8 @@ import { Schema } from "effect";
 
 import { DurationSeconds } from "./duration.ts";
 import { Uuid } from "./ids.ts";
+import { BarsAndPlates } from "./plates.ts";
+import { WeightUnit } from "./weight-unit.ts";
 
 export const EpochMillis = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)).pipe(
   Schema.brand("EpochMillis"),
@@ -44,6 +46,8 @@ export const CoachMessageId = Uuid.pipe(Schema.brand("CoachMessageId"));
 export type CoachMessageId = typeof CoachMessageId.Type;
 export const ConversationId = Uuid.pipe(Schema.brand("ConversationId"));
 export type ConversationId = typeof ConversationId.Type;
+export const GearId = Uuid.pipe(Schema.brand("GearId"));
+export type GearId = typeof GearId.Type;
 
 /** Every row carries these, so phase 6 sync needs no table rewrite. */
 const rowFields = <Id extends Schema.Top>(id: Id) => ({
@@ -498,3 +502,15 @@ export const CoachMessage = Schema.Struct({
   createdAt: EpochMillis,
 });
 export type CoachMessage = typeof CoachMessage.Type;
+
+/**
+ * The plates and bars you own in one unit, for the plate and warm-up calculators. Each unit
+ * has one row, and a unit with none has a commercial gym's.
+ */
+export const Gear = Schema.Struct({
+  ...rowFields(GearId),
+  unit: WeightUnit,
+  plates: Schema.fromJsonString(BarsAndPlates.fields.plates),
+  bars: Schema.fromJsonString(BarsAndPlates.fields.bars),
+});
+export type Gear = typeof Gear.Type;

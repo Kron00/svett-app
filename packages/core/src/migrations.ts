@@ -105,6 +105,11 @@ const restTimer = `
 ALTER TABLE activity_exercise ADD COLUMN rest_s REAL;
 `;
 
+// Plates and bars as JSON arrays, one row per weight unit.
+const gear = `
+CREATE TABLE gear (${row}, unit TEXT NOT NULL, plates TEXT NOT NULL, bars TEXT NOT NULL) STRICT;
+`;
+
 /** Applied in order and never edited once released. A change to the schema is a new migration. */
 export const MIGRATIONS: ReadonlyArray<Migration> = [
   { version: 1, name: "initial", sql: initial },
@@ -112,6 +117,7 @@ export const MIGRATIONS: ReadonlyArray<Migration> = [
   { version: 3, name: "workout in progress", sql: workoutInProgress },
   { version: 4, name: "set fields", sql: setFields },
   { version: 5, name: "rest timer", sql: restTimer },
+  { version: 6, name: "plates and bars", sql: gear },
 ];
 
 export class DatabaseTooNewError extends Data.TaggedError("DatabaseTooNewError")<{

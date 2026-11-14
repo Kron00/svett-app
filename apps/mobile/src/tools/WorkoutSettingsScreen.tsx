@@ -9,7 +9,8 @@ import {
 import { Alert, ScrollView, View } from "react-native";
 
 import { useIsAccessibilityTextSize } from "../design/hooks";
-import { changeWorkoutSettings, useWorkoutSettings, workoutSettings } from "../settings/store";
+import { changeBarsAndPlates, GearNotReady, useBarsAndPlates } from "../settings/gear";
+import { changeWorkoutSettings, useWorkoutSettings } from "../settings/store";
 import { AppText } from "../ui/AppText";
 import { Button } from "../ui/Button";
 import { IconButton } from "../ui/IconButton";
@@ -19,19 +20,13 @@ import { SegmentedControl } from "../ui/SegmentedControl";
 
 const MAX_PAIRS = 20;
 
-const changeGear = (unit: WeightUnit, change: (gear: BarsAndPlates) => BarsAndPlates) =>
-  changeWorkoutSettings((settings) => ({
-    ...settings,
-    barsAndPlates: { ...settings.barsAndPlates, [unit]: change(settings.barsAndPlates[unit]) },
-  }));
-
 /** A weight typed into a prompt, or null when it is not a number of at least zero. */
 const typedWeight = (text: string | undefined): number | null => {
   const value = Number.parseFloat((text ?? "").replace(",", "."));
   return Number.isFinite(value) && value >= 0 ? value : null;
 };
 
-const addPlate = (unit: WeightUnit) =>
+const addPlate = (unit: WeightUnit, gear: BarsAndPlates) =>
   Alert.prompt(
     "Add a plate size",
     `Its weight in ${unit}.`,
@@ -42,12 +37,12 @@ const addPlate = (unit: WeightUnit) =>
         isPreferred: true,
         onPress: (text?: string) => {
           const weight = typedWeight(text);
-          const problem = plateSizeProblem(weight, workoutSettings().barsAndPlates[unit].plates);
+          const problem = plateSizeProblem(weight, gear.plates);
           if (weight === null || problem !== undefined) {
             Alert.alert("That plate was not added", problem ?? "Enter the plate's weight.");
             return;
           }
-          changeGear(unit, (gear) => ({
+          changeBarsAndPlates(unit, (gear) => ({
             ...gear,
             plates: sortPlates([...gear.plates, { weight, pairs: 1 }]),
           }));
@@ -82,7 +77,7 @@ const addBar = (unit: WeightUnit) =>
                   Alert.alert("That bar was not added", "Enter its weight.");
                   return;
                 }
-                changeGear(unit, (gear) => ({
+                changeBarsAndPlates(unit, (gear) => ({
                   ...gear,
                   bars: [...gear.bars, { name: named, weight }],
                 }));
@@ -105,7 +100,9 @@ export function WorkoutSettingsScreen() {
   const settings = useWorkoutSettings();
   const stacked = useIsAccessibilityTextSize();
   const { unit } = settings;
-  const gear = settings.barsAndPlates[unit];
+  const saved = useBarsAndPlates();
+  if (saved.status !== "ready") return <GearNotReady query={saved} />;
+  const gear = saved.value[unit];
 
   return (
     <ScrollView
@@ -146,7 +143,7 @@ export function WorkoutSettingsScreen() {
                 label={`Pairs of ${formatWeightNumber(plate.weight)} ${unit} plates`}
                 valueText={String(plate.pairs)}
                 onDecrement={() =>
-                  changeGear(unit, (current) => ({
+                  changeBarsAndPlates(unit, (current) => ({
                     ...current,
                     plates: current.plates.map((other, at) =>
                       at === index ? { ...other, pairs: Math.max(0, other.pairs - 1) } : other,
@@ -154,7 +151,7 @@ export function WorkoutSettingsScreen() {
                   }))
                 }
                 onIncrement={() =>
-                  changeGear(unit, (current) => ({
+                  changeBarsAndPlates(unit, (current) => ({
                     ...current,
                     plates: current.plates.map((other, at) =>
                       at === index
@@ -176,7 +173,7 @@ export function WorkoutSettingsScreen() {
             label="Add a plate size"
             symbol="plus"
             variant="secondary"
-            onPress={() => addPlate(unit)}
+            onPress={() => addPlate(unit, gear)}
             testID="add-plate"
           />
         </View>
@@ -204,7 +201,7 @@ export function WorkoutSettingsScreen() {
                 label={`Remove ${bar.name}`}
                 disabled={gear.bars.length === 1}
                 onPress={() =>
-                  changeGear(unit, (current) => ({
+                  changeBarsAndPlates(unit, (current) => ({
                     ...current,
                     bars: current.bars.filter((_, at) => at !== index),
                   }))

@@ -1,24 +1,21 @@
 import { Exit, Schema } from "effect";
 
-import { BarsAndPlates, type BarsAndPlatesByUnit, DEFAULT_BARS_AND_PLATES } from "./plates.ts";
 import { Rpe } from "./schema.ts";
 import { WeightUnit } from "./weight-unit.ts";
 
 /**
- * How you log on this phone: the weight unit, whether sets ask for an RPE, and the plates
- * and bars the plate and warm-up calculators load. Weights are stored in kilograms whatever
- * the unit, so these never change what is saved.
+ * How this phone shows and asks for weights: the unit, and whether sets ask for an RPE.
+ * Weights are stored in kilograms whatever the unit, so these never change what is saved.
+ * Your plates and bars are data you made, so they live in the database instead.
  */
 export interface WorkoutSettings {
   readonly unit: WeightUnit;
   readonly logRpe: boolean;
-  readonly barsAndPlates: BarsAndPlatesByUnit;
 }
 
 export const DEFAULT_WORKOUT_SETTINGS: WorkoutSettings = {
   unit: "kg",
   logRpe: false,
-  barsAndPlates: DEFAULT_BARS_AND_PLATES,
 };
 
 const field = <S extends Schema.Top>(schema: S, raw: unknown, fallback: S["Type"]): S["Type"] => {
@@ -38,17 +35,9 @@ export const parseWorkoutSettings = (text: unknown): WorkoutSettings => {
     raw = undefined;
   }
   const record = typeof raw === "object" && raw !== null ? (raw as Record<string, unknown>) : {};
-  const saved =
-    typeof record["barsAndPlates"] === "object" && record["barsAndPlates"] !== null
-      ? (record["barsAndPlates"] as Record<string, unknown>)
-      : {};
   return {
     unit: field(WeightUnit, record["unit"], DEFAULT_WORKOUT_SETTINGS.unit),
     logRpe: field(Schema.Boolean, record["logRpe"], DEFAULT_WORKOUT_SETTINGS.logRpe),
-    barsAndPlates: {
-      kg: field(BarsAndPlates, saved["kg"], DEFAULT_BARS_AND_PLATES.kg),
-      lb: field(BarsAndPlates, saved["lb"], DEFAULT_BARS_AND_PLATES.lb),
-    },
   };
 };
 

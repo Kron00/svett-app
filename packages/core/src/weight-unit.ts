@@ -61,6 +61,27 @@ export const kgFromText = (
   return Number.isFinite(value) ? kgFrom(value, unit) : null;
 };
 
+/** A weight being typed: the text, the unit it is typed in, and the kilograms it opened with. */
+export interface WeightEntry {
+  readonly text: string;
+  readonly unit: WeightUnit;
+  readonly kg: number | null;
+}
+
+/** An entry that opens on `kg`, shown in `unit`, or empty for null. */
+export const weightEntry = (kg: number | null, unit: WeightUnit): WeightEntry => ({
+  text: kg === null ? "" : formatWeight(kg, unit),
+  unit,
+  kg,
+});
+
+/**
+ * The same weight typed in `unit`. Switching units while a weight is typed keeps what is on
+ * the bar, so 100 kg reads 220.46 lb rather than 100 lb, and back again reads 100 kg.
+ */
+export const weightEntryIn = (entry: WeightEntry, unit: WeightUnit): WeightEntry =>
+  entry.unit === unit ? entry : weightEntry(kgFromText(entry.text, entry.kg, entry.unit), unit);
+
 /** How a weight is typed: two decimals in either unit, and a stepper press of 2.5 kg or 5 lb. */
 export const WEIGHT_ENTRY: Readonly<Record<WeightUnit, NumberEntryLimits>> = {
   kg: { decimals: 2, maxIntegerDigits: 4, step: 2.5 },

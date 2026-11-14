@@ -54,6 +54,7 @@ export const PARENT: Readonly<
   measurement: null,
   proposal: null,
   coachMessage: null,
+  gear: null,
 };
 
 /**
@@ -234,6 +235,7 @@ const NOUN: Readonly<Record<TableKey, readonly [one: string, other: string]>> = 
   measurement: ["measurement", "measurements"],
   proposal: ["coach proposal", "coach proposals"],
   coachMessage: ["coach message", "coach messages"],
+  gear: ["set of plates and bars", "sets of plates and bars"],
 };
 
 export const countLabel = (table: TableKey, count: number): string =>
@@ -388,6 +390,8 @@ export const summarize = (item: Item): ItemSummary => {
         title: IMPORT_SOURCE_TITLE[text(top["source"]) as ImportSource] ?? fallback,
         at: time(top["createdAt"]),
       };
+    case "gear":
+      return { ...base, title: `Plates and bars in ${text(top["unit"])}`, at: null };
     default:
       return { ...base, title: fallback, at: null };
   }

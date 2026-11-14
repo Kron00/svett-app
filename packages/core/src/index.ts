@@ -14,6 +14,7 @@ export * from "./repositories/routines.ts";
 export * from "./repositories/records.ts";
 export * from "./repositories/progress.ts";
 export * from "./repositories/history.ts";
+export * from "./repositories/gear.ts";
 export * from "./history.ts";
 export * from "./muscle-split.ts";
 export * from "./calendar.ts";

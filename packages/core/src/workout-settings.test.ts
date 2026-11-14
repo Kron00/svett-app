@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { DEFAULT_BARS_AND_PLATES } from "./plates.ts";
 import {
   DEFAULT_WORKOUT_SETTINGS,
   parseWorkoutSettings,
@@ -10,31 +9,18 @@ import {
 } from "./workout-settings.ts";
 
 describe("workout settings", () => {
-  it("starts in kilograms, without RPE, with a commercial gym's plates and bars", () => {
+  it("starts in kilograms, without RPE", () => {
     expect(parseWorkoutSettings(undefined)).toEqual(DEFAULT_WORKOUT_SETTINGS);
     expect(DEFAULT_WORKOUT_SETTINGS).toMatchObject({ unit: "kg", logRpe: false });
   });
 
   it("reads saved settings back", () => {
-    const saved = {
-      unit: "lb",
-      logRpe: true,
-      barsAndPlates: {
-        ...DEFAULT_BARS_AND_PLATES,
-        lb: { plates: [{ weight: 45, pairs: 4 }], bars: [{ name: "Squat bar", weight: 55 }] },
-      },
-    };
+    const saved = { unit: "lb", logRpe: true };
     expect(parseWorkoutSettings(JSON.stringify(saved))).toEqual(saved);
   });
 
   it("keeps every good field when one is broken", () => {
-    const parsed = parseWorkoutSettings(
-      JSON.stringify({
-        unit: "stone",
-        logRpe: true,
-        barsAndPlates: { kg: { plates: [{ weight: -5, pairs: 1 }], bars: [] }, lb: "none" },
-      }),
-    );
+    const parsed = parseWorkoutSettings(JSON.stringify({ unit: "stone", logRpe: true }));
     expect(parsed).toEqual({ ...DEFAULT_WORKOUT_SETTINGS, logRpe: true });
     expect(parseWorkoutSettings("{not json")).toEqual(DEFAULT_WORKOUT_SETTINGS);
   });

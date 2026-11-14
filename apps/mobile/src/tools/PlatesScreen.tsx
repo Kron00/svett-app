@@ -1,19 +1,21 @@
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import {
   editNumberEntry,
-  formatWeight,
   formatWeightNumber,
   loadPlates,
   plateLabel,
   plateLine,
   type PlateLoad,
   WEIGHT_ENTRY,
+  weightEntry,
+  weightEntryIn,
   type WeightUnit,
 } from "@svett/core";
 import { useState } from "react";
 import { ScrollView, View } from "react-native";
 
 import type { RootStackParamList } from "../navigation";
+import { GearNotReady, useBarsAndPlates } from "../settings/gear";
 import { useWorkoutSettings } from "../settings/store";
 import { AppText } from "../ui/AppText";
 import { Button } from "../ui/Button";
@@ -66,15 +68,16 @@ function Load({
  * your plates cannot make shows the nearest lighter and heavier loads.
  */
 export function PlatesScreen({ route, navigation }: Props) {
-  const { unit, barsAndPlates } = useWorkoutSettings();
-  const { bars, plates } = barsAndPlates[unit];
-  const [text, setText] = useState(() => {
-    const kg = linkedKg(route.params?.kg);
-    return kg === null ? "" : formatWeight(kg, unit);
-  });
+  const { unit } = useWorkoutSettings();
+  const gear = useBarsAndPlates();
+  // The weight keeps the unit it was typed in, so changing units under it converts it.
+  const [entry, setEntry] = useState(() => weightEntry(linkedKg(route.params?.kg), unit));
+  const { text } = weightEntryIn(entry, unit);
   // The first key replaces a weight the screen opened with, as the logger's keypad does.
   const [fresh, setFresh] = useState(true);
   const [barIndex, setBarIndex] = useState(0);
+  if (gear.status !== "ready") return <GearNotReady query={gear} />;
+  const { bars, plates } = gear.value[unit];
   const bar = bars[Math.min(barIndex, bars.length - 1)]!;
   const target = text === "" ? null : Number.parseFloat(text);
   const result =
@@ -150,9 +153,11 @@ export function PlatesScreen({ route, navigation }: Props) {
       <Keypad
         limits={WEIGHT_ENTRY[unit]}
         onKey={(key) => {
-          setText((current) =>
-            editNumberEntry(fresh && key !== "delete" ? "" : current, key, WEIGHT_ENTRY[unit]),
-          );
+          setEntry((current) => {
+            const shown = weightEntryIn(current, unit);
+            const typed = fresh && key !== "delete" ? "" : shown.text;
+            return { ...shown, text: editNumberEntry(typed, key, WEIGHT_ENTRY[unit]) };
+          });
           setFresh(false);
         }}
       />
