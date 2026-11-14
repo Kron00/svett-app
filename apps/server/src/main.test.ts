@@ -58,15 +58,19 @@ const startServer = async (env: Record<string, string>) => {
 
   const base = `http://127.0.0.1:${port}`;
   const deadline = Date.now() + 30_000;
-  for (;;) {
+  const waitUntilUp = async (): Promise<void> => {
     if (server.exitCode !== null) {
       throw new Error(`The server exited with ${server.exitCode}:\n${output}`);
     }
-    const health = await fetch(`${base}/health`).catch(() => undefined);
-    if (health !== undefined) break;
+    const health = await fetch(`${base}/health`, { signal: AbortSignal.timeout(2_000) }).catch(
+      () => undefined,
+    );
+    if (health !== undefined) return;
     if (Date.now() > deadline) throw new Error(`The server did not answer:\n${output}`);
     await new Promise((resolve) => setTimeout(resolve, 200));
-  }
+    return waitUntilUp();
+  };
+  await waitUntilUp();
 
   const call = async (method: string, path: string, token?: string) => {
     const response = await fetch(`${base}${path}`, {
@@ -76,6 +80,9 @@ const startServer = async (env: Record<string, string>) => {
         ...(token === undefined ? {} : { authorization: `Bearer ${token}` }),
       },
       ...(method === "PUT" ? { body: JSON.stringify({ rows: [] }) } : {}),
+      signal: AbortSignal.timeout(15_000),
+    }).catch((error: unknown) => {
+      throw new Error(`${method} ${path} got no answer: ${String(error)}\n${output}`);
     });
     return { status: response.status, body: (await response.json()) as unknown };
   };

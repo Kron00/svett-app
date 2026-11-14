@@ -11,6 +11,7 @@ import {
   encodeMoveJournal,
   finishMove,
   type MoveJournal,
+  MoveRefused,
   type MoveSteps,
   startMove,
 } from "./move-journal.ts";
@@ -82,6 +83,24 @@ type Crash = "midCopy" | "recordCleaning" | "deleteAnonymous";
 
 class Crashed extends Error {}
 
+const run = <A>(effect: Effect.Effect<A, unknown>) =>
+  Effect.runPromise(
+    effect.pipe(
+      Effect.map((value) => ({ done: value }) as const),
+      Effect.catch((error) =>
+        Effect.succeed(
+          error instanceof Crashed
+            ? ({ crashed: error.message } as const)
+            : error instanceof SqlError && error.cause instanceof Crashed
+              ? ({ crashed: error.cause.message } as const)
+              : error instanceof MoveRefused
+                ? ({ refused: "MoveRefused" } as const)
+                : ({ failed: String(error) } as const),
+        ),
+      ),
+    ),
+  );
+
 /**
  * A phone with imported history and no one signed in. Its journal is kept as the string the
  * app stores, and each database is a file that a crash leaves as it was.
@@ -139,22 +158,6 @@ const phone = async () => {
       ),
     ),
   };
-
-  const run = <A>(effect: Effect.Effect<A, unknown>) =>
-    Effect.runPromise(
-      effect.pipe(
-        Effect.map((value) => ({ done: value }) as const),
-        Effect.catch((error) =>
-          Effect.succeed(
-            error instanceof Crashed
-              ? ({ crashed: error.message } as const)
-              : error instanceof SqlError && error.cause instanceof Crashed
-                ? ({ crashed: error.cause.message } as const)
-                : ({ refused: (error as { _tag?: string })._tag } as const),
-          ),
-        ),
-      ),
-    );
 
   return {
     crashes,

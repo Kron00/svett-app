@@ -149,19 +149,27 @@ describe("Clerk config from the environment", () => {
 
 describe("trusted origins", () => {
   it("must each be an origin", async () => {
-    for (const party of ["svett.app", "https://svett.app/path", "https://svett.app/"]) {
-      expect(await check({ ...STAND_IN, authorizedParties: party })).toEqual({
+    const parties = ["svett.app", "https://svett.app/path", "https://svett.app/"];
+    const answers = await Promise.all(
+      parties.map((party) => check({ ...STAND_IN, authorizedParties: party })),
+    );
+    expect(answers).toEqual(
+      parties.map((party) => ({
         refused: expect.stringContaining(`CLERK_AUTHORIZED_PARTIES lists ${party}`),
-      });
-    }
+      })),
+    );
   });
 
   it("must use HTTPS from another machine in production", async () => {
-    for (const party of ["http://svett.app", "https://localhost:8081", "https://127.0.0.1"]) {
-      expect(await check({ ...production, authorizedParties: party })).toEqual({
+    const parties = ["http://svett.app", "https://localhost:8081", "https://127.0.0.1"];
+    const answers = await Promise.all(
+      parties.map((party) => check({ ...production, authorizedParties: party })),
+    );
+    expect(answers).toEqual(
+      parties.map(() => ({
         refused: expect.stringContaining("served over HTTPS from another machine"),
-      });
-    }
+      })),
+    );
   });
 
   it("may name a local origin outside production", async () => {
