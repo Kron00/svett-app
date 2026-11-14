@@ -6,6 +6,7 @@ import { currentVersion, type Migration, migrate, MIGRATIONS } from "./migration
 import { openNodeDatabase } from "./node-sqlite.ts";
 import { Sql } from "./sql.ts";
 import { columnOf, TABLES } from "./table.ts";
+import { setFieldsFromSets } from "./logger.ts";
 
 const NEXT: Migration = {
   version: MIGRATIONS.length + 1,
@@ -109,9 +110,90 @@ describe("migrate", () => {
     });
   });
 
+  it("keeps every activity saved before workouts could be in progress finished, with its sets done", async () => {
+    const { database, run } = open();
+    await run(migrate(MIGRATIONS.slice(0, 3)));
+    database.exec(
+      `INSERT INTO activity (id, updated_at, kind, started_at, duration_s, title, notes, source)
+       VALUES ('a', 1, 'strength', 1, 60, 'Push', '', 'svett');
+       INSERT INTO activity_set (id, updated_at, activity_exercise_id, position, set_type, reps)
+       VALUES ('s', 1, 'e', 0, 'normal', 5)`,
+    );
+    await run(migrate());
+    expect(database.prepare("SELECT status, routine_id FROM activity").all()).toEqual([
+      { status: "finished", routine_id: null },
+    ]);
+    expect(
+      database.prepare("SELECT done, target_reps_min, target_reps_max FROM activity_set").all(),
+    ).toEqual([{ done: 1, target_reps_min: null, target_reps_max: null }]);
+  });
+
+  it("logs each exercise saved before set fields by what its sets record", async () => {
+    const { database, run } = open();
+    await run(migrate(MIGRATIONS.slice(0, 4)));
+    const sets: ReadonlyArray<
+      [string, number | null, number | null, number | null, number | null]
+    > = [
+      ["squat", 100, 5, null, null],
+      ["squat", null, 5, null, null],
+      ["pullup", null, 8, null, null],
+      ["plank", null, null, 60, null],
+      ["carry", 40, null, null, 30],
+      ["row", null, null, 120, 500],
+      ["hold", 20, null, 45, null],
+    ];
+    const exercises = [...new Set(sets.map(([exercise]) => exercise)), "empty"];
+    for (const exercise of exercises) {
+      database
+        .prepare(
+          "INSERT INTO activity_exercise (id, updated_at, activity_id, exercise_id, position, notes) VALUES (?, 1, 'a', 'x', 0, '')",
+        )
+        .run(exercise);
+    }
+    for (const [index, [exercise, weight, reps, duration, distance]] of sets.entries()) {
+      database
+        .prepare(
+          "INSERT INTO activity_set (id, updated_at, activity_exercise_id, position, set_type, weight_kg, reps, duration_s, distance_m) VALUES (?, 1, ?, 0, 'normal', ?, ?, ?, ?)",
+        )
+        .run(`s${index}`, exercise, weight, reps, duration, distance);
+    }
+    await run(migrate());
+    const stored = Object.fromEntries(
+      database
+        .prepare("SELECT id, set_fields FROM activity_exercise")
+        .all()
+        .map((row) => [row["id"], row["set_fields"]]),
+    );
+    const expected = Object.fromEntries(
+      exercises.map((exercise) => [
+        exercise,
+        setFieldsFromSets(
+          sets
+            .filter(([name]) => name === exercise)
+            .map(([, weightKg, reps, durationS, distanceM]) => ({
+              weightKg,
+              reps,
+              durationS,
+              distanceM,
+            })) as never,
+        ) ?? "weight_reps",
+      ]),
+    );
+    expect(stored).toEqual(expected);
+    expect(stored).toEqual({
+      squat: "weight_reps",
+      pullup: "reps",
+      plank: "time",
+      carry: "weight_distance",
+      row: "distance_time",
+      hold: "weight_time",
+      empty: "weight_reps",
+    });
+  });
+
   it("puts every location sample saved before routes had stretches into the first one", async () => {
     const { database, run } = open();
-    await run(migrate(MIGRATIONS.slice(0, 1)));
+    await run(migrate(MIGRATIONS.slice(0, 5)));
     database.exec(
       `INSERT INTO activity_sample (id, updated_at, deleted_at, activity_track_id, recorded_at, kind, latitude, longitude)
        VALUES ('l', 1, NULL, 't', 1, 'location', 59.3, 18.0), ('s', 1, NULL, 't', 2, 'split', NULL, NULL)`,

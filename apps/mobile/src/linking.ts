@@ -3,20 +3,20 @@ import type { LinkingOptions } from "@react-navigation/native";
 import type { RootStackParamList } from "./navigation";
 
 // The scripts in scripts/sim/ open screens through these links, such as
-// svett://gallery?sheet=open, svett://exercises?q=bench, svett://progress/muscles and
-// svett://chatgpt,
-// because agent-device refuses taps in screen content on iOS 27. It reads UIKit's
-// touch-transparent floating bar containers as toolbars that cover the whole screen.
-// scripts/sim/data.sh reaches export and import the same way, through svett://data,
-// svett://import?file=<name> and svett://imports/<id>/undo. scripts/sim/hevy.sh
-// adds &kind=hevy for a Hevy CSV.
+// svett://gallery?sheet=open, svett://exercises?q=bench, svett://progress/muscles,
+// svett://chatgpt, svett://train, svett://routine/<id>, svett://train/workout and
+// svett://train/workout/exercises?q=plank, because agent-device refuses taps in screen
+// content on iOS 27. It reads UIKit's touch-transparent floating bar containers as
+// toolbars that cover the whole screen. scripts/sim/data.sh reaches export and import
+// the same way, through svett://data, svett://import?file=<name> and
+// svett://imports/<id>/undo. scripts/sim/hevy.sh adds &kind=hevy for a Hevy CSV.
 export const linking: LinkingOptions<RootStackParamList> = {
   prefixes: ["svett://"],
   filter: (url) => !url.includes("expo-development-client"),
   config: {
     initialRouteName: "Tabs",
     screens: {
-      Tabs: { screens: { Progress: "progress" } },
+      Tabs: { screens: { Progress: "progress", Train: "train" } },
       Gallery: "gallery",
       RecordCardio: "record",
       Activity: "activity/:id",
@@ -35,6 +35,13 @@ export const linking: LinkingOptions<RootStackParamList> = {
       Data: "data",
       ImportPreview: "import",
       UndoImport: "imports/:importBatchId/undo",
+      NewRoutine: "routines/new",
+      PickExercise: "routines/new/exercises",
+      EditRoutine: "routine/:id/edit",
+      Routine: "routine/:id",
+      ActiveWorkout: "train/workout",
+      AddWorkoutExercise: "train/workout/exercises",
+      ReplaceWorkoutExercise: "train/workout/exercise/:exercise/replace",
     },
   },
 };

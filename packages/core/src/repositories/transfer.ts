@@ -41,7 +41,9 @@ import {
   tableKeyOf,
   type UndoEntry,
   undoSelection,
+  rawRowsByKey,
   withAddedFields,
+  withoutDrafts,
   withRequired,
   writtenOf,
 } from "../transfer.ts";
@@ -75,6 +77,11 @@ export interface UndoResult {
   readonly left: number;
   /** Records Undo kept because records it keeps still point at them. */
   readonly kept: number;
+  /**
+   * Workouts in progress Undo would have put back while another workout is in progress.
+   * Only one workout is in progress at a time, so these stay discarded.
+   */
+  readonly discarded: number;
 }
 
 const anyTable = (key: TableKey) => TABLES[key] as unknown as Table<AnyRow>;
@@ -87,16 +94,33 @@ const byTableName = <A>(rows: Partial<Record<TableKey, ReadonlyArray<A>>>) =>
     TABLE_KEYS.flatMap((key) => (rows[key]?.length ? [[TABLES[key].name, rows[key]]] : [])),
   );
 
-/** Parses rows an import kept, by table name, with each table's schema. */
-const decodeRows = (rows: RowsByTable) =>
+/**
+ * Parses rows an import kept, by table name, with each table's schema. A field added since
+ * they were written comes from the rows beside them as they were before the import, which are
+ * the kept rows and the rows here the import did not write.
+ */
+const decodeRows = (rows: RowsByTable, here: TableRows, rowIds: RowIdsByTable) =>
   Effect.gen(function* () {
+    const unknown = Object.keys(rows).find((name) => tableKeyOf(name) === undefined);
+    if (unknown !== undefined) return yield* Effect.die(new Error(`Unknown table ${unknown}`));
+    const kept = rawRowsByKey(rows);
+    const beside = Object.fromEntries(
+      TABLE_KEYS.map((key) => {
+        const written = new Set<string>(rowIds[TABLES[key].name] ?? []);
+        return [
+          key,
+          [...(kept[key] ?? []), ...(here[key] ?? []).filter((row) => !written.has(row.id))],
+        ];
+      }),
+    );
+    const filled = withAddedFields(kept, beside);
     const decoded: Partial<Record<TableKey, ReadonlyArray<AnyRow>>> = {};
-    for (const [name, list] of Object.entries(rows)) {
-      const key = tableKeyOf(name);
-      if (key === undefined) return yield* Effect.die(new Error(`Unknown table ${name}`));
+    for (const key of TABLE_KEYS) {
+      const list = filled[key];
+      if (list === undefined) continue;
       const decode = Schema.decodeUnknownEffect(Schema.toType(TABLES[key].schema));
       decoded[key] = (yield* Effect.orDie(
-        Effect.forEach(list, (row) => decode(withAddedFields(key, row))),
+        Effect.forEach(list, (row) => decode(row)),
       )) as ReadonlyArray<AnyRow>;
     }
     return decoded as TableRows;
@@ -165,6 +189,10 @@ const journalRows = (
       TABLE_KEYS.flatMap((key) => (rows[key] ? [[key, [...rows[key].values()]]] : [])),
     ) as TableRows;
   });
+
+/** The live workouts in progress other than `id`. */
+const otherInProgress = (id: string) =>
+  selectRows(TABLES.activity, "status = 'in_progress' AND id <> ?", [id]);
 
 const putAll = (rows: TableRows) =>
   Effect.forEach(TABLE_KEYS, (key) => putRows(anyTable(key), rows[key] ?? []), {
@@ -301,7 +329,7 @@ const undoSteps = (importBatchId: ImportBatchId) =>
       Effect.gen(function* () {
         const edited = yield* isEdited(change);
         const current = yield* journalRows(change.rowIds);
-        const before = yield* decodeRows(change.replaced ?? {});
+        const before = yield* decodeRows(change.replaced ?? {}, current, change.rowIds);
         const kept = new Set(
           TABLE_KEYS.flatMap((key) => (before[key] ?? []).map((row) => rowKey(key, row.id))),
         );
@@ -462,9 +490,18 @@ const makeTransferRepository = Effect.gen(function* () {
             yield* undoSteps(importBatchId),
             alsoEdited,
           );
+          let discarded = 0;
           for (const step of undone) {
             yield* putAll(restamped(step.before, at));
             yield* deleteWithChildren(step.added, at);
+            // Only one workout is in progress at a time, so one this put back beside another
+            // goes again, with every row below it.
+            for (const row of step.before.activity ?? []) {
+              if (row["status"] !== "in_progress" || row.deletedAt !== null) continue;
+              if ((yield* otherInProgress(row.id)).length === 0) continue;
+              yield* deleteWithChildren({ activity: [row] }, at);
+              discarded++;
+            }
           }
           yield* imports.setStatus(importBatchId, "undone");
           return {
@@ -472,17 +509,18 @@ const makeTransferRepository = Effect.gen(function* () {
             restored: restoring,
             left: leaving,
             kept: keeping,
+            discarded,
           } satisfies UndoResult;
         }),
       ),
     );
 
   return {
-    /** The whole database as a svett file, with the name to give it. */
+    /** The whole database as a svett file, with the name to give it, without a workout in progress. */
     exportFile: run(
       Effect.gen(function* () {
         const at = yield* currentTime;
-        const rows = yield* sql.transaction(snapshot);
+        const rows = withoutDrafts(yield* sql.transaction(snapshot));
         return { name: exportFileName(at), text: encodeSvettFile(rows, at), rows: rowCount(rows) };
       }),
     ),

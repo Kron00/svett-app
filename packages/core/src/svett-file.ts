@@ -13,9 +13,12 @@ import {
 
 /**
  * Raised by every change to the file's shape. An older svett refuses a newer file. Version 2
- * added a location sample's segment, which a version 1 file reads as 0, its only stretch.
+ * added a workout's status and routine and a set's done mark and target, and version 3 an
+ * exercise's set fields, and version 4 a location sample's segment. An older file reads with
+ * the values its rows had then, an exercise's set fields come from its sets, and a location
+ * sample is in segment 0, its route's only stretch.
  */
-export const SVETT_FILE_VERSION = 2;
+export const SVETT_FILE_VERSION = 4;
 
 export interface SvettFile {
   readonly version: number;
@@ -93,6 +96,9 @@ export const decodeSvettFile = (text: string): Result.Result<SvettFile, SvettFil
     );
   }
 
+  const filled = withAddedFields(
+    Object.fromEntries(TABLE_KEYS.map((key) => [key, tables[TABLES[key].name] ?? []])),
+  );
   const parsed: Partial<Record<(typeof TABLE_KEYS)[number], Array<AnyRow>>> = {};
   let rows = 0;
   for (const key of TABLE_KEYS) {
@@ -100,8 +106,8 @@ export const decodeSvettFile = (text: string): Result.Result<SvettFile, SvettFil
     const decode = Schema.decodeUnknownExit(Schema.toType(TABLES[key].schema));
     const seen = new Set<string>();
     const kept: Array<AnyRow> = [];
-    for (const [index, raw] of (tables[name] ?? []).entries()) {
-      const row = decode(withAddedFields(key, raw));
+    for (const [index, raw] of (filled[key] ?? []).entries()) {
+      const row = decode(raw);
       if (Exit.isFailure(row)) {
         return Result.fail(
           new SvettFileError({

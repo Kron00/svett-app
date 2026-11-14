@@ -2,6 +2,7 @@ import { Exit, Schema } from "effect";
 
 import { LIBRARY_UPDATED_AT } from "./exercise-library.ts";
 import { canonicalJson, contentFingerprint } from "./ids.ts";
+import { setFieldsFromSets } from "./logger.ts";
 import {
   EpochMillis,
   Fingerprint,
@@ -9,6 +10,7 @@ import {
   type ImportChangeId,
   type ImportSource,
   type MeasurementKind,
+  type SetFields,
 } from "./schema.ts";
 import { TABLES } from "./table.ts";
 
@@ -69,6 +71,7 @@ export const REFERENCES: ReadonlyArray<{
   { table: "routineExercise", key: "exerciseId", target: "exercise" },
   { table: "exerciseAlias", key: "exerciseId", target: "exercise" },
   { table: "routine", key: "folderId", target: "folder" },
+  { table: "activity", key: "routineId", target: "routine" },
   { table: "proposal", key: "coachMessageId", target: "coachMessage" },
   { table: "activity", key: "importBatchId", target: "importBatch" },
   { table: "exercise", key: "importBatchId", target: "importBatch" },
@@ -82,30 +85,138 @@ export const CHILDREN: Readonly<Record<TableKey, ReadonlyArray<TableKey>>> = Obj
 export const tableKeyOf = (name: string): TableKey | undefined =>
   TABLE_KEYS.find((key) => TABLES[key].name === name);
 
-/**
- * Fields added after svett files and import journals were first written, with the value the
- * migration gave each row that had none. A row written before a field existed reads with it,
- * and a row whose field still has that value fingerprints as it did before.
- */
-const addedFields = (
-  table: TableKey,
-  row: Readonly<Record<string, unknown>>,
-): Readonly<Record<string, unknown>> | undefined =>
-  table === "activitySample" && row["kind"] === "location" ? { segment: 0 } : undefined;
+/** Rows of some tables as they were read, before any schema checked them. */
+export type RawRows = Partial<Record<TableKey, ReadonlyArray<unknown>>>;
 
-/** A raw row with each field added since it was written filled in, ready for its schema. */
-export const withAddedFields = (table: TableKey, raw: unknown): unknown => {
-  if (typeof raw !== "object" || raw === null) return raw;
-  const added = addedFields(table, raw as Record<string, unknown>);
-  return added === undefined ? raw : { ...added, ...raw };
+type Fields = Readonly<Record<string, unknown>>;
+
+type SetValues = Parameters<typeof setFieldsFromSets>[0][number];
+
+const SET_VALUE_KEYS: ReadonlyArray<keyof SetValues> = [
+  "weightKg",
+  "reps",
+  "durationS",
+  "distanceM",
+];
+
+const fieldsOf = (raw: unknown): Fields | undefined =>
+  typeof raw === "object" && raw !== null && !Array.isArray(raw) ? (raw as Fields) : undefined;
+
+/**
+ * Each exercise's set fields as migration 5 gave an exercise logged before them, from all its
+ * sets, deleted ones too.
+ */
+const setFieldsBySets = (sets: ReadonlyArray<unknown>) => {
+  const byExercise = new Map<unknown, Array<SetValues>>();
+  for (const raw of sets) {
+    const set = fieldsOf(raw);
+    if (set === undefined) continue;
+    const list = byExercise.get(set["activityExerciseId"]) ?? [];
+    list.push(
+      Object.fromEntries(
+        SET_VALUE_KEYS.map((key) => [key, set[key] ?? null]),
+      ) as unknown as SetValues,
+    );
+    byExercise.set(set["activityExerciseId"], list);
+  }
+  return (exerciseId: unknown): SetFields =>
+    setFieldsFromSets(byExercise.get(exerciseId) ?? []) ?? "weight_reps";
 };
 
-const withoutAddedFields = (table: TableKey, row: AnyRow): AnyRow => {
-  const added = addedFields(table, row);
-  if (added === undefined) return row;
+/**
+ * Fields added after svett files and import journals were first written, with the value the
+ * migration gave every row before them. A row written before a field existed reads with it,
+ * and a row whose field still has that value fingerprints as it did before. A value can come
+ * from the rows in `beside`, as an exercise's set fields come from its sets.
+ */
+const addedFields = (beside: RawRows): Partial<Record<TableKey, (row: Fields) => Fields>> => {
+  let setFieldsOf: ((exerciseId: unknown) => SetFields) | undefined;
+  return {
+    activity: () => ({ status: "finished", routineId: null }),
+    activityExercise: (row) => ({
+      setFields: (setFieldsOf ??= setFieldsBySets(beside.activitySet ?? []))(row["id"]),
+    }),
+    activitySet: () => ({ done: true, targetRepsMin: null, targetRepsMax: null }),
+    activitySample: (row) => (row["kind"] === "location" ? { segment: 0 } : {}),
+  };
+};
+
+/**
+ * Raw rows with each field added since they were written filled in, ready for their schemas.
+ * `beside` holds the rows a filled in value comes from, by default the rows themselves.
+ */
+export const withAddedFields = (rows: RawRows, beside: RawRows = rows): RawRows => {
+  const added = addedFields(beside);
   return Object.fromEntries(
-    Object.entries(row).filter(([field, value]) => !(field in added) || added[field] !== value),
-  ) as AnyRow;
+    Object.entries(rows).map(([key, list]) => {
+      const fill = added[key as TableKey];
+      return [
+        key,
+        fill === undefined
+          ? list
+          : (list ?? []).map((raw) => {
+              const row = fieldsOf(raw);
+              return row === undefined ? raw : Object.assign(fill(row), row);
+            }),
+      ];
+    }),
+  ) as RawRows;
+};
+
+/** Raw rows by table name, such as a journal keeps, by table. Unknown tables are left out. */
+export const rawRowsByKey = (rows: Readonly<Record<string, ReadonlyArray<unknown>>>): RawRows =>
+  Object.fromEntries(
+    Object.entries(rows).flatMap(([name, list]) => {
+      const key = tableKeyOf(name);
+      return key === undefined ? [] : [[key, list]];
+    }),
+  ) as RawRows;
+
+const withoutAddedFields = (rows: TableRows): TableRows => {
+  const added = addedFields(rows);
+  return Object.fromEntries(
+    Object.entries(rows).map(([key, list]) => {
+      const fill = added[key as TableKey];
+      if (fill === undefined) return [key, list];
+      return [
+        key,
+        (list ?? []).map((row) => {
+          const first = fill(row);
+          return Object.fromEntries(
+            Object.entries(row).filter(
+              ([field, value]) => !(field in first) || first[field] !== value,
+            ),
+          ) as AnyRow;
+        }),
+      ];
+    }),
+  ) as TableRows;
+};
+
+/** A workout still in progress, deleted or not. It is a draft on the phone that started it. */
+const isDraft = (table: TableKey, row: AnyRow | undefined) =>
+  table === "activity" && row !== undefined && row["status"] === "in_progress";
+
+/**
+ * The rows without any workout in progress and the rows below it. A workout in progress is
+ * never exported, imported or synced.
+ */
+export const withoutDrafts = (rows: Snapshot): Snapshot => {
+  const dropped = new Map<TableKey, Set<string>>();
+  const kept = {} as Record<TableKey, ReadonlyArray<AnyRow>>;
+  for (const key of TABLE_KEYS) {
+    const parent = PARENT[key];
+    const gone = new Set<string>();
+    kept[key] = rows[key].filter((row) => {
+      const drop =
+        isDraft(key, row) ||
+        (parent !== null && dropped.get(parent.table)?.has(String(row[parent.key])) === true);
+      if (drop) gone.add(row.id);
+      return !drop;
+    });
+    dropped.set(key, gone);
+  }
+  return kept;
 };
 
 /** What one record is called in a preview. */
@@ -190,16 +301,18 @@ export const groupItems = (rows: TableRows, lookup: TableRows = rows): Map<strin
 };
 
 /** Changes with any write to the record, even one that leaves its content as it was. */
-export const writtenOf = (rows: TableRows): Fingerprint =>
-  Fingerprint.make(
+export const writtenOf = (rows: TableRows): Fingerprint => {
+  const first = withoutAddedFields(rows);
+  return Fingerprint.make(
     contentFingerprint(
       TABLE_KEYS.flatMap((table) =>
-        [...(rows[table] ?? [])]
+        [...(first[table] ?? [])]
           .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
-          .map((row) => [TABLES[table].name, withoutAddedFields(table, row)]),
+          .map((row) => [TABLES[table].name, row]),
       ),
     ),
   );
+};
 
 const MEASUREMENT_TITLE: Readonly<Record<MeasurementKind, string>> = {
   body_weight: "Body weight",
@@ -305,7 +418,8 @@ export type PlannedItem =
   | ({ readonly status: "new" } & Writes)
   | ({ readonly status: "changed" } & Writes)
   | ({ readonly status: "restore" } & Writes)
-  | { readonly status: "unchanged"; readonly summary: ItemSummary };
+  | { readonly status: "unchanged"; readonly summary: ItemSummary }
+  | { readonly status: "skipped"; readonly summary: ItemSummary };
 
 /**
  * A record the file holds that may be one already here or another in the file: a workout with
@@ -354,6 +468,8 @@ export interface ImportPlan {
   /** Records here that the file holds another version of. Import keeps yours unless chosen. */
   readonly changed: ReadonlyArray<ItemSummary>;
   readonly unchanged: number;
+  /** Workouts in progress, in the file or here. Import leaves them as they are. */
+  readonly skipped: number;
 }
 
 const byTimeThenTitle = (a: ItemSummary, b: ItemSummary) =>
@@ -396,6 +512,7 @@ export const planImport = (
   );
   const planned: Array<
     | { readonly status: "unchanged"; readonly summary: ItemSummary }
+    | { readonly status: "skipped"; readonly summary: ItemSummary }
     | ({ readonly status: "new" | "changed"; readonly restorable: boolean } & Omit<
         Writes,
         "requires"
@@ -403,6 +520,16 @@ export const planImport = (
   > = [];
   for (const item of groupItems(incoming, lookup).values()) {
     const summary = summarize(item);
+    if (
+      isDraft(
+        item.table,
+        item.rows[item.table]?.find((row) => row.id === item.id),
+      ) ||
+      isDraft(item.table, here.get(item.table)?.get(item.id))
+    ) {
+      planned.push({ status: "skipped", summary });
+      continue;
+    }
     const writes: Partial<Record<TableKey, Array<AnyRow>>> = {};
     const replaced: Partial<Record<TableKey, Array<AnyRow>>> = {};
     let yours = !isRootSeedOrMissing(item, here);
@@ -450,12 +577,14 @@ export const planImport = (
   };
   const requires = new Map(
     planned.flatMap((item) =>
-      item.status === "unchanged" ? [] : [[item.summary.key, requiresOf(item.incoming)] as const],
+      item.status === "unchanged" || item.status === "skipped"
+        ? []
+        : [[item.summary.key, requiresOf(item.incoming)] as const],
     ),
   );
   const required = new Set([...requires.values()].flat());
   const items = planned.map((item): PlannedItem => {
-    if (item.status === "unchanged") return item;
+    if (item.status === "unchanged" || item.status === "skipped") return item;
     const key = item.summary.key;
     return {
       status: required.has(key) ? "restore" : item.status,
@@ -482,6 +611,7 @@ export const planImport = (
       .map((item) => item.summary)
       .sort(byTimeThenTitle),
     unchanged: items.filter((item) => item.status === "unchanged").length,
+    skipped: items.filter((item) => item.status === "skipped").length,
   };
 };
 
@@ -508,12 +638,17 @@ export const journalProblem = (change: ImportChange): string | undefined => {
     if (tableKeyOf(name) === undefined) return `it names a table svett does not know, ${name}`;
     written.set(name, new Set(ids));
   }
-  for (const [name, rows] of Object.entries(change.replaced ?? {})) {
-    const key = tableKeyOf(name);
-    if (key === undefined) return `it names a table svett does not know, ${name}`;
+  const replaced = change.replaced ?? {};
+  const unknown = Object.keys(replaced).find((name) => tableKeyOf(name) === undefined);
+  if (unknown !== undefined) return `it names a table svett does not know, ${unknown}`;
+  const filled = withAddedFields(rawRowsByKey(replaced));
+  for (const key of TABLE_KEYS) {
+    const raws = filled[key];
+    if (raws === undefined) continue;
+    const name = TABLES[key].name;
     const decode = Schema.decodeUnknownExit(Schema.toType(TABLES[key].schema));
-    for (const raw of rows) {
-      const row = decode(withAddedFields(key, raw));
+    for (const raw of raws) {
+      const row = decode(raw);
       if (Exit.isFailure(row)) return `it keeps a ${name} row that is not valid`;
       const value = row.value as AnyRow;
       if (!written.get(name)?.has(value.id)) {
@@ -536,6 +671,15 @@ export const isNothingToImport = (plan: ImportPlan): boolean =>
 
 export const recordsLabel = (count: number): string =>
   `${count.toLocaleString("en-US")} ${count === 1 ? "record" : "records"}`;
+
+const workoutsLabel = (count: number) =>
+  `${count.toLocaleString("en-US")} ${count === 1 ? "workout" : "workouts"}`;
+
+/** Why an import leaves workouts in progress out, or undefined when it leaves none out. */
+export const skippedLabel = (skipped: number): string | undefined =>
+  skipped === 0
+    ? undefined
+    : `Import skips ${workoutsLabel(skipped)} in progress. A workout in progress stays on the phone that started it until it is finished.`;
 
 /** What an import did, in one or two sentences. */
 export const importOutcome = ({
@@ -564,7 +708,9 @@ export const withRequired = (
     items.flatMap((item) => (item.status === "restore" ? [[item.summary.key, item] as const] : [])),
   );
   const required = new Set<string>();
-  const pending = picked.flatMap((item) => (item.status === "unchanged" ? [] : item.requires));
+  const pending = picked.flatMap((item) =>
+    item.status === "unchanged" || item.status === "skipped" ? [] : item.requires,
+  );
   for (let key = pending.pop(); key !== undefined; key = pending.pop()) {
     const item = restores.get(key);
     if (item === undefined || required.has(key)) continue;
@@ -659,11 +805,13 @@ export const undoOutcome = ({
   restored,
   left,
   kept = 0,
+  discarded = 0,
 }: {
   readonly removed: number;
   readonly restored: number;
   readonly left: number;
   readonly kept?: number;
+  readonly discarded?: number;
 }): string => {
   const done =
     removed > 0 && restored > 0
@@ -677,5 +825,8 @@ export const undoOutcome = ({
     done,
     kept === 0 ? "" : ` Kept ${recordsLabel(kept)} ${STILL_USED}.`,
     left === 0 ? "" : ` Left ${recordsLabel(left)} you changed after the import.`,
+    discarded === 0
+      ? ""
+      : ` Kept ${workoutsLabel(discarded)} in progress discarded, because another workout is in progress.`,
   ].join("");
 };

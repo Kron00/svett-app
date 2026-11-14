@@ -7,7 +7,23 @@ import { AppText } from "./AppText";
 import { EntryField } from "./NumberEntry";
 import { Icon } from "./Icon";
 
-export type SetField = "weight" | "reps";
+/** A value column of a set row, such as weight or reps. Times and distances need the wide one. */
+export type SetRowColumn = { readonly title: string; readonly wide: boolean };
+
+export const WEIGHT_AND_REPS: ReadonlyArray<SetRowColumn> = [
+  { title: "KG", wide: true },
+  { title: "REPS", wide: false },
+];
+
+export type SetRowField = {
+  /** What VoiceOver calls the field after the set's own name, such as "weight". */
+  readonly name: string;
+  readonly value: string;
+  /** Shown dimmed while the field is empty, such as last time's value. */
+  readonly placeholder?: string;
+  readonly unit?: string;
+  readonly testID?: string;
+};
 
 export type SetRowProps = {
   readonly setType: SetType;
@@ -15,21 +31,28 @@ export type SetRowProps = {
   readonly normalSetNumber: number;
   /** The same set last time, already formatted, or null when there was none. */
   readonly previous: string | null;
-  readonly weight: string;
-  readonly reps: string;
-  readonly weightPlaceholder?: string;
-  readonly repsPlaceholder?: string;
+  readonly columns?: ReadonlyArray<SetRowColumn>;
+  /** One field per column, in the same order. */
+  readonly fields: ReadonlyArray<SetRowField>;
   readonly done: boolean;
-  readonly focusedField?: SetField;
+  /** The field the keypad types into, by its place in `fields`. */
+  readonly focusedField?: number;
   readonly onPressSetType: () => void;
-  readonly onPressField: (field: SetField) => void;
+  readonly onPressField: (field: number) => void;
   readonly onToggleDone: () => void;
+  /** What VoiceOver reads for the done box, when the set's values should be part of it. */
+  readonly doneLabel?: string;
+  readonly testID?: string;
 };
 
-const COLUMN = { set: "min-w-11", weight: "min-w-20", reps: "min-w-16", done: "w-11" } as const;
+const COLUMN = { set: "min-w-11", wide: "min-w-20", narrow: "min-w-16", done: "w-11" } as const;
 
 /** The column titles above a run of set rows. Hidden from VoiceOver, since each row reads its own labels. */
-export function SetRowHeader() {
+export function SetRowHeader({
+  columns = WEIGHT_AND_REPS,
+}: {
+  readonly columns?: ReadonlyArray<SetRowColumn>;
+}) {
   const stacked = useIsAccessibilityTextSize();
   if (stacked) return null;
   return (
@@ -44,12 +67,16 @@ export function SetRowHeader() {
       <AppText variant="caption1" tone="secondary" className="flex-1 text-center">
         PREVIOUS
       </AppText>
-      <AppText variant="caption1" tone="secondary" className={`${COLUMN.weight} text-center`}>
-        KG
-      </AppText>
-      <AppText variant="caption1" tone="secondary" className={`${COLUMN.reps} text-center`}>
-        REPS
-      </AppText>
+      {columns.map((column) => (
+        <AppText
+          key={column.title}
+          variant="caption1"
+          tone="secondary"
+          className={`${column.wide ? COLUMN.wide : COLUMN.narrow} text-center`}
+        >
+          {column.title}
+        </AppText>
+      ))}
       <View className={COLUMN.done} />
     </View>
   );
@@ -60,7 +87,7 @@ export function SetRowHeader() {
  * values and handles each press. At accessibility text sizes the fields move
  * to a second line.
  */
-export function SetRow(props: SetRowProps) {
+export function SetRow({ columns = WEIGHT_AND_REPS, ...props }: SetRowProps) {
   const stacked = useIsAccessibilityTextSize();
   const badge = setBadge(props.setType, props.normalSetNumber);
   const badgeColor = useColor(SET_TYPE_COLOR[props.setType]);
@@ -71,6 +98,7 @@ export function SetRow(props: SetRowProps) {
       accessibilityLabel={badge.label}
       accessibilityHint="Changes the set type"
       onPress={props.onPressSetType}
+      testID={props.testID === undefined ? undefined : `${props.testID}-type`}
       className={`min-h-target items-center justify-center ${COLUMN.set}`}
     >
       <AppText variant="headline" numeric style={{ color: badgeColor }}>
@@ -92,31 +120,28 @@ export function SetRow(props: SetRowProps) {
 
   const fields = (
     <>
-      <View className={stacked ? "flex-1" : COLUMN.weight}>
-        <EntryField
-          label={`${badge.label}, weight`}
-          value={props.weight}
-          placeholder={props.weightPlaceholder}
-          unit={stacked ? "kg" : undefined}
-          focused={props.focusedField === "weight"}
-          onPress={() => props.onPressField("weight")}
-        />
-      </View>
-      <View className={stacked ? "flex-1" : COLUMN.reps}>
-        <EntryField
-          label={`${badge.label}, reps`}
-          value={props.reps}
-          placeholder={props.repsPlaceholder}
-          unit={stacked ? "reps" : undefined}
-          focused={props.focusedField === "reps"}
-          onPress={() => props.onPressField("reps")}
-        />
-      </View>
+      {props.fields.map((field, index) => (
+        <View
+          key={field.name}
+          className={stacked ? "flex-1" : columns[index]?.wide ? COLUMN.wide : COLUMN.narrow}
+        >
+          <EntryField
+            label={`${badge.label}, ${field.name}`}
+            value={field.value}
+            placeholder={field.placeholder}
+            unit={stacked ? field.unit : undefined}
+            focused={props.focusedField === index}
+            onPress={() => props.onPressField(index)}
+            testID={field.testID}
+          />
+        </View>
+      ))}
       <Pressable
         accessibilityRole="checkbox"
-        accessibilityLabel={`${badge.label} done`}
+        accessibilityLabel={props.doneLabel ?? `${badge.label} done`}
         accessibilityState={{ checked: props.done }}
         onPress={props.onToggleDone}
+        testID={props.testID}
         className={`min-h-target items-center justify-center ${COLUMN.done}`}
       >
         <View className={`rounded-lg p-1.5 ${props.done ? "bg-success" : "bg-control"}`}>

@@ -1572,6 +1572,699 @@ check "chatgpt.sh --live signs out an earlier sign-in, then waits 10 minutes for
   'wait id="chatgpt-state-signedIn" 600000' 'get attrs id="chatgpt-sign-out"'
 
 
+# Stands in for the bound command while routines.sh builds and starts a routine.
+# It keeps the screen in front, the routine being edited, the saved routine and
+# the workout in progress as files under $FAKE_STATE. An element is on screen
+# only where the app would show it, and a set row's label is its target. A press
+# acts on the element whose frame was read last. A relaunch keeps the saved
+# routine unless FAKE_FORGETS is set. FAKE_NO_TARGETS starts a workout whose sets
+# are empty, and FAKE_LIBRARY names the picker's first result. It keeps the
+# screens a link opened in front of each other in stack, and writes the screen
+# under each new routine editor to editor-over. The Train tab shows svett's own
+# cold start time when the app was launched with -svettTiming 1, unless
+# FAKE_NO_TIMING is set. FAKE_TIMING_LABEL replaces its text.
+cat >"$fake/routines-device" <<'EOF'
+#!/usr/bin/env bash
+echo "$*" >>"$FAKE_ROOT/bound-calls"
+shift 4
+s=$FAKE_STATE
+mkdir -p "$s"
+get() { cat "$s/$1" 2>/dev/null || true; }
+put() { printf '%s\n' "$2" >"$s/$1"; }
+screen=$(get screen)
+screen=${screen:-home}
+decode() { node -e 'process.stdout.write(decodeURIComponent(process.argv[1]))' "$1"; }
+set_label() {
+  local weight reps_min reps_max
+  IFS='|' read -r weight reps_min reps_max <<<"$1"
+  echo "Set $2, $weight kg, $reps_min to $reps_max reps"
+}
+# set_row <file> <selector> [suffix]: the selector names a set of the file by its
+# place and its label.
+set_row() {
+  local index line
+  index=${2#*-0-}
+  index=${index%%\"*}
+  line=$(sed -n "$((index + 1))p" "$s/$1" 2>/dev/null)
+  [[ -n "$line" ]] || return 1
+  [[ "$2" != *label=* || "$2" == *"label=\"$(set_label "$line" $((index + 1)))${3:-}\"" ]]
+}
+holds() {
+  case "$1" in
+    'label="Train, tab, 2 of 5"') [[ "$screen" != home ]] ;;
+    'id="routine-list"') [[ "$screen" == train ]] ;;
+    'id="cold-start-timing"') [[ "$screen" == train && -f "$s/timing" && -z "${FAKE_NO_TIMING:-}" ]] ;;
+    'id="workout-in-progress-row"') [[ "$screen" == train && -s "$s/workout" ]] ;;
+    'id="routine-row" label='*)
+      [[ "$screen" == train && "$1" == "id=\"routine-row\" label=\"$(get saved_name), $(get saved_exercise)\"" ]] ;;
+    'id="workout"') [[ "$screen" == workout ]] ;;
+    'id="workout-title"' | 'id="discard-workout"') [[ "$screen" == workout && -s "$s/workout" ]] ;;
+    'id="workout-title" label='*) [[ "$screen" == workout && "$1" == "id=\"workout-title\" label=\"$(get workout)\"" ]] ;;
+    'id="workout-set-0-'*) [[ "$screen" == workout ]] && set_row workout_sets "$1" ", To do" ;;
+    'label="No workout in progress"') [[ "$screen" == workout && ! -s "$s/workout" ]] ;;
+    'label="Discard"') [[ -f "$s/alert" ]] ;;
+    'id="routine-editor"' | 'id="add-set-0"' | 'id="save-routine"') [[ "$screen" == editor ]] ;;
+    'id="routine-exercise-0"') [[ "$screen" == editor && -s "$s/draft_exercise" ]] ;;
+    'id="routine-set-0-'*)
+      case $screen in
+        editor) set_row draft_sets "$1" ;;
+        detail) set_row saved_sets "$1" ;;
+        *) return 1 ;;
+      esac ;;
+    'id="exercise-library"') [[ "$screen" == picker ]] ;;
+    'id="exercise-result-0"') [[ "$screen" == picker ]] ;;
+    'id="set-target"' | 'id="target-'* | 'id="key-'* | 'id="save-set"') [[ "$screen" == set-target ]] ;;
+    'id="routine-detail"' | 'id="start-routine"') [[ "$screen" == detail ]] ;;
+    'id="routine-title" label='*) [[ "$screen" == detail && "$1" == "id=\"routine-title\" label=\"$(get saved_name)\"" ]] ;;
+    *) return 1 ;;
+  esac
+}
+press() {
+  local target
+  target=$(get target)
+  case "$target" in
+    'id="exercise-result-0"')
+      put draft_exercise "${FAKE_LIBRARY:-Barbell Squat}"
+      put draft_sets "||"
+      put screen editor ;;
+    'id="routine-set-0-0"')
+      rm -f "$s/weight" "$s/from" "$s/to"
+      put screen set-target ;;
+    'id="target-weight"') put focused weight ;;
+    'id="target-reps-from"') put focused from ;;
+    'id="target-reps-to"') put focused to ;;
+    'id="key-'*)
+      key=${target#id=\"key-}
+      printf '%s' "${key%\"}" >>"$s/$(get focused)" ;;
+    'id="save-set"')
+      { echo "$(get weight)|$(get from)|$(get to)"; sed 1d "$s/draft_sets"; } >"$s/sets.new"
+      mv "$s/sets.new" "$s/draft_sets"
+      put screen editor ;;
+    'id="add-set-0"') tail -1 "$s/draft_sets" >>"$s/draft_sets" ;;
+    'id="save-routine"')
+      cp "$s/draft_name" "$s/saved_name"
+      cp "$s/draft_exercise" "$s/saved_exercise"
+      cp "$s/draft_sets" "$s/saved_sets"
+      put screen detail ;;
+    'id="routine-row" label='*) put screen detail ;;
+    'id="start-routine"')
+      cp "$s/saved_name" "$s/workout"
+      if [[ -n "${FAKE_NO_TARGETS:-}" ]]; then
+        sed 's/.*/||/' "$s/saved_sets" >"$s/workout_sets"
+      else
+        cp "$s/saved_sets" "$s/workout_sets"
+      fi
+      put screen workout ;;
+    'id="discard-workout"') touch "$s/alert" ;;
+    # Discard goes back to the Train tab. FAKE_KEEPS_WORKOUT leaves the workout in progress.
+    'label="Discard"')
+      rm -f "$s/alert"
+      [[ -n "${FAKE_KEEPS_WORKOUT:-}" ]] || rm -f "$s/workout" "$s/workout_sets"
+      sed '$d' "$s/stack" >"$s/stack.new"
+      mv "$s/stack.new" "$s/stack"
+      put screen train ;;
+    *) exit 1 ;;
+  esac
+}
+case "$1" in
+  settings | screenshot) ;;
+  open)
+    case "$3" in
+      --relaunch)
+        put screen tabs
+        put stack tabs
+        if [[ "$*" == *"--launch-args=-svettTiming --launch-args=1"* ]]; then touch "$s/timing"; else rm -f "$s/timing"; fi
+        [[ -z "${FAKE_FORGETS:-}" ]] || rm -f "$s/saved_name" "$s/saved_exercise" "$s/saved_sets" ;;
+      # A link to a tab pops every screen above the tabs.
+      svett://train)
+        put screen train
+        put stack train ;;
+      svett://train/workout)
+        put screen workout
+        echo workout >>"$s/stack" ;;
+      svett://routines/new\?title=*)
+        tail -1 "$s/stack" >>"$s/editor-over"
+        put draft_name "$(decode "${3#*title=}")"
+        rm -f "$s/draft_exercise" "$s/draft_sets"
+        put screen editor ;;
+      svett://routines/new/exercises\?q=*) put screen picker ;;
+      *) exit 1 ;;
+    esac ;;
+  wait) [[ "$2" =~ ^[0-9]+$ ]] || holds "$2" ;;
+  is) holds "$3" ;;
+  scroll) holds "$4" ;;
+  get)
+    holds "$3" || exit 1
+    put target "$3"
+    if [[ "$3" == 'id="exercise-result-0"' ]]; then
+      printf '{"label": "%s, Quadriceps · Barbell", "rect": {"x": 0, "y": 200, "width": 440, "height": 80}}\n' \
+        "${FAKE_LIBRARY:-Barbell Squat}"
+    elif [[ "$3" == 'id="cold-start-timing"' ]]; then
+      label="svett's own cold start: 640 ms. Routine list drawn 1540 ms after launch, less 900 ms waiting for the Train tab."
+      node -e 'console.log(JSON.stringify({ label: process.argv[1], rect: { x: 16, y: 800, width: 408, height: 120 } }))' \
+        "${FAKE_TIMING_LABEL:-$label}"
+    else
+      echo '{"label": "", "rect": {"x": 16, "y": 600, "width": 408, "height": 50}}'
+    fi ;;
+  press) press ;;
+  alert)
+    # svett's own alerts have no button agent-device's alert accept can find.
+    case "$2" in
+      wait) [[ -f "$s/alert" ]] ;;
+      *) exit 1 ;;
+    esac ;;
+  *) exit 1 ;;
+esac
+EOF
+chmod +x "$fake/routines-device"
+
+# run_routines [VAR=value...] [routines.sh args...] leaves the exit status in routines_status.
+# FAKE_STATE carries over between runs unless the caller clears it.
+run_routines() {
+  local -a vars=()
+  while [[ "${1:-}" == *=* ]]; do
+    vars+=("$1")
+    shift
+  done
+  rm -f "$root/simctl-calls" "$root/bound-calls"
+  routines_status=0
+  env PATH="$fake:$PATH" FAKE_ROOT="$root" FAKE_STATE="$root/routines-state" \
+    SVETT_DEVICE_CMD="routines-device --session 't3-test session' --device FAKE-UDID" \
+    SVETT_ROUTINE_NAME="Proof routine 1" "${vars[@]}" "$repo/scripts/sim/routines.sh" "$@" \
+    >"$output" 2>&1 || routines_status=$?
+}
+
+routine_links=("com.kron00.svett svett://train" "com.kron00.svett svett://train/workout"
+  "com.kron00.svett svett://train"
+  "com.kron00.svett svett://routines/new?title=Proof%20routine%201"
+  "com.kron00.svett svett://routines/new/exercises?q=barbell%20squat")
+routine_target="60 kg, 8 to 12 reps"
+timing_args="--launch-args=-svettTiming --launch-args=1"
+fixture_args="--launch-args=-svettFixture --launch-args=$container_fixture $timing_args"
+debug_fixture_open="$debug_open $fixture_args"
+cold_start_lines=(
+  "^agent-device's calls alone, against the running app: [0-9]+ ms$"
+  "^svett's own start-up, the difference: about -?[0-9]+ ms$"
+)
+fake_in_app="svett's own cold start: 640 ms. Routine list drawn 1540 ms after launch, less 900 ms waiting for the Train tab."
+
+# cold_start_says <file> <build>: the cold start's upper bound, the automation's
+# share, the difference, and the time the app measured itself, word for word as
+# the Train tab shows it, in that order.
+cold_start_says() {
+  [[ "$(wc -l <"$1")" -eq 4 ]] &&
+    sed -n 1p "$1" | grep -qE "^Cold start to the Train tab's routine list: [0-9]+ ms \($2, on the 300-workout fixture, an upper bound that includes agent-device's calls\)$" &&
+    sed -n 2p "$1" | grep -qE "${cold_start_lines[0]}" &&
+    sed -n 3p "$1" | grep -qE "${cold_start_lines[1]}" &&
+    [[ "$(sed -n 4p "$1")" == "Measured in the app: $fake_in_app" ]]
+}
+
+case_name="routines.sh Debug with SVETT_DEVICE_CMD"
+rm -rf "$root/routines-state"
+rm -f "$container_fixture"
+run_routines "$root/routines"
+[[ "$routines_status" == 0 ]] || fail "routines.sh failed"
+check "routines.sh opens the new routine from the Train tab, not over the workout screen" \
+  grep -qx train "$root/routines-state/editor-over"
+check "routines.sh copies the generated fixture into the app's data container" \
+  grep -qxF "fake fixture" "$container_fixture"
+check "routines.sh builds a routine on the fixture, relaunches into the dev client and starts it from the Train tab" \
+  only_open "$debug_fixture_open" "com.kron00.svett svett://train" "${routine_links[@]}" \
+  "$debug_fixture_open" "com.kron00.svett svett://train" "com.kron00.svett svett://train"
+check "routines.sh shoots at the largest text size, then restores the default" \
+  only_calls "settings text-size|settings appearance" \
+  "settings text-size accessibility-extra-extra-extra-large" "settings text-size large"
+check "routines.sh types the target on the keypad, one press at each key's centre" \
+  only_calls 'get attrs id="(target|key)-' \
+  'get attrs id="target-weight"' 'get attrs id="key-6"' 'get attrs id="key-0"' \
+  'get attrs id="target-reps-from"' 'get attrs id="key-8"' \
+  'get attrs id="target-reps-to"' 'get attrs id="key-1"' 'get attrs id="key-2"'
+check "routines.sh checks every set of the workout is filled in from the routine" \
+  only_calls 'is visible id="workout-set' \
+  "is visible id=\"workout-set-0-0\" label=\"Set 1, $routine_target, To do\"" \
+  "is visible id=\"workout-set-0-1\" label=\"Set 2, $routine_target, To do\"" \
+  "is visible id=\"workout-set-0-2\" label=\"Set 3, $routine_target, To do\""
+check "routines.sh screenshots each step" \
+  only_calls "screenshot" \
+  "screenshot $root/routines/01-train.png" "screenshot $root/routines/02-new-routine.png" \
+  "screenshot $root/routines/03-pick-exercise.png" "screenshot $root/routines/04-set-target.png" \
+  "screenshot $root/routines/05-routine-editor.png" "screenshot $root/routines/06-routine-detail.png" \
+  "screenshot $root/routines/07-workout.png" \
+  "screenshot $root/routines/08-train-workout-in-progress.png"
+check "routines.sh saves a Debug build's cold start, agent-device's share, the difference and svett's own time" \
+  cold_start_says "$root/routines/cold-start.txt" "Debug, loaded from Metro"
+check "routines.sh with SVETT_DEVICE_CMD calls neither simctl launch nor openurl" no_simctl_launch_or_openurl
+
+case_name="routines.sh Release when an earlier run left its workout in progress"
+rm -f "$root/routines-state/editor-over"
+run_routines --release "$root/routines-release"
+[[ "$routines_status" == 0 ]] || fail "routines.sh --release failed"
+check "routines.sh Release relaunches the installed app on the fixture without Metro" \
+  only_open "com.kron00.svett --relaunch $fixture_args" "com.kron00.svett svett://train" \
+  "${routine_links[@]}" "com.kron00.svett --relaunch $fixture_args" \
+  "com.kron00.svett svett://train" "com.kron00.svett svett://train"
+check "routines.sh discards the earlier workout by pressing svett's own Discard button" \
+  only_calls 'alert|get attrs (id="discard|label="Discard")' \
+  'get attrs id="discard-workout"' "alert wait 5000" 'get attrs label="Discard"'
+check "routines.sh checks the Train tab no longer shows the discarded workout" \
+  only_calls 'is visible id="workout-in-progress-row"|wait label="No workout' \
+  'is visible id="workout-in-progress-row"'
+check "routines.sh opens the new routine from the Train tab after discarding the workout" \
+  grep -qx train "$root/routines-state/editor-over"
+check "routines.sh saves a Release build's cold start" \
+  cold_start_says "$root/routines-release/cold-start.txt" Release
+
+case_name="routines.sh Release on a fixture already in the data container"
+rm -rf "$root/routines-state"
+rm -f "$container_fixture"
+run_routines SVETT_FIXTURE=/data/Documents/svett-fixture.db --release "$root/routines-fixture"
+[[ "$routines_status" == 0 ]] || fail "routines.sh on SVETT_FIXTURE failed"
+given_fixture_args="--launch-args=-svettFixture --launch-args=/data/Documents/svett-fixture.db $timing_args"
+check "routines.sh relaunches on SVETT_FIXTURE every time" \
+  only_open "com.kron00.svett --relaunch $given_fixture_args" "com.kron00.svett svett://train" \
+  "${routine_links[@]}" "com.kron00.svett --relaunch $given_fixture_args" \
+  "com.kron00.svett svett://train" "com.kron00.svett svett://train"
+check "routines.sh with SVETT_FIXTURE neither generates nor copies a fixture" \
+  test ! -e "$container_fixture" -a ! -e "$root/routines-fixture/svett-fixture.db"
+
+case_name="routines.sh when Discard leaves the earlier workout in progress"
+run_routines FAKE_KEEPS_WORKOUT=1 "$root/routines-keeps"
+check "routines.sh fails when the discarded workout is still in progress" test "$routines_status" -ne 0
+check "routines.sh says the earlier workout is still in progress" \
+  grep -qxF "A workout from an earlier run is still in progress" "$output"
+
+case_name="routines.sh when the routine does not survive the relaunch"
+rm -rf "$root/routines-state"
+run_routines FAKE_FORGETS=1 "$root/routines-forgets"
+check "routines.sh fails when the routine is gone after the relaunch" test "$routines_status" -ne 0
+check "routines.sh says the routine was not on the Train tab" \
+  grep -qxF '"Proof routine 1" was not on the Train tab after the relaunch' "$output"
+check "routines.sh restores the default text size after a failure" \
+  only_calls "settings" "settings text-size accessibility-extra-extra-extra-large" "settings text-size large"
+
+case_name="routines.sh when the Train tab shows no cold start time"
+rm -rf "$root/routines-state"
+run_routines FAKE_NO_TIMING=1 "$root/routines-no-timing"
+check "routines.sh fails when svett shows no cold start time" test "$routines_status" -ne 0
+check "routines.sh says svett's own time is missing" \
+  grep -qxF "The Train tab did not show svett's own cold start time" "$output"
+check "routines.sh saves no cold start without svett's own time" \
+  test ! -e "$root/routines-no-timing/cold-start.txt"
+
+case_name="routines.sh when the cold start time is not svett's"
+rm -rf "$root/routines-state"
+run_routines FAKE_TIMING_LABEL="Loading" "$root/routines-bad-timing"
+check "routines.sh fails on a cold start label it cannot read" test "$routines_status" -ne 0
+check "routines.sh quotes the label it found" \
+  grep -qxF 'The cold start time on the Train tab reads "Loading"' "$output"
+
+case_name="routines.sh when the started workout leaves the targets out"
+rm -rf "$root/routines-state"
+run_routines FAKE_NO_TARGETS=1 "$root/routines-no-targets"
+check "routines.sh fails when a set of the workout is not filled in" test "$routines_status" -ne 0
+check "routines.sh names the set that is not filled in" \
+  grep -qxF "Set 1 of the workout is not filled in with $routine_target" "$output"
+
+case_name="routines.sh when the picker shows another exercise first"
+rm -rf "$root/routines-state"
+run_routines FAKE_LIBRARY="Barbell Squat Jump" "$root/routines-other"
+check "routines.sh fails when the first result is not the exercise it adds" test "$routines_status" -ne 0
+check "routines.sh names the result it found instead" \
+  grep -qxF 'The first result was not "Barbell Squat". Its label is "Barbell Squat Jump, Quadriceps · Barbell".' "$output"
+
+# logger.sh runs against a fake fixture, a fake app and the real workout-rows.ts.
+# The fake pnpm writes a database with the Legs routine. The fake device keeps
+# the app's workouts in $FAKE_STATE and writes them to the database it was
+# launched on after every change, as the app saves each change. An element is
+# on screen only where the app shows it, and the exercises after the first and
+# the timing line sit below the fold until a scroll down reaches them. A press
+# acts on the element whose frame was read last. FAKE_LOSES_WORKOUT forgets the
+# workout when svett is killed, FAKE_DROPS_DONE forgets the last exercise's done
+# sets then, FAKE_KEEPS_UNDONE keeps the sets not done when it finishes, and
+# FAKE_NO_TIMING never times a set marked done.
+logger_bin="$root/logger-bin"
+mkdir -p "$logger_bin"
+cat >"$logger_bin/pnpm" <<'EOF'
+#!/usr/bin/env bash
+[[ "$1 $2" == "fixture --out" ]] || { echo "fake pnpm: unexpected $*" >&2; exit 1; }
+rm -f "$3"
+node -e '
+  const database = new (require("node:sqlite").DatabaseSync)(process.argv[1]);
+  database.exec(`
+    CREATE TABLE routine (id TEXT PRIMARY KEY, deleted_at INTEGER, title TEXT, position INTEGER);
+    CREATE TABLE exercise (id TEXT PRIMARY KEY, name TEXT);
+    CREATE TABLE activity (id TEXT PRIMARY KEY, deleted_at INTEGER, title TEXT, status TEXT, notes TEXT, started_at INTEGER);
+    CREATE TABLE activity_exercise (id TEXT PRIMARY KEY, deleted_at INTEGER, activity_id TEXT, exercise_id TEXT,
+      position INTEGER, set_fields TEXT, notes TEXT);
+    CREATE TABLE activity_set (id TEXT PRIMARY KEY, deleted_at INTEGER, activity_exercise_id TEXT, position INTEGER,
+      set_type TEXT, weight_kg REAL, reps INTEGER, duration_s REAL, distance_m REAL, done INTEGER);
+    INSERT INTO routine VALUES ('\''push-routine'\'', NULL, '\''Push'\'', 0), ('\''legs-routine'\'', NULL, '\''Legs'\'', 2);
+  `);
+' "$3"
+EOF
+cat >"$fake/logger-device" <<'EOF'
+#!/usr/bin/env node
+const fs = require("node:fs");
+const { DatabaseSync } = require("node:sqlite");
+const args = process.argv.slice(2);
+fs.appendFileSync(`${process.env.FAKE_ROOT}/bound-calls`, `${args.join(" ")}\n`);
+const command = args.slice(4);
+const stateFile = `${process.env.FAKE_STATE}/state.json`;
+const state = fs.existsSync(stateFile)
+  ? JSON.parse(fs.readFileSync(stateFile, "utf8"))
+  : { screen: "home", workouts: [], scrolled: [], kills: 0, timing: null };
+const save = () => {
+  fs.mkdirSync(process.env.FAKE_STATE, { recursive: true });
+  fs.writeFileSync(stateFile, JSON.stringify(state));
+  if (!state.db) return;
+  const database = new DatabaseSync(state.db);
+  database.exec("DELETE FROM activity; DELETE FROM activity_exercise; DELETE FROM activity_set; DELETE FROM exercise;");
+  state.workouts.forEach((workout, w) => {
+    database.prepare("INSERT INTO activity VALUES (?, NULL, ?, ?, '', ?)").run(`a${w}`, workout.title, workout.status, w);
+    workout.exercises.forEach((exercise, e) => {
+      database.prepare("INSERT OR IGNORE INTO exercise VALUES (?, ?)").run(exercise.name, exercise.name);
+      database.prepare("INSERT INTO activity_exercise VALUES (?, NULL, ?, ?, ?, ?, '')").run(`a${w}e${e}`, `a${w}`, exercise.name, e, exercise.fields);
+      exercise.sets.forEach((set, s) => {
+        database.prepare("INSERT INTO activity_set VALUES (?, NULL, ?, ?, ?, ?, ?, ?, NULL, ?)")
+          .run(`a${w}e${e}s${s}`, `a${w}e${e}`, s, set.type, set.weight, set.reps, set.time, set.done ? 1 : 0);
+      });
+    });
+  });
+  database.close();
+};
+const current = () => state.workouts.find((workout) => workout.status === "in_progress") ?? null;
+const set = (type, min, max) => ({ type, weight: null, reps: null, time: null, done: false, min, max });
+const ROUTINE = [["Barbell Squat", 5, 8], ["Romanian Deadlift", 6, 10], ["Leg Press", 8, 12],
+  ["Lying Leg Curls", 10, 12], ["Standing Calf Raises", 10, 15]];
+const LIBRARY = { plank: "Plank", "barbell squat": "Barbell Squat" };
+const lastSets = (name) => {
+  const last = state.workouts.filter((workout) => workout.status === "finished")
+    .flatMap((workout) => workout.exercises).filter((exercise) => exercise.name === name).at(-1);
+  return last?.sets ?? null;
+};
+const previous = (exercise, index) => {
+  const last = lastSets(exercise.name);
+  if (last === null) return null;
+  const type = exercise.sets[index].type;
+  const nth = exercise.sets.slice(0, index).filter((other) => other.type === type).length;
+  return last.filter((other) => other.type === type)[nth] ?? null;
+};
+const badges = (exercise) => {
+  let normal = 0;
+  return exercise.sets.map((other) => other.type === "normal" ? `Set ${++normal}` : other.type === "failure" ? "Failure set" : "Drop set");
+};
+const doneLabel = (exercise, index) => {
+  const one = exercise.sets[index];
+  const parts = [];
+  if (one.weight !== null) parts.push(`${one.weight} kg`);
+  if (one.reps !== null) parts.push(`${one.reps} reps`);
+  else if (one.min !== null) parts.push(`${one.min} to ${one.max} reps`);
+  if (one.time !== null) parts.push(`${one.time} seconds`);
+  return `${badges(exercise)[index]}, ${parts.join(", ")}, ${one.done ? "Done" : "To do"}`;
+};
+// Every element on the current screen, by id or label, with its label.
+const elements = () => {
+  const found = [];
+  const add = (id, label = "") => found.push({ id, label });
+  if (state.screen === "home") return found;
+  add(null, "Train, tab, 2 of 5");
+  const workout = current();
+  if (["tabs", "train"].includes(state.screen) && workout) add("workout-bar", `Workout in progress, ${workout.title}, 12:34`);
+  if (state.screen === "train") {
+    add("train");
+    add("routine-list");
+    if (!workout) add("start-empty-workout");
+  }
+  if (state.screen === "routine") { add("routine-detail"); add("start-routine"); }
+  if (state.screen === "picker") {
+    add("exercise-library");
+    add("exercise-result-0", `${process.env.FAKE_LIBRARY ?? LIBRARY[state.query]}, Quadriceps · Barbell`);
+  }
+  if (state.screen === "sheet") { add("set-type-sheet"); add("set-type-sheet-failure"); }
+  if (state.screen === "workout") {
+    add("workout");
+    if (!workout) return found;
+    add("workout-title", workout.title);
+    // The bar's Finish item has no identifier, so the script can only find it by label.
+    add("bar-finish", "Finish");
+    if (state.alert) add("alert-finish", "Finish workout");
+    add("set-done-timing", state.timing === null ? "No set marked done yet" : `Set shown done in ${state.timing} ms`);
+    workout.exercises.forEach((exercise, e) => {
+      add(`workout-exercise-${e}`, exercise.name);
+      add(`move-exercise-down-${e}`);
+      add(`add-workout-set-${e}`);
+      exercise.sets.forEach((_, s) => {
+        add(`workout-set-${e}-${s}`, doneLabel(exercise, s));
+        add(`workout-set-${e}-${s}-type`);
+        for (const column of exercise.fields === "time" ? ["time"] : ["weight", "reps"]) add(`set-${e}-${s}-${column}`);
+        const last = previous(exercise, s);
+        if (last !== null && last.weight !== null) add(null, `Previous, ${last.weight} kg × ${last.reps}`);
+      });
+    });
+    if (state.focus) {
+      for (const key of "0123456789") add(`key-${key}`);
+      add("keypad-next");
+      add("keypad-done");
+    }
+  }
+  return found;
+};
+const parse = (selector) => ({
+  id: /id="([^"]*)"/.exec(selector)?.[1] ?? null,
+  label: /label="([^"]*)"/.exec(selector)?.[1] ?? null,
+});
+const find = (selector) => {
+  const wanted = parse(selector);
+  return elements().find((element) =>
+    (wanted.id === null || element.id === wanted.id) && (wanted.label === null || element.label === wanted.label)) ?? null;
+};
+const belowFold = (element) =>
+  /^(workout-exercise|workout-set|set|move-exercise-down|add-workout-set)-[1-9]/.test(element.id ?? "") ||
+  element.id === "set-done-timing" || element.id === "start-routine";
+const visible = (element) => element !== null && (!belowFold(element) || state.scrolled.includes(element.id));
+const show = (screen) => { state.screen = screen; state.scrolled = []; state.focus = null; };
+const startWorkout = (title, exercises) => {
+  state.workouts.push({ title, status: "in_progress", exercises });
+  show("workout");
+};
+const press = () => {
+  const target = state.target;
+  const workout = current();
+  const at = (pattern) => pattern.exec(target)?.slice(1).map(Number) ?? null;
+  let m;
+  if (target === "workout-bar") show("workout");
+  else if (target === "start-routine")
+    startWorkout("Legs", ROUTINE.map(([name, min, max]) => ({ name, fields: "weight_reps", sets: [0, 1, 2].map(() => set("normal", min, max)) })));
+  else if (target === "start-empty-workout") startWorkout("Evening workout", []);
+  else if (target === "exercise-result-0") {
+    const name = process.env.FAKE_LIBRARY ?? LIBRARY[state.query];
+    const last = lastSets(name);
+    workout.exercises.push({ name, fields: name === "Plank" ? "time" : "weight_reps",
+      sets: (last ?? [set("normal", null, null), set("normal", null, null), set("normal", null, null)]).map((other) => set(other.type, null, null)) });
+    show("workout");
+  } else if ((m = at(/^workout-set-(\d+)-(\d+)-type$/))) { state.sheet = m; show("sheet"); }
+  else if (target === "set-type-sheet-failure") {
+    workout.exercises[state.sheet[0]].sets[state.sheet[1]].type = "failure";
+    show("workout");
+  } else if ((m = at(/^workout-set-(\d+)-(\d+)$/))) {
+    const exercise = workout.exercises[m[0]];
+    const one = exercise.sets[m[1]];
+    if (!one.done) {
+      const last = previous(exercise, m[1]);
+      if (last !== null) for (const key of ["weight", "reps", "time"]) one[key] ??= last[key];
+    }
+    one.done = !one.done;
+    if (process.env.FAKE_NO_TIMING === undefined) state.timing = 12;
+  } else if ((m = /^set-(\d+)-(\d+)-(\w+)$/.exec(target))) {
+    state.focus = { e: Number(m[1]), s: Number(m[2]), column: m[3], text: "", fresh: true };
+  } else if ((m = /^key-(\d)$/.exec(target))) {
+    const focus = state.focus;
+    focus.text = (focus.fresh ? "" : focus.text) + m[1];
+    focus.fresh = false;
+    const digits = focus.text.padStart(6, "0");
+    workout.exercises[focus.e].sets[focus.s][focus.column] = focus.column === "time"
+      ? Number(digits.slice(0, 2)) * 3600 + Number(digits.slice(2, 4)) * 60 + Number(digits.slice(4))
+      : Number(focus.text);
+  } else if (target === "keypad-next") state.focus = { ...state.focus, column: "reps", text: "", fresh: true };
+  else if (target === "keypad-done") state.focus = null;
+  else if ((m = at(/^add-workout-set-(\d+)$/))) {
+    const sets = workout.exercises[m[0]].sets;
+    sets.push({ ...sets.at(-1), done: false, min: null, max: null });
+  } else if ((m = at(/^move-exercise-down-(\d+)$/))) {
+    const [moved] = workout.exercises.splice(m[0], 1);
+    workout.exercises.splice(m[0] + 1, 0, moved);
+    state.scrolled = [];
+  } else if (target === "bar-finish") state.alert = true;
+  else if (target === "alert-finish") {
+    state.alert = false;
+    const workout = current();
+    if (!process.env.FAKE_KEEPS_UNDONE) {
+      for (const exercise of workout.exercises) exercise.sets = exercise.sets.filter((one) => one.done);
+      workout.exercises = workout.exercises.filter((exercise) => exercise.sets.length > 0);
+    }
+    workout.status = "finished";
+    show("tabs");
+  } else process.exit(1);
+};
+const fail = () => process.exit(1);
+switch (command[0]) {
+  case "settings":
+  case "screenshot":
+    break;
+  case "open": {
+    const url = command[2];
+    if (url === "--relaunch") {
+      state.db = command.find((arg) => arg.endsWith(".db"))?.replace("--launch-args=", "") ?? state.db;
+      const kills = (fs.existsSync(`${process.env.FAKE_ROOT}/simctl-calls`)
+        ? fs.readFileSync(`${process.env.FAKE_ROOT}/simctl-calls`, "utf8") : "").split("\n").filter((line) => line.startsWith("simctl terminate")).length;
+      if (kills > state.kills) {
+        state.kills = kills;
+        if (process.env.FAKE_LOSES_WORKOUT) state.workouts = state.workouts.filter((workout) => workout.status !== "in_progress");
+        if (process.env.FAKE_DROPS_DONE) for (const one of current()?.exercises.at(-1).sets ?? []) one.done = false;
+      }
+      show("tabs");
+    } else if (url === "svett://train") show("train");
+    else if (url === "svett://routine/legs-routine") show("routine");
+    else if (url.startsWith("svett://train/workout/exercises?q=")) {
+      state.query = decodeURIComponent(url.slice("svett://train/workout/exercises?q=".length));
+      show("picker");
+    } else fail();
+    break;
+  }
+  case "wait":
+    if (/^\d+$/.test(command[1])) break;
+    if (command[1] === "absent") { if (find(command[2]) !== null) fail(); break; }
+    if (!visible(find(command[1]))) fail();
+    break;
+  case "is":
+    if (!visible(find(command[2]))) fail();
+    break;
+  case "scroll": {
+    const element = find(command[3]);
+    if (element === null || (command[1] === "up" && !visible(element))) fail();
+    state.scrolled.push(element.id);
+    break;
+  }
+  case "get": {
+    const element = find(command[2]);
+    if (element === null) fail();
+    state.target = element.id;
+    console.log(JSON.stringify({ label: element.label, rect: { x: 16, y: 600, width: 408, height: 50 } }));
+    break;
+  }
+  case "press":
+    press();
+    break;
+  case "alert":
+    if (command[1] === "wait" && !state.alert) fail();
+    // svett's own alerts have no button agent-device's alert accept can find.
+    if (command[1] === "accept") fail();
+    break;
+  default:
+    fail();
+}
+save();
+EOF
+chmod +x "$logger_bin/pnpm" "$fake/logger-device"
+
+# run_logger [VAR=value...] [logger.sh args...] leaves the exit status in logger_status.
+run_logger() {
+  local -a vars=()
+  while [[ "${1:-}" == *=* ]]; do
+    vars+=("$1")
+    shift
+  done
+  rm -rf "$root/logger-state" "$root/data container"
+  rm -f "$root/simctl-calls" "$root/bound-calls"
+  logger_status=0
+  env PATH="$logger_bin:$fake:$PATH" FAKE_ROOT="$root" FAKE_STATE="$root/logger-state" \
+    SVETT_DEVICE_CMD="logger-device --session 't3-test session' --device FAKE-UDID" \
+    "${vars[@]}" "$repo/scripts/sim/logger.sh" "$@" >"$output" 2>&1 || logger_status=$?
+}
+
+logger_db="$root/data container/Documents/svett-logger.db"
+logger_args="--launch-args=-svettFixture --launch-args=$logger_db --launch-args=-svettTiming --launch-args=1"
+logger_links=("com.kron00.svett svett://routine/legs-routine"
+  "com.kron00.svett svett://train/workout/exercises?q=plank")
+empty_links=("com.kron00.svett svett://train"
+  "com.kron00.svett svett://train/workout/exercises?q=barbell%20squat")
+
+case_name="logger.sh Debug with SVETT_DEVICE_CMD"
+run_logger "$root/logger"
+[[ "$logger_status" == 0 ]] || fail "logger.sh failed"
+check "logger.sh launches on the copied fixture with timing, kills svett, and launches it again" \
+  only_open "$debug_open $logger_args" "com.kron00.svett svett://train" "${logger_links[@]}" \
+  "$debug_open $logger_args" "${empty_links[@]}"
+check "logger.sh kills svett mid-workout with simctl" \
+  simctl_got "simctl terminate FAKE-UDID com.kron00.svett"
+check "logger.sh never launches or opens a link with simctl" no_simctl_launch_or_openurl
+check "logger.sh shoots at the largest text size, then restores the default" \
+  only_calls "settings" "settings text-size accessibility-extra-extra-extra-large" "settings text-size large"
+check "logger.sh types each set on the keypad, one press at each key's centre, with Next to the reps" \
+  only_calls 'get attrs id="(set-[0-9]+-[0-9]+-|key-|keypad-)' \
+  'get attrs id="set-0-0-weight"' 'get attrs id="key-1"' 'get attrs id="key-0"' 'get attrs id="key-0"' \
+  'get attrs id="keypad-next"' 'get attrs id="key-5"' 'get attrs id="keypad-done"' \
+  'get attrs id="set-0-1-weight"' 'get attrs id="key-1"' 'get attrs id="key-0"' 'get attrs id="key-0"' \
+  'get attrs id="keypad-next"' 'get attrs id="key-5"' 'get attrs id="keypad-done"' \
+  'get attrs id="set-0-2-weight"' 'get attrs id="key-1"' 'get attrs id="key-0"' 'get attrs id="key-0"' \
+  'get attrs id="keypad-next"' 'get attrs id="key-4"' 'get attrs id="keypad-done"' \
+  'get attrs id="set-0-0-weight"' 'get attrs id="key-8"' 'get attrs id="key-0"' 'get attrs id="keypad-done"' \
+  'get attrs id="set-5-0-time"' 'get attrs id="key-1"' 'get attrs id="key-0"' 'get attrs id="key-0"' \
+  'get attrs id="keypad-done"'
+check "logger.sh scrolls down to a set below the fold before it checks it" \
+  bound_got "--session t3-test session --device FAKE-UDID scroll down --until id=\"workout-set-1-0\" label=\"Set 1, 100 kg, 5 reps, Done\""
+check "logger.sh finds the restored Legs in the database exactly as logged" \
+  diff "$root/logger/restored-expected.txt" "$root/logger/restored.txt"
+check "logger.sh finds the finished Legs in the database with only its done sets" \
+  diff "$root/logger/finished-expected.txt" "$root/logger/finished.txt"
+check "logger.sh finds the empty workout in the database with the set it took from last time" \
+  grep -qxF "Set 1.1: normal, 100 kg, 5 reps, done" "$root/logger/empty.txt"
+check "logger.sh saves the time a set took to show done" \
+  grep -qxF "Marking a set done until the row showed it: 12 ms (Debug, loaded from Metro, on the fixture database, timed in the app)" \
+  "$root/logger/set-done.txt"
+check "logger.sh screenshots each step" \
+  only_calls "screenshot" \
+  "screenshot $root/logger/01-train.png" "screenshot $root/logger/02-workout-started.png" \
+  "screenshot $root/logger/03-squat-logged.png" "screenshot $root/logger/04-before-kill.png" \
+  "screenshot $root/logger/05-restored-bar.png" "screenshot $root/logger/06-restored.png" \
+  "screenshot $root/logger/07-finished.png" "screenshot $root/logger/08-empty-workout.png"
+
+case_name="logger.sh Release with SVETT_DEVICE_CMD"
+run_logger --release "$root/logger-release"
+[[ "$logger_status" == 0 ]] || fail "logger.sh --release failed"
+check "logger.sh Release launches the installed app on the fixture without Metro" \
+  only_open "com.kron00.svett --relaunch $logger_args" "com.kron00.svett svett://train" \
+  "${logger_links[@]}" "com.kron00.svett --relaunch $logger_args" "${empty_links[@]}"
+check "logger.sh Release says the time came from a Release build" \
+  grep -qF "(Release, on the fixture database, timed in the app)" "$root/logger-release/set-done.txt"
+
+case_name="logger.sh when the workout does not survive the kill"
+run_logger FAKE_LOSES_WORKOUT=1 "$root/logger-loses"
+check "logger.sh fails when the workout is gone after the kill" test "$logger_status" -ne 0
+check "logger.sh says the workout did not come back" \
+  grep -qxF "The workout in progress did not show above the tabs after the kill" "$output"
+check "logger.sh restores the default text size after a failure" \
+  only_calls "settings" "settings text-size accessibility-extra-extra-extra-large" "settings text-size large"
+
+case_name="logger.sh when a done set does not survive the kill"
+run_logger FAKE_DROPS_DONE=1 "$root/logger-drops"
+check "logger.sh fails when a set comes back not done" test "$logger_status" -ne 0
+check "logger.sh names the set that came back wrong" \
+  grep -qxF 'Set 1 of exercise 6 does not read "Set 1, 60 seconds, Done"' "$output"
+
+case_name="logger.sh when finishing keeps the sets not done"
+run_logger FAKE_KEEPS_UNDONE=1 "$root/logger-undone"
+check "logger.sh fails when the database holds sets that were never done" test "$logger_status" -ne 0
+check "logger.sh says the finished workout is not as logged" \
+  grep -qxF "The database does not hold \"Legs\" as logged. See $root/logger-undone/finished.txt" "$output"
+
+case_name="logger.sh when the app does not time a set marked done"
+run_logger FAKE_NO_TIMING=1 "$root/logger-untimed"
+check "logger.sh fails without the time a set took to show done" test "$logger_status" -ne 0
+check "logger.sh says what the timing line showed" \
+  grep -qxF 'The workout did not time the set marked done. It says "No set marked done yet"' "$output"
+
+
 # Stands in for the bound command on Record and the saved activity. It tracks what
 # is in front: the Home Screen, the tab root, Record before a recording, while
 # recording, paused, or the activity. Like checks-device, a Debug open by bundle id
