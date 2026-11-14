@@ -144,11 +144,13 @@ export const typeIntoField = (
   fresh: boolean,
 ): string => editNumberEntry(fresh && key !== "delete" ? "" : text, key, COLUMN_ENTRY[column]);
 
-const has = (sets: ReadonlyArray<SetValues>, key: keyof SetValues) =>
+type SetPresence = { readonly [K in keyof SetValues]: number | null };
+
+const has = (sets: ReadonlyArray<SetPresence>, key: keyof SetValues) =>
   sets.some((set) => set[key] !== null);
 
 /** What sets with these values record, or null when none records anything yet. */
-export const setFieldsFromSets = (sets: ReadonlyArray<SetValues>): SetFields | null => {
+export const setFieldsFromSets = (sets: ReadonlyArray<SetPresence>): SetFields | null => {
   const weight = has(sets, "weightKg");
   if (has(sets, "distanceM")) return weight ? "weight_distance" : "distance_time";
   if (has(sets, "durationS")) return weight ? "weight_time" : "time";

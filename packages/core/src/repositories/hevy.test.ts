@@ -164,6 +164,20 @@ const startDraft = (database: Database) =>
     }),
   );
 
+/** Each live exercise's set fields, by its name. */
+const setFieldsByName = (database: Database) =>
+  Object.fromEntries(
+    query(
+      database,
+      "SELECT e.name, ae.set_fields FROM activity_exercise ae JOIN exercise e ON e.id = ae.exercise_id WHERE ae.deleted_at IS NULL",
+    ).map((row) => [row["name"], row["set_fields"]]),
+  );
+
+const exerciseIdOf = (database: Database, name: string) =>
+  ExerciseId.make(
+    String(query(database, "SELECT id FROM exercise WHERE name = ?", name)[0]?.["id"]),
+  );
+
 describe("Hevy import", () => {
   it("imports the sample with the right counts, under IDs from each workout's start", async () => {
     const database = openTestDatabase();
@@ -719,20 +733,6 @@ describe("Hevy import", () => {
         `"Core","9 Nov 2026, 12:00","9 Nov 2026, 12:30","","Plank",,"",0,"normal",,,,60,`,
       ].join("\n"),
     );
-
-    /** Each live exercise's set fields, by its name. */
-    const setFieldsByName = (database: Database) =>
-      Object.fromEntries(
-        query(
-          database,
-          "SELECT e.name, ae.set_fields FROM activity_exercise ae JOIN exercise e ON e.id = ae.exercise_id WHERE ae.deleted_at IS NULL",
-        ).map((row) => [row["name"], row["set_fields"]]),
-      );
-
-    const exerciseIdOf = (database: Database, name: string) =>
-      ExerciseId.make(
-        String(query(database, "SELECT id FROM exercise WHERE name = ?", name)[0]?.["id"]),
-      );
 
     it("logs each imported exercise by what its sets record, and starts it that way next time", async () => {
       const { database } = await importSample();

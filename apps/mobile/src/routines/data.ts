@@ -1,5 +1,4 @@
 import {
-  type Activity,
   ActivityRepository,
   type ExerciseId,
   ExerciseRepository,
