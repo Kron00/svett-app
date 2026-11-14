@@ -9,6 +9,7 @@ import { nextSet, REPLACED_SET } from "./logger.ts";
 import { manualClock } from "./manual-clock.ts";
 import { openNodeDatabase } from "./node-sqlite.ts";
 import { ActivityRepository, type SetDraft } from "./repositories/activities.ts";
+import { HistoryRepository } from "./repositories/history.ts";
 import type { SqlDriver } from "./sql.ts";
 import { MADE_HERE } from "./repositories/origin.ts";
 import { RoutineRepository } from "./repositories/routines.ts";
@@ -220,6 +221,67 @@ describe("logging a workout", () => {
         Effect.flatMap(Effect.service(ActivityRepository), (activities) => activities.counts),
       ),
     ).toEqual({ activities: 2, sets: 7 });
+  });
+
+  it("shows a workout finished in the logger in history and the Progress counts, and not before", async () => {
+    const database = openTestDatabase();
+    // What the history list and the Progress tab's summary read.
+    const progress = Effect.gen(function* () {
+      const history = yield* HistoryRepository;
+      const activities = yield* ActivityRepository;
+      return {
+        list: (yield* history.page({ limit: 10 })).map((summary) => [
+          summary.activity.title,
+          summary.exerciseNames,
+          summary.setCount,
+        ]),
+        starts: (yield* history.starts).map((start) => start.title),
+        counts: yield* activities.counts,
+      };
+    });
+    const { during, openedDuring, after, opened } = await database.runtime.runPromise(
+      Effect.gen(function* () {
+        const activities = yield* ActivityRepository;
+        const history = yield* HistoryRepository;
+        yield* lastWeek;
+        const id = yield* startEmptyWorkout(7);
+        yield* addExercisesToWorkout(id, [squat, curl]);
+        const [, first, second] = (yield* log).exercises[0]!.sets;
+        yield* activities.updateSet(first!.id, { weightKg: 100, reps: 6, done: true });
+        yield* activities.updateSet(second!.id, { weightKg: 100, reps: 5, done: true });
+        const before = yield* progress;
+        const openedBefore = yield* history.workout(id);
+        yield* database.clock.set(T0 + 3_600_000);
+        yield* activities.finishWorkout(id);
+        return {
+          during: before,
+          openedDuring: openedBefore,
+          after: yield* progress,
+          opened: yield* history.workout(id),
+        };
+      }),
+    );
+
+    expect(during).toEqual({
+      list: [["Legs", ["Barbell Squat"], 3]],
+      starts: ["Legs"],
+      counts: { activities: 1, sets: 3 },
+    });
+    expect(Option.isNone(openedDuring)).toBe(true);
+    // The warm-up and the leg curl were never marked done, so finishing left them out.
+    expect(after).toEqual({
+      list: [
+        ["Morning workout", ["Barbell Squat"], 2],
+        ["Legs", ["Barbell Squat"], 3],
+      ],
+      starts: ["Morning workout", "Legs"],
+      counts: { activities: 2, sets: 5 },
+    });
+    expect(Option.getOrThrow(opened).activity).toMatchObject({
+      title: "Morning workout",
+      status: "finished",
+      durationS: 3_600,
+    });
   });
 
   it("restores the workout in progress, every value as it was, after the app is killed", async () => {
