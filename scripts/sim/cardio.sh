@@ -93,14 +93,43 @@ reveal() {
 # agent-device 0.21.37 refuses a selector press inside screen content on iOS 27 as
 # covered by another element. It reads UIKit's touch-transparent floating bar
 # containers as toolbars over the whole screen. A press at coordinates skips that
-# check, so press_centre presses the centre of the element's frame from the snapshot.
-press_centre() {
-  local frame point
+# check, so tap presses the centre of the element's frame from the snapshot.
+centre_of() {
+  local frame
   frame=$(agent_device get attrs "$1") || return 1
-  point=$(node -e '
+  node -e '
     const { x, y, width, height } = JSON.parse(process.argv[1]).rect;
     console.log(Math.round(x + width / 2), Math.round(y + height / 2));
-  ' "$frame") || return 1
+  ' "$frame"
+}
+
+# Below this line a press lands on the screen's bottom edge, where iOS 27 keeps the
+# home indicator, so a control merely peeking up from there takes no press.
+safe_bottom=${SVETT_SAFE_BOTTOM:-840}
+
+# Brings the element $1 on screen, drags it up clear of the bottom edge and presses its centre.
+tap() {
+  local point drags=0
+  reveal "$1" || {
+    echo "Could not bring $1 on screen" >&2
+    exit 1
+  }
+  point=$(centre_of "$1") || {
+    echo "Could not read where $1 is" >&2
+    exit 1
+  }
+  while ((${point#* } > safe_bottom)); do
+    ((drags < 3)) || {
+      echo "$1 stayed at the bottom edge of the screen" >&2
+      exit 1
+    }
+    agent_device gesture pan 20 600 0 -300 400
+    drags=$((drags + 1))
+    point=$(centre_of "$1") || {
+      echo "Could not read where $1 is" >&2
+      exit 1
+    }
+  done
   agent_device press "${point% *}" "${point#* }"
 }
 
@@ -110,8 +139,7 @@ press() {
     echo "svett is not in the foreground on Record, so the script stops before it presses $1" >&2
     exit 1
   }
-  reveal "$1"
-  press_centre "$1"
+  tap "$1"
   agent_device wait "$2" 10000 || {
     echo "$2 did not show after pressing $1" >&2
     exit 1
@@ -164,8 +192,7 @@ agent_device wait 'id="record-start"' 10000
 screenshot start
 
 started_after=$(($(date +%s) * 1000))
-reveal 'id="record-start"'
-press_centre 'id="record-start"'
+tap 'id="record-start"'
 accept_alerts
 agent_device wait 'id="record-pause"' 10000 || {
   echo "The recording did not start" >&2

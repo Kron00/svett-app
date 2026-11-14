@@ -1393,6 +1393,8 @@ check "chatgpt.sh --live signs out an earlier sign-in, then waits 10 minutes for
 # Pressing Finish saves a run recorded along the proof route into the app's
 # database, 100 m short with FAKE_SHORT. With FAKE_NO_START, Start does nothing.
 # The activity's hide setting shows after FAKE_ACTIVITY_SCROLLS scrolls, default 2.
+# Every button has the same frame, except that with FAKE_START_LOW Start sits at the
+# screen's bottom edge until a drag moves it up, or for good when it is "stuck".
 cat >"$fake/cardio-device" <<EOF
 #!/usr/bin/env bash
 echo "\$*" >>"$root/bound-calls"
@@ -1427,9 +1429,12 @@ case "\$args" in
       show "\$left"
     fi ;;
   *" scroll "*) refuse_on_home scroll ;;
+  *" gesture "*) refuse_on_home gesture ;;
   *" press "*)
     refuse_on_home press
     attrs=\$(cat "$root/last-attrs")
+    # A press on the bottom edge lands on the home indicator, as on iOS 27.
+    [[ "\$attrs" != *low* ]] || exit 0
     case "\$screen:\$attrs" in
       setup:*record-start*)
         [[ -n "\${FAKE_NO_START:-}" ]] || { echo recording >"$root/recording"; show recording; } ;;
@@ -1442,8 +1447,14 @@ case "\$args" in
         show activity ;;
     esac ;;
   *" get attrs "*)
-    echo "\$*" >"$root/last-attrs"
-    echo '{"label": "Button", "rect": {"x": 20, "y": 600, "width": 300, "height": 50}}' ;;
+    if [[ -n "\${FAKE_START_LOW:-}" && "\$args" == *record-start* ]] &&
+      { [[ "\$FAKE_START_LOW" == stuck ]] || ! grep -q ' gesture pan ' "$root/bound-calls"; }; then
+      echo "\$* low" >"$root/last-attrs"
+      echo '{"label": "Start run", "rect": {"x": 20, "y": 905, "width": 300, "height": 50}}'
+    else
+      echo "\$*" >"$root/last-attrs"
+      echo '{"label": "Button", "rect": {"x": 20, "y": 600, "width": 300, "height": 50}}'
+    fi ;;
   *' label="Train, tab, 2 of 5" '*) [[ "\$screen" != home ]] ;;
   *' id="record-cardio" '*) [[ "\$screen" =~ ^(setup|recording|paused)\$ ]] ;;
   *' id="record-start" '*) [[ "\$screen" == setup ]] ;;
@@ -1558,6 +1569,24 @@ run_cardio FAKE_NO_START=1 "$root/cardio-no-start"
 check "cardio.sh fails when Start does not start a recording" test "$cardio_status" -ne 0
 check "cardio.sh says the recording did not start" grep -qF "The recording did not start" "$output"
 check "cardio.sh clears the simulated location after a failure" simctl_got "simctl location FAKE-UDID clear"
+
+case_name="cardio.sh when Start sits at the screen's bottom edge"
+cardio_sh FAKE_RELEASE=1 FAKE_START_LOW=1 --release "$root/cardio-low"
+check "cardio.sh drags Start up from the bottom edge before pressing it" \
+  only_calls "gesture pan" "gesture pan 20 600 0 -300 400"
+check "cardio.sh presses Start only once it is clear of the bottom edge" \
+  only_calls "get attrs|press" \
+  'get attrs id="record-start"' 'get attrs id="record-start"' "$cardio_press" \
+  'get attrs id="record-pause"' "$cardio_press" 'get attrs id="record-resume"' "$cardio_press" \
+  'get attrs id="record-pause"' "$cardio_press" 'get attrs id="record-finish"' "$cardio_press"
+
+case_name="cardio.sh when Start stays at the screen's bottom edge"
+run_cardio FAKE_RELEASE=1 FAKE_START_LOW=stuck --release "$root/cardio-stuck"
+check "cardio.sh fails when Start never clears the bottom edge" test "$cardio_status" -ne 0
+check "cardio.sh says Start stayed at the bottom edge" \
+  grep -qF 'id="record-start" stayed at the bottom edge of the screen' "$output"
+check "cardio.sh never presses Start on the bottom edge" \
+  test "$(grep -c -- " press " "$root/bound-calls")" -eq 0
 
 case_name="cardio.sh when the saved run is short of the route"
 run_cardio FAKE_RELEASE=1 FAKE_SHORT=1 --release "$root/cardio-short"
