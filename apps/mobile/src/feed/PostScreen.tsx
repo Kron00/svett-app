@@ -1,8 +1,10 @@
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import {
   COMMENT_MAX_LENGTH,
+  type CommentPage,
   cleanComment,
   commentProblem,
+  countOf,
   formatPostDistance,
   formatPostPace,
   formatVolumeKg,
@@ -10,15 +12,17 @@ import {
   hiddenNote,
   likeButton,
   type LiftingDetail,
+  mergeComments,
   type Post,
   type PostComment,
   postSetLines,
+  routeMap,
   splitLines,
   type PostThread,
   type RouteDetail,
   type SocialApi,
 } from "@svett/core";
-import { useCallback, useLayoutEffect, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Pressable, ScrollView, View } from "react-native";
 
 import { useColor } from "../design/hooks";
@@ -126,9 +130,11 @@ function LiftingSection({ post, detail }: { readonly post: Post; readonly detail
 function RouteSection({ post, detail }: { readonly post: Post; readonly detail: RouteDetail }) {
   return (
     <>
-      <View className="px-gutter">
-        <RouteShape route={detail.route} height={240} testID="post-route" />
-      </View>
+      {routeMap(detail) === "none" ? null : (
+        <View className="px-gutter">
+          <RouteShape detail={detail} height={240} testID="post-route" />
+        </View>
+      )}
       <View className="flex-row flex-wrap gap-3 px-gutter">
         <StatTile
           label="Distance"
@@ -214,48 +220,148 @@ function CommentRow({
   );
 }
 
+type Paging = "idle" | "loading" | { readonly failed: string };
+
+function PageButton({
+  label,
+  paging,
+  onPress,
+  testID,
+}: {
+  readonly label: string;
+  readonly paging: Paging;
+  readonly onPress: () => void;
+  readonly testID: string;
+}) {
+  return (
+    <View className="gap-2 px-gutter">
+      {typeof paging === "object" ? <AppText tone="destructive">{paging.failed}</AppText> : null}
+      <Button
+        label={paging === "loading" ? "Loading" : label}
+        variant="secondary"
+        disabled={paging === "loading"}
+        onPress={onPress}
+        testID={testID}
+      />
+    </View>
+  );
+}
+
 function Comments({
   api,
-  thread,
-  onChange,
+  post,
+  initial,
+  atEnd,
+  onCount,
 }: {
   readonly api: SocialApi;
-  readonly thread: PostThread;
-  readonly onChange: (comments: ReadonlyArray<PostComment>) => void;
+  readonly post: Post;
+  readonly initial: CommentPage;
+  /** The screen is scrolled near its end, so the next page of comments loads. */
+  readonly atEnd: boolean;
+  readonly onCount: (count: number) => void;
 }) {
+  const [page, setPage] = useState(initial);
+  const [paging, setPaging] = useState<{ readonly earlier: Paging; readonly later: Paging }>({
+    earlier: "idle",
+    later: "idle",
+  });
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
   const [problem, setProblem] = useState<string>();
-  const { post, comments } = thread;
-  const update = (next: ReadonlyArray<PostComment>) => {
-    onChange(next);
-    postChanged(post.activity.id, { comments: next.length });
+  const sent = useRef(new Set<string>());
+  const postId = post.activity.id;
+  const count = (change: number) => {
+    const next = Math.max(0, post.comments + change);
+    onCount(next);
+    postChanged(postId, { comments: next });
   };
+
+  const load = useCallback(
+    (side: "earlier" | "later") => {
+      const cursor = page[side];
+      if (cursor === null || paging[side] === "loading") return;
+      const mark = (state: Paging) => setPaging((current) => ({ ...current, [side]: state }));
+      mark("loading");
+      // A cursor names one comment and stops working once it is deleted. The thread then
+      // reopens at the nearest shown comment that came from the server.
+      const reopen = () => {
+        const paged = page.comments.filter((comment) => !sent.current.has(comment.id));
+        return runSocial(api.post(postId, (side === "later" ? paged.at(-1) : paged[0])?.id));
+      };
+      void runSocial<CommentPage & { readonly post?: Post }>(
+        api.comments(postId, side === "later" ? { later: cursor } : { earlier: cursor }),
+      )
+        .then((result) => (!result.ok && result.problem === "invalid_cursor" ? reopen() : result))
+        .then((result) => {
+          if (!result.ok) return mark({ failed: result.message });
+          mark("idle");
+          setPage((current) =>
+            current[side] !== cursor
+              ? current
+              : {
+                  ...current,
+                  comments: mergeComments(current.comments, result.value.comments),
+                  [side]: result.value[side],
+                },
+          );
+          if (result.value.post !== undefined) onCount(result.value.post.comments);
+        });
+    },
+    [api, postId, page, paging, onCount],
+  );
+
+  useEffect(() => {
+    if (atEnd) load("later");
+  }, [atEnd, load]);
+
   const send = () => {
     const invalid = commentProblem(cleanComment(draft));
     if (invalid !== undefined) return setProblem(invalid);
     setSending(true);
     setProblem(undefined);
-    void runSocial(api.comment(post.activity.id, draft)).then((result) => {
+    void runSocial(api.comment(postId, draft)).then((result) => {
       setSending(false);
       if (!result.ok) return setProblem(result.message);
       setDraft("");
-      update([...comments, result.value]);
+      sent.current.add(result.value.id);
+      setPage((current) => ({
+        ...current,
+        comments: mergeComments(current.comments, [result.value]),
+      }));
+      count(1);
     });
   };
   const remove = (comment: PostComment) => {
-    void runSocial(api.deleteComment(post.activity.id, comment.id)).then((result) => {
+    void runSocial(api.deleteComment(postId, comment.id)).then((result) => {
       if (!result.ok) return setProblem(result.message);
-      update(comments.filter((other) => other.id !== comment.id));
+      setPage((current) => ({
+        ...current,
+        comments: current.comments.filter((other) => other.id !== comment.id),
+      }));
+      count(-1);
     });
   };
+  const { comments } = page;
   return (
     <View testID="post-comments" className="gap-3">
-      <SectionHeader title="Comments" />
+      <SectionHeader
+        title={post.comments === 0 ? "Comments" : countOf(post.comments, "comment", "comments")}
+      />
+      {page.earlier === null ? null : (
+        <PageButton
+          label="Show earlier comments"
+          paging={paging.earlier}
+          onPress={() => load("earlier")}
+          testID="comments-earlier"
+        />
+      )}
       {comments.length === 0 ? (
-        <AppText tone="secondary" className="px-gutter" testID="no-comments">
-          No comments yet.
-        </AppText>
+        page.later === null ? (
+          <AppText tone="secondary" className="px-gutter" testID="no-comments">
+            No comments yet.
+          </AppText>
+        ) : null
       ) : (
         <View className="mx-gutter overflow-hidden rounded-card bg-surface">
           {comments.map((comment) => (
@@ -266,6 +372,14 @@ function Comments({
             />
           ))}
         </View>
+      )}
+      {page.later === null ? null : (
+        <PageButton
+          label="Show more comments"
+          paging={paging.later}
+          onPress={() => load("later")}
+          testID="comments-later"
+        />
       )}
       <View className="gap-3 px-gutter">
         <TextField
@@ -294,14 +408,17 @@ function Comments({
 function ThreadContent({
   api,
   initial,
+  atEnd,
 }: {
   readonly api: SocialApi;
   readonly initial: PostThread;
+  readonly atEnd: boolean;
 }) {
-  const [thread, setThread] = useState(initial);
-  const { post } = thread;
-  const like = useLike(api, post, (likes) =>
-    setThread((current) => ({ ...current, post: { ...current.post, ...likes } })),
+  const [post, setPost] = useState(initial.post);
+  const like = useLike(api, post, (likes) => setPost((current) => ({ ...current, ...likes })));
+  const onCount = useCallback(
+    (comments: number) => setPost((current) => ({ ...current, comments })),
+    [],
   );
   const button = likeButton(post);
   const note = post.mine ? undefined : hiddenNote(post.username, post.activity.hiddenFields);
@@ -343,23 +460,19 @@ function ThreadContent({
           {like.problem}
         </AppText>
       )}
-      <Comments
-        api={api}
-        thread={thread}
-        onChange={(comments) =>
-          setThread((current) => ({
-            post: { ...current.post, comments: comments.length },
-            comments,
-          }))
-        }
-      />
+      <Comments api={api} post={post} initial={initial} atEnd={atEnd} onCount={onCount} />
     </>
   );
 }
 
-function ThreadRead({ api, route, navigation }: Props & { readonly api: SocialApi }) {
-  const { id } = route.params;
-  const read = useCallback(() => api.post(id), [api, id]);
+function ThreadRead({
+  api,
+  route,
+  navigation,
+  atEnd,
+}: Props & { readonly api: SocialApi; readonly atEnd: boolean }) {
+  const { id, comment } = route.params;
+  const read = useCallback(() => api.post(id, comment), [api, id, comment]);
   const { state } = useSocialRead(read);
   const title = state.status === "ready" ? postTitle(state.value.post) : "Post";
   useLayoutEffect(() => {
@@ -367,13 +480,28 @@ function ThreadRead({ api, route, navigation }: Props & { readonly api: SocialAp
   }, [navigation, title]);
   return (
     <SocialView state={state} testID="post">
-      {(thread) => <ThreadContent key={thread.post.activity.id} api={api} initial={thread} />}
+      {(thread) => (
+        <ThreadContent key={thread.post.activity.id} api={api} initial={thread} atEnd={atEnd} />
+      )}
     </SocialView>
   );
 }
 
-/** One post in full: its sets or route, its likes and its comments. */
+/** How close to the end, in points, the next page of comments starts loading. */
+const END_DISTANCE = 600;
+
+/**
+ * One post in full: its sets or route, its likes and its comments. Opened from an inbox item,
+ * it shows the page of comments that holds the item's comment.
+ */
 export function PostScreen(props: Props) {
+  const view = useRef({ offset: 0, height: 0, content: 0 });
+  const [atEnd, setAtEnd] = useState(false);
+  const measure = (change: Partial<typeof view.current>) => {
+    view.current = { ...view.current, ...change };
+    const { offset, height, content } = view.current;
+    setAtEnd(content > 0 && offset + height >= content - END_DISTANCE);
+  };
   return (
     <ScrollView
       testID="post"
@@ -382,8 +510,18 @@ export function PostScreen(props: Props) {
       contentInsetAdjustmentBehavior="automatic"
       automaticallyAdjustKeyboardInsets
       keyboardShouldPersistTaps="handled"
+      scrollEventThrottle={100}
+      onScroll={(event) =>
+        measure({
+          offset: event.nativeEvent.contentOffset.y,
+          height: event.nativeEvent.layoutMeasurement.height,
+          content: event.nativeEvent.contentSize.height,
+        })
+      }
+      onLayout={(event) => measure({ height: event.nativeEvent.layout.height })}
+      onContentSizeChange={(_, content) => measure({ content })}
     >
-      <SignedInOnly>{(api) => <ThreadRead {...props} api={api} />}</SignedInOnly>
+      <SignedInOnly>{(api) => <ThreadRead {...props} api={api} atEnd={atEnd} />}</SignedInOnly>
     </ScrollView>
   );
 }

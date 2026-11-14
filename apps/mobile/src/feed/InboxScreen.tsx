@@ -33,8 +33,9 @@ function InboxRow({ item }: { readonly item: InboxItem }) {
   const open = () => {
     switch (item.kind) {
       case "like":
-      case "comment":
         return navigation.push("Post", { id: item.post.id });
+      case "comment":
+        return navigation.push("Post", { id: item.post.id, comment: item.commentId });
       case "follow":
         return navigation.push("Profile", { username: item.username });
       case "follow_request":

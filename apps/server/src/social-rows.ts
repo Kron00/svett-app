@@ -25,10 +25,10 @@ import { type SqlError, UniqueViolation } from "effect/sql/SqlError";
 import {
   firstVisible,
   InvalidCursor,
-  postCursor,
-  readPostCursor,
+  idCursor,
+  readIdCursor,
   SCAN,
-  type SharedAnchor,
+  type ListAnchor,
 } from "./paging.ts";
 
 export class NotFound extends Data.TaggedError("NotFound")<{}> {}
@@ -64,7 +64,8 @@ export interface SocialRowsShape {
   ) => Effect.Effect<ReadonlyArray<ProfileSummary>, SqlError>;
   /**
    * A profile and the first page of the activities the privacy rule lets `viewer` see, newest
-   * first by when each was shared, never by when it started, as a start may be hidden.
+   * first. Others see shared ones by when each was shared, never by when it started, as a start
+   * may be hidden. The owner sees all of theirs by when each started.
    */
   readonly profile: (
     viewer: AccountId,
@@ -147,6 +148,8 @@ const summary = (row: SummaryRow): ProfileSummary => ({
   private: row.private,
   follow: row.follow as FollowState,
 });
+
+const ownList = (relation: OwnedRelation) => relation.viewer === relation.owner;
 
 export class SocialRows extends Context.Service<SocialRows, SocialRowsShape>()(
   "svett/server/SocialRows",
@@ -236,14 +239,24 @@ export class SocialRows extends Context.Service<SocialRows, SocialRowsShape>()(
         );
 
       /**
-       * The owner's activities that `relation` reaches by audience, each from the time it was
-       * shared. A workout in progress is not shared yet.
+       * What orders a profile's activities, newest first. Others see the owner's shared
+       * activities by when each was shared, never by when it started, as its start may be
+       * hidden. The owner knows their own start times, and sees every activity of theirs by
+       * when it started, shared or not.
        */
-      const sharedScope = (relation: OwnedRelation, audiences: ReadonlyArray<string>) => sql`
+      const orderOf = (relation: OwnedRelation) =>
+        ownList(relation) ? sql`(r.data->>'startedAt')::bigint` : sql`s.shared_ms`;
+
+      /**
+       * The owner's activities that `relation` reaches by audience. Others see only those
+       * shared, each from the time it was shared. A workout in progress is not listed yet.
+       */
+      const listScope = (relation: OwnedRelation, audiences: ReadonlyArray<string>) => sql`
         from activity_social s
         join account_row r on r.account_id = s.account_id and r.table_name = 'activity'
           and r.row_id = s.activity_id
-        where s.account_id = ${relation.owner} and s.shared_ms is not null
+        where s.account_id = ${relation.owner}
+          ${ownList(relation) ? sql`` : sql`and s.shared_ms is not null`}
           and r.deleted_at is null and coalesce(r.data->>'status', '') <> 'in_progress'
           and r.data->>'audience' in ${sql.in(audiences)}
       `;
@@ -254,38 +267,37 @@ export class SocialRows extends Context.Service<SocialRows, SocialRowsShape>()(
        */
       const activitiesAfter = (relation: OwnedRelation, cursor: string) =>
         Effect.gen(function* () {
-          const id = yield* readPostCursor(cursor);
+          const id = yield* readIdCursor(cursor);
           const audiences = visibleAudiences(relation);
           if (audiences.length === 0) return yield* new InvalidCursor();
-          const [anchor] = yield* sql<SharedAnchor>`
-            select s.shared_ms as "sharedMs", s.social_id as "socialId"
-            ${sharedScope(relation, audiences)} and s.social_id = ${id}
+          const [anchor] = yield* sql<ListAnchor>`
+            select ${orderOf(relation)} as "orderMs", s.social_id as "socialId"
+            ${listScope(relation, audiences)} and s.social_id = ${id}
           `;
           if (anchor === undefined) return yield* new InvalidCursor();
           return anchor;
         });
 
-      // Newest first by when each activity was shared, never by when it started, as its start
-      // may be hidden. The social ID breaks a tie, as the feed does.
-      const activityPage = (relation: OwnedRelation, start: SharedAnchor | undefined) =>
+      const activityPage = (relation: OwnedRelation, start: ListAnchor | undefined) =>
         Effect.gen(function* () {
           const audiences = visibleAudiences(relation);
           if (audiences.length === 0) return { activities: [], next: null } satisfies ActivityPage;
-          const scope = sharedScope(relation, audiences);
-          type Row = SharedAnchor & { readonly data: unknown };
+          const scope = listScope(relation, audiences);
+          const order = orderOf(relation);
+          type Row = ListAnchor & { readonly data: unknown };
           const shown = yield* firstVisible(
             (after: Row | undefined) => {
               const before = after ?? start;
               return sql<Row>`
-                select s.shared_ms as "sharedMs", s.social_id as "socialId", r.data
+                select ${order} as "orderMs", s.social_id as "socialId", r.data
                 ${scope}
                 ${
                   before === undefined
                     ? sql``
-                    : sql`and (s.shared_ms, s.social_id)
-                        < (${before.sharedMs}::bigint, ${before.socialId})`
+                    : sql`and (${order}, s.social_id)
+                        < (${before.orderMs}::bigint, ${before.socialId})`
                 }
-                order by s.shared_ms desc, s.social_id desc
+                order by ${order} desc, s.social_id desc
                 limit ${SCAN}
               `;
             },
@@ -306,7 +318,7 @@ export class SocialRows extends Context.Service<SocialRows, SocialRowsShape>()(
           const last = shown[PAGE - 1];
           return {
             activities: shown.slice(0, PAGE).map(({ item }) => item),
-            next: shown.length > PAGE && last !== undefined ? postCursor(last.row.socialId) : null,
+            next: shown.length > PAGE && last !== undefined ? idCursor(last.row.socialId) : null,
           } satisfies ActivityPage;
         });
 

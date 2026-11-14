@@ -1,6 +1,6 @@
 import { Data, Effect, Option, Schema } from "effect";
 
-import { FeedPage, InboxPage, Likes, PostComment, PostThread } from "./feed.ts";
+import { CommentPage, FeedPage, InboxPage, Likes, PostComment, PostThread } from "./feed.ts";
 import { ActivityView, FollowState, type SocialActivityId } from "./privacy.ts";
 import { usernamePrefix } from "./username.ts";
 
@@ -54,7 +54,8 @@ export type FollowRequestList = typeof FollowRequestList.Type;
 
 /**
  * A profile and the first page of the activities the privacy rule lets the signed-in account
- * see, newest first by when each was shared, as the feed orders them.
+ * see. Another account's shared activities come newest first by when each was shared, as the
+ * feed orders them. Your own profile lists every activity of yours, newest first by its start.
  */
 export const ProfileView = Schema.Struct({
   username: Schema.String,
@@ -254,15 +255,35 @@ export const httpSocialApi = (options: HttpSocialOptions) => {
     /** Declines the request with this `FollowRequest.id`. */
     decline: (request: string) =>
       call(Done, "DELETE", `/v1/follow-requests/${encodeURIComponent(request)}`),
-    /** Your posts and those of the accounts you follow, newest first, after `cursor`. */
+    /**
+     * Your shared posts and those of the accounts you follow, newest first by when each was
+     * shared, after `cursor`.
+     */
     feed: (cursor?: string) =>
       call(
         FeedPage,
         "GET",
         cursor === undefined ? "/v1/feed" : `/v1/feed?cursor=${encodeURIComponent(cursor)}`,
       ),
-    /** A post by its social ID, with its comments. */
-    post: (id: string) => call(PostThread, "GET", postAt(id)),
+    /**
+     * A post by its social ID, with its first page of comments, or with the page that holds
+     * `comment` when it is still there.
+     */
+    post: (id: string, comment?: string) =>
+      call(
+        PostThread,
+        "GET",
+        comment === undefined ? postAt(id) : `${postAt(id)}?comment=${encodeURIComponent(comment)}`,
+      ),
+    /** The page of a post's comments after a `later` cursor, or before an `earlier` one. */
+    comments: (id: string, from: { readonly later: string } | { readonly earlier: string }) =>
+      call(
+        CommentPage,
+        "GET",
+        "later" in from
+          ? `${postAt(id)}/comments?after=${encodeURIComponent(from.later)}`
+          : `${postAt(id)}/comments?before=${encodeURIComponent(from.earlier)}`,
+      ),
     like: (id: string) => call(Likes, "PUT", `${postAt(id)}/like`),
     unlike: (id: string) => call(Likes, "DELETE", `${postAt(id)}/like`),
     comment: (id: string, body: string) =>

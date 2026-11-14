@@ -1,12 +1,14 @@
 import { DurationSeconds, formatDuration } from "./duration.ts";
-import type {
-  InboxItem,
-  LiftingDetail,
-  Post,
-  PostRef,
-  PostSet,
-  RouteDetail,
-  RoutePoint,
+import {
+  INBOX_PAGE,
+  type InboxItem,
+  type LiftingDetail,
+  type Post,
+  type PostComment,
+  type PostRef,
+  type PostSet,
+  type RouteDetail,
+  type RoutePoint,
 } from "./feed.ts";
 import { describeSet, formatVolumeKg, formatWorkoutDuration } from "./history.ts";
 import type { ActivityKind, Audience, HiddenField } from "./schema.ts";
@@ -89,6 +91,29 @@ export const inboxLine = (item: InboxItem): string => {
     case "follow_request":
       return `${item.username} asked to follow you`;
   }
+};
+
+/**
+ * The inbox badge for `unread` items. The server counts up to one more than a page, so more
+ * than a page reads as "30+".
+ */
+export const unreadBadge = (unread: number): string =>
+  unread > INBOX_PAGE ? `${INBOX_PAGE}+` : String(unread);
+
+/**
+ * What a route post's map area shows: the map, a note that the hidden start and end cover
+ * every position, or nothing, for an activity that recorded no positions.
+ */
+export const routeMap = (detail: RouteDetail): "map" | "hidden" | "none" =>
+  detail.route.length > 0 ? "map" : detail.routeHidden ? "hidden" : "none";
+
+/** Two runs of a thread's comments as one, oldest first as the server orders them, each once. */
+export const mergeComments = (
+  a: ReadonlyArray<PostComment>,
+  b: ReadonlyArray<PostComment>,
+): ReadonlyArray<PostComment> => {
+  const byId = new Map([...a, ...b].map((comment) => [comment.id, comment]));
+  return [...byId.values()].sort((x, y) => x.at - y.at || (x.id < y.id ? -1 : x.id > y.id ? 1 : 0));
 };
 
 const ROUTE_PADDING = 12;

@@ -40,7 +40,7 @@ function DetailSummary({ detail, id }: { readonly detail: PostDetail; readonly i
   if (detail.type === "route") {
     return (
       <View className="gap-2">
-        <RouteShape route={detail.route} height={160} testID={`post-route-${id}`} />
+        <RouteShape detail={detail} height={160} testID={`post-route-${id}`} />
         <AppText variant="headline" numeric testID={`post-numbers-${id}`}>
           {routeLine(detail)}
         </AppText>

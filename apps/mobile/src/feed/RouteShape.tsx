@@ -1,4 +1,4 @@
-import { projectRoute, type RoutePoint } from "@svett/core";
+import { projectRoute, type RouteDetail, routeMap } from "@svett/core";
 import { useState } from "react";
 import { View } from "react-native";
 import Svg, { Polyline } from "react-native-svg";
@@ -7,22 +7,25 @@ import { useColor } from "../design/hooks";
 import { AppText } from "../ui/AppText";
 
 /**
- * The visible stretch of a route, drawn as its shape. The ends were cut off on the server,
- * so nothing here can show where the route started or finished.
+ * The visible stretches of a route, drawn as its shape, each line on its own so none joins
+ * across a hidden circle. The circles were cut out on the server, so nothing here can show
+ * where the route started or finished. An activity with no positions shows no map.
  */
 export function RouteShape({
-  route,
+  detail,
   height = 180,
   testID,
 }: {
-  readonly route: ReadonlyArray<ReadonlyArray<RoutePoint>>;
+  readonly detail: RouteDetail;
   readonly height?: number;
   readonly testID?: string;
 }) {
   const [width, setWidth] = useState(0);
   const stroke = useColor("accent");
-  const lines = projectRoute(route, width, height);
-  if (route.length === 0) {
+  const lines = projectRoute(detail.route, width, height);
+  const map = routeMap(detail);
+  if (map === "none") return null;
+  if (map === "hidden") {
     return (
       <View
         testID={testID}

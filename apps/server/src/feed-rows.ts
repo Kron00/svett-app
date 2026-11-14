@@ -8,8 +8,10 @@ import {
   ActivitySample,
   ActivitySet,
   ActivityTrack,
+  Audience,
   cleanComment,
   COMMENT_PAGE,
+  type CommentPage,
   commentProblem,
   Exercise,
   exerciseLibrary,
@@ -41,10 +43,10 @@ import {
   encodeCursor,
   firstVisible,
   InvalidCursor,
-  postCursor,
-  readPostCursor,
+  idCursor,
+  readIdCursor,
   SCAN,
-  type SharedAnchor,
+  type ListAnchor,
 } from "./paging.ts";
 import { UsernameRequired } from "./social-rows.ts";
 
@@ -62,7 +64,21 @@ export interface FeedRowsShape {
     viewer: AccountId,
     cursor: string | undefined,
   ) => Effect.Effect<FeedPage, SqlError | UsernameRequired | InvalidCursor>;
-  readonly post: (viewer: AccountId, id: SocialActivityId) => Effect.Effect<PostThread, PostError>;
+  /**
+   * The post with its first page of comments, or with the page that holds `comment` when it is
+   * still on the post.
+   */
+  readonly post: (
+    viewer: AccountId,
+    id: SocialActivityId,
+    comment: string | undefined,
+  ) => Effect.Effect<PostThread, PostError>;
+  /** The page of the post's comments after a `later` cursor, or before an `earlier` one. */
+  readonly comments: (
+    viewer: AccountId,
+    id: SocialActivityId,
+    from: { readonly after: string } | { readonly before: string },
+  ) => Effect.Effect<CommentPage, PostError | InvalidCursor>;
   /** Likes the post. Liking it again changes nothing. */
   readonly like: (
     viewer: AccountId,
@@ -113,10 +129,13 @@ const relation = (viewer: AccountId, owner: string, follow: FollowState): Relati
   blocked: false,
 });
 
+/** The audiences of an owner's own posts in their feed: every one but their own alone. */
+const SHARED_AUDIENCES = Audience.literals.filter((audience) => audience !== "only_you");
+
 /** Where an inbox row sits in the inbox's order. */
 const position = (row: InboxRow) => ({ at: Number(row.at), key: row.key });
 
-type FeedRow = SharedAnchor & {
+type FeedRow = ListAnchor & {
   readonly ownerId: string;
   readonly username: string;
   readonly data: unknown;
@@ -132,7 +151,25 @@ type InboxRow = {
   readonly socialId: string | null;
   readonly follow: FollowState | null;
   readonly activity: unknown;
+  readonly commentId: string | null;
   readonly body: string | null;
+};
+
+type CommentRow = {
+  readonly id: string;
+  readonly username: string;
+  readonly body: string;
+  readonly at: string;
+  readonly authorId: string;
+};
+
+/** Where a comment sits in its thread, oldest first. */
+type CommentAnchor = { readonly at: string; readonly id: string };
+
+/** The cursor for the page after rows read oldest first, when there is one. */
+const laterCursor = (rows: ReadonlyArray<PostComment>) => {
+  const last = rows[COMMENT_PAGE - 1];
+  return rows.length > COMMENT_PAGE && last !== undefined ? idCursor(last.id) : null;
 };
 
 /** The inbox item a row makes, or undefined when its post is not the viewer's to see. */
@@ -176,7 +213,13 @@ const inboxItem = (viewer: AccountId, readUntil: number, row: InboxRow) => {
     mine: row.ownerId === viewer,
   };
   return row.kind === "comment"
-    ? ({ ...item, kind: "comment", post, body: row.body ?? "" } satisfies InboxItem)
+    ? ({
+        ...item,
+        kind: "comment",
+        post,
+        commentId: row.commentId ?? "",
+        body: row.body ?? "",
+      } satisfies InboxItem)
     : ({ ...item, kind: "like", post } satisfies InboxItem);
 };
 
@@ -352,14 +395,17 @@ export class FeedRows extends Context.Service<FeedRows, FeedRowsShape>()("svett/
           return { owner: row.owner, activityId: row.activityId, post };
         });
 
+      type VisiblePost = Effect.Success<ReturnType<typeof visiblePost>>;
+
       const needUsername = (viewer: AccountId) =>
         Effect.flatMap(usernameOf(viewer), (username) =>
           username === undefined ? Effect.fail(new UsernameRequired()) : Effect.succeed(username),
         );
 
       /**
-       * The posts `viewer`'s feed holds: their own and those of the accounts they follow, as
-       * far as the privacy rule's audiences reach, each from the time it reached the feed.
+       * The posts `viewer`'s feed holds: their own shared ones and those of the accounts they
+       * follow, as far as the privacy rule's audiences reach, each from the time it was first
+       * shared. An activity for only its owner is in no feed, not even the owner's.
        */
       const feedScope = (viewer: AccountId) => sql`
         from activity_social s
@@ -371,7 +417,7 @@ export class FeedRows extends Context.Service<FeedRows, FeedRowsShape>()("svett/
         where s.shared_ms is not null and r.deleted_at is null
           and coalesce(r.data->>'status', '') <> 'in_progress'
           and ((s.account_id = ${viewer}
-              and r.data->>'audience' in ${sql.in(visibleAudiences(relation(viewer, viewer, "none")))})
+              and r.data->>'audience' in ${sql.in(SHARED_AUDIENCES)})
             or (f.follower_id is not null
               and r.data->>'audience' in ${sql.in(visibleAudiences(relation(viewer, "", "following")))}))
       `;
@@ -383,9 +429,9 @@ export class FeedRows extends Context.Service<FeedRows, FeedRowsShape>()("svett/
       const feedAfter = (viewer: AccountId, cursor: string | undefined) =>
         Effect.gen(function* () {
           if (cursor === undefined) return undefined;
-          const id = yield* readPostCursor(cursor);
-          const [anchor] = yield* sql<SharedAnchor>`
-            select s.shared_ms as "sharedMs", s.social_id as "socialId"
+          const id = yield* readIdCursor(cursor);
+          const [anchor] = yield* sql<ListAnchor>`
+            select s.shared_ms as "orderMs", s.social_id as "socialId"
             ${feedScope(viewer)} and s.social_id = ${id}
           `;
           if (anchor === undefined) return yield* new InvalidCursor();
@@ -403,12 +449,13 @@ export class FeedRows extends Context.Service<FeedRows, FeedRowsShape>()("svett/
         sql<InboxRow>`
           with item as (
             select 'like' as kind, md5('like/' || l.owner_id || '/' || l.activity_id || '/' || l.liker_id) as key,
-              l.liker_id as actor, l.owner_id, l.activity_id, null::text as body, l.created_ms as at
+              l.liker_id as actor, l.owner_id, l.activity_id, null::text as comment_id,
+              null::text as body, l.created_ms as at
             from activity_like l
             where l.owner_id = ${viewer} and l.liker_id <> ${viewer}
             union all
             select 'comment', md5('comment/' || c.id), c.author_id, c.owner_id, c.activity_id,
-              c.body, c.created_ms
+              c.id, c.body, c.created_ms
             from activity_comment c
             where c.author_id <> ${viewer}
               and (c.owner_id = ${viewer} or exists (
@@ -417,14 +464,15 @@ export class FeedRows extends Context.Service<FeedRows, FeedRowsShape>()("svett/
                   and mine.author_id = ${viewer} and mine.created_ms < c.created_ms))
             union all
             select case f.state when 'following' then 'follow' else 'follow_request' end,
-              md5('follow/' || f.follower_id), f.follower_id, null, null, null,
+              md5('follow/' || f.follower_id), f.follower_id, null, null, null, null,
               (extract(epoch from f.created_at) * 1000)::bigint
             from follow f
             where f.followee_id = ${viewer}
           )
           select i.kind, i.key, actor.username, i.at, i.owner_id as "ownerId",
             owner.username as "ownerUsername", social.social_id as "socialId",
-            coalesce(seen.state, 'none') as follow, post.data as activity, i.body
+            coalesce(seen.state, 'none') as follow, post.data as activity,
+            i.comment_id as "commentId", i.body
           from item i
           join profile actor on actor.account_id = i.actor
           left join profile owner on owner.account_id = i.owner_id
@@ -441,6 +489,55 @@ export class FeedRows extends Context.Service<FeedRows, FeedRowsShape>()("svett/
           limit ${options.limit}
         `;
 
+      const commentOrder = sql`(c.created_ms, c.id collate "C")`;
+
+      /** Where comment `comment` sits on the post, or undefined when it is not on the post. */
+      const anchorOf = (post: VisiblePost, comment: string) =>
+        sql<CommentAnchor>`
+          select c.created_ms as at, c.id from activity_comment c
+          where c.id = ${comment} and c.owner_id = ${post.owner}
+            and c.activity_id = ${post.activityId}
+        `.pipe(Effect.map(([row]) => row));
+
+      /**
+       * Up to one more than a page of the post's comments, from `from` on, after `after` or
+       * before `before`, nearest first.
+       */
+      const commentRows = (
+        post: VisiblePost,
+        viewer: AccountId,
+        bound: {
+          readonly from?: CommentAnchor | undefined;
+          readonly after?: CommentAnchor;
+          readonly before?: CommentAnchor;
+          readonly ascending: boolean;
+        },
+      ) =>
+        sql<CommentRow>`
+          select c.id, p.username, c.body, c.created_ms as at, c.author_id as "authorId"
+          from activity_comment c join profile p on p.account_id = c.author_id
+          where c.owner_id = ${post.owner} and c.activity_id = ${post.activityId}
+            ${bound.from === undefined ? sql`` : sql`and ${commentOrder} >= (${bound.from.at}::bigint, ${bound.from.id} collate "C")`}
+            ${bound.after === undefined ? sql`` : sql`and ${commentOrder} > (${bound.after.at}::bigint, ${bound.after.id} collate "C")`}
+            ${bound.before === undefined ? sql`` : sql`and ${commentOrder} < (${bound.before.at}::bigint, ${bound.before.id} collate "C")`}
+          ${
+            bound.ascending
+              ? sql`order by c.created_ms, c.id collate "C"`
+              : sql`order by c.created_ms desc, c.id collate "C" desc`
+          }
+          limit ${COMMENT_PAGE + 1}
+        `.pipe(
+          Effect.map((rows) =>
+            rows.map((row): PostComment => ({
+              id: row.id,
+              username: row.username,
+              body: row.body,
+              at: Number(row.at),
+              canDelete: row.authorId === viewer || post.owner === viewer,
+            })),
+          ),
+        );
+
       return FeedRows.of({
         feed: (viewer, cursor) =>
           Effect.gen(function* () {
@@ -453,13 +550,13 @@ export class FeedRows extends Context.Service<FeedRows, FeedRowsShape>()("svett/
                 const before = after ?? start;
                 return sql<FeedRow>`
                   select s.account_id as "ownerId", p.username, s.social_id as "socialId",
-                    s.shared_ms as "sharedMs", r.data
+                    s.shared_ms as "orderMs", r.data
                   ${feedScope(viewer)}
                   ${
                     before === undefined
                       ? sql``
                       : sql`and (s.shared_ms, s.social_id)
-                          < (${before.sharedMs}::bigint, ${before.socialId})`
+                          < (${before.orderMs}::bigint, ${before.socialId})`
                   }
                   order by s.shared_ms desc, s.social_id desc
                   limit ${SCAN}
@@ -491,37 +588,56 @@ export class FeedRows extends Context.Service<FeedRows, FeedRowsShape>()("svett/
             return {
               posts: posts.filter((post) => post !== undefined),
               next:
-                shown.length > FEED_PAGE && last !== undefined
-                  ? postCursor(last.row.socialId)
-                  : null,
+                shown.length > FEED_PAGE && last !== undefined ? idCursor(last.row.socialId) : null,
             };
           }),
-        post: (viewer, id) =>
+        post: (viewer, id, comment) =>
           Effect.gen(function* () {
             const found = yield* visiblePost(viewer, id);
             const { owner, activityId } = found;
-            const comments = yield* sql<{
-              readonly id: string;
-              readonly username: string;
-              readonly body: string;
-              readonly at: string;
-              readonly authorId: string;
-            }>`
-              select c.id, p.username, c.body, c.created_ms as at, c.author_id as "authorId"
-              from activity_comment c join profile p on p.account_id = c.author_id
-              where c.owner_id = ${owner} and c.activity_id = ${activityId}
-              order by c.created_ms, c.id
-              limit ${COMMENT_PAGE}
-            `;
+            const target = comment === undefined ? undefined : yield* anchorOf(found, comment);
+            // A comment within the first page opens the first page, so the thread reads from
+            // its start whenever it can.
+            const before =
+              target === undefined
+                ? 0
+                : yield* sql<{ readonly count: number }>`
+                    select count(*)::int as count from activity_comment c
+                    where c.owner_id = ${owner} and c.activity_id = ${activityId}
+                      and ${commentOrder} < (${target.at}::bigint, ${target.id} collate "C")
+                  `.pipe(Effect.map(([row]) => row?.count ?? 0));
+            const from = target !== undefined && before >= COMMENT_PAGE ? target : undefined;
+            const rows = yield* commentRows(found, viewer, { from, ascending: true });
+            const page = rows.slice(0, COMMENT_PAGE);
             return {
               post: found.post,
-              comments: comments.map((comment) => ({
-                id: comment.id,
-                username: comment.username,
-                body: comment.body,
-                at: Number(comment.at),
-                canDelete: comment.authorId === viewer || owner === viewer,
-              })),
+              comments: page,
+              earlier: from === undefined ? null : idCursor(from.id),
+              later: laterCursor(rows),
+            };
+          }),
+        comments: (viewer, id, from) =>
+          Effect.gen(function* () {
+            const found = yield* visiblePost(viewer, id);
+            const cursor = "after" in from ? from.after : from.before;
+            const anchor = yield* anchorOf(found, yield* readIdCursor(cursor));
+            if (anchor === undefined) return yield* new InvalidCursor();
+            if ("after" in from) {
+              const rows = yield* commentRows(found, viewer, { after: anchor, ascending: true });
+              return {
+                comments: rows.slice(0, COMMENT_PAGE),
+                earlier: null,
+                later: laterCursor(rows),
+              };
+            }
+            const rows = yield* commentRows(found, viewer, { before: anchor, ascending: false });
+            const page = rows.slice(0, COMMENT_PAGE).toReversed();
+            const oldest = page[0];
+            return {
+              comments: page,
+              earlier:
+                rows.length > COMMENT_PAGE && oldest !== undefined ? idCursor(oldest.id) : null,
+              later: null,
             };
           }),
         like: (viewer, id) =>
@@ -598,7 +714,7 @@ export class FeedRows extends Context.Service<FeedRows, FeedRowsShape>()("svett/
                   limit: SCAN,
                 }),
               itemOf,
-              INBOX_PAGE,
+              INBOX_PAGE + 1,
             );
             const last = page[INBOX_PAGE - 1];
             return {

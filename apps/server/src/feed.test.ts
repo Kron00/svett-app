@@ -2,7 +2,7 @@ import { createServer } from "node:http";
 
 import { NodeHttpServer } from "@effect/platform-node";
 import { PgClient } from "@effect/sql-pg";
-import { COMMENT_MAX_LENGTH, FEED_PAGE, INBOX_PAGE } from "@svett/core";
+import { COMMENT_MAX_LENGTH, COMMENT_PAGE, FEED_PAGE, INBOX_PAGE } from "@svett/core";
 import { Effect, Layer } from "effect";
 import { HttpClient, HttpClientRequest, HttpRouter, HttpServer } from "effect/http";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
@@ -161,6 +161,12 @@ const activity = (overrides: Record<string, unknown> = {}) => ({
 
 type Shown = { readonly id: string; readonly title: string };
 
+/** The titles on anna's profile, as `account` sees them. */
+const annaAsSeenBy = (account: string) =>
+  Effect.map(ok(account, "GET", "/v1/profiles/anna"), ({ body }) =>
+    body.activities.map((one: Shown) => one.title),
+  );
+
 /** The feed after a cursor naming the post with social ID `id`. */
 const feedAfterPost = (id: string) =>
   `/v1/feed?cursor=${Buffer.from(JSON.stringify({ id })).toString("base64url")}`;
@@ -308,13 +314,14 @@ describe("the feed", { timeout: 60_000 }, () => {
         endM: 1000 * (index + 1),
         durationS: null,
       })),
+      routeHidden: false,
       averageHeartRateBpm: null,
     });
     // About 111 m between positions, so 200 m at each end hides two of them.
     expect(route).toEqual([runPositions().slice(2, -2)]);
   });
 
-  it("holds the accounts you follow and your own posts, never a stranger's or a draft", async () => {
+  it("holds your shared posts and those of the accounts you follow, never a stranger's, one for only its owner or a draft", async () => {
     const shown = await withServer(
       Effect.gen(function* () {
         const sql = yield* PgClient.PgClient;
@@ -323,10 +330,11 @@ describe("the feed", { timeout: 60_000 }, () => {
         yield* name(CARA, "cara");
         yield* follow(ANNA, "ben");
         const own = activity({ audience: "only_you", title: "Anna, only you" });
+        const shared = activity({ audience: "followers", title: "Anna, followers" });
         const followers = activity({ audience: "followers", title: "Ben, followers" });
         const mine = activity({ audience: "only_you", title: "Ben, only you" });
         const stranger = activity({ title: "Cara, everyone" });
-        yield* write(ANNA, [own]);
+        yield* write(ANNA, [own, shared]);
         yield* write(BEN, [followers, mine]);
         yield* write(CARA, [stranger]);
         const titles = () =>
@@ -345,10 +353,10 @@ describe("the feed", { timeout: 60_000 }, () => {
         return { requested, following, withDraft: yield* titles() };
       }),
     );
-    expect(shown.requested).toEqual([["Anna, only you", "only_you"]]);
+    expect(shown.requested).toEqual([["Anna, followers", "followers"]]);
     expect(shown.following).toEqual([
       ["Ben, followers", null],
-      ["Anna, only you", "only_you"],
+      ["Anna, followers", "followers"],
     ]);
     expect(shown.withDraft).toEqual(shown.following);
   });
@@ -427,6 +435,66 @@ describe("the feed", { timeout: 60_000 }, () => {
     }
     expect(feeds[0]?.text).not.toContain("1600000000");
     expect(feeds[1]?.text).not.toContain("1900000000");
+  });
+
+  it("leaves activities moved in for only their owner out of every feed until one is shared", async () => {
+    const result = await withServer(
+      Effect.gen(function* () {
+        yield* name(ANNA, "anna");
+        yield* name(BEN, "ben");
+        yield* follow(BEN, "anna");
+        const shared = activity({
+          audience: "followers",
+          title: "Shared",
+          startedAt: 1_700_000_000_000,
+        });
+        yield* write(ANNA, [shared]);
+        const feeds = () =>
+          Effect.all({
+            anna: Effect.map(feedPage(ANNA), ({ posts }) => posts.map(({ title }) => title)),
+            ben: Effect.map(feedPage(BEN), ({ posts }) => posts.map(({ title }) => title)),
+          });
+        const before = yield* feeds();
+        yield* Effect.sleep("5 millis");
+        // A phone's workouts move into a new account in one write, each for only its owner,
+        // with start times in no particular order.
+        const moved = [3, 0, 4, 1, 2].map((day) =>
+          activity({
+            audience: "only_you",
+            title: `Moved ${day}`,
+            startedAt: 1_790_000_000_000 + day * 86_400_000,
+          }),
+        );
+        yield* write(ANNA, moved);
+        const afterMove = yield* feeds();
+        const ownAfterMove = yield* annaAsSeenBy(ANNA);
+        const benAfterMove = yield* annaAsSeenBy(BEN);
+        yield* Effect.sleep("5 millis");
+        const opened = moved.find(({ row }) => row.title === "Moved 0")!;
+        yield* write(ANNA, [
+          { ...opened, row: { ...opened.row, audience: "followers", updatedAt: 2 } },
+        ]);
+        return {
+          before,
+          afterMove,
+          ownAfterMove,
+          benAfterMove,
+          afterShare: yield* feeds(),
+          ownAfterShare: yield* annaAsSeenBy(ANNA),
+          benAfterShare: yield* annaAsSeenBy(BEN),
+        };
+      }),
+    );
+    expect(result.before).toEqual({ anna: ["Shared"], ben: ["Shared"] });
+    expect(result.afterMove).toEqual(result.before);
+    // The owner knows every start time, and sees all their activities by it.
+    const byStart = ["Moved 4", "Moved 3", "Moved 2", "Moved 1", "Moved 0", "Shared"];
+    expect(result.ownAfterMove).toEqual(byStart);
+    expect(result.benAfterMove).toEqual(["Shared"]);
+    // Shared last, it tops the feed although it started before the other moved workouts.
+    expect(result.afterShare).toEqual({ anna: ["Moved 0", "Shared"], ben: ["Moved 0", "Shared"] });
+    expect(result.ownAfterShare).toEqual(byStart);
+    expect(result.benAfterShare).toEqual(["Moved 0", "Shared"]);
   });
 
   it("keeps a hidden start time out of the cursor", async () => {
@@ -688,6 +756,134 @@ describe("comments", { timeout: 60_000 }, () => {
   });
 });
 
+/** Every comment from `first`, following `side`'s cursor page by page. */
+const pageThrough = (
+  account: string,
+  at: string,
+  first: { comments: ReadonlyArray<any>; earlier: string | null; later: string | null },
+  side: "earlier" | "later",
+) =>
+  Effect.gen(function* () {
+    let comments = [...first.comments];
+    let cursor = first[side];
+    let pages = 1;
+    while (cursor !== null) {
+      const query = side === "later" ? `after=${cursor}` : `before=${cursor}`;
+      const page = (yield* ok(account, "GET", `${at}/comments?${query}`)).body;
+      expect(page.comments.length).toBeLessThanOrEqual(COMMENT_PAGE);
+      comments =
+        side === "later" ? [...comments, ...page.comments] : [...page.comments, ...comments];
+      cursor = page[side];
+      pages++;
+    }
+    return { comments, pages };
+  });
+
+describe("a thread's comments", { timeout: 60_000 }, () => {
+  it("reaches every comment past the first page, and opens an inbox item's thread on its comment", async () => {
+    const total = 4 * COMMENT_PAGE + 1;
+    const result = await withServer(
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        yield* name(ANNA, "anna");
+        yield* name(BEN, "ben");
+        yield* name(CARA, "cara");
+        const post = activity({ title: "Busy" });
+        yield* write(ANNA, [post]);
+        const at = `/v1/posts/${yield* idOf(ANNA, "anna", post.row.title)}`;
+        // Two comments share each time, so only the tie-break orders them.
+        yield* sql`
+          insert into activity_comment (id, owner_id, activity_id, author_id, body, created_ms)
+          select gen_random_uuid()::text, ${ANNA}, ${post.row.id}, ${BEN}, 'Comment ' || n,
+            1000 + n / 2
+          from generate_series(0, ${total - 2}) n
+        `;
+        const newest = (yield* ok(CARA, "POST", `${at}/comments`, { body: "The newest" })).body;
+        const thread = (yield* ok(ANNA, "GET", at)).body;
+        const forward = yield* pageThrough(ANNA, at, thread, "later");
+        const stored = (yield* sql<{ id: string }>`
+          select id from activity_comment order by created_ms, id collate "C"
+        `).map(({ id }) => id);
+        const item = (yield* ok(ANNA, "GET", "/v1/inbox")).body.items[0];
+        const opened = (yield* ok(ANNA, "GET", `${at}?comment=${item.commentId}`)).body;
+        const backward = yield* pageThrough(ANNA, at, opened, "earlier");
+        const early = forward.comments[3];
+        const openedEarly = (yield* ok(ANNA, "GET", `${at}?comment=${early.id}`)).body;
+        const other = activity({ title: "Other" });
+        yield* write(ANNA, [other]);
+        const otherAt = `/v1/posts/${yield* idOf(ANNA, "anna", other.row.title)}`;
+        const wrongPost = yield* as(ANNA, "GET", `${otherAt}/comments?after=${thread.later}`);
+        yield* ok(CARA, "DELETE", `${at}/comments/${newest.id}`);
+        const gone = (yield* ok(ANNA, "GET", `${at}?comment=${newest.id}`)).body;
+        return {
+          newest,
+          thread,
+          forward,
+          item,
+          opened,
+          backward,
+          early,
+          openedEarly,
+          wrongPost,
+          gone,
+          stored,
+        };
+      }),
+    );
+    expect(result.thread.post.comments).toBe(total);
+    expect(result.thread.comments).toHaveLength(COMMENT_PAGE);
+    expect(result.thread.earlier).toBeNull();
+    expect(result.forward.pages).toBe(5);
+    expect(result.forward.comments.map((one: any) => one.id)).toEqual(result.stored);
+    expect(result.forward.comments.at(-1)).toEqual({ ...result.newest, canDelete: true });
+    // The inbox's comment is on the page its thread opens on, and the earlier ones are still
+    // there before it.
+    expect(result.item).toMatchObject({ kind: "comment", commentId: result.newest.id });
+    expect(result.opened.comments.map((one: any) => one.id)).toEqual([result.newest.id]);
+    expect(result.opened.post.comments).toBe(total);
+    expect(result.opened.later).toBeNull();
+    expect(result.backward.comments.map((one: any) => one.id)).toEqual(result.stored);
+    // A comment on the first page opens the first page.
+    expect(result.openedEarly.comments.map((one: any) => one.id)).toEqual(
+      result.thread.comments.map((one: any) => one.id),
+    );
+    expect(result.openedEarly.earlier).toBeNull();
+    expect([result.wrongPost.status, result.wrongPost.body.error]).toEqual([400, "invalid_cursor"]);
+    expect(result.gone.comments.map((one: any) => one.id)).toEqual(
+      result.thread.comments.map((one: any) => one.id),
+    );
+    expect(JSON.parse(Buffer.from(result.thread.later, "base64url").toString())).toEqual({
+      id: result.thread.comments.at(-1).id,
+    });
+  });
+
+  it("refuses a comment cursor once the post is no longer the viewer's to see", async () => {
+    const result = await withServer(
+      Effect.gen(function* () {
+        yield* name(ANNA, "anna");
+        yield* name(BEN, "ben");
+        yield* follow(BEN, "anna");
+        const post = activity({ audience: "followers", title: "Followers only" });
+        yield* write(ANNA, [post]);
+        const at = `/v1/posts/${yield* idOf(ANNA, "anna", post.row.title)}`;
+        for (let index = 0; index <= COMMENT_PAGE; index++) {
+          yield* ok(ANNA, "POST", `${at}/comments`, { body: `Note ${index}` });
+        }
+        const cursor = (yield* ok(BEN, "GET", at)).body.later as string;
+        const following = yield* as(BEN, "GET", `${at}/comments?after=${cursor}`);
+        yield* ok(BEN, "DELETE", "/v1/profiles/anna/follow");
+        return { following, unfollowed: yield* as(BEN, "GET", `${at}/comments?after=${cursor}`) };
+      }),
+    );
+    expect(result.following.status).toBe(200);
+    expect(result.following.body.comments).toHaveLength(1);
+    expect([result.unfollowed.status, result.unfollowed.body.error]).toEqual([
+      404,
+      "post_not_found",
+    ]);
+  });
+});
+
 const inboxLines = (page: any) =>
   page.items.map((item: any) => [item.kind, item.username, item.unread, item.post?.title]);
 const kinds = (page: any) => page.items.map((item: any) => [item.kind, item.username]);
@@ -790,7 +986,8 @@ describe("the inbox", { timeout: 60_000 }, () => {
       }),
     );
     expect(result.following.items).toHaveLength(INBOX_PAGE);
-    expect(result.following.unread).toBe(INBOX_PAGE);
+    // One more than a page is counted, so the badge can say there are more.
+    expect(result.following.unread).toBe(INBOX_PAGE + 1);
     expect(result.following.next).not.toBeNull();
     // Every reply is now hidden, and none of them shortens the page, ends it or places a cursor.
     expect(result.unfollowed).toMatchObject({ next: null, unread: 1 });

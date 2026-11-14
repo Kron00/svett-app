@@ -1,6 +1,6 @@
 import { LegendList } from "@legendapp/list/react-native";
 import { useFocusEffect, useNavigation } from "@react-navigation/native";
-import type { Post, SocialApi } from "@svett/core";
+import { type Post, type SocialApi, unreadBadge } from "@svett/core";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { View } from "react-native";
 
@@ -45,9 +45,9 @@ function useInboxButton(api: SocialApi) {
           type: "button",
           label: "Inbox",
           icon: { type: "sfSymbol", name: unread > 0 ? "bell.badge" : "bell" },
-          accessibilityLabel: unread > 0 ? `Inbox, ${unread} unread` : "Inbox",
+          accessibilityLabel: unread > 0 ? `Inbox, ${unreadBadge(unread)} unread` : "Inbox",
           identifier: "inbox",
-          ...(unread > 0 ? { badge: { value: unread > 99 ? "99+" : unread } } : {}),
+          ...(unread > 0 ? { badge: { value: unreadBadge(unread) } } : {}),
           onPress: () => navigation.navigate("Inbox"),
         },
       ],
@@ -187,7 +187,7 @@ function FeedList({ api }: { readonly api: SocialApi }) {
               <EmptyState
                 symbol="person.2"
                 title="Nothing here yet"
-                message="Your posts and those of the people you follow show here, newest first."
+                message="What you and the people you follow share shows here, newest shared first."
                 action={{ label: "Find people", onPress: () => navigation.navigate("People") }}
               />
             }
@@ -211,7 +211,7 @@ function FeedList({ api }: { readonly api: SocialApi }) {
   }
 }
 
-/** Home: your posts and those of the people you follow, newest first. */
+/** Home: your shared posts and those of the people you follow, newest shared first. */
 export function FeedScreen() {
   return (
     <SignedInOnly

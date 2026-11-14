@@ -6,6 +6,11 @@ import { FeedRows } from "./feed-rows.ts";
 import { route } from "./social-routes.ts";
 
 const Page = Schema.Struct({ cursor: Schema.optional(Schema.String) });
+const ThreadQuery = Schema.Struct({ comment: Schema.optional(Schema.String) });
+const CommentQuery = Schema.Union([
+  Schema.Struct({ after: Schema.String }),
+  Schema.Struct({ before: Schema.String }),
+]);
 const PostPath = Schema.Struct({ post: SocialActivityId });
 const CommentPath = Schema.Struct({ post: SocialActivityId, comment: Schema.String });
 const NewComment = Schema.Struct({ body: Schema.String });
@@ -22,7 +27,15 @@ const feed = route((account) =>
 
 const thread = route((account) =>
   Effect.gen(function* () {
-    return yield* (yield* FeedRows).post(account, yield* post);
+    const { comment } = yield* HttpServerRequest.schemaSearchParams(ThreadQuery);
+    return yield* (yield* FeedRows).post(account, yield* post, comment);
+  }),
+);
+
+const comments = route((account) =>
+  Effect.gen(function* () {
+    const from = yield* HttpServerRequest.schemaSearchParams(CommentQuery);
+    return yield* (yield* FeedRows).comments(account, yield* post, from);
   }),
 );
 
@@ -76,6 +89,7 @@ export const FeedRoutes = Layer.mergeAll(
   HttpRouter.add("GET", "/v1/posts/:post", thread),
   HttpRouter.add("PUT", "/v1/posts/:post/like", like),
   HttpRouter.add("DELETE", "/v1/posts/:post/like", unlike),
+  HttpRouter.add("GET", "/v1/posts/:post/comments", comments),
   HttpRouter.add("POST", "/v1/posts/:post/comments", comment),
   HttpRouter.add("DELETE", "/v1/posts/:post/comments/:comment", deleteComment),
   HttpRouter.add("GET", "/v1/inbox", inbox),

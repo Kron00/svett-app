@@ -44,7 +44,8 @@ export type RootStackParamList = {
   /** `list` is followers or following, parsed by the screen. */
   Connections: { username: string; list: string };
   /** A post in full, named by its activity's social ID. */
-  Post: { id: string };
+  /** `comment` opens the post on the page of comments that holds it. */
+  Post: { id: string; comment?: string };
   Inbox: undefined;
 };
 

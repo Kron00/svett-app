@@ -83,8 +83,8 @@ export const MIGRATIONS: Record<string, Effect.Effect<void, unknown, SqlClient>>
     yield* sql`create unique index follow_id on follow (id)`;
     yield* sql`create index follow_followee on follow (followee_id, state)`;
   }),
-  // Another account names an activity by a random ID minted here the first time anyone is
-  // shown it. An activity's own ID can come from its start time, as an imported workout's
+  // Another account names an activity by a random ID, minted when the activity first reaches
+  // the server. An activity's own ID can come from its start time, as an imported workout's
   // does, so it never leaves the server for anyone but its owner.
   "4_activity_social": Effect.gen(function* () {
     const sql = yield* SqlClient;
@@ -100,16 +100,19 @@ export const MIGRATIONS: Record<string, Effect.Effect<void, unknown, SqlClient>>
   }),
   // Likes and comments key an activity by its owner and its own ID, which others never see.
   // The inbox is read from likes, comments and follows, and each account keeps only the time
-  // up to which it has read it. The feed orders posts by when each first reached it, set once
-  // and never from a start time, which may be hidden. Activities already here share the
-  // migration's time, so the random social ID orders them. A profile lists its activities in
-  // the same order. The other indexes serve a post's sets and route.
+  // up to which it has read it. The feed orders posts by when each was first shared with
+  // anyone, set once and never from a start time, which may be hidden. An activity for only
+  // its owner has no such time until its audience changes. Shared activities already here share
+  // the migration's time, so the random social ID orders them. Others see a profile's
+  // activities in the same order. The other indexes serve a post's sets and route.
   "5_feed": Effect.gen(function* () {
     const sql = yield* SqlClient;
     yield* sql`alter table activity_social add column shared_ms bigint`;
     yield* sql`
       insert into activity_social (account_id, activity_id, shared_ms)
-      select account_id, row_id, (extract(epoch from now()) * 1000)::bigint
+      select account_id, row_id,
+        case when data->>'audience' <> 'only_you'
+          then (extract(epoch from now()) * 1000)::bigint end
       from account_row
       where table_name = 'activity' and deleted_at is null
         and coalesce(data->>'status', '') <> 'in_progress'

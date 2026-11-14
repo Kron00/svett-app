@@ -5,11 +5,15 @@ import {
   cleanComment,
   COMMENT_MAX_LENGTH,
   commentProblem,
+  INBOX_PAGE,
   isPublished,
+  isShared,
   type LiftingDetail,
+  type PostComment,
   type PostRows,
   type PostRowsExercise,
   type RouteDetail,
+  type RoutePoint,
   thinRoute,
   viewPostDetail,
   visibleRoute,
@@ -20,11 +24,14 @@ import {
   hiddenNote,
   inboxLine,
   liftingLine,
+  mergeComments,
   postCounts,
   postSetLines,
   projectRoute,
-  splitLines,
   routeLine,
+  routeMap,
+  splitLines,
+  unreadBadge,
 } from "./feed-format.ts";
 import { privacy, SocialActivityId, viewActivity, type Visibility, WITHHELD } from "./privacy.ts";
 import {
@@ -266,6 +273,7 @@ describe("viewPostDetail", () => {
       splits: [{ distanceM: 1000, endM: 1000, durationS: 318 }],
       // 200 m hides the first two readings, 300 m the last three.
       route: [north(10).slice(2, 8)],
+      routeHidden: false,
       averageHeartRateBpm: 156,
     });
     expect(JSON.stringify(detail)).not.toContain("1790000000");
@@ -367,10 +375,36 @@ describe("viewPostDetail", () => {
   });
 });
 
+// About 111 m per 0.001 degree of latitude, at this longitude about 56 m per 0.001 degree.
+const metresFrom = (a: RoutePoint, b: RoutePoint) =>
+  Math.hypot(
+    (a.latitude - b.latitude) * 111_195,
+    (a.longitude - b.longitude) * 111_195 * Math.cos((a.latitude * Math.PI) / 180),
+  );
+
+/** Every point on every drawn line, the lines' own points and 20 between each pair. */
+const drawn = (lines: ReadonlyArray<ReadonlyArray<RoutePoint>>) =>
+  lines.flatMap((line) =>
+    line.slice(1).flatMap((to, index) => {
+      const from = line[index]!;
+      return Array.from({ length: 21 }, (_, step) => ({
+        latitude: from.latitude + ((to.latitude - from.latitude) * step) / 20,
+        longitude: from.longitude + ((to.longitude - from.longitude) * step) / 20,
+      }));
+    }),
+  );
+
+/** `steps` positions along `to`, from its first step out. */
+const leg = (to: (index: number) => RoutePoint, steps: number) =>
+  Array.from({ length: steps }, (_, index) => to(index + 1));
+/** `steps` positions along `to`, from its last step back to its start. */
+const back = (to: (index: number) => RoutePoint, steps: number) =>
+  Array.from({ length: steps }, (_, index) => to(steps - index - 1));
+
 describe("visibleRoute", () => {
   it("drops every reading inside either circle", () => {
-    expect(visibleRoute(north(10), 200, 300)).toEqual(north(10).slice(2, 8));
-    expect(visibleRoute(north(10), 0, 0)).toEqual(north(10).slice(1, 10));
+    expect(visibleRoute(north(10), 200, 300)).toEqual([north(10).slice(2, 8)]);
+    expect(visibleRoute(north(10), 0, 0)).toEqual([north(10).slice(1, 10)]);
   });
 
   it("shows nothing when the circles cover the route", () => {
@@ -381,18 +415,150 @@ describe("visibleRoute", () => {
   it("keeps a loop's middle when it starts and ends at the door", () => {
     const out = north(5);
     const loop = [...out, ...out.slice(0, -1).toReversed()];
-    expect(visibleRoute(loop, 250, 250)).toEqual(loop.slice(3, 8));
+    expect(visibleRoute(loop, 250, 250)).toEqual([loop.slice(3, 8)]);
+  });
+
+  it("cuts a run that passes home twice midway into stretches, none of them near home", () => {
+    // Out north and back through home, out south and back through home, then out east to end
+    // 2 km away, so only the start's circle sits on home.
+    const home = north(0)[0]!;
+    const step = (dLat: number, dLon: number) => (index: number) => ({
+      latitude: home.latitude + dLat * index,
+      longitude: home.longitude + dLon * index,
+    });
+    const run = [
+      home,
+      ...leg(step(0.001, 0), 8),
+      ...back(step(0.001, 0), 8),
+      ...leg(step(-0.001, 0), 8),
+      ...back(step(-0.001, 0), 8),
+      ...leg(step(0, 0.002), 18),
+    ];
+    const end = run.at(-1)!;
+    const lines = visibleRoute(run, 300, 300);
+    // Out and back north, out and back south, and east, each cut where it reaches home.
+    expect(lines.length).toBe(3);
+    for (const point of [...lines.flat(), ...drawn(lines)]) {
+      expect(metresFrom(point, home)).toBeGreaterThan(300);
+      expect(metresFrom(point, end)).toBeGreaterThan(300);
+    }
+    expect(lines.flat()).not.toContainEqual(home);
+    // Thinned to a few positions, the stretches still never join across home.
+    const thin = visibleRoute(run, 300, 300, 12);
+    expect(thin.flat().length).toBeLessThanOrEqual(12);
+    for (const point of drawn(thin)) {
+      expect(metresFrom(point, home)).toBeGreaterThan(300);
+    }
+  });
+
+  it("cuts a straight step that crosses a circle between two readings outside it", () => {
+    // Sparse readings 500 m either side of home, which is both the start and the end.
+    const home = { latitude: 59.9, longitude: 10.7 };
+    const run = [
+      home,
+      { latitude: 59.89, longitude: 10.7 },
+      { latitude: 59.8955, longitude: 10.7 },
+      { latitude: 59.9045, longitude: 10.7 },
+      { latitude: 59.91, longitude: 10.7 },
+      { latitude: 59.92, longitude: 10.7 },
+    ];
+    const lines = visibleRoute([home, ...run.slice(1), home], 100, 100);
+    expect(lines).toEqual([run.slice(1, 3), run.slice(3)]);
   });
 });
 
 describe("thinRoute", () => {
-  it("keeps at most the limit, with the first and last positions", () => {
+  it("keeps at most the limit across the lines, with each line's first and last positions", () => {
     const long = north(999);
-    const thin = thinRoute(long, 50);
+    const [thin] = thinRoute([long], 50);
     expect(thin).toHaveLength(50);
-    expect(thin[0]).toEqual(long[0]);
-    expect(thin.at(-1)).toEqual(long.at(-1));
-    expect(thinRoute(north(3), 50)).toEqual(north(3));
+    expect(thin?.[0]).toEqual(long[0]);
+    expect(thin?.at(-1)).toEqual(long.at(-1));
+    expect(thinRoute([north(3)], 50)).toEqual([north(3)]);
+    const lines = thinRoute([north(299), north(99), north(1)], 50);
+    expect(lines.flat().length).toBeLessThanOrEqual(50);
+    expect(lines.map((line) => [line[0], line.at(-1)])).toEqual(
+      [north(299), north(99), north(1)].map((line) => [line[0], line.at(-1)]),
+    );
+  });
+
+  it("drops the shortest lines when there are more than half the limit", () => {
+    const lines = [north(1), north(5), north(2), north(9)];
+    expect(thinRoute(lines, 4)).toEqual([north(5), north(9)].map((line) => [line[0], line.at(-1)]));
+  });
+});
+
+/** A run over `positions` as a follower sees it, its start and end hidden `hideM` around. */
+const runOver = (positions: ReadonlyArray<RoutePoint>, hideM: number) =>
+  viewPostDetail(
+    activity("run", 1500),
+    {
+      exercises: [],
+      track: {
+        track: { ...track, hideStartM: hideM, hideEndM: hideM },
+        samples: positions.map((point, index) => ({
+          id: ActivitySampleId.make(uuid(700 + index)),
+          ...ROW,
+          activityTrackId: track.id,
+          recordedAt: EpochMillis.make(1_790_000_000_000 + index * 1000),
+          kind: "location",
+          latitude: point.latitude,
+          longitude: point.longitude,
+          altitudeM: null,
+        })),
+      },
+    },
+    seen([]),
+  ) as RouteDetail;
+
+describe("routeMap", () => {
+  it("shows the map when a stretch is left", () => {
+    expect(routeMap(runOver(north(10), 200))).toBe("map");
+  });
+
+  it("says the hidden start and end cover a route only when it recorded positions", () => {
+    expect(runOver(north(3), 300)).toMatchObject({ route: [], routeHidden: true });
+    expect(routeMap(runOver(north(3), 300))).toBe("hidden");
+    // A run entered by hand has a track and no positions.
+    expect(runOver([], 300)).toMatchObject({ route: [], routeHidden: false });
+    expect(routeMap(runOver([], 300))).toBe("none");
+  });
+});
+
+describe("isShared", () => {
+  it("holds for a published activity whose audience reaches someone else", () => {
+    expect(isShared({ audience: "everyone" })).toBe(true);
+    expect(isShared({ audience: "followers" })).toBe(true);
+    expect(isShared({ audience: "only_you" })).toBe(false);
+    expect(isShared({ audience: "followers", status: "in_progress" })).toBe(false);
+    expect(isShared({})).toBe(false);
+  });
+});
+
+describe("the inbox badge", () => {
+  it("counts up to a page and says more past it", () => {
+    expect(unreadBadge(3)).toBe("3");
+    expect(unreadBadge(INBOX_PAGE)).toBe(String(INBOX_PAGE));
+    expect(unreadBadge(INBOX_PAGE + 1)).toBe(`${INBOX_PAGE}+`);
+  });
+});
+
+const comment = (id: string, at: number): PostComment => ({
+  id,
+  username: "anna",
+  body: id,
+  at,
+  canDelete: false,
+});
+
+describe("mergeComments", () => {
+  it("keeps each comment once, oldest first, ordering a shared time by ID", () => {
+    expect(
+      mergeComments(
+        [comment("b", 2), comment("d", 4)],
+        [comment("d", 4), comment("a", 2), comment("c", 3)],
+      ).map(({ id }) => id),
+    ).toEqual(["a", "b", "c", "d"]);
   });
 });
 
@@ -437,6 +603,7 @@ describe("feed lines", () => {
       inboxLine({
         ...item,
         kind: "comment",
+        commentId: "c",
         body: "Fast!",
         post: { ...post, mine: false, title: "" },
       }),
@@ -458,6 +625,7 @@ describe("feed lines", () => {
         paceSPerKm: 312.4,
         splits: [],
         route: [],
+        routeHidden: false,
         averageHeartRateBpm: null,
       }),
     ).toBe("4.99 km · 5:12 /km");

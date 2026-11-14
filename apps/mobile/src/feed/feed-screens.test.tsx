@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
+import { INBOX_PAGE } from "@svett/core";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 import { FeedScreen } from "./FeedScreen";
@@ -210,6 +211,7 @@ const runPost = {
         { latitude: 59.96, longitude: 10.75 },
       ],
     ],
+    routeHidden: false,
     averageHeartRateBpm: 151,
   },
   likes: 0,
@@ -242,9 +244,23 @@ describe("the feed", () => {
     const inboxButton = () =>
       (app.options.unstable_headerRightItems as (() => ReadonlyArray<Item>) | undefined)?.()[0];
     await until(() => inboxButton()?.accessibilityLabel === "Inbox, 3 unread", "the unread count");
-    expect(inboxButton()).toMatchObject({ type: "button", badge: { value: 3 } });
+    expect(inboxButton()).toMatchObject({ type: "button", badge: { value: "3" } });
     inboxButton()!.onPress();
     expect(app.navigated).toEqual(["Inbox"]);
+  });
+
+  it("says there are more unread items than a page holds", async () => {
+    answer("GET /v1/feed", ok({ posts: [], next: null }));
+    answer("GET /v1/inbox", inbox([], INBOX_PAGE + 1));
+    await render(<FeedScreen />, "feed");
+    type Item = { accessibilityLabel: string; badge?: unknown };
+    const inboxButton = () =>
+      (app.options.unstable_headerRightItems as (() => ReadonlyArray<Item>) | undefined)?.()[0];
+    await until(() => inboxButton()?.badge !== undefined, "the badge");
+    expect(inboxButton()).toMatchObject({
+      accessibilityLabel: `Inbox, ${INBOX_PAGE}+ unread`,
+      badge: { value: `${INBOX_PAGE}+` },
+    });
   });
 
   it("likes a post once and shows the server's count", async () => {
@@ -285,17 +301,32 @@ describe("the feed", () => {
   });
 });
 
-const props = (id: string) =>
+const props = (id: string, comment?: string) =>
   ({
-    route: { key: "post", name: "Post", params: { id } },
+    route: {
+      key: "post",
+      name: "Post",
+      params: comment === undefined ? { id } : { id, comment },
+    },
     navigation: {
       setOptions: (options: Record<string, unknown>) => Object.assign(app.options, options),
     },
   }) as unknown as Parameters<typeof PostScreen>[0];
 
+const comment = (id: string, at: number) => ({
+  id,
+  username: "ben",
+  body: `Comment ${id}`,
+  at,
+  canDelete: false,
+});
+
 describe("a post", () => {
   it("shows a lifting post's sets and muscle split, and says what is hidden", async () => {
-    answer(`GET /v1/posts/${LIFT_ID}`, ok({ post: liftingPost, comments: [] }));
+    answer(
+      `GET /v1/posts/${LIFT_ID}`,
+      ok({ post: liftingPost, comments: [], earlier: null, later: null }),
+    );
     const root = await render(<PostScreen {...props(LIFT_ID)} />, "post-exercises");
     expect(texts(find(root, "post-hidden"))).toBe("anna hides weight.");
     expect(texts(find(root, "post-exercises"))).toContain("Barbell Squat");
@@ -309,7 +340,10 @@ describe("a post", () => {
   });
 
   it("shows a run's route, distance, pace and splits", async () => {
-    answer(`GET /v1/posts/${RUN_ID}`, ok({ post: runPost, comments: [] }));
+    answer(
+      `GET /v1/posts/${RUN_ID}`,
+      ok({ post: runPost, comments: [], earlier: null, later: null }),
+    );
     const root = await render(<PostScreen {...props(RUN_ID)} />, "post-route");
     expect(find(root, "post-distance").props.accessibilityLabel).toBe("Distance, 4.44 km");
     expect(find(root, "post-pace").props.accessibilityLabel).toBe("Pace, 5:38 /km");
@@ -330,7 +364,10 @@ describe("a post", () => {
         splits: [{ distanceM: 1000, endM: 1000, durationS: null }],
       },
     };
-    answer(`GET /v1/posts/${RUN_ID}`, ok({ post: hiddenStart, comments: [] }));
+    answer(
+      `GET /v1/posts/${RUN_ID}`,
+      ok({ post: hiddenStart, comments: [], earlier: null, later: null }),
+    );
     const root = await render(<PostScreen {...props(RUN_ID)} />, "post-route");
     expect(find(root, "post-time").props.accessibilityLabel).toBe("Time, Hidden");
     expect(find(root, "post-pace").props.accessibilityLabel).toBe("Pace, Hidden");
@@ -341,8 +378,85 @@ describe("a post", () => {
     expect(texts(find(root, "post-hidden"))).toBe("anna hides start time.");
   });
 
+  it("shows no map for a run without positions, and says when the hidden ends cover the route", async () => {
+    const noRoute = { ...runPost, detail: { ...runPost.detail, route: [], routeHidden: false } };
+    answer(
+      `GET /v1/posts/${RUN_ID}`,
+      ok({ post: noRoute, comments: [], earlier: null, later: null }),
+    );
+    const root = await render(<PostScreen {...props(RUN_ID)} />, "post-distance");
+    expect(has(root, "post-route")).toBe(false);
+    expect(texts(root)).not.toContain("hidden start and end");
+
+    const covered = { ...noRoute, detail: { ...noRoute.detail, routeHidden: true } };
+    answer(
+      `GET /v1/posts/${RUN_ID}`,
+      ok({ post: covered, comments: [], earlier: null, later: null }),
+    );
+    const again = await render(<PostScreen {...props(RUN_ID)} />, "post-route");
+    expect(texts(find(again, "post-route"))).toBe(
+      "The hidden start and end cover the whole route.",
+    );
+  });
+
+  it("loads the next page of comments near the end, and counts every comment", async () => {
+    const post = { ...liftingPost, comments: 2 };
+    answer(
+      `GET /v1/posts/${LIFT_ID}`,
+      ok({ post, comments: [comment("c1", 1)], earlier: null, later: "page-2" }),
+    );
+    answer(
+      `GET /v1/posts/${LIFT_ID}/comments?after=page-2`,
+      ok({ comments: [comment("c2", 2)], earlier: null, later: null }),
+    );
+    const root = await render(<PostScreen {...props(LIFT_ID)} />, "comment-c1");
+    expect(texts(find(root, "post-comments"))).toContain("2 comments");
+    expect(has(root, "comment-c2")).toBe(false);
+    await act(async () =>
+      find(root, "post").props.onScroll({
+        nativeEvent: {
+          contentOffset: { y: 1400 },
+          layoutMeasurement: { height: 900 },
+          contentSize: { height: 2400 },
+        },
+      }),
+    );
+    await until(() => has(root, "comment-c2"), "the next page");
+    expect(has(root, "comments-later")).toBe(false);
+    expect(app.sent.filter((sent) => sent.includes("/comments?"))).toEqual([
+      `GET /v1/posts/${LIFT_ID}/comments?after=page-2`,
+    ]);
+  });
+
+  it("opens on an inbox item's comment and shows earlier ones on request", async () => {
+    answer(
+      `GET /v1/posts/${LIFT_ID}?comment=c9`,
+      ok({
+        post: { ...liftingPost, comments: 9 },
+        comments: [comment("c9", 9)],
+        earlier: "e1",
+        later: null,
+      }),
+    );
+    answer(
+      `GET /v1/posts/${LIFT_ID}/comments?before=e1`,
+      ok({ comments: [comment("c1", 1), comment("c2", 2)], earlier: null, later: null }),
+    );
+    const root = await render(<PostScreen {...props(LIFT_ID, "c9")} />, "comment-c9");
+    await press(root, "comments-earlier");
+    await until(() => has(root, "comment-c1"), "the earlier comments");
+    const shown = find(root, "post-comments")
+      .findAll((node) => typeof node.type === "string" && /^comment-c\d$/.test(node.props.testID))
+      .map((node) => node.props.testID);
+    expect(shown).toEqual(["comment-c1", "comment-c2", "comment-c9"]);
+    expect(has(root, "comments-earlier")).toBe(false);
+  });
+
   it("posts a comment as plain text and shows it", async () => {
-    answer(`GET /v1/posts/${LIFT_ID}`, ok({ post: liftingPost, comments: [] }));
+    answer(
+      `GET /v1/posts/${LIFT_ID}`,
+      ok({ post: liftingPost, comments: [], earlier: null, later: null }),
+    );
     answer(
       `POST /v1/posts/${LIFT_ID}/comments`,
       ok({ id: "c1", username: "me", body: "<b>Strong</b>", at: 5, canDelete: true }),
@@ -356,7 +470,10 @@ describe("a post", () => {
   });
 
   it("refuses an empty comment without asking the server", async () => {
-    answer(`GET /v1/posts/${LIFT_ID}`, ok({ post: liftingPost, comments: [] }));
+    answer(
+      `GET /v1/posts/${LIFT_ID}`,
+      ok({ post: liftingPost, comments: [], earlier: null, later: null }),
+    );
     const root = await render(<PostScreen {...props(LIFT_ID)} />, "comment-field");
     await act(async () => find(root, "comment-field").props.onChangeText("   "));
     expect(find(root, "comment-send").props.accessibilityState).toMatchObject({ disabled: true });
@@ -378,6 +495,7 @@ describe("the inbox", () => {
       at: 30,
       unread: true,
       body: "Nice!",
+      commentId: "c9",
       post: { username: "me", id: RUN_ID, kind: "run", title: "River loop", mine: true },
     },
     {
@@ -402,7 +520,8 @@ describe("the inbox", () => {
 
     await press(root, "inbox-i1");
     await press(root, "inbox-i2");
-    expect(app.navigated).toEqual([`Post ${RUN_ID}`, "FollowRequests"]);
+    // A comment opens its post on the page that holds it.
+    expect(app.navigated).toEqual([`Post ${RUN_ID} c9`, "FollowRequests"]);
   });
 
   it("marks nothing read when nothing is unread", async () => {

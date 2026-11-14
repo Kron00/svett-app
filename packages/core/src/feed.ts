@@ -28,8 +28,8 @@ export const FEED_PAGE = 20;
 export const INBOX_PAGE = 30;
 /** The longest comment, in characters as a person counts them. */
 export const COMMENT_MAX_LENGTH = 500;
-/** The most comments a post shows, oldest first. */
-export const COMMENT_PAGE = 200;
+/** Comments in one page of a thread. */
+export const COMMENT_PAGE = 50;
 /** The most positions a shared route carries, so a feed page stays small. */
 export const ROUTE_POINTS_MAX = 400;
 
@@ -89,8 +89,13 @@ export const RouteDetail = Schema.Struct({
       durationS: Schema.NullOr(DurationSeconds),
     }),
   ),
-  /** The visible stretch, as lines of positions. */
+  /**
+   * The visible stretches, each a line of positions. A gap between two lines is a hidden circle
+   * the route passed through, and no line may be drawn across it.
+   */
   route: Schema.Array(Schema.Array(RoutePoint)),
+  /** The activity recorded positions, and the hidden start and end leave none to show. */
+  routeHidden: Schema.Boolean,
   /** Null without readings, and when the owner hides heart rate. */
   averageHeartRateBpm: Schema.NullOr(Schema.Int),
 });
@@ -134,10 +139,22 @@ export const PostComment = Schema.Struct({
 });
 export type PostComment = typeof PostComment.Type;
 
-/** A post with its comments, oldest first. */
+/**
+ * A page of a post's comments, oldest first. `earlier` asks for the page before it, and `later`
+ * for the page after it. Each names a comment by its ID alone, and works only while the viewer
+ * may see the post. The post's `comments` counts them all.
+ */
+export const CommentPage = Schema.Struct({
+  comments: Schema.Array(PostComment),
+  earlier: Schema.NullOr(Schema.String),
+  later: Schema.NullOr(Schema.String),
+});
+export type CommentPage = typeof CommentPage.Type;
+
+/** A post with a page of its comments: the first, or the one holding the comment asked for. */
 export const PostThread = Schema.Struct({
   post: Post,
-  comments: Schema.Array(PostComment),
+  ...CommentPage.fields,
 });
 export type PostThread = typeof PostThread.Type;
 
@@ -170,6 +187,8 @@ export const InboxItem = Schema.Union([
     ...itemFields,
     kind: Schema.Literal("comment"),
     post: PostRef,
+    /** The comment's own ID, so the post opens on the page that holds it. */
+    commentId: Schema.String,
     body: Schema.String,
   }),
   Schema.Struct({ ...itemFields, kind: Schema.Literal("follow") }),
@@ -177,7 +196,7 @@ export const InboxItem = Schema.Union([
 ]);
 export type InboxItem = typeof InboxItem.Type;
 
-/** Newest first. `unread` counts unread items up to INBOX_PAGE. */
+/** Newest first. `unread` counts unread items up to INBOX_PAGE + 1, so a badge can say "30+". */
 export const InboxPage = Schema.Struct({
   items: Schema.Array(InboxItem),
   next: Schema.NullOr(Schema.String),
@@ -191,6 +210,18 @@ export type InboxPage = typeof InboxPage.Type;
  */
 export const isPublished = (row: unknown): boolean =>
   !(typeof row === "object" && row !== null && "status" in row && row.status === "in_progress");
+
+/**
+ * Whether a stored activity row is shared: published, and for someone other than its owner.
+ * The feed orders a post by the time this first held, which never comes from its start time.
+ */
+export const isShared = (row: unknown): boolean =>
+  isPublished(row) &&
+  typeof row === "object" &&
+  row !== null &&
+  "audience" in row &&
+  typeof row.audience === "string" &&
+  row.audience !== "only_you";
 
 // Control characters, and direction marks, isolates and overrides, which can make a comment
 // read differently from what it holds.
@@ -247,33 +278,116 @@ const metresBetween = (a: RoutePoint, b: RoutePoint): number => {
   return 2 * EARTH_RADIUS_M * Math.asin(Math.min(1, Math.sqrt(h)));
 };
 
+type Circle = { readonly centre: RoutePoint; readonly radiusM: number };
+
+const METRES_PER_DEGREE = (EARTH_RADIUS_M * Math.PI) / 180;
+
+/** How close the straight step from `a` to `b` comes to `centre`, in metres, on a flat local map. */
+const closestApproachM = (centre: RoutePoint, a: RoutePoint, b: RoutePoint): number => {
+  const squeeze = Math.cos(radians(centre.latitude));
+  const local = (point: RoutePoint) => ({
+    x: (point.longitude - centre.longitude) * squeeze * METRES_PER_DEGREE,
+    y: (point.latitude - centre.latitude) * METRES_PER_DEGREE,
+  });
+  const from = local(a);
+  const to = local(b);
+  const dx = to.x - from.x;
+  const dy = to.y - from.y;
+  const lengthSquared = dx * dx + dy * dy;
+  const along =
+    lengthSquared === 0
+      ? 0
+      : Math.max(0, Math.min(1, -(from.x * dx + from.y * dy) / lengthSquared));
+  return Math.hypot(from.x + along * dx, from.y + along * dy);
+};
+
 /**
- * The route others may see: every position from the first one outside `hideStartM` of the
- * start to the last one outside `hideEndM` of the end. Whole readings are dropped, so the
- * visible line never reaches into either circle.
+ * The lines with every position inside a circle dropped, cut wherever a position was dropped or
+ * a straight step passes through a circle, so no drawn line crosses one. Lines of fewer than two
+ * positions draw nothing and are left out.
+ */
+const outsideCircles = (
+  lines: ReadonlyArray<ReadonlyArray<RoutePoint>>,
+  circles: ReadonlyArray<Circle>,
+): ReadonlyArray<ReadonlyArray<RoutePoint>> => {
+  const stretches: Array<Array<RoutePoint>> = [];
+  for (const line of lines) {
+    let current: Array<RoutePoint> = [];
+    const cut = () => {
+      if (current.length >= 2) stretches.push(current);
+      current = [];
+    };
+    for (const point of line) {
+      if (circles.some(({ centre, radiusM }) => metresBetween(centre, point) <= radiusM)) {
+        cut();
+        continue;
+      }
+      const previous = current.at(-1);
+      if (
+        previous !== undefined &&
+        circles.some(({ centre, radiusM }) => closestApproachM(centre, previous, point) <= radiusM)
+      ) {
+        cut();
+      }
+      current.push(point);
+    }
+    cut();
+  }
+  return stretches;
+};
+
+/** `count` positions of a line, evenly picked, always keeping its first and last. */
+const pick = (line: ReadonlyArray<RoutePoint>, count: number): ReadonlyArray<RoutePoint> => {
+  if (line.length <= count) return line;
+  const step = (line.length - 1) / (count - 1);
+  return Array.from({ length: count }, (_, index) => line[Math.round(index * step)]!);
+};
+
+/**
+ * At most `max` positions across the lines, each line keeping its first and last and a share of
+ * the rest by its length. A line needs two positions, so past `max / 2` lines the shortest go.
+ */
+export const thinRoute = (
+  lines: ReadonlyArray<ReadonlyArray<RoutePoint>>,
+  max = ROUTE_POINTS_MAX,
+): ReadonlyArray<ReadonlyArray<RoutePoint>> => {
+  const total = (some: ReadonlyArray<ReadonlyArray<RoutePoint>>) =>
+    some.reduce((sum, line) => sum + line.length, 0);
+  if (total(lines) <= max) return lines;
+  const longest = new Set(
+    lines
+      .map((line, index) => ({ length: line.length, index }))
+      .sort((a, b) => b.length - a.length || a.index - b.index)
+      .slice(0, Math.floor(max / 2))
+      .map(({ index }) => index),
+  );
+  const kept = lines.filter((_, index) => longest.has(index));
+  if (total(kept) <= max) return kept;
+  const spare = max - 2 * kept.length;
+  const extra = total(kept) - 2 * kept.length;
+  return kept.map((line) => pick(line, 2 + Math.floor((spare * (line.length - 2)) / extra)));
+};
+
+/**
+ * The route others may see, as separate stretches of at most `max` positions in all. Every
+ * position within `hideStartM` of the start or `hideEndM` of the end is dropped, wherever in
+ * the route it falls, and the route is cut at each gap, so a run that passes its start or end
+ * midway shows neither. A cut is also made wherever a straight step would cross either circle,
+ * before and after thinning, so no line drawn between two shown positions passes through one.
+ * Every view of another account's route must come from here.
  */
 export const visibleRoute = (
   points: ReadonlyArray<RoutePoint>,
   hideStartM: number,
   hideEndM: number,
-): ReadonlyArray<RoutePoint> => {
-  if (points.length < 2) return [];
-  const start = points[0]!;
-  const end = points.at(-1)!;
-  const first = points.findIndex((point) => metresBetween(start, point) > hideStartM);
-  const last = points.findLastIndex((point) => metresBetween(end, point) > hideEndM);
-  if (first === -1 || last === -1 || first >= last) return [];
-  return points.slice(first, last + 1);
-};
-
-/** At most `max` positions, evenly picked, always keeping the first and the last. */
-export const thinRoute = (
-  points: ReadonlyArray<RoutePoint>,
   max = ROUTE_POINTS_MAX,
-): ReadonlyArray<RoutePoint> => {
-  if (points.length <= max) return points;
-  const step = (points.length - 1) / (max - 1);
-  return Array.from({ length: max }, (_, index) => points[Math.round(index * step)]!);
+): ReadonlyArray<ReadonlyArray<RoutePoint>> => {
+  if (points.length < 2) return [];
+  const circles: ReadonlyArray<Circle> = [
+    { centre: points[0]!, radiusM: hideStartM },
+    { centre: points.at(-1)!, radiusM: hideEndM },
+  ];
+  return outsideCircles(thinRoute(outsideCircles([points], circles), max), circles);
 };
 
 const liftingDetail = (rows: PostRows, withheld: ReadonlySet<Withheld>): LiftingDetail => {
@@ -325,7 +439,7 @@ const routeDetail = (
     sample.kind === "location" ? [{ latitude: sample.latitude, longitude: sample.longitude }] : [],
   );
   const beats = byTime.flatMap((sample) => (sample.kind === "heart_rate" ? [sample.bpm] : []));
-  const visible = thinRoute(visibleRoute(positions, track.hideStartM, track.hideEndM));
+  const route = visibleRoute(positions, track.hideStartM, track.hideEndM);
   const pace =
     track.distanceM === null || track.distanceM < 10 || activity.durationS <= 0
       ? null
@@ -336,7 +450,8 @@ const routeDetail = (
     elevationGainM: track.elevationGainM,
     paceSPerKm: withheld.has("pace") ? null : pace,
     splits: splitsOf(byTime, withheld.has("duration")),
-    route: visible.length === 0 ? [] : [visible],
+    route,
+    routeHidden: positions.length > 0 && route.length === 0,
     averageHeartRateBpm:
       withheld.has("heart_rate") || beats.length === 0
         ? null

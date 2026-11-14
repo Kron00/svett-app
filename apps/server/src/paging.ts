@@ -18,17 +18,21 @@ export const decodeCursor =
       ),
     );
 
-// A post cursor names the last post by its social ID alone, so no time leaves the server in it.
-const PostCursor = Schema.Struct({ id: Schema.String });
+// A post or comment cursor names its item by ID alone, a post by its social ID, so no time
+// leaves the server in it.
+const IdCursor = Schema.Struct({ id: Schema.String });
 
-/** The social ID a post cursor names. */
-export const readPostCursor = (cursor: string) =>
-  Effect.map(decodeCursor(PostCursor)(cursor), ({ id }) => id);
+/** The ID a post or comment cursor names. */
+export const readIdCursor = (cursor: string) =>
+  Effect.map(decodeCursor(IdCursor)(cursor), ({ id }) => id);
 
-export const postCursor = (socialId: string) => encodeCursor({ id: socialId });
+export const idCursor = (id: string) => encodeCursor({ id });
 
-/** Where a post sits in a list ordered by when it was shared, newest first. */
-export type SharedAnchor = { readonly sharedMs: string; readonly socialId: string };
+/**
+ * Where a post sits in a list, newest first: by when it was shared, or, in the owner's own list,
+ * by when it started. The social ID breaks a tie.
+ */
+export type ListAnchor = { readonly orderMs: string; readonly socialId: string };
 
 /** Rows read at a time while skipping ones the viewer may not see. */
 export const SCAN = 100;
