@@ -9,7 +9,13 @@ import {
 } from "./recording.ts";
 import type { ActivityDraft, SampleDraft } from "./repositories/activities.ts";
 import { MADE_HERE } from "./repositories/origin.ts";
-import { type ActivityId, type ActivitySample, type ActivityTrack, EpochMillis } from "./schema.ts";
+import {
+  type ActivityId,
+  type ActivityKind,
+  type ActivitySample,
+  type ActivityTrack,
+  EpochMillis,
+} from "./schema.ts";
 
 export const SPLIT_M = 1000;
 
@@ -213,15 +219,17 @@ export const summarizeRecording = (recording: Recording, end: number): CardioSum
 /** How much of each end of a new route is hidden from others. */
 export const DEFAULT_HIDE_M = 200;
 
-const SPORT_NAME: Readonly<Record<CardioKind, string>> = {
+const SPORT_NAME: Readonly<Record<ActivityKind, string>> = {
   run: "run",
   walk: "walk",
   hike: "hike",
   ride: "ride",
+  strength: "workout",
+  other: "workout",
 };
 
-/** "Morning run", "Evening ride", from the local hour the activity started. */
-export const cardioTitle = (kind: CardioKind, localHour: number): string => {
+/** "Morning run", "Evening ride", "Night workout", from the local hour the activity started. */
+export const activityTitle = (kind: ActivityKind, localHour: number): string => {
   const part =
     localHour < 5
       ? "Night"
@@ -234,6 +242,8 @@ export const cardioTitle = (kind: CardioKind, localHour: number): string => {
             : "Night";
   return `${part} ${SPORT_NAME[kind]}`;
 };
+
+export const cardioTitle: (kind: CardioKind, localHour: number) => string = activityTitle;
 
 export const cardioDraft = (summary: CardioSummary, title: string): ActivityDraft => ({
   id: summary.activityId,

@@ -22,6 +22,8 @@ export const ActivityTrackId = Uuid.pipe(Schema.brand("ActivityTrackId"));
 export type ActivityTrackId = typeof ActivityTrackId.Type;
 export const ActivitySampleId = Uuid.pipe(Schema.brand("ActivitySampleId"));
 export type ActivitySampleId = typeof ActivitySampleId.Type;
+export const ActivitySourceId = Uuid.pipe(Schema.brand("ActivitySourceId"));
+export type ActivitySourceId = typeof ActivitySourceId.Type;
 export const ExerciseId = Uuid.pipe(Schema.brand("ExerciseId"));
 export type ExerciseId = typeof ExerciseId.Type;
 export const ExerciseAliasId = Uuid.pipe(Schema.brand("ExerciseAliasId"));
@@ -54,9 +56,12 @@ const rowFields = <Id extends Schema.Top>(id: Id) => ({
   deletedAt: Schema.NullOr(EpochMillis),
 });
 
-export const Source = Schema.Literals(["svett", "library", "hevy", "apple_health"]);
+export const Source = Schema.Literals(["svett", "library", "hevy", "apple_health", "gpx"]);
 export type Source = typeof Source.Type;
-export const ImportSource = Schema.Literals(["hevy", "apple_health", "svett_file"]);
+/** The sources whose rows arrive by import, each with its own identity there. */
+export const ImportedSource = Schema.Literals(["hevy", "apple_health", "gpx"]);
+export type ImportedSource = typeof ImportedSource.Type;
+export const ImportSource = Schema.Literals(["hevy", "apple_health", "gpx", "svett_file"]);
 export type ImportSource = typeof ImportSource.Type;
 export const SourceIdentity = Schema.NonEmptyString.pipe(Schema.brand("SourceIdentity"));
 export type SourceIdentity = typeof SourceIdentity.Type;
@@ -88,6 +93,7 @@ const provenanceRule = Schema.makeFilter<Provenance>((row) => {
       return row.sourceId !== null ? undefined : "a library row needs its library identity";
     case "hevy":
     case "apple_health":
+    case "gpx":
       return row.sourceId !== null && row.fingerprint !== null
         ? undefined
         : "an imported row needs its source identity and fingerprint";
@@ -204,6 +210,20 @@ export const ActivitySample = Schema.Union([
   }),
 ]);
 export type ActivitySample = typeof ActivitySample.Type;
+
+/**
+ * Another source's identity for an activity that came from elsewhere first. Linking a
+ * possible duplicate records the second source here, so neither source imports it again.
+ */
+export const ActivitySource = Schema.Struct({
+  ...rowFields(ActivitySourceId),
+  activityId: ActivityId,
+  source: ImportedSource,
+  sourceId: SourceIdentity,
+  fingerprint: Fingerprint,
+  importBatchId: Schema.NullOr(ImportBatchId),
+});
+export type ActivitySource = typeof ActivitySource.Type;
 
 export const Muscle = Schema.Literals([
   "abdominals",

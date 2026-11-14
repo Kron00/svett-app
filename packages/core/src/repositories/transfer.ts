@@ -2,14 +2,25 @@ import { Context, Data, Effect, Layer, Option, Schema } from "effect";
 
 import { Ids } from "../ids.ts";
 import {
+  type ActivityId,
   type EpochMillis,
   type ImportBatch,
   type ImportBatchId,
   type ImportChange,
   ImportChangeId,
+  type ImportedSource,
   type RowIdsByTable,
   type RowsByTable,
 } from "../schema.ts";
+import {
+  linkRows,
+  type SourceChoices,
+  type SourceImportResult,
+  type SourcePlan,
+  planSourceImport,
+  sourceActivityRows,
+  type SourceWorkout,
+} from "../source-import.ts";
 import { Sql, type SqlError } from "../sql.ts";
 import { encodeSvettFile, exportFileName, type SvettFile } from "../svett-file.ts";
 import {
@@ -42,6 +53,7 @@ import {
   type UndoEntry,
   undoSelection,
   withRequired,
+  summarize,
   writtenOf,
 } from "../transfer.ts";
 import { MADE_HERE, rowId } from "./origin.ts";
@@ -356,6 +368,28 @@ const undoSteps = (importBatchId: ImportBatchId) =>
       }),
     );
   });
+/** Rows of the same tables, together. */
+const mergeRows = (...parts: ReadonlyArray<TableRows>): TableRows =>
+  Object.fromEntries(
+    TABLE_KEYS.flatMap((key) => {
+      const rows = parts.flatMap((part) => part[key] ?? []);
+      return rows.length === 0 ? [] : [[key, rows]];
+    }),
+  );
+
+const activityItem = (id: string, rows: TableRows): Item => ({
+  key: `${TABLES.activity.name}/${id}`,
+  table: "activity",
+  id,
+  rows,
+});
+
+/** What the duplicate check needs of every activity here, and the sources already linked. */
+const localActivities = Effect.gen(function* () {
+  const activities = yield* selectRows(TABLES.activity);
+  const links = yield* selectRows(TABLES.activitySource);
+  return { activities, links };
+}).pipe(Effect.orDie);
 
 const makeTransferRepository = Effect.gen(function* () {
   const sql = yield* Sql;
@@ -421,6 +455,93 @@ const makeTransferRepository = Effect.gen(function* () {
             }
           }
           return Option.some<ImportResult>({ importBatchId, added, replaced });
+        }),
+      ),
+    );
+
+  /**
+   * Saves workouts from Apple Health or a GPX file. New ones become activities. A
+   * possible duplicate links to the activity it overlaps, unless its key is in
+   * `keepBoth`. A changed one replaces yours only when its key is in `take`. Each is
+   * recorded as an import change, so Undo takes the whole import back.
+   */
+  const applySourceImport = (
+    source: ImportedSource,
+    workouts: ReadonlyArray<SourceWorkout>,
+    choices: SourceChoices,
+  ) =>
+    run(
+      sql.transaction(
+        Effect.gen(function* () {
+          const plan = planSourceImport(yield* localActivities, workouts);
+          const fresh = plan.items.filter(
+            (item) =>
+              item.status === "new" ||
+              (item.status === "duplicate" && choices.keepBoth.includes(item.key)),
+          );
+          const links = plan.duplicates.filter((item) => !choices.keepBoth.includes(item.key));
+          const taken = plan.changed.filter((item) => choices.take.includes(item.key));
+          if (fresh.length + links.length + taken.length === 0) {
+            return Option.none<SourceImportResult>();
+          }
+          const importBatchId = yield* imports.create(source);
+          yield* imports.setStatus(importBatchId, "applied");
+          const at = yield* currentTime;
+
+          for (const { workout } of fresh) {
+            const rows = sourceActivityRows(workout, importBatchId, at);
+            yield* putAll(rows);
+            const item = activityItem(String(rows.activity![0]!.id), rows);
+            yield* recordChange(importBatchId, "added", item, summarize(item), rows, {});
+          }
+
+          // Two workouts may overlap the same activity, so each activity gets one change.
+          const byActivity = new Map<ActivityId, Array<SourceWorkout>>();
+          for (const { match, workout } of links) {
+            byActivity.set(match.id, [...(byActivity.get(match.id) ?? []), workout]);
+          }
+          for (const [activityId, linked] of byActivity) {
+            const here = yield* journalRows({ [TABLES.activity.name]: [activityId] });
+            let after = here;
+            let written: TableRows = {};
+            for (const workout of linked) {
+              const added = linkRows(workout, { id: activityId, rows: after }, importBatchId, at);
+              yield* putAll(added);
+              after = mergeRows(after, added);
+              written = mergeRows(written, added);
+            }
+            // Linking only adds rows, so Undo removes them and the activity is as it was.
+            const item = activityItem(activityId, here);
+            yield* recordChange(importBatchId, "replaced", item, summarize(item), written, {});
+          }
+
+          for (const { workout, local } of taken) {
+            const before = yield* journalRows({ [TABLES.activity.name]: [local] });
+            const written = mergeRows(sourceActivityRows(workout, importBatchId, at), {
+              activitySource: before.activitySource ?? [],
+            });
+            yield* putAll(written);
+            const kept = new Set(
+              TABLE_KEYS.flatMap((key) => (written[key] ?? []).map((row) => `${key}/${row.id}`)),
+            );
+            yield* deleteWithChildren(
+              Object.fromEntries(
+                TABLE_KEYS.map((key) => [
+                  key,
+                  (before[key] ?? []).filter((row) => !kept.has(`${key}/${row.id}`)),
+                ]),
+              ) as TableRows,
+              at,
+            );
+            const item = activityItem(local, written);
+            yield* recordChange(importBatchId, "replaced", item, summarize(item), written, before);
+          }
+          return Option.some<SourceImportResult>({
+            importBatchId,
+            added: fresh.length,
+            linked: links.length,
+            replaced: taken.length,
+          });
         }),
       ),
     );
@@ -494,6 +615,10 @@ const makeTransferRepository = Effect.gen(function* () {
         }),
       ),
     applyImport,
+    /** What importing workouts from Apple Health or a GPX file would add, link and change. */
+    previewSourceImport: (workouts: ReadonlyArray<SourceWorkout>): Effect.Effect<SourcePlan> =>
+      run(Effect.map(localActivities, (local) => planSourceImport(local, workouts))),
+    applySourceImport,
     previewUndo,
     undoImport,
     /** Imports that changed something, newest first. */

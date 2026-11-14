@@ -1,0 +1,522 @@
+import { Result } from "effect";
+
+import { activityTitle, DEFAULT_HIDE_M, elevationGainM, splitsOf } from "./cardio.ts";
+import { DurationSeconds } from "./duration.ts";
+import { pathLengthM } from "./geo.ts";
+import { GpxError, type GpxTrack } from "./gpx.ts";
+import type { HealthWorkout } from "./health-export.ts";
+import { contentFingerprint, importedId } from "./ids.ts";
+import { CardioKind } from "./recording.ts";
+import {
+  type Activity,
+  ActivityId,
+  type ActivityKind,
+  type ActivitySample,
+  ActivitySampleId,
+  type ActivitySource,
+  ActivitySourceId,
+  type ActivityTrack,
+  ActivityTrackId,
+  EpochMillis,
+  Fingerprint,
+  type ImportBatchId,
+  type ImportedSource,
+  SourceIdentity,
+} from "./schema.ts";
+import { TABLES } from "./table.ts";
+import type { TableKey, TableRows } from "./transfer.ts";
+
+export interface RoutePoint {
+  readonly recordedAt: EpochMillis;
+  readonly latitude: number;
+  readonly longitude: number;
+  readonly altitudeM: number | null;
+}
+
+export interface HeartRateReading {
+  readonly recordedAt: EpochMillis;
+  readonly bpm: number;
+}
+
+/** A workout from Apple Health or a GPX file, read and checked, before it is saved. */
+export interface SourceWorkout {
+  readonly source: ImportedSource;
+  /** Who it is in its source: for Health its source, start and type, for GPX its first point's time. */
+  readonly identity: SourceIdentity;
+  readonly fingerprint: Fingerprint;
+  readonly kind: ActivityKind;
+  readonly title: string;
+  readonly startedAt: EpochMillis;
+  readonly endedAt: EpochMillis;
+  readonly durationS: DurationSeconds;
+  readonly distanceM: number | null;
+  readonly energyKcal: number | null;
+  readonly route: ReadonlyArray<RoutePoint>;
+  readonly heartRate: ReadonlyArray<HeartRateReading>;
+}
+
+const isCardio = (kind: ActivityKind) =>
+  (CardioKind.literals as ReadonlyArray<string>).includes(kind);
+
+const HEALTH_KIND: Readonly<Record<string, ActivityKind>> = {
+  HKWorkoutActivityTypeRunning: "run",
+  HKWorkoutActivityTypeCycling: "ride",
+  HKWorkoutActivityTypeHandCycling: "ride",
+  HKWorkoutActivityTypeWalking: "walk",
+  HKWorkoutActivityTypeHiking: "hike",
+  HKWorkoutActivityTypeTraditionalStrengthTraining: "strength",
+  HKWorkoutActivityTypeFunctionalStrengthTraining: "strength",
+};
+
+/** HKWorkoutActivityTypeHighIntensityIntervalTraining reads "High intensity interval training". */
+export const healthActivityName = (activityType: string): string => {
+  const words = activityType
+    .replace(/^HKWorkoutActivityType/, "")
+    .replaceAll(/([a-z])([A-Z])/g, "$1 $2")
+    .toLowerCase();
+  return words.charAt(0).toUpperCase() + words.slice(1);
+};
+
+const fingerprintOf = (workout: Omit<SourceWorkout, "fingerprint" | "title">) =>
+  Fingerprint.make(
+    contentFingerprint({
+      kind: workout.kind,
+      startedAt: workout.startedAt,
+      endedAt: workout.endedAt,
+      durationS: workout.durationS,
+      distanceM: workout.distanceM,
+      energyKcal: workout.energyKcal,
+      route: workout.route,
+      heartRate: workout.heartRate,
+    }),
+  );
+
+/** Track points with a time. A point without one takes the time of the point before it. */
+const routeOf = (track: GpxTrack | null, fallback: number): Array<RoutePoint> => {
+  let last = fallback;
+  return (track?.points ?? []).map((point) => {
+    last = point.recordedAt ?? last;
+    return {
+      recordedAt: EpochMillis.make(last),
+      latitude: point.latitude,
+      longitude: point.longitude,
+      altitudeM: point.altitudeM,
+    };
+  });
+};
+
+const routeDistance = (route: ReadonlyArray<RoutePoint>) =>
+  route.length < 2 ? null : pathLengthM(route);
+
+/** A Health workout, with its route when the export holds one. */
+export const fromHealthWorkout = (
+  workout: HealthWorkout,
+  route: GpxTrack | null,
+): SourceWorkout => {
+  const kind = HEALTH_KIND[workout.activityType] ?? "other";
+  const points = routeOf(route, workout.startedAt);
+  const content = {
+    source: "apple_health" as const,
+    identity: SourceIdentity.make(
+      `${new Date(workout.startedAt).toISOString()} ${workout.activityType} ${workout.sourceName}`,
+    ),
+    kind,
+    startedAt: EpochMillis.make(workout.startedAt),
+    endedAt: EpochMillis.make(workout.endedAt),
+    durationS: DurationSeconds.make(workout.durationS),
+    distanceM: workout.distanceM ?? routeDistance(points),
+    energyKcal: workout.energyKcal,
+    route: points,
+    heartRate: workout.heartRate.map((reading) => ({
+      recordedAt: EpochMillis.make(reading.recordedAt),
+      bpm: reading.bpm,
+    })),
+  };
+  return {
+    ...content,
+    fingerprint: fingerprintOf(content),
+    title:
+      isCardio(kind) || kind === "strength"
+        ? activityTitle(kind, workout.localHour)
+        : healthActivityName(workout.activityType),
+  };
+};
+
+const GPX_KIND: ReadonlyArray<readonly [RegExp, ActivityKind]> = [
+  [/run/i, "run"],
+  [/ride|cycl|bik/i, "ride"],
+  [/hik/i, "hike"],
+  [/walk/i, "walk"],
+];
+
+/**
+ * A GPX file as one workout. Its identity is its first point's time, so the same file
+ * imports once. `hourOf` gives the phone's local hour of a time, for its title.
+ */
+export const fromGpx = (
+  track: GpxTrack,
+  hourOf: (at: number) => number,
+): Result.Result<SourceWorkout, GpxError> => {
+  const times = track.points.flatMap((point) =>
+    point.recordedAt === null ? [] : [point.recordedAt],
+  );
+  const first = times[0];
+  if (first === undefined) {
+    return Result.fail(
+      new GpxError({
+        message: "This GPX file has no times, so svett cannot tell when it happened.",
+      }),
+    );
+  }
+  const last = Math.max(...times);
+  const kind = GPX_KIND.find(([pattern]) => pattern.test(track.type ?? ""))?.[1] ?? "other";
+  const route = routeOf(track, first);
+  const content = {
+    source: "gpx" as const,
+    identity: SourceIdentity.make(new Date(first).toISOString()),
+    kind,
+    startedAt: EpochMillis.make(first),
+    endedAt: EpochMillis.make(last),
+    durationS: DurationSeconds.make((last - first) / 1000),
+    distanceM: routeDistance(route),
+    energyKcal: null,
+    route,
+    heartRate: track.points.flatMap((point) => {
+      const bpm = point.heartRate === null ? Number.NaN : Math.round(point.heartRate);
+      return point.recordedAt !== null && bpm >= 20 && bpm <= 260
+        ? [{ recordedAt: EpochMillis.make(point.recordedAt), bpm }]
+        : [];
+    }),
+  };
+  return Result.succeed({
+    ...content,
+    fingerprint: fingerprintOf(content),
+    title: track.name ?? activityTitle(kind, hourOf(first)),
+  });
+};
+
+/** An activity here, as the duplicate check sees it. */
+export type LocalActivity = Pick<
+  Activity,
+  "id" | "kind" | "title" | "startedAt" | "durationS" | "source" | "sourceId" | "fingerprint"
+>;
+
+export type LocalLink = Pick<ActivitySource, "activityId" | "source" | "sourceId">;
+
+export type SourcePlanItem =
+  | { readonly status: "new"; readonly key: string; readonly workout: SourceWorkout }
+  | { readonly status: "unchanged"; readonly key: string; readonly workout: SourceWorkout }
+  | {
+      readonly status: "changed";
+      readonly key: string;
+      readonly workout: SourceWorkout;
+      readonly local: ActivityId;
+    }
+  | {
+      readonly status: "duplicate";
+      readonly key: string;
+      readonly workout: SourceWorkout;
+      /** The activity from another source whose time it overlaps most. */
+      readonly match: LocalActivity;
+    };
+
+export interface SourcePlan {
+  readonly items: ReadonlyArray<SourcePlanItem>;
+  readonly added: number;
+  readonly duplicates: ReadonlyArray<Extract<SourcePlanItem, { status: "duplicate" }>>;
+  readonly changed: ReadonlyArray<Extract<SourcePlanItem, { status: "changed" }>>;
+  readonly unchanged: number;
+}
+
+/** What the person chose in the preview. Duplicates link unless kept apart, and changed ones keep yours unless taken. */
+export interface SourceChoices {
+  readonly take: ReadonlyArray<string>;
+  readonly keepBoth: ReadonlyArray<string>;
+}
+
+export const NO_CHOICES: SourceChoices = { take: [], keepBoth: [] };
+
+export const sourceKey = (workout: Pick<SourceWorkout, "source" | "identity">): string =>
+  `${workout.source}:${workout.identity}`;
+
+export const sourceActivityId = (workout: Pick<SourceWorkout, "source" | "identity">) =>
+  ActivityId.make(importedId(TABLES.activity.name, workout.source, workout.identity));
+
+const overlapMs = (local: LocalActivity, workout: SourceWorkout) =>
+  Math.min(local.startedAt + local.durationS * 1000, workout.endedAt) -
+  Math.max(local.startedAt, workout.startedAt);
+
+const newestFirst = (a: SourcePlanItem, b: SourcePlanItem) =>
+  b.workout.startedAt - a.workout.startedAt || a.key.localeCompare(b.key);
+
+/**
+ * Compares workouts from a source with the activities here. One already here with the
+ * same content, or already linked to an activity from another source, is unchanged.
+ * One here with other content is changed. One that overlaps the time of an activity
+ * from another source is a possible duplicate. The rest are new.
+ */
+export const planSourceImport = (
+  local: {
+    readonly activities: ReadonlyArray<LocalActivity>;
+    readonly links: ReadonlyArray<LocalLink>;
+  },
+  incoming: ReadonlyArray<SourceWorkout>,
+): SourcePlan => {
+  const byId = new Map(local.activities.map((activity) => [activity.id, activity]));
+  const linked = new Set(local.links.map((link) => `${link.source}:${link.sourceId}`));
+  const seen = new Set<string>();
+  const items: Array<SourcePlanItem> = [];
+  for (const workout of incoming) {
+    const key = sourceKey(workout);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const here = byId.get(sourceActivityId(workout));
+    if (here !== undefined) {
+      items.push(
+        here.fingerprint === workout.fingerprint
+          ? { status: "unchanged", key, workout }
+          : { status: "changed", key, workout, local: here.id },
+      );
+      continue;
+    }
+    if (linked.has(key)) {
+      items.push({ status: "unchanged", key, workout });
+      continue;
+    }
+    let match: LocalActivity | undefined;
+    let best = 0;
+    for (const activity of local.activities) {
+      if (activity.source === workout.source) continue;
+      const overlap = overlapMs(activity, workout);
+      if (overlap > best) {
+        best = overlap;
+        match = activity;
+      }
+    }
+    items.push(
+      match === undefined
+        ? { status: "new", key, workout }
+        : { status: "duplicate", key, workout, match },
+    );
+  }
+  items.sort(newestFirst);
+  return {
+    items,
+    added: items.filter((item) => item.status === "new").length,
+    duplicates: items.filter((item) => item.status === "duplicate"),
+    changed: items.filter((item) => item.status === "changed"),
+    unchanged: items.filter((item) => item.status === "unchanged").length,
+  };
+};
+
+export const isNothingFromSource = (plan: SourcePlan): boolean =>
+  plan.added === 0 && plan.duplicates.length === 0 && plan.changed.length === 0;
+
+const idIn = (table: TableKey, workout: SourceWorkout, path = "") =>
+  importedId(TABLES[table].name, workout.source, `${workout.identity}${path}`);
+
+const heartSamples = (
+  workout: SourceWorkout,
+  trackId: ActivityTrackId,
+  at: EpochMillis,
+  path: (index: number) => string,
+): Array<ActivitySample> =>
+  workout.heartRate.map((reading, index) => ({
+    id: ActivitySampleId.make(idIn("activitySample", workout, path(index))),
+    updatedAt: at,
+    deletedAt: null,
+    activityTrackId: trackId,
+    recordedAt: reading.recordedAt,
+    kind: "heart_rate",
+    bpm: reading.bpm,
+  }));
+
+/**
+ * The rows of a workout saved as its own activity. Each ID is computed from the source
+ * and identity, as ActivityRepository.create does for an import, so two phones that
+ * import the same file make the same rows.
+ */
+export const sourceActivityRows = (
+  workout: SourceWorkout,
+  importBatchId: ImportBatchId,
+  at: EpochMillis,
+): TableRows => {
+  const activityId = sourceActivityId(workout);
+  const activity: Activity = {
+    id: activityId,
+    updatedAt: at,
+    deletedAt: null,
+    kind: workout.kind,
+    startedAt: workout.startedAt,
+    durationS: workout.durationS,
+    title: workout.title,
+    notes: "",
+    energyKcal: workout.energyKcal,
+    audience: "only_you",
+    hiddenFields: [],
+    source: workout.source,
+    sourceId: workout.identity,
+    fingerprint: workout.fingerprint,
+    importBatchId,
+  };
+  const { route } = workout;
+  if (route.length === 0 && workout.heartRate.length === 0 && workout.distanceM === null) {
+    return { activity: [activity] };
+  }
+  const trackId = ActivityTrackId.make(idIn("activityTrack", workout, "/track"));
+  const track: ActivityTrack = {
+    id: trackId,
+    updatedAt: at,
+    deletedAt: null,
+    activityId,
+    distanceM: workout.distanceM,
+    elevationGainM: elevationGainM(route.map((point) => point.altitudeM)),
+    hideStartM: route.length > 0 ? DEFAULT_HIDE_M : 0,
+    hideEndM: route.length > 0 ? DEFAULT_HIDE_M : 0,
+  };
+  const first = route[0];
+  const last = route.at(-1);
+  const splits =
+    first !== undefined && last !== undefined && route.length > 1 && isCardio(workout.kind)
+      ? splitsOf(
+          {
+            kind: workout.kind as CardioKind,
+            startedAt: first.recordedAt,
+            segments: [
+              {
+                from: first.recordedAt,
+                to: last.recordedAt,
+                fixes: route.map((point) => ({
+                  at: point.recordedAt,
+                  latitude: point.latitude,
+                  longitude: point.longitude,
+                  altitudeM: point.altitudeM,
+                  accuracyM: null,
+                })),
+                distanceM: pathLengthM(route),
+              },
+            ],
+          },
+          last.recordedAt,
+        )
+      : [];
+  const sample = (index: number) =>
+    ActivitySampleId.make(idIn("activitySample", workout, `/track/sample/${index}`));
+  const locations: Array<ActivitySample> = route.map((point, index) => ({
+    id: sample(index),
+    updatedAt: at,
+    deletedAt: null,
+    activityTrackId: trackId,
+    kind: "location",
+    ...point,
+  }));
+  const splitRows: Array<ActivitySample> = splits.map((split, index) => ({
+    id: sample(route.length + index),
+    updatedAt: at,
+    deletedAt: null,
+    activityTrackId: trackId,
+    recordedAt: EpochMillis.make(Math.round(split.endedAt)),
+    kind: "split",
+    distanceM: split.distanceM,
+    durationS: DurationSeconds.make(split.durationS),
+  }));
+  const offset = route.length + splits.length;
+  return {
+    activity: [activity],
+    activityTrack: [track],
+    activitySample: [
+      ...locations,
+      ...splitRows,
+      ...heartSamples(workout, trackId, at, (index) => `/track/sample/${offset + index}`),
+    ],
+  };
+};
+
+/**
+ * The rows that link a workout to an activity from another source: the workout's
+ * identity, and its heart rate when the activity has none. A strength workout with no
+ * route gets a track to hold the heart rate.
+ */
+export const linkRows = (
+  workout: SourceWorkout,
+  activity: { readonly id: ActivityId; readonly rows: TableRows },
+  importBatchId: ImportBatchId,
+  at: EpochMillis,
+): TableRows => {
+  const link: ActivitySource = {
+    id: ActivitySourceId.make(idIn("activitySource", workout)),
+    updatedAt: at,
+    deletedAt: null,
+    activityId: activity.id,
+    source: workout.source,
+    sourceId: workout.identity,
+    fingerprint: workout.fingerprint,
+    importBatchId,
+  };
+  const hasHeart = (activity.rows.activitySample ?? []).some((row) => row["kind"] === "heart_rate");
+  if (workout.heartRate.length === 0 || hasHeart) return { activitySource: [link] };
+  const existing = activity.rows.activityTrack?.[0] as ActivityTrack | undefined;
+  const track: ActivityTrack = existing ?? {
+    id: ActivityTrackId.make(idIn("activityTrack", workout, "/track")),
+    updatedAt: at,
+    deletedAt: null,
+    activityId: activity.id,
+    distanceM: null,
+    elevationGainM: null,
+    hideStartM: 0,
+    hideEndM: 0,
+  };
+  return {
+    activitySource: [link],
+    ...(existing === undefined ? { activityTrack: [track] } : {}),
+    activitySample: heartSamples(workout, track.id, at, (index) => `/track/heart_rate/${index}`),
+  };
+};
+
+export interface HeartRateSummary {
+  readonly averageBpm: number;
+  readonly maxBpm: number;
+}
+
+/** The mean and highest of the readings, or null when there are none. */
+export const heartRateSummary = (
+  samples: ReadonlyArray<{ readonly kind: string; readonly bpm?: number }>,
+): HeartRateSummary | null => {
+  const beats = samples.flatMap((sample) =>
+    sample.kind === "heart_rate" && sample.bpm !== undefined ? [sample.bpm] : [],
+  );
+  if (beats.length === 0) return null;
+  return {
+    averageBpm: Math.round(beats.reduce((total, bpm) => total + bpm, 0) / beats.length),
+    maxBpm: Math.max(...beats),
+  };
+};
+
+export const workoutsLabel = (count: number) =>
+  `${count.toLocaleString("en-US")} ${count === 1 ? "workout" : "workouts"}`;
+
+export interface SourceImportResult {
+  readonly importBatchId: ImportBatchId;
+  readonly added: number;
+  readonly linked: number;
+  readonly replaced: number;
+}
+
+/** What a Health or GPX import did, in one sentence. */
+export const sourceImportOutcome = ({
+  added,
+  linked,
+  replaced,
+}: Pick<SourceImportResult, "added" | "linked" | "replaced">): string => {
+  const parts = [
+    added > 0 ? `added ${workoutsLabel(added)}` : null,
+    linked > 0
+      ? `linked ${workoutsLabel(linked)} to ${linked === 1 ? "one" : "ones"} already here`
+      : null,
+    replaced > 0 ? `took the new version of ${workoutsLabel(replaced)}` : null,
+  ].filter((part) => part !== null);
+  if (parts.length === 0) return "Nothing changed.";
+  const sentence =
+    parts.length === 1 ? parts[0]! : `${parts.slice(0, -1).join(", ")} and ${parts.at(-1)!}`;
+  return `${sentence.charAt(0).toUpperCase()}${sentence.slice(1)}.`;
+};
