@@ -70,7 +70,7 @@ const canonicalJson = (value: unknown): string => {
   if (value !== null && typeof value === "object") {
     const entries = Object.entries(value)
       .filter(([, entry]) => entry !== undefined)
-      .toSorted(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
     return `{${entries.map(([key, entry]) => `${JSON.stringify(key)}:${canonicalJson(entry)}`).join(",")}}`;
   }
   return JSON.stringify(value);
