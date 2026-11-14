@@ -132,3 +132,39 @@ export const httpSyncApi = (options: HttpSyncOptions): SyncApi<SyncFailed> => {
     pull: (after: number) => call(SyncPull, `/v1/rows?after=${after}`, { method: "GET" }),
   };
 };
+
+/** What the Account screen shows about sync. */
+export type SyncStatus =
+  | { readonly kind: "waiting" }
+  | { readonly kind: "syncing" }
+  | { readonly kind: "synced"; readonly queued: number; readonly held: number }
+  | { readonly kind: "failed"; readonly problem: SyncProblem; readonly queued: number };
+
+const changes = (count: number) => (count === 1 ? "1 change waits" : `${count} changes wait`);
+
+export const syncStatusMessage = (status: SyncStatus): string => {
+  switch (status.kind) {
+    case "waiting":
+      return "Not synced yet on this launch.";
+    case "syncing":
+      return "Syncing";
+    case "synced":
+      if (status.held > 0) {
+        return `This phone's clock is ahead of the svett server. ${changes(status.held)} on this phone until the clock is right.`;
+      }
+      return status.queued === 0 ? "Up to date" : `${changes(status.queued)} to upload.`;
+    case "failed":
+      switch (status.problem) {
+        case "offline":
+          return `Cannot reach svett. ${changes(status.queued)} on this phone, and sync tries again soon.`;
+        case "signed_out":
+          return "Sign in again to sync. Everything stays on this phone meanwhile.";
+        case "sign_in_unavailable":
+          return "The svett server has no sign-in set up yet, so nothing syncs.";
+        case "wrong_account":
+          return "The session belongs to another account, so nothing was sent.";
+        case "server":
+          return "The svett server had a problem. Sync tries again soon.";
+      }
+  }
+};
