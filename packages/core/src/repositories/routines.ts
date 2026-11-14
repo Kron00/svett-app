@@ -281,11 +281,11 @@ const makeRoutineRepository = Effect.gen(function* () {
   const appliedRows = (folderId: FolderId | null, routineIds: ReadonlyArray<RoutineId>) =>
     run(
       Effect.gen(function* () {
-        const ids = JSON.stringify(routineIds);
+        const wanted = JSON.stringify(routineIds);
         const routine = yield* folderId === null
-          ? selectRowsWithDeleted(TABLES.routine, inList("id"), [ids])
+          ? selectRowsWithDeleted(TABLES.routine, inList("id"), [wanted])
           : selectRowsWithDeleted(TABLES.routine, `${inList("id")} OR folder_id = ?`, [
-              ids,
+              wanted,
               folderId,
             ]);
         const routineExercise = yield* selectRowsWithDeleted(
@@ -300,9 +300,11 @@ const makeRoutineRepository = Effect.gen(function* () {
               : yield* selectRowsWithDeleted(TABLES.folder, "id = ?", [folderId]),
           routine,
           routineExercise,
-          routineSet: yield* selectRowsWithDeleted(TABLES.routineSet, inList("routine_exercise_id"), [
-            JSON.stringify(routineExercise.map((row) => row.id)),
-          ]),
+          routineSet: yield* selectRowsWithDeleted(
+            TABLES.routineSet,
+            inList("routine_exercise_id"),
+            [JSON.stringify(routineExercise.map((row) => row.id))],
+          ),
         } satisfies AppliedRows;
       }),
     );

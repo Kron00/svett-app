@@ -5,8 +5,9 @@ import { libraryExerciseId } from "./exercise-library.ts";
 import {
   applyProposal,
   createProposal,
-  type PlannedRoutine,
+  type ProposedRoutine,
   planSummary,
+  PROPOSAL_STATUS_TEXT,
   type ProposalPlan,
   proposalView,
   undoProposal,
@@ -24,7 +25,7 @@ const BENCH = libraryExerciseId("Barbell_Bench_Press_-_Medium_Grip");
 const ROW = libraryExerciseId("Bent_Over_Barbell_Row");
 const SQUAT = libraryExerciseId("Barbell_Squat");
 
-const routine = (title: string, ...exerciseIds: ReadonlyArray<ExerciseId>): PlannedRoutine => ({
+const routine = (title: string, ...exerciseIds: ReadonlyArray<ExerciseId>): ProposedRoutine => ({
   title,
   notes: "",
   exercises: exerciseIds.map((exerciseId) => ({
@@ -90,15 +91,67 @@ const withOwnRoutine = async () => {
       title,
       notes,
       position: 0,
-      exercises: exercises.map((exercise) => ({ ...exercise, supersetGroup: null })),
+      exercises: exercises.map(({ exerciseId, restS, notes: cue, sets }) => ({
+        exerciseId,
+        restS,
+        notes: cue,
+        sets,
+        supersetGroup: null,
+      })),
     }),
   );
   return database;
 };
 
 const status = (database: Database, id: ProposalId) =>
-  run(database, Effect.map(proposalView(id), (view) => view.status));
+  run(
+    database,
+    Effect.map(proposalView(id), (view) => view.status),
+  );
 
+/** Changes a user can make on the Train tab to what Apply created. */
+const EDITS: ReadonlyArray<
+  readonly [
+    string,
+    ProposalPlan,
+    (
+      routines: typeof RoutineRepository.Service,
+      created: ReadonlyArray<string>,
+    ) => Effect.Effect<unknown, unknown>,
+  ]
+> = [
+  [
+    "a renamed routine",
+    upper,
+    (routines, [id]) => routines.updateRoutine(id as never, { title: "Upper A" }),
+  ],
+  [
+    "a changed set",
+    upper,
+    (routines, [id]) =>
+      Effect.flatMap(routines.getRoutine(id as never), (detail) =>
+        routines.updateRoutineSet(Option.getOrThrow(detail).exercises[0]!.sets[0]!.id, {
+          weightKg: 62.5,
+        }),
+      ),
+  ],
+  ["a deleted routine", upper, (routines, [id]) => routines.removeRoutine(id as never)],
+  [
+    "a routine moved out of the program's folder",
+    program,
+    (routines, [id]) => routines.moveRoutine(id as never, null),
+  ],
+  [
+    "a routine of the user's moved into the program's folder",
+    program,
+    (routines, [id]) =>
+      Effect.gen(function* () {
+        const detail = Option.getOrThrow(yield* routines.getRoutine(id as never));
+        const own = (yield* routines.listRoutines).find((row) => row.title === "My legs")!;
+        yield* routines.moveRoutine(own.id, detail.routine.folderId);
+      }),
+  ],
+];
 describe("a coach proposal", () => {
   it("writes nothing to routines until Apply, then shows under Train", async () => {
     const database = await withOwnRoutine();
@@ -120,8 +173,22 @@ describe("a coach proposal", () => {
         sets.map((set) => [set.weightKg, set.repsMin, set.repsMax]),
       ]),
     ).toEqual([
-      [BENCH, [[60, 8, 10], [60, 8, 10], [60, 8, 10]]],
-      [ROW, [[60, 8, 10], [60, 8, 10], [60, 8, 10]]],
+      [
+        BENCH,
+        [
+          [60, 8, 10],
+          [60, 8, 10],
+          [60, 8, 10],
+        ],
+      ],
+      [
+        ROW,
+        [
+          [60, 8, 10],
+          [60, 8, 10],
+          [60, 8, 10],
+        ],
+      ],
     ]);
   });
 
@@ -159,68 +226,26 @@ describe("a coach proposal", () => {
     expect(await status(database, programId)).toBe("undone");
     expect(pointersToDeleted(database)).toEqual([]);
     const live = (table: string) =>
-      database.database.prepare(`SELECT count(*) AS n FROM ${table} WHERE deleted_at IS NULL`).get();
+      database.database
+        .prepare(`SELECT count(*) AS n FROM ${table} WHERE deleted_at IS NULL`)
+        .get();
     expect(live("routine_set")).toEqual({ n: 3 });
     expect(live("folder")).toEqual({ n: 0 });
   });
 
-  it("refuses Undo once the user changed what it created, and says why", async () => {
-    const edits: ReadonlyArray<
-      readonly [
-        string,
-        ProposalPlan,
-        (
-          routines: typeof RoutineRepository.Service,
-          created: ReadonlyArray<string>,
-        ) => Effect.Effect<unknown, unknown>,
-      ]
-    > = [
-      [
-        "a renamed routine",
-        upper,
-        (routines, [id]) => routines.updateRoutine(id as never, { title: "Upper A" }),
-      ],
-      [
-        "a changed set",
-        upper,
-        (routines, [id]) =>
-          Effect.flatMap(routines.getRoutine(id as never), (detail) =>
-            routines.updateRoutineSet(Option.getOrThrow(detail).exercises[0]!.sets[0]!.id, {
-              weightKg: 62.5,
-            }),
-          ),
-      ],
-      ["a deleted routine", upper, (routines, [id]) => routines.removeRoutine(id as never)],
-      [
-        "a routine moved out of the program's folder",
-        program,
-        (routines, [id]) => routines.moveRoutine(id as never, null),
-      ],
-      [
-        "a routine of the user's moved into the program's folder",
-        program,
-        (routines, [id]) =>
-          Effect.gen(function* () {
-            const detail = Option.getOrThrow(yield* routines.getRoutine(id as never));
-            const own = (yield* routines.listRoutines).find((row) => row.title === "My legs")!;
-            yield* routines.moveRoutine(own.id, detail.routine.folderId);
-          }),
-      ],
-    ];
-    for (const [name, plan, edit] of edits) {
-      const database = await withOwnRoutine();
-      const id = await propose(database, plan);
-      await run(database, applyProposal(id));
-      const created = (await run(database, proposalView(id))).routineIds;
-      await database.runtime.runPromise(database.clock.advance(1_000));
-      await withRoutines(database, (routines) => edit(routines, created) as Effect.Effect<unknown>);
-      const after = await train(database);
+  it.each(EDITS)("refuses Undo after %s, and says why", async (name, plan, edit) => {
+    const database = await withOwnRoutine();
+    const id = await propose(database, plan);
+    await run(database, applyProposal(id));
+    const created = (await run(database, proposalView(id))).routineIds;
+    await database.runtime.runPromise(database.clock.advance(1_000));
+    await withRoutines(database, (routines) => edit(routines, created) as Effect.Effect<unknown>);
+    const after = await train(database);
 
-      const why = await failure(database, undoProposal(id));
-      expect(why, name).toContain("after Apply, so Undo would throw your changes away");
-      expect(await train(database), name).toEqual(after);
-      expect(await status(database, id), name).toBe("applied");
-    }
+    const why = await failure(database, undoProposal(id));
+    expect(why, name).toContain("after Apply, so Undo would throw your changes away");
+    expect(await train(database), name).toEqual(after);
+    expect(await status(database, id), name).toBe("applied");
   });
 
   it("refuses Undo before Apply", async () => {
@@ -274,6 +299,11 @@ describe("a coach proposal", () => {
 });
 
 describe("the pure proposal rules", () => {
+  it("says what each state means", () => {
+    expect(PROPOSAL_STATUS_TEXT.pending).toBe("Not applied. Nothing is saved until you tap Apply.");
+    expect(PROPOSAL_STATUS_TEXT.applied).toBe("Applied. It is on the Train tab.");
+  });
+
   it("summarizes a routine and a program", () => {
     expect(planSummary(upper)).toBe("A routine of 2 exercises");
     expect(planSummary(program)).toBe("A program of 3 routines in a new folder");

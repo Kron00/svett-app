@@ -1,5 +1,8 @@
 import {
   ActivityId,
+  type CoachMessageId,
+  DurationSeconds,
+  createProposal,
   type Exercise,
   ActivityRepository,
   dayStart,
@@ -13,9 +16,14 @@ import {
   MEASUREMENT_UNIT,
   MeasurementKind,
   MeasurementRepository,
+  PROPOSAL_LIMITS,
+  type ProposalPlan,
+  ProposalRepository,
   rankBestSets,
   RoutineRepository,
+  SetType,
   TrainingReads,
+  unknownExercises,
 } from "@svett/core";
 import { Data, Effect, Option, Schema } from "effect";
 
@@ -23,13 +31,16 @@ import { Data, Effect, Option, Schema } from "effect";
 export interface ToolContext {
   /** The phone's offset from UTC in minutes, which turns days into times. */
   readonly offsetMinutes: number;
+  /** The user's question a tool call answers. A proposal stays linked to it. */
+  readonly questionId?: CoachMessageId;
 }
 
-/** Repositories the read tools use. */
+/** Repositories the tools use. Only the proposal tools write, and only to proposal. */
 export type ToolServices =
   | ActivityRepository
   | ExerciseRepository
   | MeasurementRepository
+  | ProposalRepository
   | RoutineRepository
   | TrainingReads;
 
@@ -46,13 +57,21 @@ interface ToolSpec<I, O> {
   readonly run: (input: I, context: ToolContext) => Effect.Effect<O, ToolInputError, ToolServices>;
   /** Names the data the tool read, for the line under the coach's answer. */
   readonly source: (input: I, output: O) => string;
+  /** A tool that proposes a change. Its result names the proposal, or why there is none. */
+  readonly proposes?: (output: O) => string;
+  /** Arguments longer than this are refused. MAX_ARGUMENTS when left out. */
+  readonly maxArguments?: number;
 }
 
 export interface ToolResult {
   /** The JSON text the model gets back. */
   readonly output: string;
-  /** Names the data the tool read. */
+  /** Names the data the tool read, or for a proposal tool, what it proposed. */
   readonly source: string;
+  /** The proposal a proposal tool stored. */
+  readonly proposalId?: string;
+  /** Why a proposal tool stored nothing. The chat shows it. */
+  readonly problem?: string;
 }
 
 export interface CoachTool {
@@ -92,11 +111,13 @@ const bounded = (result: ToolResult): ToolResult => ({
   source: clip(result.source, MAX_SOURCE),
 });
 
-const refusal = (name: string, message: string): ToolResult =>
-  bounded({
+const refusal = (name: string, message: string, proposes = false): ToolResult => {
+  const result = bounded({
     output: JSON.stringify({ error: clip(message, MAX_ERROR) }),
-    source: `${clip(name, 40)} (not read: ${clip(message, MAX_SOURCE)})`,
+    source: `${clip(name, 40)} (${proposes ? "nothing proposed" : "not read"}: ${clip(message, MAX_SOURCE)})`,
   });
+  return proposes ? { ...result, problem: clip(message, MAX_ERROR) } : result;
+};
 
 /**
  * Text the user typed or imported, such as a workout's title or notes. The model gets it under
@@ -143,7 +164,7 @@ const defineTool = <I, O>(spec: ToolSpec<I, O>): CoachTool => {
     },
     execute: (argumentsJson, context) =>
       Effect.gen(function* () {
-        if (argumentsJson.length > MAX_ARGUMENTS) {
+        if (argumentsJson.length > (spec.maxArguments ?? MAX_ARGUMENTS)) {
           return yield* new ToolInputError({ message: "the arguments are too long" });
         }
         const input = yield* decode(argumentsJson).pipe(
@@ -151,10 +172,16 @@ const defineTool = <I, O>(spec: ToolSpec<I, O>): CoachTool => {
         );
         const output = yield* spec.run(input, context);
         const encoded = yield* encode(output).pipe(Effect.orDie);
-        return bounded({ output: JSON.stringify(encoded), source: spec.source(input, output) });
+        const result = bounded({
+          output: JSON.stringify(encoded),
+          source: spec.source(input, output),
+        });
+        return spec.proposes === undefined
+          ? result
+          : { ...result, proposalId: spec.proposes(output) };
       }).pipe(
         Effect.catchTag("ToolInputError", (error) =>
-          Effect.succeed(refusal(spec.name, error.message)),
+          Effect.succeed(refusal(spec.name, error.message, spec.proposes !== undefined)),
         ),
         // A database failure is a bug or a broken file, and the user has to see it.
         Effect.orDie,
@@ -698,6 +725,165 @@ const listRoutines = defineTool({
   },
 });
 
+/** A proposal's arguments may be this long. A seven-routine program fits easily. */
+const MAX_PROPOSAL_ARGUMENTS = 40_000;
+
+const Between = (minimum: number, maximum: number, description: string, integer = true) =>
+  Schema.optionalKey(
+    (integer ? Schema.Int : Schema.Finite).check(Schema.isBetween({ minimum, maximum })),
+  ).annotate({ description });
+
+const Text = (maximum: number, description: string) =>
+  Schema.String.check(Schema.isMaxLength(maximum)).annotate({ description });
+
+const SetIn = Schema.Struct({
+  type: Schema.optionalKey(SetType).annotate({
+    description: "The set's type. normal when left out",
+  }),
+  weightKg: Between(0, 1_000, "The target weight in kilograms", false),
+  repsMin: Between(
+    1,
+    100,
+    "The target reps. For an exact count give only repsMin, for a range give repsMin and repsMax",
+  ),
+  repsMax: Between(1, 100, "The top of a rep range"),
+  seconds: Between(1, 36_000, "A target time in seconds, for holds and cardio"),
+  metres: Between(1, 100_000, "A target distance in metres", false),
+});
+
+const ExerciseIn = Schema.Struct({
+  exerciseId: Uuid.annotate({ description: "The exercise id from search_exercises" }),
+  sets: Schema.Array(SetIn)
+    .check(
+      Schema.isMinLength(1),
+      Schema.isMaxLength(PROPOSAL_LIMITS.sets, {
+        message: `an exercise holds at most ${PROPOSAL_LIMITS.sets} sets`,
+      }),
+    )
+    .annotate({ description: "The sets in order" }),
+  restSeconds: Between(0, 900, "Rest after each set, in seconds"),
+  notes: Schema.optionalKey(Text(200, "A short cue for the user")),
+});
+
+const RoutineIn = Schema.Struct({
+  title: Text(PROPOSAL_LIMITS.title, "The routine's name").check(Schema.isMinLength(1)),
+  notes: Schema.optionalKey(Text(PROPOSAL_LIMITS.notes, "What the routine is for")),
+  exercises: Schema.Array(ExerciseIn)
+    .check(
+      Schema.isMinLength(1),
+      Schema.isMaxLength(PROPOSAL_LIMITS.exercises, {
+        message: `a routine holds at most ${PROPOSAL_LIMITS.exercises} exercises`,
+      }),
+    )
+    .annotate({ description: "The exercises in order" }),
+});
+type RoutineIn = typeof RoutineIn.Type;
+
+const ProposalOut = Schema.Struct({ proposalId: Schema.String, shown: Schema.String });
+
+/** The routine a tool's input plans, or the first set whose rep range runs backwards. */
+const plannedRoutine = (routine: RoutineIn, where: string) =>
+  Effect.gen(function* () {
+    const exercises = [];
+    for (const [index, exercise] of routine.exercises.entries()) {
+      const sets = [];
+      for (const [setIndex, set] of exercise.sets.entries()) {
+        const repsMin = set.repsMin ?? set.repsMax ?? null;
+        const repsMax = set.repsMax ?? set.repsMin ?? null;
+        if (repsMin !== null && repsMax !== null && repsMin > repsMax) {
+          return yield* new ToolInputError({
+            message: `${where}exercise ${index} set ${setIndex} has repsMin above repsMax`,
+          });
+        }
+        sets.push({
+          setType: set.type ?? "normal",
+          weightKg: set.weightKg ?? null,
+          repsMin,
+          repsMax,
+          durationS: set.seconds === undefined ? null : DurationSeconds.make(set.seconds),
+          distanceM: set.metres ?? null,
+        });
+      }
+      exercises.push({
+        exerciseId: ExerciseId.make(exercise.exerciseId),
+        restS:
+          exercise.restSeconds === undefined ? null : DurationSeconds.make(exercise.restSeconds),
+        notes: exercise.notes ?? "",
+        sets,
+      });
+    }
+    return { title: routine.title, notes: routine.notes ?? "", exercises };
+  });
+
+/** Stores the plan as a proposal once every exercise it names is in the user's library. */
+const propose = (plan: ProposalPlan, context: ToolContext) =>
+  Effect.gen(function* () {
+    const ids = (plan.kind === "routine" ? [plan.routine] : plan.routines).flatMap((routine) =>
+      routine.exercises.map((exercise) => exercise.exerciseId),
+    );
+    const known = yield* (yield* ExerciseRepository).names(ids);
+    const unknown = unknownExercises(plan, new Set(known.keys()));
+    if (unknown.length > 0) {
+      return yield* new ToolInputError({
+        message: `no exercise has the id ${unknown.join(", ")}. Find exercise ids with search_exercises, then propose again`,
+      });
+    }
+    const id = yield* createProposal(plan, context.questionId ?? null);
+    return {
+      proposalId: id,
+      shown:
+        "The user sees it as a preview with Apply. Nothing is saved until they tap Apply, so do not say it was saved.",
+    };
+  }).pipe(Effect.catchTag("SqlError", Effect.die), Effect.catchTag("InvalidRowError", Effect.die));
+
+const proposeRoutine = defineTool({
+  name: "propose_routine",
+  description:
+    "Proposes one new routine. The user sees it as a preview and decides whether to apply it, so nothing is saved by this call. Use exercise ids from search_exercises.",
+  maxArguments: MAX_PROPOSAL_ARGUMENTS,
+  input: RoutineIn,
+  output: ProposalOut,
+  run: (input, context) =>
+    Effect.flatMap(plannedRoutine(input, ""), (routine) =>
+      propose({ kind: "routine", routine }, context),
+    ),
+  source: ({ title }) => `Proposed the routine "${title}"`,
+  proposes: ({ proposalId }) => proposalId,
+});
+
+const proposeProgram = defineTool({
+  name: "propose_program",
+  description: `Proposes a program: a new folder of ${PROPOSAL_LIMITS.routines} routines at most, such as one per training day. The user sees it as a preview and decides whether to apply it, so nothing is saved by this call. Use exercise ids from search_exercises.`,
+  maxArguments: MAX_PROPOSAL_ARGUMENTS,
+  input: Schema.Struct({
+    folder: Text(PROPOSAL_LIMITS.folder, "The program's name, which names its folder").check(
+      Schema.isMinLength(1),
+    ),
+    routines: Schema.Array(RoutineIn)
+      .check(
+        Schema.isMinLength(2),
+        Schema.isMaxLength(PROPOSAL_LIMITS.routines, {
+          message: `a program holds at most ${PROPOSAL_LIMITS.routines} routines`,
+        }),
+      )
+      .annotate({ description: "The program's routines in order" }),
+  }),
+  output: ProposalOut,
+  run: (input, context) =>
+    Effect.gen(function* () {
+      const routines = yield* Effect.forEach(input.routines, (routine, index) =>
+        plannedRoutine(routine, `routine ${index} `),
+      );
+      return yield* propose({ kind: "program", folder: input.folder, routines }, context);
+    }),
+  source: ({ folder, routines }) =>
+    `Proposed the program "${folder}" of ${routines.length} routines`,
+  proposes: ({ proposalId }) => proposalId,
+});
+
+/** The tools that propose a change for the user to apply. They never change data themselves. */
+export const PROPOSAL_TOOLS: ReadonlyArray<CoachTool> = [proposeRoutine, proposeProgram];
+
 /** Every read tool, in the order the model sees them. */
 export const READ_TOOLS: ReadonlyArray<CoachTool> = [
   searchExercises,
@@ -712,9 +898,12 @@ export const READ_TOOLS: ReadonlyArray<CoachTool> = [
 /** The namespace that holds svett's tools in a request. */
 export const TOOL_NAMESPACE = "svett";
 
+/** Every tool the coach offers, in the order the model sees them. */
+export const COACH_TOOLS: ReadonlyArray<CoachTool> = [...READ_TOOLS, ...PROPOSAL_TOOLS];
+
 /** Runs the tool the model named. A name svett has no tool for gets an error the model reads. */
 export const runToolCall = (name: string, argumentsJson: string, context: ToolContext) => {
-  const tool = READ_TOOLS.find((each) => each.name === name);
+  const tool = COACH_TOOLS.find((each) => each.name === name);
   return tool === undefined
     ? Effect.succeed(refusal(name, `svett has no tool named ${name}`))
     : tool.execute(argumentsJson, context);

@@ -36,7 +36,7 @@ export const PROPOSAL_LIMITS = {
 const NonNegative = Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0));
 const NonNegativeInt = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
 
-export const PlannedSet = Schema.Struct({
+export const ProposedSet = Schema.Struct({
   setType: SetType,
   weightKg: Schema.NullOr(NonNegative),
   repsMin: Schema.NullOr(NonNegativeInt),
@@ -50,30 +50,30 @@ export const PlannedSet = Schema.Struct({
       : "a rep range starts at or below its end",
   ),
 );
-export type PlannedSet = typeof PlannedSet.Type;
+export type ProposedSet = typeof ProposedSet.Type;
 
-export const PlannedExercise = Schema.Struct({
+export const ProposedExercise = Schema.Struct({
   exerciseId: ExerciseIdSchema,
   restS: Schema.NullOr(DurationSeconds),
   notes: Schema.String,
-  sets: Schema.Array(PlannedSet),
+  sets: Schema.Array(ProposedSet),
 });
-export type PlannedExercise = typeof PlannedExercise.Type;
+export type ProposedExercise = typeof ProposedExercise.Type;
 
-export const PlannedRoutine = Schema.Struct({
+export const ProposedRoutine = Schema.Struct({
   title: Schema.NonEmptyString,
   notes: Schema.String,
-  exercises: Schema.Array(PlannedExercise),
+  exercises: Schema.Array(ProposedExercise),
 });
-export type PlannedRoutine = typeof PlannedRoutine.Type;
+export type ProposedRoutine = typeof ProposedRoutine.Type;
 
 /** What a proposal would create: one routine, or a program as a folder of routines. */
 export const ProposalPlan = Schema.Union([
-  Schema.Struct({ kind: Schema.Literal("routine"), routine: PlannedRoutine }),
+  Schema.Struct({ kind: Schema.Literal("routine"), routine: ProposedRoutine }),
   Schema.Struct({
     kind: Schema.Literal("program"),
     folder: Schema.NonEmptyString,
-    routines: Schema.Array(PlannedRoutine),
+    routines: Schema.Array(ProposedRoutine),
   }),
 ]);
 export type ProposalPlan = typeof ProposalPlan.Type;
@@ -100,7 +100,7 @@ export class ProposalError extends Data.TaggedError("ProposalError")<{
   readonly message: string;
 }> {}
 
-export const planRoutines = (plan: ProposalPlan): ReadonlyArray<PlannedRoutine> =>
+export const planRoutines = (plan: ProposalPlan): ReadonlyArray<ProposedRoutine> =>
   plan.kind === "routine" ? [plan.routine] : plan.routines;
 
 /** The proposal's title: the routine's, or the program's folder name. */
@@ -114,6 +114,14 @@ export const planSummary = (plan: ProposalPlan): string =>
   plan.kind === "routine"
     ? `A routine of ${count(plan.routine.exercises.length, "exercise", "exercises")}`
     : `A program of ${count(plan.routines.length, "routine", "routines")} in a new folder`;
+
+/** What a proposal's state means for the user. */
+export const PROPOSAL_STATUS_TEXT: Readonly<Record<ProposalStatus, string>> = {
+  pending: "Not applied. Nothing is saved until you tap Apply.",
+  applied: "Applied. It is on the Train tab.",
+  undone: "Undone. svett removed what Apply created.",
+  dismissed: "Dismissed. Nothing was saved.",
+};
 
 /** The exercises a plan names that are not in `known`, each once, in order. */
 export const unknownExercises = (
@@ -195,7 +203,7 @@ export const proposalView = (id: ProposalId) =>
     } satisfies ProposalView;
   });
 
-const routineDraft = (routine: PlannedRoutine, folderId: FolderId | null, position: number) => ({
+const routineDraft = (routine: ProposedRoutine, folderId: FolderId | null, position: number) => ({
   folderId,
   title: routine.title,
   notes: routine.notes,
@@ -242,7 +250,9 @@ export const applyProposal = (id: ProposalId) =>
             position: endPosition(yield* routines.listFolders),
           });
           for (const [position, routine] of plan.routines.entries()) {
-            routineIds.push(yield* routines.createRoutine(routineDraft(routine, folderId, position)));
+            routineIds.push(
+              yield* routines.createRoutine(routineDraft(routine, folderId, position)),
+            );
           }
         } else {
           const loose = (yield* routines.listRoutines).filter((row) => row.folderId === null);

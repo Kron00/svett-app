@@ -16,6 +16,12 @@ import {
   EpochMillis,
   MADE_HERE,
   UNTRUSTED_DATA_RULE,
+  applyProposal,
+  ProposalId,
+  ProposalRepository,
+  proposalView,
+  trainOverview,
+  undoProposal,
 } from "@svett/core";
 import { Effect } from "effect";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
@@ -154,7 +160,14 @@ describe("the recorded best squat run", () => {
     );
     expect(messages.map((message) => message.role)).toEqual(["user", "tool", "tool", "assistant"]);
     expect(chatEntries(messages)).toEqual([
-      { id: messages[0]!.id, role: "user", text: QUESTION, sources: [] },
+      {
+        id: messages[0]!.id,
+        role: "user",
+        text: QUESTION,
+        sources: [],
+        proposals: [],
+        problems: [],
+      },
       {
         id: messages[3]!.id,
         role: "assistant",
@@ -163,6 +176,8 @@ describe("the recorded best squat run", () => {
           'Exercise search "squat" (3 found)',
           "Best sets of Barbell Squat, 2026-10-01 to 2026-10-31",
         ],
+        proposals: [],
+        problems: [],
       },
     ]);
   });
@@ -472,6 +487,8 @@ describe("a workout note that tries to give the coach orders", () => {
         role: "user",
         text: QUESTION,
         sources: ['Workout "Imported session" on 2021-01-15'],
+        proposals: [],
+        problems: [],
       },
     ]);
   });
@@ -485,5 +502,103 @@ describe("a workout note that tries to give the coach orders", () => {
     expect(requests).toHaveLength(MAX_REQUESTS_PER_QUESTION);
     expect(MAX_REQUESTS_PER_QUESTION).toBeLessThanOrEqual(MAX_TOOL_CALLS_PER_QUESTION);
     expect(outcome.type === "failed" && outcome.failure.kind).toBe("tooManyTools");
+  });
+});
+
+/** The question a recording asks, from its first request. */
+const questionOf = (recording: CoachFixture) => {
+  const first = recorded(recording.exchanges[0]!).input.at(-1)!;
+  return first.type === "message" && first.role === "user" ? first.content[0]!.text : "";
+};
+
+const withoutProposalIds = (input: ResponsesRequest["input"]) =>
+  JSON.parse(JSON.stringify(input).replaceAll(/proposalId\\":\\"[0-9a-f-]+/g, "proposalId"));
+
+/** Replays a recording and gives back what the chat shows and the proposals it stored. */
+const replayProposal = async (name: string) => {
+  const recording = fixture(name);
+  const { transport, requests } = replay(recording);
+  const conversationId = newConversation();
+  const outcome = await run(
+    askCoach({
+      conversationId,
+      question: questionOf(recording),
+      transport,
+      offsetMinutes: OFFSET,
+    }),
+  );
+  requests.forEach((request, index) => {
+    expect(checkResponsesRequest(request)).toEqual([]);
+    // A proposal's ID comes from the database's own ID sequence, which differs here.
+    expect(withoutProposalIds(request.input)).toEqual(
+      withoutProposalIds(recorded(recording.exchanges[index]!).input),
+    );
+  });
+  expect(requests).toHaveLength(recording.exchanges.length);
+  const messages = await run(
+    Effect.flatMap(Effect.service(CoachMessageRepository), (repo) =>
+      repo.conversation(conversationId),
+    ),
+  );
+  const stored = (
+    await run(Effect.flatMap(Effect.service(ProposalRepository), (repo) => repo.list))
+  ).filter((proposal) => proposal.coachMessageId === messages[0]!.id);
+  return { outcome, entry: chatEntries(messages).at(-1)!, stored };
+};
+
+/** The Train tab's row label of each routine a proposal created: its title and exercises. */
+const trainLabels = (id: string) =>
+  run(
+    Effect.gen(function* () {
+      const view = yield* proposalView(ProposalId.make(id));
+      const overview = yield* trainOverview;
+      return view.routineIds.map((routineId) => {
+        const routine = overview.sections
+          .flatMap((section) => section.routines)
+          .find((each) => each.id === routineId)!;
+        return `${routine.title}, ${overview.summaries.get(routineId)}`;
+      });
+    }),
+  );
+
+// scripts/sim/proposals.sh looks for these rows on the Train tab after Apply.
+describe("the proposal stand-ins", () => {
+  it("propose a routine that Apply puts on the Train tab and Undo takes off", async () => {
+    const { outcome, entry, stored } = await replayProposal("coach-propose-routine.json");
+    expect(outcome.type).toBe("answered");
+    expect(stored.map((proposal) => [proposal.kind, proposal.title, proposal.status])).toEqual([
+      ["routine", "Upper body strength", "pending"],
+    ]);
+    expect(entry).toMatchObject({ proposals: [stored[0]!.id], problems: [], sources: [] });
+    await run(applyProposal(stored[0]!.id));
+    expect(await trainLabels(stored[0]!.id)).toEqual([
+      "Upper body strength, Barbell Bench Press - Medium Grip, Bent Over Barbell Row, Standing Military Press",
+    ]);
+    await run(undoProposal(stored[0]!.id));
+    expect(await trainLabels(stored[0]!.id)).toEqual([]);
+  });
+
+  it("propose a three-routine program in a new folder", async () => {
+    const { entry, stored } = await replayProposal("coach-propose-program.json");
+    expect(stored.map((proposal) => [proposal.kind, proposal.title])).toEqual([
+      ["program", "Coach 3-day split"],
+    ]);
+    expect(entry.proposals).toEqual([stored[0]!.id]);
+    await run(applyProposal(stored[0]!.id));
+    expect(await trainLabels(stored[0]!.id)).toEqual([
+      "Day 1 Push, Barbell Bench Press - Medium Grip, Standing Military Press, Dips - Triceps Version",
+      "Day 2 Pull, Barbell Deadlift, Pullups, Seated Cable Rows",
+      "Day 3 Legs, Barbell Squat, Romanian Deadlift, Lying Leg Curls",
+    ]);
+    await run(undoProposal(stored[0]!.id));
+    expect(await trainLabels(stored[0]!.id)).toEqual([]);
+  });
+
+  it("refuse the malformed routine, store nothing and show why", async () => {
+    const { outcome, entry, stored } = await replayProposal("coach-propose-malformed.json");
+    expect(outcome.type).toBe("answered");
+    expect(stored).toEqual([]);
+    expect(entry.proposals).toEqual([]);
+    expect(entry.problems).toEqual([expect.stringContaining('["exercises"][0]["name"]')]);
   });
 });
