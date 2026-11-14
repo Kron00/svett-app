@@ -10,8 +10,8 @@
 # two more sets that copy it, and saves. Then it relaunches svett, opens the
 # routine from the Train tab and starts it, and checks the workout in progress
 # holds the exercise with all three sets filled in. A workout left in progress
-# by an earlier run is discarded first. It fails when a screen, the exercise,
-# a target or a set is missing.
+# by an earlier run is discarded first, which takes svett back to the Train tab.
+# It fails when a screen, the exercise, a target or a set is missing.
 #
 # It also times a cold start to the Train tab's routine list, from the relaunch
 # until the list shows, and saves it as cold-start.txt. The time includes
@@ -121,6 +121,17 @@ expect() {
   agent_device wait "$1" 10000 >/dev/null || fail "$2"
 }
 
+# gone <selector> <what is still there, for the failure message>: waits up to
+# 5 seconds for the element to leave the screen.
+gone() {
+  local tries
+  for tries in 1 2 3 4 5 6 7 8 9 10; do
+    agent_device is visible "$1" >/dev/null 2>&1 || return 0
+    agent_device wait 500 >/dev/null
+  done
+  fail "$2"
+}
+
 # bring <selector> [what is missing]: scrolls until the element is on screen, up
 # or down, because at the largest text size a form is taller than the screen.
 bring() {
@@ -182,14 +193,19 @@ echo "Cold start to the Train tab's routine list: $cold_start ms ($build, includ
   tee "$out/cold-start.txt"
 screenshot train
 
-link "svett://workout"
+link "svett://train/workout"
 expect 'id="workout"' "The workout screen did not open"
 if agent_device wait 'id="workout-title"' 3000 >/dev/null 2>&1; then
   tap 'id="discard-workout"'
   agent_device alert wait 5000 >/dev/null || fail "Discard workout asked nothing"
-  agent_device alert accept
+  # svett's own alert: agent-device's alert accept cannot answer it, so press its button.
+  tap 'label="Discard"'
+  # Discarding goes back to the Train tab, which reloads without the workout.
+  expect 'id="routine-list"' "Discarding the workout did not go back to the Train tab"
+  gone 'id="workout-in-progress-row"' "A workout from an earlier run is still in progress"
+else
+  expect 'label="No workout in progress"' "A workout from an earlier run is still in progress"
 fi
-expect 'label="No workout in progress"' "A workout from an earlier run is still in progress"
 
 link "svett://routines/new?title=$(encode "$routine_name")"
 expect 'id="routine-editor"' "The new routine editor did not open"

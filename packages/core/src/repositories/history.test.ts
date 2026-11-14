@@ -16,6 +16,8 @@ import { HistoryRepository, saveWorkoutAsRoutine } from "./history.ts";
 import { MADE_HERE } from "./origin.ts";
 import { ProgressRepository } from "./progress.ts";
 import { RoutineRepository } from "./routines.ts";
+import { EMPTY_TARGET } from "../routine-plan.ts";
+import { startWorkoutFromRoutine } from "../start-workout.ts";
 
 const DAY = 86_400_000;
 const SQUAT = libraryExerciseId("Barbell_Squat");
@@ -132,6 +134,59 @@ describe("HistoryRepository.page", () => {
     await run(({ activities }) => activities.restore(removed));
     expect(await titles()).toEqual(["Removed", "Kept"]);
     expect(Option.isSome(await run(({ history }) => history.workout(removed)))).toBe(true);
+  });
+});
+
+describe("a workout in progress", () => {
+  it("is not in the list, the calendar, the streak or the counts until it is finished", async () => {
+    const { database, run, log } = open();
+    const legs = await log(1, "Legs", [{ exerciseId: SQUAT, sets: [set(100, 5)] }]);
+    const started = await database.runtime.runPromise(
+      Effect.gen(function* () {
+        const activities = yield* ActivityRepository;
+        const routineId = yield* (yield* RoutineRepository).createRoutine({
+          folderId: null,
+          title: "Pull",
+          notes: "",
+          position: 0,
+          exercises: [
+            {
+              exerciseId: DEADLIFT,
+              supersetGroup: null,
+              restS: null,
+              notes: "",
+              sets: [{ ...EMPTY_TARGET, weightKg: 140, repsMin: 3, repsMax: 3 }],
+            },
+          ],
+        });
+        const id = yield* startWorkoutFromRoutine(routineId);
+        const detail = Option.getOrThrow(yield* activities.inProgress);
+        yield* activities.updateSet(detail.exercises[0]!.sets[0]!.id, { done: true });
+        return id;
+      }),
+    );
+
+    const read = () =>
+      run(({ history, activities }) =>
+        Effect.all({
+          page: history.page({ limit: 10 }),
+          starts: history.starts,
+          workout: history.workout(started),
+          counts: activities.counts,
+        }),
+      );
+    const during = await read();
+    expect(during.page.map((row) => row.activity.title)).toEqual(["Legs"]);
+    expect(during.starts.map((start) => start.id)).toEqual([legs]);
+    expect(during.workout).toEqual(Option.none());
+    expect(during.counts).toEqual({ activities: 1, sets: 1 });
+
+    await run(({ activities }) => activities.update(started, { status: "finished" }));
+    const after = await read();
+    expect(after.page.map((row) => row.activity.title)).toEqual(["Pull", "Legs"]);
+    expect(after.starts.map((start) => start.id)).toEqual([started, legs]);
+    expect(Option.isSome(after.workout)).toBe(true);
+    expect(after.counts).toEqual({ activities: 2, sets: 2 });
   });
 });
 

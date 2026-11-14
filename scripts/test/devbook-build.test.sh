@@ -1429,6 +1429,7 @@ holds() {
     'id="workout-title" label='*) [[ "$screen" == workout && "$1" == "id=\"workout-title\" label=\"$(get workout)\"" ]] ;;
     'id="workout-set-0-'*) [[ "$screen" == workout ]] && set_row workout_sets "$1" ", To do" ;;
     'label="No workout in progress"') [[ "$screen" == workout && ! -s "$s/workout" ]] ;;
+    'label="Discard"') [[ -f "$s/alert" ]] ;;
     'id="routine-editor"' | 'id="add-set-0"' | 'id="save-routine"') [[ "$screen" == editor ]] ;;
     'id="routine-exercise-0"') [[ "$screen" == editor && -s "$s/draft_exercise" ]] ;;
     'id="routine-set-0-'*)
@@ -1482,6 +1483,11 @@ press() {
       fi
       put screen workout ;;
     'id="discard-workout"') touch "$s/alert" ;;
+    # Discard goes back to the Train tab. FAKE_KEEPS_WORKOUT leaves the workout in progress.
+    'label="Discard"')
+      rm -f "$s/alert"
+      [[ -n "${FAKE_KEEPS_WORKOUT:-}" ]] || rm -f "$s/workout" "$s/workout_sets"
+      put screen train ;;
     *) exit 1 ;;
   esac
 }
@@ -1493,7 +1499,7 @@ case "$1" in
         put screen tabs
         [[ -z "${FAKE_FORGETS:-}" ]] || rm -f "$s/saved_name" "$s/saved_exercise" "$s/saved_sets" ;;
       svett://train) put screen train ;;
-      svett://workout) put screen workout ;;
+      svett://train/workout) put screen workout ;;
       svett://routines/new\?title=*)
         put draft_name "$(decode "${3#*title=}")"
         rm -f "$s/draft_exercise" "$s/draft_sets"
@@ -1515,9 +1521,10 @@ case "$1" in
     fi ;;
   press) press ;;
   alert)
+    # svett's own alerts have no button agent-device's alert accept can find.
     case "$2" in
       wait) [[ -f "$s/alert" ]] ;;
-      accept) rm -f "$s/alert" "$s/workout" "$s/workout_sets" ;;
+      *) exit 1 ;;
     esac ;;
   *) exit 1 ;;
 esac
@@ -1540,7 +1547,7 @@ run_routines() {
     >"$output" 2>&1 || routines_status=$?
 }
 
-routine_links=("com.kron00.svett svett://train" "com.kron00.svett svett://workout"
+routine_links=("com.kron00.svett svett://train" "com.kron00.svett svett://train/workout"
   "com.kron00.svett svett://routines/new?title=Proof%20routine%201"
   "com.kron00.svett svett://routines/new/exercises?q=barbell%20squat")
 routine_target="60 kg, 8 to 12 reps"
@@ -1583,9 +1590,12 @@ run_routines --release "$root/routines-release"
 check "routines.sh Release relaunches the installed app without Metro" \
   only_open "com.kron00.svett --relaunch" "${routine_links[@]}" "com.kron00.svett --relaunch" \
   "com.kron00.svett svett://train" "com.kron00.svett svett://train"
-check "routines.sh discards the earlier workout before it builds the routine" \
-  only_calls 'alert|get attrs id="discard' \
-  'get attrs id="discard-workout"' "alert wait 5000" "alert accept"
+check "routines.sh discards the earlier workout by pressing svett's own Discard button" \
+  only_calls 'alert|get attrs (id="discard|label="Discard")' \
+  'get attrs id="discard-workout"' "alert wait 5000" 'get attrs label="Discard"'
+check "routines.sh checks the Train tab no longer shows the discarded workout" \
+  only_calls 'is visible id="workout-in-progress-row"|wait label="No workout' \
+  'is visible id="workout-in-progress-row"'
 check "routines.sh saves the cold start time of a Release build" \
   grep -qF "(Release, including agent-device's calls)" "$root/routines-release/cold-start.txt"
 
@@ -1601,6 +1611,12 @@ check "routines.sh relaunches on the fixture database every time" \
 check "routines.sh says the cold start ran on the fixture database" \
   grep -qF "(Release, on the fixture database, including agent-device's calls)" \
   "$root/routines-fixture/cold-start.txt"
+
+case_name="routines.sh when Discard leaves the earlier workout in progress"
+run_routines FAKE_KEEPS_WORKOUT=1 "$root/routines-keeps"
+check "routines.sh fails when the discarded workout is still in progress" test "$routines_status" -ne 0
+check "routines.sh says the earlier workout is still in progress" \
+  grep -qxF "A workout from an earlier run is still in progress" "$output"
 
 case_name="routines.sh when the routine does not survive the relaunch"
 rm -rf "$root/routines-state"

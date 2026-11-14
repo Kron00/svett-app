@@ -7,6 +7,7 @@ import {
   importOutcome,
   isNothingToImport,
   recordsLabel,
+  skippedLabel,
   type SvettFile,
 } from "@svett/core";
 import { Option, Result } from "effect";
@@ -69,6 +70,16 @@ function Plan({
       <AppText tone="secondary" className="px-gutter">
         A svett export from {formatDay(file.exportedAt)} with {recordsLabel(file.rows)}.
       </AppText>
+      {plan.skipped === 0 ? null : (
+        <AppText
+          variant="subheadline"
+          tone="secondary"
+          className="px-gutter"
+          testID="import-skipped"
+        >
+          {skippedLabel(plan.skipped)}
+        </AppText>
+      )}
       {isNothingToImport(plan) ? (
         <View testID="import-nothing-new">
           <EmptyState

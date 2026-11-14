@@ -67,6 +67,7 @@ export const REFERENCES: ReadonlyArray<{
   { table: "activityExercise", key: "exerciseId", target: "exercise" },
   { table: "routineExercise", key: "exerciseId", target: "exercise" },
   { table: "routine", key: "folderId", target: "folder" },
+  { table: "activity", key: "routineId", target: "routine" },
   { table: "proposal", key: "coachMessageId", target: "coachMessage" },
   { table: "activity", key: "importBatchId", target: "importBatch" },
   { table: "exercise", key: "importBatchId", target: "importBatch" },
@@ -79,6 +80,56 @@ export const CHILDREN: Readonly<Record<TableKey, ReadonlyArray<TableKey>>> = Obj
 
 export const tableKeyOf = (name: string): TableKey | undefined =>
   TABLE_KEYS.find((key) => TABLES[key].name === name);
+
+/**
+ * Fields added after svett files and import journals were first written, with the value the
+ * migration gave every row before them. A row written before a field existed reads with it,
+ * and a row whose field still has that value fingerprints as it did before.
+ */
+const ADDED_FIELDS: Partial<Record<TableKey, Readonly<Record<string, unknown>>>> = {
+  activity: { status: "finished", routineId: null },
+  activitySet: { done: true, targetRepsMin: null, targetRepsMax: null },
+};
+
+/** A raw row with each field added since it was written filled in, ready for its schema. */
+export const withAddedFields = (table: TableKey, raw: unknown): unknown =>
+  ADDED_FIELDS[table] !== undefined && typeof raw === "object" && raw !== null
+    ? { ...ADDED_FIELDS[table], ...raw }
+    : raw;
+
+const withoutAddedFields = (table: TableKey, row: AnyRow): AnyRow => {
+  const added = ADDED_FIELDS[table];
+  if (added === undefined) return row;
+  return Object.fromEntries(
+    Object.entries(row).filter(([field, value]) => !(field in added) || added[field] !== value),
+  ) as AnyRow;
+};
+
+/** A workout still in progress, deleted or not. It is a draft on the phone that started it. */
+const isDraft = (table: TableKey, row: AnyRow | undefined) =>
+  table === "activity" && row !== undefined && row["status"] === "in_progress";
+
+/**
+ * The rows without any workout in progress and the rows below it. A workout in progress is
+ * never exported, imported or synced.
+ */
+export const withoutDrafts = (rows: Snapshot): Snapshot => {
+  const dropped = new Map<TableKey, Set<string>>();
+  const kept = {} as Record<TableKey, ReadonlyArray<AnyRow>>;
+  for (const key of TABLE_KEYS) {
+    const parent = PARENT[key];
+    const gone = new Set<string>();
+    kept[key] = rows[key].filter((row) => {
+      const drop =
+        isDraft(key, row) ||
+        (parent !== null && dropped.get(parent.table)?.has(String(row[parent.key])) === true);
+      if (drop) gone.add(row.id);
+      return !drop;
+    });
+    dropped.set(key, gone);
+  }
+  return kept;
+};
 
 /** What one record is called in a preview. */
 const NOUN: Readonly<Record<TableKey, readonly [one: string, other: string]>> = {
@@ -167,7 +218,7 @@ export const writtenOf = (rows: TableRows): Fingerprint =>
       TABLE_KEYS.flatMap((table) =>
         [...(rows[table] ?? [])]
           .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
-          .map((row) => [TABLES[table].name, row]),
+          .map((row) => [TABLES[table].name, withoutAddedFields(table, row)]),
       ),
     ),
   );
@@ -267,7 +318,8 @@ interface Writes {
 export type PlannedItem =
   | ({ readonly status: "new" } & Writes)
   | ({ readonly status: "changed" } & Writes)
-  | { readonly status: "unchanged"; readonly summary: ItemSummary };
+  | { readonly status: "unchanged"; readonly summary: ItemSummary }
+  | { readonly status: "skipped"; readonly summary: ItemSummary };
 
 export interface ImportPlan {
   readonly items: ReadonlyArray<PlannedItem>;
@@ -278,6 +330,8 @@ export interface ImportPlan {
   /** Records here that the file holds another version of. Import keeps yours unless chosen. */
   readonly changed: ReadonlyArray<ItemSummary>;
   readonly unchanged: number;
+  /** Workouts in progress, in the file or here. Import leaves them as they are. */
+  readonly skipped: number;
 }
 
 const byTimeThenTitle = (a: ItemSummary, b: ItemSummary) =>
@@ -316,6 +370,13 @@ export const planImport = (local: TableRows, incoming: TableRows): ImportPlan =>
   const items: Array<PlannedItem> = [];
   for (const item of groupItems(incoming, lookup).values()) {
     const summary = summarize(item);
+    if (
+      isDraft(item.table, item.rows[item.table]?.find((row) => row.id === item.id)) ||
+      isDraft(item.table, here.get(item.table)?.get(item.id))
+    ) {
+      items.push({ status: "skipped", summary });
+      continue;
+    }
     const writes: Partial<Record<TableKey, Array<AnyRow>>> = {};
     const replaced: Partial<Record<TableKey, Array<AnyRow>>> = {};
     let yours = !isRootSeedOrMissing(item, here);
@@ -348,6 +409,7 @@ export const planImport = (local: TableRows, incoming: TableRows): ImportPlan =>
       .map((item) => item.summary)
       .sort(byTimeThenTitle),
     unchanged: items.filter((item) => item.status === "unchanged").length,
+    skipped: items.filter((item) => item.status === "skipped").length,
   };
 };
 
@@ -379,7 +441,7 @@ export const journalProblem = (change: ImportChange): string | undefined => {
     if (key === undefined) return `it names a table svett does not know, ${name}`;
     const decode = Schema.decodeUnknownExit(Schema.toType(TABLES[key].schema));
     for (const raw of rows) {
-      const row = decode(raw);
+      const row = decode(withAddedFields(key, raw));
       if (Exit.isFailure(row)) return `it keeps a ${name} row that is not valid`;
       const value = row.value as AnyRow;
       if (!written.get(name)?.has(value.id)) {
@@ -399,6 +461,15 @@ export const isNothingToImport = (plan: ImportPlan): boolean =>
 
 export const recordsLabel = (count: number): string =>
   `${count.toLocaleString("en-US")} ${count === 1 ? "record" : "records"}`;
+
+const workoutsLabel = (count: number) =>
+  `${count.toLocaleString("en-US")} ${count === 1 ? "workout" : "workouts"}`;
+
+/** Why an import leaves workouts in progress out, or undefined when it leaves none out. */
+export const skippedLabel = (skipped: number): string | undefined =>
+  skipped === 0
+    ? undefined
+    : `Import skips ${workoutsLabel(skipped)} in progress. A workout in progress stays on the phone that started it until it is finished.`;
 
 /** What an import did, in one or two sentences. */
 export const importOutcome = ({
@@ -497,11 +568,13 @@ export const undoOutcome = ({
   restored,
   left,
   kept = 0,
+  discarded = 0,
 }: {
   readonly removed: number;
   readonly restored: number;
   readonly left: number;
   readonly kept?: number;
+  readonly discarded?: number;
 }): string => {
   const done =
     removed > 0 && restored > 0
@@ -515,5 +588,8 @@ export const undoOutcome = ({
     done,
     kept === 0 ? "" : ` Kept ${recordsLabel(kept)} ${STILL_USED}.`,
     left === 0 ? "" : ` Left ${recordsLabel(left)} you changed after the import.`,
+    discarded === 0
+      ? ""
+      : ` Kept ${workoutsLabel(discarded)} in progress discarded, because another workout is in progress.`,
   ].join("");
 };
