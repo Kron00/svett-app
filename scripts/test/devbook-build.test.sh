@@ -648,6 +648,7 @@ check "checks.sh still screenshots the report when a check did not pass" \
 # is set. The bundled library holds FAKE_LIBRARY, by default "Barbell Squat".
 # A search link lists the exercises whose name starts with its text, ignoring case.
 # A press on the library opens the first result. A press on the form saves it.
+# The detail's "From" row starts below the fold, so only a scroll finds it.
 cat >"$fake/exercises-device" <<EOF
 #!/usr/bin/env bash
 echo "\$*" >>"$root/bound-calls"
@@ -684,8 +685,9 @@ case "\$args" in
   *' wait id="exercise-form" '*) [[ "\$screen" == form ]] ;;
   *' wait id="exercise-detail" '*) [[ "\$screen" == detail ]] ;;
   *' wait id="exercise-name" label='*) [[ "\$screen" == detail && "\$args" == *"label=\"\$(state detail)\" "* ]] ;;
-  *' wait id="exercise-source" label="From, Custom" '*) grep -qxF -- "\$(state detail)" "$root/custom" 2>/dev/null ;;
-  *' wait id="exercise-source" label="From, svett library" '*) names | grep -qxF -- "\$(state detail)" ;;
+  *' is visible id="exercise-source" '* | *' wait id="exercise-source" '*) exit 1 ;;
+  *' --until id="exercise-source" label="From, Custom" '*) grep -qxF -- "\$(state detail)" "$root/custom" 2>/dev/null ;;
+  *' --until id="exercise-source" label="From, svett library" '*) names | grep -qxF -- "\$(state detail)" ;;
   *" is visible "*) [[ "\$screen" == form ]] ;;
   *" press "[0-9]*)
     case \$screen in

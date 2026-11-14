@@ -103,6 +103,14 @@ expect() {
   agent_device wait "$1" 10000 >/dev/null || fail "$2"
 }
 
+# shows <selector> <what is missing>: scrolls down until the element is on screen,
+# because at the largest text size the detail's last rows start below the fold.
+shows() {
+  agent_device is visible "$1" >/dev/null 2>&1 ||
+    agent_device scroll down --until "$1" >/dev/null 2>&1 ||
+    fail "$2"
+}
+
 # Checks the first search result is the exercise named $1, then presses the centre
 # of its row. A row's label is its name, then its muscles and equipment.
 open_first_result() {
@@ -152,7 +160,7 @@ expect 'id="exercise-library"' "The exercise library did not open"
 agent_device wait 1000
 screenshot library-search
 open_first_result "$library_name"
-expect 'id="exercise-source" label="From, svett library"' "\"$library_name\" did not show it is from the library"
+shows 'id="exercise-source" label="From, svett library"' "\"$library_name\" did not show it is from the library"
 screenshot library-detail
 
 link "svett://exercises/new?name=$(encode "$custom_name")&muscle=chest&equipment=cable"
@@ -163,7 +171,7 @@ reveal 'id="save-exercise"'
 press_centre 'id="save-exercise"'
 expect 'id="exercise-detail"' "Saving \"$custom_name\" did not open its detail"
 expect "id=\"exercise-name\" label=\"$custom_name\"" "The saved detail did not show \"$custom_name\""
-expect 'id="exercise-source" label="From, Custom"' "\"$custom_name\" was not saved as a custom exercise"
+shows 'id="exercise-source" label="From, Custom"' "\"$custom_name\" was not saved as a custom exercise"
 screenshot custom-detail
 
 relaunch
@@ -172,7 +180,7 @@ expect 'id="exercise-library"' "The exercise library did not open after the rela
 agent_device wait 1000
 screenshot custom-search-after-relaunch
 open_first_result "$custom_name"
-expect 'id="exercise-source" label="From, Custom"' "\"$custom_name\" was not custom after the relaunch"
+shows 'id="exercise-source" label="From, Custom"' "\"$custom_name\" was not custom after the relaunch"
 screenshot custom-detail-after-relaunch
 
 echo "\"$custom_name\" survived the relaunch. Screenshots are in $out"
