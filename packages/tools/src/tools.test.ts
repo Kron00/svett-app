@@ -482,7 +482,6 @@ const followCursors = async (
   read: (input: Record<string, number>) => Promise<{ json: Record<string, any>; output: string }>,
   names: Cursors,
 ) => {
-  const seen: string[] = [];
   let answers = 0;
   const visit = async (input: Record<string, number>) => {
     answers += 1;
@@ -493,28 +492,29 @@ const followCursors = async (
     expect(json).toHaveProperty(names.nextOuter);
     return json;
   };
-  const take = (group: Record<string, any>) => {
-    for (const item of group[names.items]) seen.push(`${group["index"]}/${item.index}`);
+  const indexes = (group: Record<string, any>): string[] =>
+    group[names.items].map((item: { index: number }) => `${group["index"]}/${item.index}`);
+  /** The rest of one group, from its inner cursor, in a page that holds only that group. */
+  const restOf = async (index: number, next: number | null): Promise<string[]> => {
+    if (next === null) return [];
+    const page = await visit({ [names.outer]: index, [names.inner]: next });
+    expect(page[names.groups]).toHaveLength(1);
+    const [same] = page[names.groups];
+    expect(same.index).toBe(index);
+    return [...indexes(same), ...(await restOf(index, same[names.nextInner]))];
   };
-  let input: Record<string, number> | null = {};
-  while (input !== null) {
+  const pagesFrom = async (input: Record<string, number>): Promise<string[]> => {
     const json = await visit(input);
-    for (const group of json[names.groups]) {
-      take(group);
-      let next = group[names.nextInner] as number | null;
-      while (next !== null) {
-        const page = await visit({ [names.outer]: group.index, [names.inner]: next });
-        expect(page[names.groups]).toHaveLength(1);
-        const [same] = page[names.groups];
-        expect(same.index).toBe(group.index);
-        take(same);
-        next = same[names.nextInner];
-      }
-    }
+    const groups = (json[names.groups] as Array<Record<string, any>>).map(async (group) =>
+      indexes(group).concat(await restOf(group["index"], group[names.nextInner])),
+    );
     const nextOuter = json[names.nextOuter] as number | null;
-    input = nextOuter === null ? null : { [names.outer]: nextOuter };
-  }
-  return seen;
+    return [
+      ...(await Promise.all(groups)).flat(),
+      ...(nextOuter === null ? [] : await pagesFrom({ [names.outer]: nextOuter })),
+    ];
+  };
+  return pagesFrom({});
 };
 
 const everyIndex = (groups: number, items: number) =>
@@ -563,8 +563,8 @@ describe("routines too dense for one answer", () => {
   const list = (input: Record<string, number>) => callOn(dense.runtime, "list_routines", input);
 
   it("fills the first answer within the limit and keeps the totals and cursors", async () => {
-    for (const input of [{}, { routineStart: 0 }]) {
-      const { json, output } = await list(input);
+    const answers = await Promise.all([list({}), list({ routineStart: 0 })]);
+    for (const { json, output } of answers) {
       expect(json["error"]).toBeUndefined();
       expect(output.length).toBeLessThanOrEqual(MAX_TOOL_OUTPUT);
       expect(json).toMatchObject({ totalRoutines: ROUTINES, truncated: true });
@@ -639,7 +639,7 @@ describe("a workout too dense for one answer", () => {
               setType: "failure" as const,
               weightKg: 102.25,
               reps: 10,
-              durationS: 3_600,
+              durationS: DurationSeconds.make(3_600),
               distanceM: 12_345.6,
               rpe: 9.5,
             })),
