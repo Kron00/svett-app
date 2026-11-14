@@ -688,7 +688,7 @@ chatgpt_sh() {
 
 stub() { echo "--launch-args=-svettChatGPTStub --launch-args=$1"; }
 chatgpt_link="com.kron00.svett svett://chatgpt"
-scenarios=(signedOut noPlanUsage renews lapsed badSignature wrongAudience expiredToken revokeFails signedOut)
+scenarios=(signedOut noPlanUsage renews lapsed badSignature wrongAudience expiredToken revokeFails twoAccounts signedOut)
 
 # stand_in_opens <relaunch> <front> lists the opens of a run through every scenario.
 stand_in_opens() {
@@ -713,11 +713,11 @@ check "chatgpt.sh shoots at the largest text size, then restores the default" \
   "settings text-size accessibility-extra-extra-extra-large" "settings text-size large"
 check "chatgpt.sh presses screen content only at an element's centre, which agent-device does not refuse on iOS 27" \
   test "$(grep -E -- "^$bound_prefix press " "$root/bound-calls" | grep -cvxF -- "$bound_prefix press 80 320")" -eq 0
-check "chatgpt.sh signs in, signs out, allows plan usage, signs out unconfirmed and signs in with Safari, in that order" \
+check "chatgpt.sh signs in, signs out, allows plan usage, signs out unconfirmed, returns to an earlier account and signs in with Safari, in that order" \
   only_calls "get attrs" \
   'get attrs id="chatgpt-continue"' 'get attrs id="chatgpt-sign-out"' 'get attrs id="chatgpt-allow"' \
   'get attrs id="chatgpt-continue"' 'get attrs id="chatgpt-continue"' 'get attrs id="chatgpt-continue"' \
-  'get attrs id="chatgpt-sign-out"' 'get attrs id="chatgpt-safari"'
+  'get attrs id="chatgpt-sign-out"' 'get attrs id="chatgpt-account-0"' 'get attrs id="chatgpt-safari"'
 check "chatgpt.sh checks each refusal names its reason" \
   only_calls "wait text .*(match|another app|expired)" \
   "wait text does not match OpenAI's published keys 15000" "wait text was made for another app 15000" \
@@ -729,8 +729,9 @@ check "chatgpt.sh screenshots each state" \
   "screenshot $root/chatgpt/05-plan-usage-allowed.png" "screenshot $root/chatgpt/06-renewed.png" \
   "screenshot $root/chatgpt/07-lapsed.png" "screenshot $root/chatgpt/08-refused-badSignature.png" \
   "screenshot $root/chatgpt/09-refused-wrongAudience.png" "screenshot $root/chatgpt/10-refused-expiredToken.png" \
-  "screenshot $root/chatgpt/11-revocation-unconfirmed.png" "screenshot $root/chatgpt/12-safari.png" \
-  "screenshot $root/chatgpt/13-safari-signed-in.png"
+  "screenshot $root/chatgpt/11-revocation-unconfirmed.png" "screenshot $root/chatgpt/12-two-accounts.png" \
+  "screenshot $root/chatgpt/13-returned-to-earlier-account.png" "screenshot $root/chatgpt/14-safari.png" \
+  "screenshot $root/chatgpt/15-safari-signed-in.png"
 check "chatgpt.sh with SVETT_DEVICE_CMD never calls simctl" test ! -e "$root/simctl-calls"
 
 case_name="chatgpt.sh Release with SVETT_DEVICE_CMD"

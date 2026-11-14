@@ -10,7 +10,8 @@
 # through svett://chatgpt and walks each state against the stand-in: sign in through the
 # sheet, sign out keeping the account, allow plan usage, a renewed and a lapsed sign-in,
 # identity tokens refused for a bad signature, a wrong audience and a past expiry, an
-# unconfirmed revocation, and a sign-in through Safari. It fails when a state or message
+# unconfirmed revocation, a return to the earlier of two saved accounts, and a sign-in
+# through Safari. It fails when a state or message
 # it expects does not show.
 #
 # --live skips all that and signs in with a real ChatGPT account, which a person types
@@ -213,6 +214,16 @@ tap 'id="chatgpt-sign-out"'
 expect "the unconfirmed revocation" text "did not confirm"
 expect "the signed-out state" 'id="chatgpt-state-signedOut"'
 screenshot revocation-unconfirmed
+
+# The stand-in's account was used before another one, so it is the earlier account.
+open_chatgpt twoAccounts
+expect "the earlier account, offered on its own" 'id="chatgpt-account-0"'
+screenshot two-accounts
+tap 'id="chatgpt-account-0"'
+allow_sheet
+expect "a signed-in account" 'id="chatgpt-state-signedIn"'
+expect "the earlier account" text "you@example.com"
+screenshot returned-to-earlier-account
 
 # Safari answers the listener while svett waits in the background. Coming back can
 # reload a Debug build, so the link opens the settings again either way.

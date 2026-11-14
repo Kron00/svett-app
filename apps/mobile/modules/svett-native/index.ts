@@ -12,12 +12,18 @@ interface SvettNative {
   chatGPTStatus(): Promise<unknown>;
   /** Refreshes the sign-in when its access token is about to expire, then reports the status. */
   renewChatGPT(): Promise<unknown>;
+  /** `account` is a saved account's id from the status, or null for the one used last. */
   signInWithChatGPT(
     route: "sheet" | "safari",
     choice: "returning" | "anotherAccount" | "allowPlanUsage",
+    account: string | null,
   ): Promise<unknown>;
-  /** Returns a problem code when the address cannot finish the sign-in, or null when it was taken. */
-  pasteSignInAddress(address: string): Promise<string | null>;
+  /**
+   * Swift reads the address Safari could not open from the pasteboard and finishes the sign-in
+   * with it, so the address never reaches JavaScript. Returns a problem code when it cannot, or
+   * null when it was taken.
+   */
+  pasteSignInAddress(): Promise<string | null>;
   cancelSignIn(): Promise<void>;
   signOutOfChatGPT(): Promise<unknown>;
 }

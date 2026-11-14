@@ -14,14 +14,24 @@ const SignedIn = Schema.Struct({
   expiresAt: Schema.Number,
   /** When a refresh last replaced the tokens. */
   renewedAt: Schema.optionalKey(Schema.Number),
+  /** The Keychain refused the last write, so svett holds the sign-in in memory only. */
+  unsaved: Schema.optionalKey(Schema.Boolean),
 });
+
+/** A ChatGPT account this iPhone has signed in to. `id` is how a sign-in returns to it. */
+const SavedAccount = Schema.Struct({ id: Schema.String, email: Schema.optionalKey(Schema.String) });
+export type SavedAccount = typeof SavedAccount.Type;
 
 const SignedOut = Schema.Struct({
   state: Schema.Literal("signedOut"),
   /** The account the next sign-in returns to, when this iPhone has signed in before. */
   returning: Schema.optionalKey(Schema.Struct({ email: Schema.optionalKey(Schema.String) })),
+  /** Every saved account, the one used last first. */
+  accounts: Schema.Array(SavedAccount),
   /** Why the last sign-in ended, when ChatGPT ended it rather than the user. */
   ended: Schema.optionalKey(Schema.Literals(["lapsed", "clientRefused"])),
+  /** The Keychain could not be read, or refused the last write, so it may still hold tokens. */
+  unsaved: Schema.optionalKey(Schema.Boolean),
 });
 
 export const ChatGPTStatus = Schema.Union([SignedIn, SignedOut]);
@@ -40,7 +50,13 @@ const RenewResult = Schema.Struct({
 });
 export type RenewResult = typeof RenewResult.Type;
 
-const SignOutResult = Schema.Struct({ revoked: Schema.Boolean });
+const SignOutResult = Schema.Struct({
+  /** OpenAI confirmed it ended the sign-in. */
+  revoked: Schema.Boolean,
+  /** The tokens are gone from the Keychain. */
+  cleared: Schema.Boolean,
+});
+export type SignOutResult = typeof SignOutResult.Type;
 
 export const decodeChatGPTStatus = Schema.decodeUnknownSync(ChatGPTStatus);
 export const decodeSignInResult = Schema.decodeUnknownSync(SignInResult);
@@ -69,6 +85,11 @@ const SIGN_IN_PROBLEMS: Readonly<Record<string, string>> = {
   otherClient: "ChatGPT answered for another app's registration. Try again.",
   otherAccount:
     "That is not the ChatGPT account this iPhone signed in with before. To use it, choose Use another ChatGPT account.",
+  nothingPasted:
+    "There is no address to paste. In Safari, copy the whole address that starts with http://127.0.0.1, then come back and paste it.",
+  unknownAccount: "That ChatGPT account is no longer saved on this iPhone. Choose another one.",
+  storage:
+    "svett could not read its saved ChatGPT sign-in from this iPhone's Keychain. Close and reopen svett, then try again.",
 };
 
 // Each finishes "because the identity token ...".
@@ -111,10 +132,30 @@ export function renewProblemMessage(code: string | undefined): string | undefine
   }
 }
 
-export function signOutMessage(revoked: boolean): string | undefined {
+export function signOutMessage({ revoked, cleared }: SignOutResult): string | undefined {
+  if (!cleared) {
+    return revoked
+      ? "OpenAI ended the sign-in, but svett could not delete it from this iPhone's Keychain. svett tries again while it is open. The tokens no longer work."
+      : "svett could not delete the sign-in from this iPhone's Keychain, and OpenAI did not confirm it ended it. svett tries again while it is open. To be sure, remove svett in ChatGPT's settings.";
+  }
   return revoked
     ? undefined
     : "Signed out on this iPhone, but OpenAI did not confirm it ended the sign-in. To be sure, remove svett in ChatGPT's settings.";
+}
+
+/**
+ * A distinct label for each saved account, in the same order. Two accounts can share an email
+ * address, and an account may have none.
+ */
+export function accountLabels(accounts: ReadonlyArray<SavedAccount>): ReadonlyArray<string> {
+  const names = accounts.map((account) => account.email ?? "ChatGPT account");
+  const seen = new Map<string, number>();
+  return names.map((name) => {
+    const count = (seen.get(name) ?? 0) + 1;
+    seen.set(name, count);
+    const shared = names.filter((other) => other === name).length > 1;
+    return shared ? `${name} (${count})` : name;
+  });
 }
 
 export type ChatGPTAction =
@@ -128,7 +169,16 @@ export interface ChatGPTView {
   readonly rows: ReadonlyArray<{ readonly title: string; readonly value: string }>;
   readonly notice: { readonly tone: "warning" | "secondary"; readonly text: string } | undefined;
   readonly actions: ReadonlyArray<ChatGPTAction>;
+  /** The saved account that Continue with ChatGPT returns to, when there is one. */
+  readonly continueAs: string | undefined;
+  /** The other saved accounts, each offered as its own way back. */
+  readonly otherAccounts: ReadonlyArray<{ readonly id: string; readonly label: string }>;
 }
+
+const UNSAVED_SIGNED_IN =
+  "svett could not save your ChatGPT sign-in to this iPhone's Keychain. It keeps it while svett is open and tries again. If svett closes first, you may have to sign in again.";
+const UNSAVED_SIGNED_OUT =
+  "svett could not update its saved ChatGPT sign-in in this iPhone's Keychain. It tries again while svett is open.";
 
 /** What the ChatGPT settings screen shows for a status. */
 export function describeChatGPT(
@@ -136,27 +186,38 @@ export function describeChatGPT(
   formatTime: (ms: number) => string,
 ): ChatGPTView {
   if (status.state === "signedOut") {
-    const returning = status.returning;
+    const [last, ...others] = status.accounts;
+    const labels = accountLabels(status.accounts);
     return {
       rows: [
         { title: "ChatGPT", value: "Not signed in" },
-        ...(returning?.email === undefined
-          ? []
-          : [{ title: "Last account", value: returning.email }]),
+        ...(last === undefined ? [] : [{ title: "Last account", value: labels[0] ?? "" }]),
       ],
-      notice: endedNotice(status.ended),
-      actions: returning === undefined ? ["continue"] : ["continue", "anotherAccount"],
+      notice:
+        status.unsaved === true
+          ? { tone: "warning", text: UNSAVED_SIGNED_OUT }
+          : endedNotice(status.ended),
+      actions: last === undefined ? ["continue"] : ["continue", "anotherAccount"],
+      continueAs: last?.id,
+      otherAccounts: others.map((account, index) => ({
+        id: account.id,
+        label: labels[index + 1] ?? "",
+      })),
     };
   }
+  const unsaved =
+    status.unsaved === true ? { tone: "warning" as const, text: UNSAVED_SIGNED_IN } : undefined;
   const account = { title: "Account", value: status.email ?? "Signed in" };
   if (!status.planUsage) {
     return {
       rows: [account, { title: "Plan usage", value: "Not allowed" }],
-      notice: {
+      notice: unsaved ?? {
         tone: "warning",
         text: `ChatGPT did not let svett use your plan, so the coach is off. OpenAI lists ${PLAN_USAGE_PLANS} as plans that allow it. A Free plan does not.`,
       },
       actions: ["allowPlanUsage", "signOut"],
+      continueAs: undefined,
+      otherAccounts: [],
     };
   }
   return {
@@ -171,11 +232,13 @@ export function describeChatGPT(
             : `Renewed at ${formatTime(status.renewedAt)}`,
       },
     ],
-    notice: {
+    notice: unsaved ?? {
       tone: "secondary",
       text: "The coach counts toward your ChatGPT plan's limits, the same as using ChatGPT. Manage usage shows and caps what svett may use.",
     },
     actions: ["manageUsage", "signOut"],
+    continueAs: undefined,
+    otherAccounts: [],
   };
 }
 

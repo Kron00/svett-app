@@ -74,11 +74,11 @@ export function ChatGPTScreen() {
     );
   }, []);
 
-  const signIn = async (by: SignInRoute, choice: SignInChoice) => {
+  const signIn = async (by: SignInRoute, choice: SignInChoice, account?: string) => {
     setMessage(undefined);
     setRoute(by);
     try {
-      const result = await signInWithChatGPT(by, choice);
+      const result = await signInWithChatGPT(by, choice, account);
       if (result.status === "signedIn") setStatus(result.account);
       if (result.status === "failed") {
         setMessage({ tone: "destructive", text: signInProblemMessage(result.problem) });
@@ -104,10 +104,13 @@ export function ChatGPTScreen() {
     }
   };
 
+  const view = status === undefined ? undefined : describeChatGPT(status, formatTime);
+  const safari = view === undefined ? undefined : safariChoice(view.actions);
+
   const press = (action: ChatGPTAction) => {
     switch (action) {
       case "continue":
-        return void signIn("sheet", "returning");
+        return void signIn("sheet", "returning", view?.continueAs);
       case "anotherAccount":
         return void signIn("sheet", "anotherAccount");
       case "allowPlanUsage":
@@ -118,9 +121,6 @@ export function ChatGPTScreen() {
         return void signOut();
     }
   };
-
-  const view = status === undefined ? undefined : describeChatGPT(status, formatTime);
-  const safari = view === undefined ? undefined : safariChoice(view.actions);
 
   return (
     <ScrollView
@@ -161,7 +161,7 @@ export function ChatGPTScreen() {
         <View className="gap-3 px-gutter">
           <AppText tone="secondary">
             {route === "safari"
-              ? "Sign in in Safari, then come back. If Safari cannot open the last page, copy its address and paste it here."
+              ? "Sign in in Safari, then come back. If Safari cannot open the last page, copy its address, come back and paste it here."
               : "Signing in…"}
           </AppText>
           {route === "safari" ? <SafariPaste paste={pasteSignInAddress} /> : null}
@@ -181,6 +181,15 @@ export function ChatGPTScreen() {
           {view.actions.map((action) => (
             <Button key={action} {...ACTIONS[action]} onPress={() => press(action)} />
           ))}
+          {view.otherAccounts.map((account, index) => (
+            <Button
+              key={account.id}
+              label={`Continue as ${account.label}`}
+              variant="secondary"
+              testID={`chatgpt-account-${index}`}
+              onPress={() => void signIn("sheet", "returning", account.id)}
+            />
+          ))}
           {safari === undefined ? null : (
             <View className="gap-3 pt-4">
               <AppText variant="footnote" tone="secondary">
@@ -191,7 +200,13 @@ export function ChatGPTScreen() {
                 label="Sign in with Safari"
                 variant="secondary"
                 testID="chatgpt-safari"
-                onPress={() => void signIn("safari", safari)}
+                onPress={() =>
+                  void signIn(
+                    "safari",
+                    safari,
+                    safari === "returning" ? view.continueAs : undefined,
+                  )
+                }
               />
             </View>
           )}

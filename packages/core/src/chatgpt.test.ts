@@ -2,6 +2,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   type ChatGPTStatus,
+  accountLabels,
   decodeChatGPTStatus,
   decodeRenewResult,
   decodeSignInResult,
@@ -31,15 +32,27 @@ describe("what Swift sends", () => {
     });
   });
 
-  it("reads a signed-out status with the account the next sign-in returns to", () => {
-    const status = { state: "signedOut", returning: { email: "you@example.com" }, ended: "lapsed" };
+  it("reads a signed-out status with every saved account by its id", () => {
+    const status = {
+      state: "signedOut",
+      accounts: [{ id: "oaiapp_b", email: "b@example.com" }, { id: "oaiapp_a" }],
+      returning: { email: "b@example.com" },
+      ended: "lapsed",
+      unsaved: true,
+    };
     expect(decodeChatGPTStatus(status)).toEqual(status);
-    expect(decodeChatGPTStatus({ state: "signedOut" })).toEqual({ state: "signedOut" });
+    expect(decodeChatGPTStatus({ state: "signedOut", accounts: [] })).toEqual({
+      state: "signedOut",
+      accounts: [],
+    });
   });
 
   it("refuses a status it does not know", () => {
     expect(() => decodeChatGPTStatus({ state: "signedIn" })).toThrow();
-    expect(() => decodeChatGPTStatus({ state: "signedOut", ended: "forgotten" })).toThrow();
+    expect(() =>
+      decodeChatGPTStatus({ state: "signedOut", accounts: [], ended: "forgotten" }),
+    ).toThrow();
+    expect(() => decodeChatGPTStatus({ state: "signedOut" })).toThrow();
   });
 
   it("reads each sign-in result", () => {
@@ -59,7 +72,11 @@ describe("what Swift sends", () => {
       account: signedIn,
       problem: "unreachable",
     });
-    expect(decodeSignOutResult({ revoked: false })).toEqual({ revoked: false });
+    expect(decodeSignOutResult({ revoked: false, cleared: true })).toEqual({
+      revoked: false,
+      cleared: true,
+    });
+    expect(() => decodeSignOutResult({ revoked: true })).toThrow();
   });
 });
 
@@ -88,6 +105,9 @@ describe("signInProblemMessage", () => {
       "incompleteRegistration",
       "otherClient",
       "otherAccount",
+      "nothingPasted",
+      "unknownAccount",
+      "storage",
     ];
     const messages = codes.map(signInProblemMessage);
     expect(new Set(messages).size).toBe(codes.length);
@@ -110,37 +130,87 @@ describe("renewProblemMessage", () => {
 
 describe("signOutMessage", () => {
   it("says so when OpenAI did not confirm the revocation", () => {
-    expect(signOutMessage(true)).toBeUndefined();
-    expect(signOutMessage(false)).toContain("remove svett in ChatGPT's settings");
+    expect(signOutMessage({ revoked: true, cleared: true })).toBeUndefined();
+    expect(signOutMessage({ revoked: false, cleared: true })).toContain(
+      "remove svett in ChatGPT's settings",
+    );
+  });
+
+  it("says so when the Keychain kept the tokens", () => {
+    expect(signOutMessage({ revoked: true, cleared: false })).toContain(
+      "could not delete it from this iPhone's Keychain",
+    );
+    const neither = signOutMessage({ revoked: false, cleared: false });
+    expect(neither).toContain("could not delete the sign-in");
+    expect(neither).toContain("remove svett in ChatGPT's settings");
   });
 });
 
 describe("describeChatGPT", () => {
   it("offers the first sign-in", () => {
-    expect(describeChatGPT({ state: "signedOut" }, time)).toEqual({
+    expect(describeChatGPT({ state: "signedOut", accounts: [] }, time)).toEqual({
       rows: [{ title: "ChatGPT", value: "Not signed in" }],
       notice: undefined,
       actions: ["continue"],
+      continueAs: undefined,
+      otherAccounts: [],
     });
   });
 
   it("names the account a returning sign-in uses, and offers another", () => {
     const view = describeChatGPT(
-      { state: "signedOut", returning: { email: "you@example.com" } },
+      { state: "signedOut", accounts: [{ id: "oaiapp_a", email: "you@example.com" }] },
       time,
     );
     expect(view.rows).toContainEqual({ title: "Last account", value: "you@example.com" });
     expect(view.actions).toEqual(["continue", "anotherAccount"]);
+    expect(view.continueAs).toBe("oaiapp_a");
+    expect(view.otherAccounts).toEqual([]);
+  });
+
+  it("offers a way back to each earlier account by its id", () => {
+    const view = describeChatGPT(
+      {
+        state: "signedOut",
+        accounts: [
+          { id: "oaiapp_b", email: "b@example.com" },
+          { id: "oaiapp_a", email: "you@example.com" },
+          { id: "oaiapp_old" },
+        ],
+      },
+      time,
+    );
+    expect(view.continueAs).toBe("oaiapp_b");
+    expect(view.otherAccounts).toEqual([
+      { id: "oaiapp_a", label: "you@example.com" },
+      { id: "oaiapp_old", label: "ChatGPT account" },
+    ]);
+  });
+
+  it("says when the Keychain did not take the last change", () => {
+    const out = describeChatGPT({ state: "signedOut", accounts: [], unsaved: true }, time);
+    expect(out.notice?.tone).toBe("warning");
+    expect(out.notice?.text).toContain("Keychain");
+    const signedInUnsaved = describeChatGPT({ ...signedIn, unsaved: true }, time);
+    expect(signedInUnsaved.notice?.tone).toBe("warning");
+    expect(signedInUnsaved.notice?.text).toContain("you may have to sign in again");
   });
 
   it("says when the sign-in lapsed or ChatGPT dropped the registration", () => {
     const lapsed = describeChatGPT(
-      { state: "signedOut", returning: { email: "you@example.com" }, ended: "lapsed" },
+      {
+        state: "signedOut",
+        accounts: [{ id: "oaiapp_a", email: "you@example.com" }],
+        ended: "lapsed",
+      },
       time,
     );
     expect(lapsed.notice?.tone).toBe("warning");
     expect(lapsed.notice?.text).toContain("30 days");
-    const refused = describeChatGPT({ state: "signedOut", ended: "clientRefused" }, time);
+    const refused = describeChatGPT(
+      { state: "signedOut", accounts: [], ended: "clientRefused" },
+      time,
+    );
     expect(refused.notice?.text).toContain("register svett again");
     expect(refused.actions).toEqual(["continue"]);
   });
@@ -166,5 +236,18 @@ describe("describeChatGPT", () => {
       text: "ChatGPT did not let svett use your plan, so the coach is off. OpenAI lists Go, Plus, Pro and Business as plans that allow it. A Free plan does not.",
     });
     expect(view.actions).toEqual(["allowPlanUsage", "signOut"]);
+  });
+});
+
+describe("accountLabels", () => {
+  it("tells apart accounts that share an email address or have none", () => {
+    expect(
+      accountLabels([
+        { id: "1", email: "you@example.com" },
+        { id: "2", email: "you@example.com" },
+        { id: "3" },
+        { id: "4", email: "b@example.com" },
+      ]),
+    ).toEqual(["you@example.com (1)", "you@example.com (2)", "ChatGPT account", "b@example.com"]);
   });
 });
