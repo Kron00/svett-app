@@ -36,7 +36,7 @@ import {
 import { Clock, Context, Data, Effect, Layer, Option, Schema } from "effect";
 import type { SqlError } from "effect/sql/SqlError";
 
-import { socialIdsOf, UsernameRequired } from "./social-rows.ts";
+import { UsernameRequired } from "./social-rows.ts";
 
 /** The post is not there, or the privacy rule does not let the account see it. */
 export class PostNotFound extends Data.TaggedError("PostNotFound")<{}> {}
@@ -94,7 +94,7 @@ const decodeAll = <A>(
 ): Array<A> => rows.flatMap(({ data }) => Option.toArray(decode(data)));
 
 // A cursor names a post or an inbox item and nothing more. A feed cursor names the last post
-// rather than its start time, as the time may be hidden.
+// by its social ID alone, so no time leaves the server in it.
 const FeedCursor = Schema.Struct({ id: Schema.String });
 const InboxCursor = Schema.Struct({ at: Schema.Int, key: Schema.String });
 
@@ -115,6 +115,34 @@ const decodeCursor =
 const readFeedCursor = decodeCursor(FeedCursor);
 const readInboxCursor = decodeCursor(InboxCursor);
 
+/** Rows read at a time while skipping ones the viewer may not see. */
+const SCAN = 100;
+
+/**
+ * The first `want` rows that `toItem` turns into an item, each with its item. `fetch` reads up
+ * to SCAN rows in order after the row it is given, so rows the viewer may not see never
+ * shorten a page or end it early.
+ */
+const firstVisible = <Row, Item, E>(
+  fetch: (after: Row | undefined) => Effect.Effect<ReadonlyArray<Row>, E>,
+  toItem: (row: Row) => Item | undefined,
+  want: number,
+) =>
+  Effect.gen(function* () {
+    const kept: Array<{ readonly row: Row; readonly item: Item }> = [];
+    let after: Row | undefined;
+    while (true) {
+      const rows = yield* fetch(after);
+      for (const row of rows) {
+        const item = toItem(row);
+        if (item !== undefined) kept.push({ row, item });
+        if (kept.length === want) return kept;
+      }
+      if (rows.length < SCAN) return kept;
+      after = rows.at(-1);
+    }
+  });
+
 /** Where `viewer` stands to an account they follow, or to themself. */
 const relation = (viewer: AccountId, owner: string, follow: FollowState): Relation => ({
   viewer,
@@ -122,6 +150,14 @@ const relation = (viewer: AccountId, owner: string, follow: FollowState): Relati
   follow,
   blocked: false,
 });
+
+type FeedAnchor = { readonly sharedMs: string; readonly socialId: string };
+
+type FeedRow = FeedAnchor & {
+  readonly ownerId: string;
+  readonly username: string;
+  readonly data: unknown;
+};
 
 type InboxRow = {
   readonly kind: InboxItem["kind"];
@@ -358,24 +394,39 @@ export class FeedRows extends Context.Service<FeedRows, FeedRowsShape>()("svett/
           username === undefined ? Effect.fail(new UsernameRequired()) : Effect.succeed(username),
         );
 
-      const feedAfter = (cursor: string | undefined) =>
+      /**
+       * The posts `viewer`'s feed holds: their own and those of the accounts they follow, as
+       * far as the privacy rule's audiences reach, each from the time it reached the feed.
+       */
+      const feedScope = (viewer: AccountId) => sql`
+        from activity_social s
+        join account_row r on r.account_id = s.account_id and r.table_name = 'activity'
+          and r.row_id = s.activity_id
+        join profile p on p.account_id = s.account_id
+        left join follow f on f.follower_id = ${viewer} and f.followee_id = s.account_id
+          and f.state = 'following'
+        where s.shared_ms is not null and r.deleted_at is null
+          and coalesce(r.data->>'status', '') <> 'in_progress'
+          and ((s.account_id = ${viewer}
+              and r.data->>'audience' in ${sql.in(visibleAudiences(relation(viewer, viewer, "none")))})
+            or (f.follower_id is not null
+              and r.data->>'audience' in ${sql.in(visibleAudiences(relation(viewer, "", "following")))}))
+      `;
+
+      /**
+       * Where the page after `cursor` starts. The post it names must still be in the viewer's
+       * feed, and one that is not is refused just as one that never was.
+       */
+      const feedAfter = (viewer: AccountId, cursor: string | undefined) =>
         Effect.gen(function* () {
           if (cursor === undefined) return undefined;
-          const after = yield* readFeedCursor(cursor);
-          const [row] = yield* sql<{
-            readonly startedAt: string;
-            readonly ownerId: string;
-            readonly rowId: string;
-          }>`
-            select (r.data->>'startedAt')::bigint as "startedAt", r.account_id as "ownerId",
-              r.row_id as "rowId"
-            from activity_social s
-            join account_row r on r.account_id = s.account_id and r.table_name = 'activity'
-              and r.row_id = s.activity_id
-            where s.social_id = ${after.id}
+          const { id } = yield* readFeedCursor(cursor);
+          const [anchor] = yield* sql<FeedAnchor>`
+            select s.shared_ms as "sharedMs", s.social_id as "socialId"
+            ${feedScope(viewer)} and s.social_id = ${id}
           `;
-          if (row === undefined) return yield* new InvalidCursor();
-          return row;
+          if (anchor === undefined) return yield* new InvalidCursor();
+          return anchor;
         });
 
       const inboxRows = (
@@ -431,71 +482,54 @@ export class FeedRows extends Context.Service<FeedRows, FeedRowsShape>()("svett/
         feed: (viewer, cursor) =>
           Effect.gen(function* () {
             yield* needUsername(viewer);
-            const after = yield* feedAfter(cursor);
-            const own = visibleAudiences(relation(viewer, viewer, "none"));
-            const followed = visibleAudiences(relation(viewer, "", "following"));
-            const rows = yield* sql<{
-              readonly ownerId: string;
-              readonly username: string;
-              readonly rowId: string;
-              readonly data: unknown;
-            }>`
-              select r.account_id as "ownerId", p.username, r.row_id as "rowId", r.data
-              from account_row r
-              join profile p on p.account_id = r.account_id
-              left join follow f on f.follower_id = ${viewer} and f.followee_id = r.account_id
-                and f.state = 'following'
-              where r.table_name = 'activity' and r.deleted_at is null
-                and coalesce(r.data->>'status', '') <> 'in_progress'
-                and ((r.account_id = ${viewer} and r.data->>'audience' in ${sql.in(own)})
-                  or (f.follower_id is not null and r.data->>'audience' in ${sql.in(followed)}))
-                ${
-                  after === undefined
-                    ? sql``
-                    : sql`and ((r.data->>'startedAt')::bigint, r.account_id, r.row_id)
-                        < (${after.startedAt}::bigint, ${after.ownerId}, ${after.rowId})`
-                }
-              order by (r.data->>'startedAt')::bigint desc, r.account_id desc, r.row_id desc
-              limit ${FEED_PAGE + 1}
-            `;
-            const page = rows.flatMap((row, index) => {
-              const activity =
-                index < FEED_PAGE && isPublished(row.data)
+            const start = yield* feedAfter(viewer, cursor);
+            // Newest first by when each post reached the feed, never by when it started, as
+            // its start time may be hidden. The social ID breaks a tie.
+            const shown = yield* firstVisible(
+              (after: FeedRow | undefined) => {
+                const before = after ?? start;
+                return sql<FeedRow>`
+                  select s.account_id as "ownerId", p.username, s.social_id as "socialId",
+                    s.shared_ms as "sharedMs", r.data
+                  ${feedScope(viewer)}
+                  ${
+                    before === undefined
+                      ? sql``
+                      : sql`and (s.shared_ms, s.social_id)
+                          < (${before.sharedMs}::bigint, ${before.socialId})`
+                  }
+                  order by s.shared_ms desc, s.social_id desc
+                  limit ${SCAN}
+                `;
+              },
+              (row) => {
+                const activity = isPublished(row.data)
                   ? Option.getOrUndefined(decodeActivity(row.data))
                   : undefined;
-              return activity === undefined ? [] : [{ ...row, activity }];
-            });
-            const ids = new Map<string, SocialActivityId>();
-            for (const owner of new Set(page.map((row) => row.ownerId))) {
-              const minted = yield* socialIdsOf(
-                sql,
-                owner,
-                page.filter((row) => row.ownerId === owner).map((row) => row.rowId),
-              );
-              for (const [activityId, id] of minted) ids.set(`${owner}/${activityId}`, id);
-            }
-            const posts = yield* Effect.forEach(page, (row) => {
-              const id = ids.get(`${row.ownerId}/${row.rowId}`);
-              return id === undefined
-                ? Effect.succeed(undefined)
-                : postFor(
-                    relation(viewer, row.ownerId, row.ownerId === viewer ? "none" : "following"),
-                    row.username,
-                    row.activity,
-                    id,
-                  );
-            });
-            const last = rows[FEED_PAGE - 1];
-            const lastId =
-              last === undefined
-                ? undefined
-                : (ids.get(`${last.ownerId}/${last.rowId}`) ??
-                  (yield* socialIdsOf(sql, last.ownerId, [last.rowId])).get(last.rowId));
+                if (activity === undefined) return undefined;
+                const seen = relation(
+                  viewer,
+                  row.ownerId,
+                  row.ownerId === viewer ? "none" : "following",
+                );
+                const visible = privacy({
+                  ...seen,
+                  audience: activity.audience,
+                  hiddenFields: activity.hiddenFields,
+                }).visible;
+                return visible ? { seen, activity } : undefined;
+              },
+              FEED_PAGE + 1,
+            );
+            const posts = yield* Effect.forEach(shown.slice(0, FEED_PAGE), ({ row, item }) =>
+              postFor(item.seen, row.username, item.activity, SocialActivityId.make(row.socialId)),
+            );
+            const last = shown[FEED_PAGE - 1];
             return {
               posts: posts.filter((post) => post !== undefined),
               next:
-                rows.length > FEED_PAGE && lastId !== undefined
-                  ? encodeCursor({ id: lastId })
+                shown.length > FEED_PAGE && last !== undefined
+                  ? encodeCursor({ id: last.row.socialId })
                   : null,
             };
           }),
@@ -574,29 +608,44 @@ export class FeedRows extends Context.Service<FeedRows, FeedRowsShape>()("svett/
           }),
         inbox: (viewer, cursor) =>
           Effect.gen(function* () {
-            const before = cursor === undefined ? undefined : yield* readInboxCursor(cursor);
+            const start = cursor === undefined ? undefined : yield* readInboxCursor(cursor);
             const [read] = yield* sql<{ readonly readUntil: string }>`
               select read_until as "readUntil" from inbox_read where account_id = ${viewer}
             `;
             const readUntil = Number(read?.readUntil ?? 0);
-            const rows = yield* inboxRows(viewer, {
-              ...(before === undefined ? {} : { before }),
-              limit: INBOX_PAGE + 1,
-            });
-            const page = rows.slice(0, INBOX_PAGE);
-            const unread = (yield* inboxRows(viewer, { after: readUntil, limit: INBOX_PAGE }))
-              .map((row) => inboxItem(viewer, readUntil, row))
-              .filter((item) => item !== undefined).length;
-            const last = page.at(-1);
+            const position = (row: InboxRow) => ({ at: Number(row.at), key: row.key });
+            const item = (row: InboxRow) => inboxItem(viewer, readUntil, row);
+            // Items about a post the viewer may no longer see are skipped before paging and
+            // counting, so they neither shorten a page nor place a cursor.
+            const page = yield* firstVisible(
+              (after: InboxRow | undefined) => {
+                const before = after === undefined ? start : position(after);
+                return inboxRows(viewer, {
+                  ...(before === undefined ? {} : { before }),
+                  limit: SCAN,
+                });
+              },
+              item,
+              INBOX_PAGE + 1,
+            );
+            const unread = yield* firstVisible(
+              (after: InboxRow | undefined) =>
+                inboxRows(viewer, {
+                  ...(after === undefined ? {} : { before: position(after) }),
+                  after: readUntil,
+                  limit: SCAN,
+                }),
+              item,
+              INBOX_PAGE,
+            );
+            const last = page[INBOX_PAGE - 1];
             return {
-              items: page
-                .map((row) => inboxItem(viewer, readUntil, row))
-                .filter((item) => item !== undefined),
+              items: page.slice(0, INBOX_PAGE).map(({ item }) => item),
               next:
-                rows.length > INBOX_PAGE && last !== undefined
-                  ? encodeCursor({ at: Number(last.at), key: last.key })
+                page.length > INBOX_PAGE && last !== undefined
+                  ? encodeCursor(position(last.row))
                   : null,
-              unread,
+              unread: unread.length,
             };
           }),
         markRead: (viewer, until) =>

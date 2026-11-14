@@ -100,9 +100,22 @@ export const MIGRATIONS: Record<string, Effect.Effect<void, unknown, SqlClient>>
   }),
   // Likes and comments key an activity by its owner and its own ID, which others never see.
   // The inbox is read from likes, comments and follows, and each account keeps only the time
-  // up to which it has read it. The indexes serve a post's sets and route.
+  // up to which it has read it. The feed orders posts by when each first reached it, set once
+  // and never from a start time, which may be hidden. Activities already here share the
+  // migration's time, so the random social ID orders them. The indexes serve a post's sets
+  // and route.
   "5_feed": Effect.gen(function* () {
     const sql = yield* SqlClient;
+    yield* sql`alter table activity_social add column shared_ms bigint`;
+    yield* sql`
+      insert into activity_social (account_id, activity_id, shared_ms)
+      select account_id, row_id, (extract(epoch from now()) * 1000)::bigint
+      from account_row
+      where table_name = 'activity' and deleted_at is null
+        and coalesce(data->>'status', '') <> 'in_progress'
+      on conflict (account_id, activity_id) do update set shared_ms = excluded.shared_ms
+    `;
+    yield* sql`create index activity_social_shared on activity_social (shared_ms, social_id)`;
     yield* sql`
       create table activity_like (
         owner_id text not null,

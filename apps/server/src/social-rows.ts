@@ -123,11 +123,7 @@ const visibilityOf = (relation: Relation, activity: Activity) =>
  * Mints the social ID of each of `owner`'s activities that has none yet, and gives back every
  * one, keyed by the activity's own ID.
  */
-export const socialIdsOf = (
-  sql: PgClient.PgClient,
-  owner: string,
-  activityIds: ReadonlyArray<string>,
-) =>
+const socialIdsOf = (sql: PgClient.PgClient, owner: string, activityIds: ReadonlyArray<string>) =>
   Effect.gen(function* () {
     const [first, ...rest] = activityIds.map((id) => ({ account_id: owner, activity_id: id }));
     if (first === undefined) return new Map<string, SocialActivityId>();

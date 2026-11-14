@@ -112,7 +112,7 @@ export const Post = Schema.Struct({
 });
 export type Post = typeof Post.Type;
 
-/** Newest first by when each activity started. `next` asks for the page after this one. */
+/** Newest first by when each post reached the feed. `next` asks for the page after this one. */
 export const FeedPage = Schema.Struct({
   posts: Schema.Array(Post),
   next: Schema.NullOr(Schema.String),

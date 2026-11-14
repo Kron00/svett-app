@@ -159,7 +159,7 @@ const activity = (overrides: Record<string, unknown> = {}) => ({
   },
 });
 
-type Shown = { readonly id: string; readonly startedAt: number };
+type Shown = { readonly id: string; readonly title: string };
 
 const feedPage = (account: string, cursor?: string) =>
   Effect.map(
@@ -167,7 +167,7 @@ const feedPage = (account: string, cursor?: string) =>
     ({ body }) => ({
       posts: (body.posts as ReadonlyArray<{ activity: Shown }>).map((post) => ({
         id: post.activity.id,
-        startedAt: post.activity.startedAt,
+        title: post.activity.title,
       })),
       next: body.next as string | null,
     }),
@@ -316,11 +316,7 @@ describe("the feed", { timeout: 60_000 }, () => {
         yield* name(BEN, "ben", true);
         yield* name(CARA, "cara");
         yield* follow(ANNA, "ben");
-        const own = activity({
-          audience: "only_you",
-          title: "Anna, only you",
-          startedAt: 1_790_000_001_000,
-        });
+        const own = activity({ audience: "only_you", title: "Anna, only you" });
         const followers = activity({ audience: "followers", title: "Ben, followers" });
         const mine = activity({ audience: "only_you", title: "Ben, only you" });
         const stranger = activity({ title: "Cara, everyone" });
@@ -345,30 +341,33 @@ describe("the feed", { timeout: 60_000 }, () => {
     );
     expect(shown.requested).toEqual([["Anna, only you", "only_you"]]);
     expect(shown.following).toEqual([
-      ["Anna, only you", "only_you"],
       ["Ben, followers", null],
+      ["Anna, only you", "only_you"],
     ]);
     expect(shown.withDraft).toEqual(shown.following);
   });
 
-  it("pages newest first by start time, breaking ties the same way every time", async () => {
+  it("pages newest first by when each post reached the feed, whatever its start time", async () => {
     const pages = await withServer(
       Effect.gen(function* () {
         yield* name(ANNA, "anna");
         yield* name(BEN, "ben");
         yield* follow(ANNA, "ben");
-        // Pairs share a start time, across both accounts, so only the tie-break orders them.
-        const rows = Array.from({ length: FEED_PAGE + 5 }, (_, index) =>
-          activity({ startedAt: 1_790_000_000_000 + Math.floor(index / 2) * 1000 }),
+        // Five writes of five, alternating accounts. Each write starts earlier than the one
+        // before, and the posts within one write share their time, so only the tie-break
+        // orders them.
+        const writes = Array.from({ length: 5 }, (_, batch) =>
+          Array.from({ length: 5 }, (_, index) =>
+            activity({
+              startedAt: 1_790_000_000_000 - batch * 86_400_000 + index * 1000,
+              title: `Write ${batch}`,
+            }),
+          ),
         );
-        yield* write(
-          ANNA,
-          rows.filter((_, index) => index % 2 === 0),
-        );
-        yield* write(
-          BEN,
-          rows.filter((_, index) => index % 2 === 1),
-        );
+        for (const [batch, rows] of writes.entries()) {
+          yield* write(batch % 2 === 0 ? ANNA : BEN, rows);
+          yield* Effect.sleep("5 millis");
+        }
         const first = yield* wholeFeed(ANNA);
         return { first, again: yield* wholeFeed(ANNA) };
       }),
@@ -377,8 +376,51 @@ describe("the feed", { timeout: 60_000 }, () => {
     expect(pages.again).toEqual(pages.first);
     const all = pages.first.flat();
     expect(new Set(all.map(({ id }) => id)).size).toBe(FEED_PAGE + 5);
-    const times = all.map(({ startedAt }) => startedAt);
-    expect(times).toEqual(times.toSorted((a, b) => b - a));
+    expect(all.map(({ title }) => title)).toEqual(
+      [4, 3, 2, 1, 0].flatMap((batch) => Array.from({ length: 5 }, () => `Write ${batch}`)),
+    );
+  });
+
+  it("places a post whose start is hidden by when it was shared, so its neighbours tell nothing", async () => {
+    // The same three posts, shared in the same order, with the hidden start long before or
+    // long after its neighbours'.
+    const feeds = await Promise.all(
+      [1_600_000_000_000, 1_900_000_000_000].map((hiddenStart) =>
+        withServer(
+          Effect.gen(function* () {
+            yield* name(ANNA, "anna");
+            yield* name(BEN, "ben");
+            yield* follow(ANNA, "ben");
+            const tick = Effect.sleep("5 millis");
+            yield* write(BEN, [activity({ title: "Before", startedAt: 1_790_000_000_000 })]);
+            yield* tick;
+            yield* write(BEN, [
+              activity({
+                title: "Hidden",
+                startedAt: hiddenStart,
+                hiddenFields: '["start_time"]',
+              }),
+            ]);
+            yield* tick;
+            yield* write(BEN, [activity({ title: "After", startedAt: 1_790_000_100_000 })]);
+            const { text, body } = yield* ok(ANNA, "GET", "/v1/feed");
+            return {
+              text,
+              posts: body.posts.map((post: any) => [post.activity.title, post.activity.startedAt]),
+            };
+          }),
+        ),
+      ),
+    );
+    for (const feed of feeds) {
+      expect(feed.posts).toEqual([
+        ["After", 1_790_000_100_000],
+        ["Hidden", null],
+        ["Before", 1_790_000_000_000],
+      ]);
+    }
+    expect(feeds[0]?.text).not.toContain("1600000000");
+    expect(feeds[1]?.text).not.toContain("1900000000");
   });
 
   it("keeps a hidden start time out of the cursor", async () => {
@@ -397,6 +439,39 @@ describe("the feed", { timeout: 60_000 }, () => {
       }),
     );
     expect(Buffer.from(cursor, "base64url").toString()).not.toContain("1790123456");
+  });
+
+  it("refuses a cursor whose post the viewer may no longer see, as one that names nothing", async () => {
+    const answers = await withServer(
+      Effect.gen(function* () {
+        yield* name(ANNA, "anna");
+        yield* name(BEN, "ben");
+        yield* name(CARA, "cara");
+        yield* follow(ANNA, "ben");
+        yield* write(
+          BEN,
+          Array.from({ length: FEED_PAGE + 1 }, () => activity({ audience: "followers" })),
+        );
+        const stranger = activity({ title: "Cara, everyone" });
+        yield* write(CARA, [stranger]);
+        const cursor = (yield* ok(ANNA, "GET", "/v1/feed")).body.next as string;
+        const at = (id: string) =>
+          `/v1/feed?cursor=${Buffer.from(JSON.stringify({ id })).toString("base64url")}`;
+        const following = yield* as(ANNA, "GET", `/v1/feed?cursor=${cursor}`);
+        // Cara's post is Anna's to see on Cara's profile, but it is not in Anna's feed.
+        const notInFeed = yield* as(ANNA, "GET", at(yield* idOf(CARA, "cara", stranger.row.title)));
+        const nothing = yield* as(ANNA, "GET", at(nextId()));
+        yield* ok(ANNA, "DELETE", "/v1/profiles/ben/follow");
+        const unfollowed = yield* as(ANNA, "GET", `/v1/feed?cursor=${cursor}`);
+        return { following, refused: [notInFeed, nothing, unfollowed] };
+      }),
+    );
+    expect(answers.following.status).toBe(200);
+    expect(answers.following.body.posts).toHaveLength(1);
+    expect(answers.refused.map(({ status, text }) => [status, text])).toEqual(
+      Array.from({ length: 3 }, () => [400, answers.refused[1]?.text]),
+    );
+    expect(answers.refused[1]?.body.error).toBe("invalid_cursor");
   });
 
   it("refuses a feed before you have a username, and a cursor svett did not make", async () => {
@@ -454,6 +529,10 @@ describe("hidden fields", { timeout: 60_000 }, () => {
       paceSPerKm: null,
       averageHeartRateBpm: null,
     });
+    // The run's 4,440 m in 1,500 s would give the hidden pace back.
+    expect(answers.post.body.post.activity.durationS).toBeNull();
+    expect(answers.feed.body.posts[0].activity.durationS).toBeNull();
+    expect(answers.post.text).not.toContain(":1500");
     // The owner sees every field of their own run.
     expect(answers.own.text).toContain("1790000600000");
     expect(answers.own.body.post.detail.averageHeartRateBpm).toBe(PROOF_HIDDEN_BPM);
@@ -635,6 +714,34 @@ describe("the inbox", { timeout: 60_000 }, () => {
     );
     expect(result.following).toEqual([["comment", "ben"]]);
     expect(result.unfollowed).toEqual([]);
+  });
+
+  it("fills a page and counts unread past items about posts the viewer may no longer see", async () => {
+    const result = await withServer(
+      Effect.gen(function* () {
+        yield* name(ANNA, "anna");
+        yield* name(BEN, "ben");
+        yield* name(CARA, "cara");
+        yield* follow(CARA, "anna");
+        yield* follow(ANNA, "ben");
+        const post = activity({ audience: "followers" });
+        yield* write(BEN, [post]);
+        const at = `/v1/posts/${yield* idOf(BEN, "ben", post.row.title)}/comments`;
+        yield* ok(ANNA, "POST", at, { body: "First" });
+        for (let index = 0; index <= INBOX_PAGE; index++) {
+          yield* ok(BEN, "POST", at, { body: `Reply ${index}` });
+        }
+        const following = (yield* ok(ANNA, "GET", "/v1/inbox")).body;
+        yield* ok(ANNA, "DELETE", "/v1/profiles/ben/follow");
+        return { following, unfollowed: (yield* ok(ANNA, "GET", "/v1/inbox")).body };
+      }),
+    );
+    expect(result.following.items).toHaveLength(INBOX_PAGE);
+    expect(result.following.unread).toBe(INBOX_PAGE);
+    expect(result.following.next).not.toBeNull();
+    // Every reply is now hidden, and none of them shortens the page, ends it or places a cursor.
+    expect(result.unfollowed).toMatchObject({ next: null, unread: 1 });
+    expect(kinds(result.unfollowed)).toEqual([["follow", "cara"]]);
   });
 
   it("pages through more items than fit on one page", async () => {

@@ -5,6 +5,7 @@ import {
   checkSyncRow,
   deletedAboveOf,
   deletionMatters,
+  isPublished,
   isTooFarAhead,
   MAX_SYNC_ROWS,
   mergeChange,
@@ -145,6 +146,21 @@ export class AccountRows extends Context.Service<AccountRows, AccountRowsShape>(
                     seq = excluded.seq,
                     change_id = excluded.change_id
                 `;
+                // The feed orders posts by when each first reached it, never by when it started,
+                // as a start time may be hidden. A workout in progress has not reached it yet.
+                if (
+                  row.table === "activity" &&
+                  row.deletedAt === null &&
+                  isPublished(row.encoded)
+                ) {
+                  yield* sql`
+                    insert into activity_social (account_id, activity_id, shared_ms)
+                    values (${account}, ${row.id}, ${nowMillis})
+                    on conflict (account_id, activity_id) do update
+                      set shared_ms = excluded.shared_ms
+                      where activity_social.shared_ms is null
+                  `;
+                }
                 stored.set(key(row.table, row.id), row);
               }
               yield* sql`update account set next_seq = ${seq} where id = ${account}`;
