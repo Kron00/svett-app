@@ -17,6 +17,7 @@ export * from "./repositories/history.ts";
 export * from "./history.ts";
 export * from "./muscle-split.ts";
 export * from "./calendar.ts";
+export * from "./set-edit.ts";
 export * from "./database.ts";
 export * from "./set-format.ts";
 export * from "./number-entry.ts";

@@ -1,11 +1,17 @@
 import { Context, Effect, Layer, Option } from "effect";
 
-import { describeWorkout, summarizeWorkout, type WorkoutView } from "../history.ts";
+import {
+  describeWorkout,
+  routineFromWorkout,
+  summarizeWorkout,
+  type WorkoutView,
+} from "../history.ts";
 import type { ScoredSet } from "../records.ts";
 import type { Activity, ActivityExercise, ActivityId, ExerciseId } from "../schema.ts";
 import { Sql } from "../sql.ts";
-import { selectById, selectRows, TABLES } from "../table.ts";
-import type { ActivityDetail } from "./activities.ts";
+import { RowNotFoundError, selectById, selectRows, TABLES } from "../table.ts";
+import { type ActivityDetail, ActivityRepository } from "./activities.ts";
+import { RoutineRepository } from "./routines.ts";
 
 const inList = (column: string) => `${column} IN (SELECT value FROM json_each(?))`;
 
@@ -136,3 +142,14 @@ export class HistoryRepository extends Context.Service<
 >()("svett/HistoryRepository") {
   static readonly layer = Layer.effect(HistoryRepository, makeHistoryRepository);
 }
+
+/** Saves a past workout as a new routine at the end of the routine list. */
+export const saveWorkoutAsRoutine = (id: ActivityId) =>
+  Effect.gen(function* () {
+    const activities = yield* ActivityRepository;
+    const routines = yield* RoutineRepository;
+    const detail = yield* activities.get(id);
+    if (Option.isNone(detail)) return yield* new RowNotFoundError({ table: "activity", id });
+    const existing = yield* routines.listRoutines;
+    return yield* routines.createRoutine(routineFromWorkout(detail.value, existing.length));
+  });

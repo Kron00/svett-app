@@ -44,6 +44,16 @@ export const describeSet = (
 
 const DELETED_EXERCISE = "Deleted exercise";
 
+/** The exercises a history row names, such as "Squat, Leg Press and 3 more". */
+export const exerciseSummary = (names: ReadonlyArray<string>, shown = 2): string => {
+  if (names.length <= shown + 1) {
+    return names.length <= 1
+      ? (names[0] ?? "No exercises")
+      : `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`;
+  }
+  return `${names.slice(0, shown).join(", ")} and ${names.length - shown} more`;
+};
+
 export type WorkoutSummary = {
   readonly activity: Activity;
   readonly exerciseNames: ReadonlyArray<string>;

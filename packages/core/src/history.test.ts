@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
 
 import { DurationSeconds } from "./duration.ts";
-import { describeSet, formatVolumeKg, workingVolumeKg } from "./history.ts";
+import { describeSet, exerciseSummary, formatVolumeKg, workingVolumeKg } from "./history.ts";
 
 const values = (
   weightKg: number | null,
@@ -49,5 +49,17 @@ describe("formatVolumeKg", () => {
     [1_234_567, "1,234,567 kg"],
   ])("shows %d as %s", (kg, expected) => {
     expect(formatVolumeKg(kg)).toBe(expected);
+  });
+});
+
+describe("exerciseSummary", () => {
+  it.each([
+    [[], "No exercises"],
+    [["Squat"], "Squat"],
+    [["Squat", "Leg Press"], "Squat and Leg Press"],
+    [["Squat", "Leg Press", "Calf Raise"], "Squat, Leg Press and Calf Raise"],
+    [["Squat", "Leg Press", "Calf Raise", "Curl", "Plank"], "Squat, Leg Press and 3 more"],
+  ])("names %o as %s", (names, expected) => {
+    expect(exerciseSummary(names)).toBe(expected);
   });
 });

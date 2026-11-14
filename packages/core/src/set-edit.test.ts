@@ -1,0 +1,63 @@
+import { describe, expect, it } from "vite-plus/test";
+
+import { DurationSeconds } from "./duration.ts";
+import { setEditFrom, setEditPatch } from "./set-edit.ts";
+
+const lifted = {
+  setType: "normal",
+  weightKg: 82.5,
+  reps: 8,
+  durationS: null,
+  distanceM: null,
+} as const;
+const plank = {
+  setType: "normal",
+  weightKg: null,
+  reps: null,
+  durationS: DurationSeconds.make(60),
+  distanceM: null,
+} as const;
+
+describe("setEditFrom", () => {
+  it("fills the fields with the set's values", () => {
+    expect(setEditFrom(lifted)).toEqual({ setType: "normal", weight: "82.5", reps: "8" });
+    expect(setEditFrom(plank)).toEqual({ setType: "normal", weight: "", reps: "" });
+  });
+});
+
+describe("setEditPatch", () => {
+  it("saves the typed weight, reps and type", () => {
+    expect(setEditPatch({ setType: "failure", weight: "100.25", reps: "3" }, lifted)).toEqual({
+      ok: true,
+      patch: { setType: "failure", weightKg: 100.25, reps: 3 },
+    });
+  });
+
+  it("reads a trailing decimal point as the whole number", () => {
+    expect(setEditPatch({ setType: "normal", weight: "90.", reps: "5" }, lifted)).toEqual({
+      ok: true,
+      patch: { setType: "normal", weightKg: 90, reps: 5 },
+    });
+  });
+
+  it("clears the weight for a bodyweight set", () => {
+    expect(setEditPatch({ setType: "normal", weight: "", reps: "12" }, lifted)).toEqual({
+      ok: true,
+      patch: { setType: "normal", weightKg: null, reps: 12 },
+    });
+  });
+
+  it("refuses a set left with no reps, time or distance", () => {
+    expect(setEditPatch({ setType: "normal", weight: "80", reps: "" }, lifted)).toEqual({
+      ok: false,
+      message: "A set needs reps. Enter how many you did.",
+    });
+  });
+
+  it("lets a timed set go without reps", () => {
+    expect(setEditPatch({ setType: "normal", weight: "10", reps: "" }, plank)).toEqual({
+      ok: true,
+      patch: { setType: "normal", weightKg: 10, reps: null },
+    });
+  });
+});

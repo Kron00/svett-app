@@ -5,13 +5,13 @@ import { databaseLayer } from "../database.ts";
 import { DurationSeconds } from "../duration.ts";
 import { libraryExerciseId } from "../exercise-library.ts";
 import { buildFixture } from "../fixture.ts";
-import { routineFromWorkout, type WorkoutSummary } from "../history.ts";
+import type { WorkoutSummary } from "../history.ts";
 import { Ids } from "../ids.ts";
 import { openNodeDatabase } from "../node-sqlite.ts";
 import { type ActivityId, EpochMillis } from "../schema.ts";
 import { openTestDatabase, T0 } from "../test-database.ts";
 import { type ActivityDraft, ActivityRepository, type SetDraft } from "./activities.ts";
-import { type HistoryCursor, HistoryRepository } from "./history.ts";
+import { type HistoryCursor, HistoryRepository, saveWorkoutAsRoutine } from "./history.ts";
 import { MADE_HERE } from "./origin.ts";
 import { RoutineRepository } from "./routines.ts";
 
@@ -207,17 +207,12 @@ describe("HistoryRepository.workout", () => {
 
 describe("save as routine", () => {
   it("makes a routine with the workout's exercises and sets as targets", async () => {
-    const { run, log } = open();
+    const { database, run, log } = open();
     const id = await log(0, "Legs", [
       { exerciseId: SQUAT, sets: [set(60, 8, "warm_up"), set(100, 5)] },
       { exerciseId: CURL, sets: [set(40, 12)] },
     ]);
-    const routineId = await run(({ activities, routines }) =>
-      Effect.gen(function* () {
-        const detail = Option.getOrThrow(yield* activities.get(id));
-        return yield* routines.createRoutine(routineFromWorkout(detail, 0));
-      }),
-    );
+    const routineId = await database.runtime.runPromise(saveWorkoutAsRoutine(id));
     const routine = Option.getOrThrow(await run(({ routines }) => routines.getRoutine(routineId)));
     expect(routine.routine.title).toBe("Legs");
     expect(
@@ -234,6 +229,19 @@ describe("save as routine", () => {
         ],
       ],
       [CURL, [["normal", 40, 12, 12]]],
+    ]);
+  });
+
+  it("puts each saved routine at the end of the list", async () => {
+    const { database, run, log } = open();
+    const legs = await log(1, "Legs", [{ exerciseId: SQUAT, sets: [set(100, 5)] }]);
+    const curls = await log(0, "", [{ exerciseId: CURL, sets: [set(40, 12)] }]);
+    await database.runtime.runPromise(saveWorkoutAsRoutine(legs));
+    await database.runtime.runPromise(saveWorkoutAsRoutine(curls));
+    const saved = await run(({ routines }) => routines.listRoutines);
+    expect(saved.map((routine) => [routine.position, routine.title])).toEqual([
+      [0, "Legs"],
+      [1, "Workout"],
     ]);
   });
 });
