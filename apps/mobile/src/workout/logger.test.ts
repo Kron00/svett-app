@@ -270,18 +270,18 @@ describe("the workout store", () => {
   });
 });
 
-describe("the Finish item in the workout's header", () => {
-  /** The header's Finish item, pressed, and the alert it shows. */
-  const pressFinish = async (running: Launched, leave: () => void) => {
-    const { finishItems } = await import("./finish");
-    const [item] = finishItems(true, leave);
-    if (item?.type !== "button") throw new Error("no Finish button");
-    expect(item).toMatchObject({ label: "Finish", accessibilityLabel: "Finish" });
-    item.onPress();
-    const [title, message, buttons] = alert.mock.lastCall!;
-    return { title, message, finishWorkout: () => buttons[1].onPress() };
-  };
+/** The header's Finish item, pressed, and the alert it shows. */
+const pressFinish = async (running: Launched, leave: () => void) => {
+  const { finishItems } = await import("./finish");
+  const [item] = finishItems(true, leave);
+  if (item?.type !== "button") throw new Error("no Finish button");
+  expect(item).toMatchObject({ label: "Finish", accessibilityLabel: "Finish" });
+  item.onPress();
+  const [title, message, buttons] = alert.mock.lastCall!;
+  return { title, message, finishWorkout: () => buttons[1].onPress() };
+};
 
+describe("the Finish item in the workout's header", () => {
   it("is there only while a workout is ready", async () => {
     const { finishItems } = await import("./finish");
     expect(finishItems(false, () => {})).toEqual([]);
@@ -300,7 +300,7 @@ describe("the Finish item in the workout's header", () => {
 
     const asked = await pressFinish(running, leave);
     expect(asked.title).toBe(`Finish ${running.store.currentWorkout()!.activity.title}?`);
-    expect(asked.message).toBe("2 sets not marked done are left out.");
+    expect(asked.message).toBe("It is saved to your history.");
     expect(leave).not.toHaveBeenCalled();
 
     asked.finishWorkout();
@@ -315,7 +315,9 @@ describe("the Finish item in the workout's header", () => {
     const running = await launch(opened.runtime);
     const leave = vi.fn();
 
-    (await pressFinish(running, leave)).finishWorkout();
+    const asked = await pressFinish(running, leave);
+    expect(asked.message).toBe("1 set not marked done is left out.");
+    asked.finishWorkout();
     await vi.waitFor(() =>
       expect(alert).toHaveBeenLastCalledWith("The workout is not finished", expect.any(String)),
     );
