@@ -235,6 +235,7 @@ type GalleryParams = { Gallery: { sheet?: "open" } | undefined };
 export function GalleryScreen() {
   const [range, setRange] = useState<"week" | "month" | "year">("week");
   const [awake, setAwake] = useState(true);
+  const [unit, setUnit] = useState<"kg" | "lb">("kg");
   const [weight, setWeight] = useState(80);
   const [reps, setReps] = useState(8);
   const [search, setSearch] = useState("bench");
@@ -324,6 +325,16 @@ export function GalleryScreen() {
             trailing={{ type: "chevron", onPress: noop }}
           />
           <ListRow title="Version" value="0.1" />
+        </ListSection>
+        <ListSection header="Weight unit" footer="A check row picks one choice of its section.">
+          <ListRow
+            title="Kilograms"
+            trailing={{ type: "check", selected: unit === "kg", onPress: () => setUnit("kg") }}
+          />
+          <ListRow
+            title="Pounds"
+            trailing={{ type: "check", selected: unit === "lb", onPress: () => setUnit("lb") }}
+          />
         </ListSection>
       </Section>
 

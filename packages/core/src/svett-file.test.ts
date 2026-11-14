@@ -151,7 +151,7 @@ describe("svett file", () => {
     ]);
   });
 
-  it("reads a version 2 file's exercises with the set fields their sets give, as migration 4 did", () => {
+  it("reads a version 2 file's exercises with the set fields their sets give, as migration 5 did", () => {
     const tables = tablesOf(
       file(
         {

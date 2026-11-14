@@ -1,23 +1,23 @@
 import {
-  type Activity,
   ActivityRepository,
   type ExerciseId,
   ExerciseRepository,
+  exerciseName,
   type Folder,
-  exerciseNamesSummary,
   type Routine,
   type RoutineDetail,
   type RoutineDraft,
   RoutineId,
   RoutineRepository,
-  type RoutineSection,
   routinePosition,
-  routineSections,
+  type TrainOverview,
+  trainOverview,
 } from "@svett/core";
 import { Effect, Option, Schema } from "effect";
 import { useCallback } from "react";
 
 import { appDatabase } from "../data/database";
+import { markLaunch } from "../data/launch-timing";
 import { useOnFocus } from "../data/loaded";
 
 type Repositories = RoutineRepository | ActivityRepository | ExerciseRepository;
@@ -28,56 +28,17 @@ export const runOnDatabase = <A, E>(effect: Effect.Effect<A, E, Repositories>): 
 
 /** The names of exercises by ID. A missing exercise, such as one deleted since, has none. */
 const exerciseNames = (ids: Iterable<ExerciseId>) =>
-  Effect.gen(function* () {
-    const exercises = yield* ExerciseRepository;
-    const names = new Map<ExerciseId, string>();
-    for (const id of new Set(ids)) {
-      const exercise = yield* exercises.get(id);
-      if (Option.isSome(exercise)) names.set(id, exercise.value.name);
-    }
-    return names;
-  });
+  Effect.flatMap(Effect.service(ExerciseRepository), (exercises) => exercises.names(ids));
 
-export const exerciseName = (names: ReadonlyMap<ExerciseId, string>, id: ExerciseId) =>
-  names.get(id) ?? "Deleted exercise";
+export { exerciseName };
 
-export interface RoutineOverview {
-  readonly sections: ReadonlyArray<RoutineSection>;
-  readonly folders: ReadonlyArray<Folder>;
-  /** The exercises each routine lists under its title. */
-  readonly summaries: ReadonlyMap<RoutineId, string>;
-  readonly inProgress: Activity | null;
-}
+export type RoutineOverview = TrainOverview;
 
 const loadOverview = () =>
-  runOnDatabase(
-    Effect.gen(function* () {
-      const routines = yield* RoutineRepository;
-      const activities = yield* ActivityRepository;
-      const folders = yield* routines.listFolders;
-      const list = yield* routines.listRoutines;
-      const routineExercises = yield* routines.listRoutineExercises;
-      const names = yield* exerciseNames(routineExercises.map((exercise) => exercise.exerciseId));
-      const summaries = new Map<RoutineId, string>();
-      for (const routine of list) {
-        summaries.set(
-          routine.id,
-          exerciseNamesSummary(
-            routineExercises
-              .filter((exercise) => exercise.routineId === routine.id)
-              .map((exercise) => exerciseName(names, exercise.exerciseId)),
-          ),
-        );
-      }
-      const inProgress = yield* activities.inProgress;
-      return {
-        sections: routineSections(folders, list),
-        folders,
-        summaries,
-        inProgress: Option.isSome(inProgress) ? inProgress.value.activity : null,
-      } satisfies RoutineOverview;
-    }),
-  );
+  runOnDatabase(trainOverview).then((overview) => {
+    markLaunch("queried");
+    return overview;
+  });
 
 /** The Train tab's routines by folder, and the workout in progress. */
 export const useRoutineOverview = () => useOnFocus(loadOverview);

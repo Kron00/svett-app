@@ -34,6 +34,7 @@ export const TABLES = {
   importBatch: table("import_batch", Model.ImportBatch),
   importChange: table("import_change", Model.ImportChange),
   exercise: table("exercise", Model.Exercise),
+  exerciseAlias: table("exercise_alias", Model.ExerciseAlias),
   activity: table("activity", Model.Activity),
   activityExercise: table("activity_exercise", Model.ActivityExercise),
   activitySet: table("activity_set", Model.ActivitySet),

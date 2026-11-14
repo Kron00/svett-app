@@ -127,9 +127,10 @@ describe("migrate", () => {
       database.prepare("SELECT done, target_reps_min, target_reps_max FROM activity_set").all(),
     ).toEqual([{ done: 1, target_reps_min: null, target_reps_max: null }]);
   });
+
   it("logs each exercise saved before set fields by what its sets record", async () => {
     const { database, run } = open();
-    await run(migrate(MIGRATIONS.slice(0, 3)));
+    await run(migrate(MIGRATIONS.slice(0, 4)));
     const sets: ReadonlyArray<
       [string, number | null, number | null, number | null, number | null]
     > = [

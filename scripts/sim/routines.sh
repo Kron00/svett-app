@@ -23,9 +23,12 @@
 # It times a cold start from the relaunch until the Train tab lists the
 # routines, which it renders once they have loaded. That time includes
 # agent-device's calls, so it is an upper bound. Then it times the same calls
-# against the running app, which shows the automation's own share, and saves
-# both and their difference, svett's own start-up, to cold-start.txt. Only a
-# Release build's time counts against the plan's target.
+# against the running app, which shows the automation's own share. svett is
+# launched with -svettTiming 1, so the Train tab also shows the time svett
+# measured itself, from the process start to the first frame with the routine
+# list, without the wait for the svett://train link, and each step on the way.
+# All of it goes to cold-start.txt. Only a Release build's time counts against
+# the plan's target.
 #
 # It opens screens through svett:// links and presses an element at the centre
 # of its frame, because agent-device 0.21.37 refuses a selector press inside
@@ -91,7 +94,7 @@ open_flags=(--relaunch)
 # Opening by bundle id alone shows the development client's launcher, and
 # agent-device's own Expo detection falls back to that when it is inconclusive.
 [[ "$release" == true ]] || open_flags+=(--launch-url "$(dev_client_url "http://$metro")")
-open_flags+=(--launch-args=-svettFixture "--launch-args=$fixture")
+open_flags+=(--launch-args=-svettFixture "--launch-args=$fixture" --launch-args=-svettTiming --launch-args=1)
 
 # Leaves the simulator at the default text size, also when a step fails, and
 # frees its own session.
@@ -209,11 +212,16 @@ agent_device wait "$train_tab" 120000 >/dev/null || fail "svett did not show its
 link "svett://train"
 expect 'id="routine-list"' "The Train tab did not list the routines"
 overhead=$(($(now_ms) - started))
+bring 'id="cold-start-timing"' "The Train tab did not show svett's own cold start time"
+in_app=$(agent_device get attrs 'id="cold-start-timing"' |
+  node -e 'process.stdout.write(JSON.parse(require("fs").readFileSync(0, "utf8")).label ?? "")')
+[[ "$in_app" == "svett's own cold start: "* ]] || fail "The cold start time on the Train tab reads \"$in_app\""
 build=$([[ "$release" == true ]] && echo Release || echo "Debug, loaded from Metro")
 {
   echo "Cold start to the Train tab's routine list: $cold_start ms ($build, on the 300-workout fixture, an upper bound that includes agent-device's calls)"
   echo "agent-device's calls alone, against the running app: $overhead ms"
   echo "svett's own start-up, the difference: about $((cold_start - overhead)) ms"
+  echo "Measured in the app: $in_app"
 } | tee "$out/cold-start.txt"
 screenshot train
 

@@ -3,7 +3,7 @@ import { Effect, Layer, Schema } from "effect";
 import { Ids } from "./ids.ts";
 import { migrate } from "./migrations.ts";
 import { ActivityRepository } from "./repositories/activities.ts";
-import { ExerciseRepository } from "./repositories/exercises.ts";
+import { ExerciseAliasRepository, ExerciseRepository } from "./repositories/exercises.ts";
 import { GearRepository } from "./repositories/gear.ts";
 import { ProgressRepository } from "./repositories/progress.ts";
 import { HistoryRepository } from "./repositories/history.ts";
@@ -35,6 +35,7 @@ export const databaseFileName = (owner: DatabaseOwner): string =>
 export const Repositories = Layer.mergeAll(
   ActivityRepository.layer,
   ExerciseRepository.layer,
+  ExerciseAliasRepository.layer,
   RoutineRepository.layer,
   MeasurementRepository.layer,
   ImportRepository.layer,
@@ -46,20 +47,30 @@ export const Repositories = Layer.mergeAll(
   GearRepository.layer,
 );
 
-const prepared = Layer.effectDiscard(
-  Effect.gen(function* () {
-    yield* migrate();
-    const exercises = yield* ExerciseRepository;
-    yield* exercises.seedLibrary();
-  }),
-);
+/** The steps of opening a database that the app times at launch. */
+export type OpenStep = "migrated" | "seeded";
+
+const prepared = (onStep: (step: OpenStep) => void) =>
+  Layer.effectDiscard(
+    Effect.gen(function* () {
+      yield* migrate();
+      yield* Effect.sync(() => onStep("migrated"));
+      const exercises = yield* ExerciseRepository;
+      yield* exercises.seedLibrary();
+      yield* Effect.sync(() => onStep("seeded"));
+    }),
+  );
 
 /**
  * An open, migrated database with the exercise library seeded, and every repository over it.
- * Opening the same file again finds nothing left to do.
+ * Opening the same file again finds nothing left to do. `onStep` hears when each step is done.
  */
-export const databaseLayer = (driver: SqlDriver, ids: Layer.Layer<Ids>) => {
+export const databaseLayer = (
+  driver: SqlDriver,
+  ids: Layer.Layer<Ids>,
+  onStep: (step: OpenStep) => void = () => {},
+) => {
   const base = Layer.merge(Sql.layer(driver), ids);
   const repositories = Repositories.pipe(Layer.provideMerge(base));
-  return Layer.provideMerge(prepared, repositories);
+  return Layer.provideMerge(prepared(onStep), repositories);
 };

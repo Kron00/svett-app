@@ -26,6 +26,8 @@ export const ActivitySampleId = Uuid.pipe(Schema.brand("ActivitySampleId"));
 export type ActivitySampleId = typeof ActivitySampleId.Type;
 export const ExerciseId = Uuid.pipe(Schema.brand("ExerciseId"));
 export type ExerciseId = typeof ExerciseId.Type;
+export const ExerciseAliasId = Uuid.pipe(Schema.brand("ExerciseAliasId"));
+export type ExerciseAliasId = typeof ExerciseAliasId.Type;
 export const RoutineId = Uuid.pipe(Schema.brand("RoutineId"));
 export type RoutineId = typeof RoutineId.Type;
 export const RoutineExerciseId = Uuid.pipe(Schema.brand("RoutineExerciseId"));
@@ -307,6 +309,18 @@ export const Exercise = Schema.Struct({
   ...provenanceFields,
 }).check(provenanceRule);
 export type Exercise = typeof Exercise.Type;
+
+/**
+ * An exercise name from another app, and the exercise you matched it to, so the next import
+ * from that app uses the same exercise without asking again.
+ */
+export const ExerciseAlias = Schema.Struct({
+  ...rowFields(ExerciseAliasId),
+  source: ImportSource,
+  name: Schema.NonEmptyString,
+  exerciseId: ExerciseId,
+});
+export type ExerciseAlias = typeof ExerciseAlias.Type;
 
 export const Folder = Schema.Struct({
   ...rowFields(FolderId),

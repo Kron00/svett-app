@@ -4,12 +4,15 @@ import {
   databaseLayer,
   type DatabaseOwner,
   Ids,
+  type OpenStep,
   type SqlDriver,
 } from "@svett/core";
-import { ManagedRuntime } from "effect";
+import { Effect, ManagedRuntime } from "effect";
 import { getRandomValues } from "expo-crypto";
 import { openDatabaseAsync, type SQLiteBindValue, type SQLiteDatabase } from "expo-sqlite";
 import { Settings } from "react-native";
+
+import { markLaunch } from "./launch-timing";
 
 const expoSqliteDriver = (database: Promise<SQLiteDatabase>): SqlDriver => ({
   all: async (sql, params) => (await database).getAllAsync(sql, params as Array<SQLiteBindValue>),
@@ -33,12 +36,24 @@ const open = (target: DatabaseTarget) => {
   );
 };
 
-/** The database for `target`, migrated and seeded, with every repository over it. */
-export const openDatabase = (target: DatabaseTarget) =>
+/**
+ * The database for `target`, migrated and seeded, with every repository over it. `onStep`
+ * hears when the file is open and when each step of preparing it is done.
+ */
+export const openDatabase = (
+  target: DatabaseTarget,
+  onStep: (step: "opened" | OpenStep) => void = () => {},
+) =>
   ManagedRuntime.make(
     databaseLayer(
-      expoSqliteDriver(open(target)),
+      expoSqliteDriver(
+        open(target).then((database) => {
+          onStep("opened");
+          return database;
+        }),
+      ),
       Ids.layer((bytes) => getRandomValues(bytes)),
+      onStep,
     ),
   );
 
@@ -57,6 +72,16 @@ export const launchTarget = (): DatabaseTarget => {
 let shared: ReturnType<typeof openDatabase> | undefined;
 
 /** The one database every screen reads and writes, opened on first use for this launch's target. */
-export const appDatabase = () => (shared ??= openDatabase(launchTarget()));
+export const appDatabase = () => (shared ??= openDatabase(launchTarget(), markLaunch));
+
+/**
+ * Opens, migrates and seeds the database now, so the Train tab finds it ready instead of
+ * waiting for it on its first read.
+ */
+export const prepareAppDatabase = () => {
+  appDatabase()
+    .runPromise(Effect.void)
+    .catch(() => undefined);
+};
 
 export type AppServices = ManagedRuntime.ManagedRuntime.Services<ReturnType<typeof openDatabase>>;
