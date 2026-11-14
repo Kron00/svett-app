@@ -9,7 +9,7 @@ import { decodeHevyFile, type HevyFile, type ToInstant, wallTimeAsUtc } from "..
 import { hevyExerciseId, hevyImport } from "../hevy-import.ts";
 import { importedId } from "../ids.ts";
 import { ActivityId, EpochMillis, type ImportBatchId } from "../schema.ts";
-import { openTestDatabase, pointersToDeleted } from "../test-database.ts";
+import { openTestDatabase, pointersToDeleted, T0 } from "../test-database.ts";
 import { decodeSvettFile } from "../svett-file.ts";
 import { isNothingToImport } from "../transfer.ts";
 import { ActivityRepository } from "./activities.ts";
@@ -53,6 +53,11 @@ const apply = async (
   Option.getOrUndefined(
     await transfers(database, (repository) => repository.applyImport(hevyImport(file, keep), take)),
   );
+
+const workoutsHere = <A, E>(
+  database: Database,
+  body: (repository: typeof ActivityRepository.Service) => Effect.Effect<A, E>,
+) => database.runtime.runPromise(Effect.flatMap(Effect.service(ActivityRepository), body));
 
 const undo = (database: Database, batch: ImportBatchId) =>
   transfers(database, (repository) => repository.undoImport(batch, []));
@@ -121,6 +126,42 @@ const importSample = async () => {
   if (result === undefined) throw new Error("The sample imported nothing");
   return { database, batch: result.importBatchId };
 };
+
+// A draft started at T0 with one set of 100 kg for 5. The file repeats its sets in a
+// workout on another day, and has a second workout whose time covers the draft's start.
+const DRAFT_SQUAT = '"Squat (Barbell)",,"",0,"normal",100,5,,,';
+const DRAFT_FILE = hevy(
+  [
+    HEADER,
+    `"Squat day","1 Feb 2025, 10:00","1 Feb 2025, 11:00","",${DRAFT_SQUAT}`,
+    `"New year","1 Jan 2026, 08:30","1 Jan 2026, 09:30","","Plank",,"",0,"normal",,,,60,`,
+  ].join("\n"),
+);
+const startDraft = (database: Database) =>
+  workoutsHere(database, (repository) =>
+    repository.startWorkout({
+      title: "Squats",
+      routineId: null,
+      exercises: [
+        {
+          exerciseId: libraryExerciseId("Barbell_Squat"),
+          supersetGroup: null,
+          notes: "",
+          sets: [
+            {
+              setType: "normal",
+              weightKg: 100,
+              reps: 5,
+              durationS: null,
+              distanceM: null,
+              targetRepsMin: null,
+              targetRepsMax: null,
+            },
+          ],
+        },
+      ],
+    }),
+  );
 
 describe("Hevy import", () => {
   it("imports the sample with the right counts, under IDs from each workout's start", async () => {
@@ -263,6 +304,7 @@ describe("Hevy import", () => {
       restored: 2,
       left: 0,
       kept: 0,
+      discarded: 0,
     });
     expect(workouts(database)).toEqual(before);
     expect(count(database, "activity_set")).toBe(25);
@@ -343,6 +385,7 @@ describe("Hevy import", () => {
       restored: 2,
       left: 1,
       kept: 1,
+      discarded: 0,
     });
     expect(workouts(database).map(({ title, notes }) => ({ title, notes }))).toEqual([
       { title: "Push Day", notes: "Shoulder felt fine" },
@@ -595,5 +638,75 @@ describe("Hevy import", () => {
     expect(result?.added).toBe(300);
     expect(count(database, "activity_set")).toBe(6_000);
     expect(seconds).toBeLessThan(10);
+  });
+
+  describe("with a workout in progress", () => {
+    it("holds back both workouts once the same workout is finished", async () => {
+      const database = openTestDatabase();
+      const id = await startDraft(database);
+      await workoutsHere(database, (repository) => repository.update(id, { status: "finished" }));
+
+      const plan = await preview(database, DRAFT_FILE);
+      expect(plan.duplicates.map(({ reason, summary }) => [reason, summary.title])).toEqual([
+        ["same_sets", "Squat day"],
+        ["overlap", "New year"],
+      ]);
+    });
+
+    it("never holds a workout back for it, and leaves it untouched", async () => {
+      const database = openTestDatabase();
+      await startDraft(database);
+      const before = await workoutsHere(database, (repository) => repository.inProgress);
+
+      const plan = await preview(database, DRAFT_FILE);
+      expect(plan.duplicates).toEqual([]);
+      expect(plan.added).toEqual([{ table: "activity", count: 2 }]);
+      expect(plan.skipped).toBe(0);
+      expect((await apply(database, DRAFT_FILE))?.added).toBe(2);
+
+      const after = await workoutsHere(database, (repository) => repository.inProgress);
+      expect(Option.getOrThrow(after).activity.startedAt).toBe(T0);
+      expect(after).toEqual(before);
+      const exported = Result.getOrThrow(
+        decodeSvettFile((await transfers(database, (repository) => repository.exportFile)).text),
+      );
+      expect(exported.tables.activity?.map((row) => row["title"]).sort()).toEqual([
+        "New year",
+        "Squat day",
+      ]);
+    });
+
+    it("shows the imported workouts in history as finished, with every set done", async () => {
+      const database = openTestDatabase();
+      await startDraft(database);
+      await matchMachineRow(database);
+      await apply(database, SAMPLE);
+
+      const history = await workoutsHere(database, (repository) => repository.list());
+      expect(history.map(({ title, status, routineId }) => [title, status, routineId])).toEqual([
+        ["Legs", "finished", null],
+        ["Pull Day", "finished", null],
+        ["Push Day", "finished", null],
+      ]);
+      const sets = (
+        await workoutsHere(database, (repository) =>
+          Effect.forEach(history, ({ id }) => repository.get(id)),
+        )
+      ).flatMap((detail) =>
+        Option.getOrThrow(detail).exercises.flatMap((exercise) => exercise.sets),
+      );
+      expect(sets).toHaveLength(SAMPLE.sets);
+      expect(
+        new Set(
+          sets.map(({ done, targetRepsMin, targetRepsMax }) =>
+            [done, targetRepsMin, targetRepsMax].join(),
+          ),
+        ),
+      ).toEqual(new Set(["true,,"]));
+      expect(await workoutsHere(database, (repository) => repository.counts)).toEqual({
+        activities: 3,
+        sets: SAMPLE.sets,
+      });
+    });
   });
 });
