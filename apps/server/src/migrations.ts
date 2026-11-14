@@ -162,4 +162,37 @@ export const MIGRATIONS: Record<string, Effect.Effect<void, unknown, SqlClient>>
       on account_row (account_id, table_name, (data->>'activityTrackId'))
     `;
   }),
+  // A block works both ways, so each pair is read in both directions. A rate limit is a token
+  // bucket per account and route group, kept here so it survives a restart and holds across
+  // servers. A deleted account's ID stays, so no later request or upload recreates it.
+  "6_safety": Effect.gen(function* () {
+    const sql = yield* SqlClient;
+    yield* sql`
+      create table block (
+        id text not null default gen_random_uuid()::text,
+        blocker_id text not null,
+        blocked_id text not null,
+        created_at timestamptz not null default now(),
+        primary key (blocker_id, blocked_id)
+      )
+    `;
+    yield* sql`create unique index block_id on block (id)`;
+    yield* sql`create index block_blocked on block (blocked_id)`;
+    yield* sql`
+      create table rate_limit (
+        account_id text not null,
+        route_group text not null,
+        tokens double precision not null,
+        at_ms bigint not null,
+        primary key (account_id, route_group)
+      )
+    `;
+    yield* sql`
+      create table deleted_account (
+        id text primary key,
+        deleted_at timestamptz not null default now()
+      )
+    `;
+    yield* sql`create index activity_like_liker on activity_like (liker_id)`;
+  }),
 };

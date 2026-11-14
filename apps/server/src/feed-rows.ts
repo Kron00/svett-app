@@ -46,7 +46,7 @@ import {
   SCAN,
   type SharedAnchor,
 } from "./paging.ts";
-import { UsernameRequired } from "./social-rows.ts";
+import { blockedWith, UsernameRequired } from "./social-rows.ts";
 
 /** The post is not there, or the privacy rule does not let the account see it. */
 export class PostNotFound extends Data.TaggedError("PostNotFound")<{}> {}
@@ -106,12 +106,12 @@ const InboxCursor = Schema.Struct({ at: Schema.Int, key: Schema.String });
 const readInboxCursor = decodeCursor(InboxCursor);
 
 /** Where `viewer` stands to an account they follow, or to themself. */
-const relation = (viewer: AccountId, owner: string, follow: FollowState): Relation => ({
-  viewer,
-  owner,
-  follow,
-  blocked: false,
-});
+const relation = (
+  viewer: AccountId,
+  owner: string,
+  follow: FollowState,
+  blocked = false,
+): Relation => ({ viewer, owner, follow, blocked });
 
 /** Where an inbox row sits in the inbox's order. */
 const position = (row: InboxRow) => ({ at: Number(row.at), key: row.key });
@@ -201,6 +201,15 @@ export class FeedRows extends Context.Service<FeedRows, FeedRowsShape>()("svett/
         sql<{ readonly state: FollowState }>`
           select state from follow where follower_id = ${viewer} and followee_id = ${owner}
         `.pipe(Effect.map(([row]) => row?.state ?? "none"));
+
+      const blockedOf = (viewer: AccountId, owner: string) =>
+        sql<{ readonly blocked: boolean }>`
+          select exists (
+            select 1 from block
+            where (blocker_id = ${viewer} and blocked_id = ${owner})
+              or (blocker_id = ${owner} and blocked_id = ${viewer})
+          ) as blocked
+        `.pipe(Effect.map(([row]) => row?.blocked === true));
 
       /** The sets or the route under one activity, each row checked against its schema. */
       const postRows = (owner: string, activityId: string) =>
@@ -342,8 +351,9 @@ export class FeedRows extends Context.Service<FeedRows, FeedRowsShape>()("svett/
               : undefined;
           if (row === undefined || activity === undefined) return yield* new PostNotFound();
           const follow = row.owner === viewer ? "none" : yield* followOf(viewer, row.owner);
+          const blocked = row.owner !== viewer && (yield* blockedOf(viewer, row.owner));
           const post = yield* postFor(
-            relation(viewer, row.owner, follow),
+            relation(viewer, row.owner, follow, blocked),
             row.username,
             activity,
             id,
@@ -373,7 +383,8 @@ export class FeedRows extends Context.Service<FeedRows, FeedRowsShape>()("svett/
           and ((s.account_id = ${viewer}
               and r.data->>'audience' in ${sql.in(visibleAudiences(relation(viewer, viewer, "none")))})
             or (f.follower_id is not null
-              and r.data->>'audience' in ${sql.in(visibleAudiences(relation(viewer, "", "following")))}))
+              and r.data->>'audience' in ${sql.in(visibleAudiences(relation(viewer, "", "following")))}
+              and not ${blockedWith(sql, viewer, "s.account_id")}))
       `;
 
       /**
@@ -435,6 +446,8 @@ export class FeedRows extends Context.Service<FeedRows, FeedRowsShape>()("svett/
           left join activity_social social on social.account_id = i.owner_id
             and social.activity_id = i.activity_id
           where (i.activity_id is null or (post.data is not null and owner.username is not null))
+            and not ${blockedWith(sql, viewer, "i.actor")}
+            and (i.owner_id is null or not ${blockedWith(sql, viewer, "i.owner_id")})
             ${options.before === undefined ? sql`` : sql`and (i.at, i.key) < (${options.before.at}, ${options.before.key})`}
             ${options.after === undefined ? sql`` : sql`and i.at > ${options.after}`}
           order by i.at desc, i.key desc
