@@ -288,14 +288,26 @@ export const sourceKey = (workout: Pick<SourceWorkout, "source" | "identity">): 
 export const sourceActivityId = (workout: Pick<SourceWorkout, "source" | "identity">) =>
   ActivityId.make(importedId(TABLES.activity.name, workout.source, workout.identity));
 
+/** An identity already saved here, as an activity of its own or as a link. */
+export type SavedIdentity = Pick<LocalLink, "source" | "fingerprint"> & {
+  readonly sourceId: SourceIdentity | null;
+};
+
+/** " #2", " #3" and so on, as `distinctIdentities` adds them. */
+const SUFFIX = / #([2-9]|[1-9]\d+)$/;
+
 /**
  * Gives workouts in the file that share an identity, but not their content, identities
- * of their own. They are ordered by fingerprint, the first keeps the identity, and the
- * others add "#2", "#3" and so on, so the same file gives the same IDs every time.
- * Copies with the same content are one workout.
+ * of their own. Number 1 is the identity itself and number n adds " #n". A workout whose
+ * content matches one saved under the identity or a numbered one keeps that number, so
+ * adding or removing another workout with the same start changes no one's ID. The rest
+ * take, in fingerprint order, the saved numbers no workout in the file matched, so a
+ * changed workout shows as changed, and then numbers after every saved one. Copies with
+ * the same content are one workout.
  */
 export const distinctIdentities = (
   incoming: ReadonlyArray<SourceWorkout>,
+  saved: ReadonlyArray<SavedIdentity> = [],
 ): { readonly workouts: ReadonlyArray<SourceWorkout>; readonly collided: ReadonlySet<string> } => {
   const groups = new Map<string, Map<Fingerprint, SourceWorkout>>();
   for (const workout of incoming) {
@@ -304,17 +316,45 @@ export const distinctIdentities = (
     if (!group.has(workout.fingerprint)) group.set(workout.fingerprint, workout);
     groups.set(key, group);
   }
+  // The fingerprint saved under each number of each identity.
+  const numbered = new Map<string, Map<number, Fingerprint | null>>();
+  const remember = (key: string, number: number, fingerprint: Fingerprint | null) => {
+    const slots = numbered.get(key) ?? new Map<number, Fingerprint | null>();
+    slots.set(number, fingerprint);
+    numbered.set(key, slots);
+  };
+  for (const { source, sourceId, fingerprint } of saved) {
+    if (sourceId === null) continue;
+    remember(`${source}:${sourceId}`, 1, fingerprint);
+    const suffix = SUFFIX.exec(sourceId);
+    if (suffix !== null) {
+      remember(`${source}:${sourceId.slice(0, suffix.index)}`, Number(suffix[1]), fingerprint);
+    }
+  }
+  const byFingerprint = (a: SourceWorkout, b: SourceWorkout) =>
+    a.fingerprint < b.fingerprint ? -1 : a.fingerprint > b.fingerprint ? 1 : 0;
   const workouts: Array<SourceWorkout> = [];
   const collided = new Set<string>();
-  for (const group of groups.values()) {
-    const ordered = [...group.values()].sort((a, b) =>
-      a.fingerprint < b.fingerprint ? -1 : a.fingerprint > b.fingerprint ? 1 : 0,
-    );
-    for (const [index, workout] of ordered.entries()) {
+  for (const [key, group] of groups) {
+    const ordered = [...group.values()].sort(byFingerprint);
+    const slots = numbered.get(key) ?? new Map<number, Fingerprint | null>();
+    const assigned = new Map<number, SourceWorkout>();
+    const unmatched: Array<SourceWorkout> = [];
+    for (const workout of ordered) {
+      const slot = [...slots].find(
+        ([number, fingerprint]) => fingerprint === workout.fingerprint && !assigned.has(number),
+      );
+      if (slot === undefined) unmatched.push(workout);
+      else assigned.set(slot[0], workout);
+    }
+    const free = [...slots.keys()].filter((number) => !assigned.has(number)).sort((a, b) => a - b);
+    let next = [...slots.keys()].reduce((highest, number) => Math.max(highest, number), 0) + 1;
+    for (const workout of unmatched) assigned.set(free.shift() ?? next++, workout);
+    for (const [number, workout] of [...assigned].sort(([a], [b]) => a - b)) {
       const distinct =
-        index === 0
+        number === 1
           ? workout
-          : { ...workout, identity: SourceIdentity.make(`${workout.identity} #${index + 1}`) };
+          : { ...workout, identity: SourceIdentity.make(`${workout.identity} #${number}`) };
       workouts.push(distinct);
       if (ordered.length > 1) collided.add(sourceKey(distinct));
     }
@@ -334,7 +374,8 @@ const newestFirst = (a: SourcePlanItem, b: SourcePlanItem) =>
  * linked to an activity from another source, is unchanged when its content is the same
  * as when it was saved or linked, and changed when not. One that overlaps the time of
  * an activity from another source is a possible duplicate. The rest are new. Workouts
- * in the file that share an identity get their own first, as `distinctIdentities` says.
+ * in the file that share an identity get their own first, matched against the
+ * identities saved here, as `distinctIdentities` says.
  */
 export const planSourceImport = (
   local: {
@@ -345,7 +386,10 @@ export const planSourceImport = (
 ): SourcePlan => {
   const byId = new Map(local.activities.map((activity) => [activity.id, activity]));
   const linked = new Map(local.links.map((link) => [`${link.source}:${link.sourceId}`, link]));
-  const { workouts, collided } = distinctIdentities(incoming);
+  const { workouts, collided } = distinctIdentities(incoming, [
+    ...local.activities,
+    ...local.links,
+  ]);
   const items: Array<SourcePlanItem> = [];
   for (const workout of workouts) {
     const key = sourceKey(workout);

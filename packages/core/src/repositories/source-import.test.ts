@@ -382,6 +382,48 @@ describe("importing from Apple Health and GPX", () => {
     expect(otherIds(other)).toEqual(otherIds(database));
   });
 
+  it("keeps the IDs of Health workouts with the same start as others join, leave and change", async () => {
+    const database = openTestDatabase();
+    const file = await health();
+    const yoga = file.workouts.find((workout) => workout.kind === "other")!;
+    // Fingerprint order is a, b, c, so b lands between the other two.
+    const shared = (minutes: number, digit: string): SourceWorkout => ({
+      ...yoga,
+      endedAt: EpochMillis.make(yoga.startedAt + minutes * 60_000),
+      durationS: DurationSeconds.make(minutes * 60),
+      fingerprint: Fingerprint.make(digit.repeat(64)),
+    });
+    const [a, b, c] = [shared(20, "1"), shared(25, "2"), shared(30, "3")] as const;
+    const only = (...workouts: ReadonlyArray<SourceWorkout>): SourceFile => ({
+      ...file,
+      workouts,
+    });
+
+    await importAll(database, only(a, c));
+    const first = otherIds(database);
+    expect(await planOf(database, only(a, b, c))).toMatchObject({ added: 1, unchanged: 2 });
+    expect(Option.getOrThrow(await importAll(database, only(a, b, c))).added).toBe(1);
+    expect(otherIds(database)).toEqual(expect.arrayContaining(first));
+    expect(await counts(database)).toEqual({ activities: 3, sets: 0 });
+    expect(isNothingFromSource(await planOf(database, only(a, c)))).toBe(true);
+    expect(isNothingFromSource(await planOf(database, only(c, b, a)))).toBe(true);
+
+    const changedB = shared(26, "4");
+    const plan = await planOf(database, only(a, changedB, c));
+    expect(plan).toMatchObject({ added: 0, unchanged: 2 });
+    expect(plan.changed).toHaveLength(1);
+    await importAll(database, only(a, changedB, c), {
+      take: [plan.changed[0]!.key],
+      keepBoth: [],
+    });
+    expect(await counts(database)).toEqual({ activities: 3, sets: 0 });
+    expect(
+      otherIds(database)
+        .map((row) => row["duration_s"])
+        .toSorted(),
+    ).toEqual([1200, 1560, 1800]);
+  });
+
   it("lists a linked workout whose heart rate was corrected, takes it when asked, and Undo puts the old one back", async () => {
     const database = openTestDatabase();
     const hevyId = await seedHevy(database);

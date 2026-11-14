@@ -9,6 +9,7 @@ import {
   fromGpx,
   healthActivityName,
   heartRateSummary,
+  isNothingFromSource,
   type LocalActivity,
   planSourceImport,
   sourceActivityId,
@@ -139,6 +140,83 @@ describe("planSourceImport", () => {
       [1800, "same"],
       [2700, "same #2"],
     ]);
+  });
+
+  describe("workouts that share an identity, against the ones saved before", () => {
+    const shared = (minutes: number, digit: string) => ({
+      ...workout("same", T, minutes),
+      fingerprint: Fingerprint.make(digit.repeat(64)),
+    });
+    // Fingerprint order is a, b, c, so b lands between the other two.
+    const [a, b, c] = [shared(20, "1"), shared(25, "2"), shared(30, "3")] as const;
+    /** The activities an import of every new workout in the plan leaves here. */
+    const savedFrom = (plan: SourcePlan): Array<LocalActivity> =>
+      plan.items.map((item) =>
+        local(sourceActivityId(item.workout), item.workout.startedAt, "apple_health", {
+          sourceId: item.workout.identity,
+          fingerprint: item.workout.fingerprint,
+          durationS: item.workout.durationS,
+        }),
+      );
+    const imported = (workouts: ReadonlyArray<SourceWorkout>) =>
+      savedFrom(planSourceImport({ activities: [], links: [] }, workouts));
+
+    it("keeps each saved workout's identity when another with the same start joins the file", () => {
+      const plan = planSourceImport({ activities: imported([a, c]), links: [] }, [a, b, c]);
+      expect(plan.unchanged).toBe(2);
+      expect(plan.changed).toEqual([]);
+      expect(plan.items.filter((item) => item.status === "new").map((item) => item.key)).toEqual([
+        "apple_health:same #3",
+      ]);
+      expect(identities(plan.items).toSorted()).toEqual([
+        [1200, "same"],
+        [1500, "same #3"],
+        [1800, "same #2"],
+      ]);
+    });
+
+    it("keeps each saved workout's identity when one with the same start leaves the file", () => {
+      const plan = planSourceImport({ activities: imported([a, b, c]), links: [] }, [a, c]);
+      expect(isNothingFromSource(plan)).toBe(true);
+      expect(plan.unchanged).toBe(2);
+    });
+
+    it("lists a changed workout among ones with the same start as changed, not new", () => {
+      const here = imported([a, b, c]);
+      const changedB = shared(26, "4");
+      const plan = planSourceImport({ activities: here, links: [] }, [a, changedB, c]);
+      expect(plan.added).toBe(0);
+      expect(plan.unchanged).toBe(2);
+      expect(plan.changed).toMatchObject([
+        {
+          key: "apple_health:same #2",
+          local: sourceActivityId({
+            source: "apple_health",
+            identity: SourceIdentity.make("same #2"),
+          }),
+          linked: false,
+        },
+      ]);
+    });
+
+    it("matches a linked workout among ones with the same start by its content", () => {
+      const plan = planSourceImport(
+        {
+          activities: [local(UUID(2), T, "hevy")],
+          links: [
+            {
+              activityId: ActivityId.make(UUID(2)),
+              source: "apple_health",
+              sourceId: SourceIdentity.make("same #2"),
+              fingerprint: c.fingerprint,
+            },
+          ],
+        },
+        [c],
+      );
+      expect(plan.unchanged).toBe(1);
+      expect(plan.duplicates).toEqual([]);
+    });
   });
 
   it("does not match activities that only touch end to start", () => {
