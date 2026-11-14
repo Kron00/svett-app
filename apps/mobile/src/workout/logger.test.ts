@@ -3,16 +3,21 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
+  type ActivitySet,
   addExercisesToWorkout,
   databaseLayer,
   Ids,
+  type KeypadKey,
   libraryExerciseId,
+  type SetColumn,
   type SqlDriver,
   startEmptyWorkout,
 } from "@svett/core";
 import { openNodeDatabase } from "@svett/core/node";
 import { Effect, ManagedRuntime } from "effect";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
+
+import type { Focus } from "./focus";
 
 const app = vi.hoisted(() => ({ runtime: undefined as unknown }));
 vi.mock("../data/database", () => ({ appDatabase: () => app.runtime }));
@@ -28,9 +33,14 @@ const openApp = (path: string) => {
   const { database, driver } = openNodeDatabase(path);
   let held: Array<() => void> | null = null;
   let reached: (() => void) | null = null;
+  let failing = false;
   const slow: SqlDriver = {
     ...driver,
     run: async (sql, params) => {
+      if (failing && sql.startsWith("UPDATE activity_set")) {
+        failing = false;
+        throw new Error("disk I/O error");
+      }
       if (held !== null && sql.startsWith("UPDATE activity_set")) {
         reached?.();
         await new Promise<void>((resume) => held!.push(resume));
@@ -51,6 +61,10 @@ const openApp = (path: string) => {
       const waiting = held ?? [];
       held = null;
       for (const resume of waiting) resume();
+    },
+    /** Fails the next set write. */
+    failNext: () => {
+      failing = true;
     },
   };
 };
@@ -78,6 +92,36 @@ const startSquats = (runtime: ReturnType<typeof openApp>["runtime"]) =>
     }),
   );
 
+const failures = ({ store }: Launched) => {
+  const state = store.workoutState();
+  return state.status === "ready" ? state.failures : 0;
+};
+
+/** Opens the keypad on a field of the first exercise and presses keys, as the screen does. */
+const typeKeys = (
+  running: Launched,
+  set: ActivitySet,
+  column: SetColumn,
+  keys: ReadonlyArray<KeypadKey>,
+) => {
+  const { store, actions, focus } = running;
+  let field = focus.focusField(
+    store.currentWorkout()!.exercises[0]!,
+    set,
+    column,
+    failures(running),
+  );
+  for (const key of keys) {
+    const typed = focus.pressKey(store.currentWorkout()!, field, key, failures(running))!;
+    field = typed.focus;
+    actions.typeValue(typed.set, field.column, typed.value);
+  }
+  return field;
+};
+
+const shownText = (running: Launched, field: Focus) =>
+  running.focus.liveFocus(running.store.currentWorkout()!, field, failures(running))?.focus.text;
+
 const tempFile = () => join(mkdtempSync(join(tmpdir(), "svett-logger-")), "svett.db");
 
 afterEach(() => {
@@ -91,7 +135,7 @@ describe("the workout store", () => {
     await startSquats(first.runtime);
     const running = await launch(first.runtime);
     const set = shownSet(running);
-    running.actions.typeValue(running.store.currentWorkout()!.exercises[0]!, set, "reps", 5);
+    running.actions.typeValue(set, "reps", 5);
     await running.store.reloadWorkout();
 
     const waiting = first.hold();
@@ -113,12 +157,7 @@ describe("the workout store", () => {
     const opened = openApp(":memory:");
     await startSquats(opened.runtime);
     const running = await launch(opened.runtime);
-    running.actions.typeValue(
-      running.store.currentWorkout()!.exercises[0]!,
-      shownSet(running),
-      "reps",
-      5,
-    );
+    running.actions.typeValue(shownSet(running), "reps", 5);
 
     const waiting = opened.hold();
     running.actions.toggleSetDone(running.store.currentWorkout()!.exercises[0]!, 0);
@@ -146,7 +185,7 @@ describe("the workout store", () => {
     await store.reloadWorkout();
     const read = store.reloadWorkout();
     actions.setWorkoutNotes("edited");
-    actions.typeValue(store.currentWorkout()!.exercises[0]!, shownSet(running), "reps", 8);
+    actions.typeValue(shownSet(running), "reps", 8);
     expect(notes()).toBe("edited");
     await read;
     expect(notes()).toBe("edited");
@@ -166,11 +205,11 @@ describe("the workout store", () => {
     const running = await launch(opened.runtime);
     const { store, actions, focus } = running;
     const exercise = store.currentWorkout()!.exercises[0]!;
-    let field = focus.focusField(exercise, exercise.sets[0]!, "weight");
+    let field = focus.focusField(exercise, exercise.sets[0]!, "weight", 0);
     for (const key of ["1", "0"] as const) {
-      const typed = focus.pressKey(store.currentWorkout()!, field, key)!;
+      const typed = focus.pressKey(store.currentWorkout()!, field, key, 0)!;
       field = typed.focus;
-      actions.typeValue(typed.exercise, typed.set, field.column, typed.value);
+      actions.typeValue(typed.set, field.column, typed.value);
     }
     await store.reloadWorkout();
     expect(shownSet(running).weightKg).toBe(10);
@@ -179,9 +218,51 @@ describe("the workout store", () => {
     await store.reloadWorkout();
     const replaced = store.currentWorkout()!;
     expect(replaced.exercises[0]!.sets[0]!.id).toBe(field.setId);
-    expect(focus.liveFocus(replaced, field)).toBeNull();
-    expect(focus.pressKey(replaced, field, "5")).toBeNull();
+    expect(focus.liveFocus(replaced, field, 0)).toBeNull();
+    expect(focus.pressKey(replaced, field, "5", 0)).toBeNull();
     await store.reloadWorkout();
     expect(shownSet(running)).toMatchObject({ weightKg: null, reps: null });
+  });
+
+  it("clears the reps and marks the set to do again when they are cleared while done saves", async () => {
+    const opened = openApp(":memory:");
+    await startSquats(opened.runtime);
+    const running = await launch(opened.runtime);
+    running.actions.typeValue(shownSet(running), "reps", 5);
+    await running.store.reloadWorkout();
+
+    const waiting = opened.hold();
+    running.actions.toggleSetDone(running.store.currentWorkout()!.exercises[0]!, 0);
+    await waiting;
+    const field = typeKeys(running, shownSet(running), "reps", ["delete"]);
+    expect(shownText(running, field)).toBe("");
+    opened.release();
+    await running.store.reloadWorkout();
+
+    expect(running.store.workoutState()).toMatchObject({ problem: null });
+    expect(shownSet(running)).toMatchObject({ reps: null, done: false });
+    expect(shownText(running, field)).toBe("");
+    const stored = opened.database
+      .prepare("SELECT reps, done FROM activity_set WHERE id = ?")
+      .get(shownSet(running).id);
+    expect(stored).toEqual({ reps: null, done: 0 });
+  });
+
+  it("puts the stored value back in the field being typed when its save fails", async () => {
+    const opened = openApp(":memory:");
+    await startSquats(opened.runtime);
+    const running = await launch(opened.runtime);
+    running.actions.typeValue(shownSet(running), "reps", 5);
+    await running.store.reloadWorkout();
+
+    opened.failNext();
+    const field = typeKeys(running, shownSet(running), "reps", ["8"]);
+    expect(shownText(running, field)).toBe("8");
+
+    await vi.waitFor(() =>
+      expect(running.store.workoutState()).toMatchObject({ problem: expect.any(String) }),
+    );
+    expect(shownSet(running).reps).toBe(5);
+    expect(shownText(running, field)).toBe("5");
   });
 });

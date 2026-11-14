@@ -32,7 +32,13 @@ import {
   updateRow,
 } from "../table.ts";
 import { DurationSeconds } from "../duration.ts";
-import { finishPlan, setFieldsFromSets, setsForFields } from "../logger.ts";
+import {
+  fieldPatch,
+  finishPlan,
+  type SetColumn,
+  setFieldsFromSets,
+  setsForFields,
+} from "../logger.ts";
 import { MADE_HERE, type Origin, provenance, rowId } from "./origin.ts";
 
 type Draft<A, Parent extends string = never> = Omit<
@@ -221,13 +227,13 @@ const inProgressExercise = (id: ActivityExerciseId) =>
     return exercise.value;
   });
 
-/** A live set of the workout in progress. */
+/** A live set of the workout in progress, with its exercise. */
 const inProgressSet = (id: ActivitySetId) =>
   Effect.gen(function* () {
     const set = yield* selectById(TABLES.activitySet, id);
     if (Option.isNone(set)) return yield* new RowNotFoundError({ table: "activity_set", id });
-    yield* inProgressExercise(set.value.activityExerciseId);
-    return set.value;
+    const exercise = yield* inProgressExercise(set.value.activityExerciseId);
+    return { set: set.value, exercise };
   });
 
 /** The new order names each exercise exactly once. */
@@ -663,6 +669,18 @@ const makeActivityRepository = Effect.gen(function* () {
       run(
         sql.transaction(
           Effect.andThen(inProgressSet(id), updateRow(TABLES.activitySet, id, patch)),
+        ),
+      ),
+    /**
+     * Types one value into a set of the workout in progress. Whether clearing it also marks the
+     * set to do again is worked out from the stored set, so it holds whatever was saved before.
+     */
+    changeSetValue: (id: ActivitySetId, column: SetColumn, value: number | null) =>
+      run(
+        sql.transaction(
+          Effect.flatMap(inProgressSet(id), ({ set, exercise }) =>
+            updateRow(TABLES.activitySet, id, fieldPatch(set, exercise.setFields, column, value)),
+          ),
         ),
       ),
     addSet,

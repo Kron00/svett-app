@@ -106,6 +106,7 @@ const refusals = (target: {
       addSet: activities.addSet(exerciseId, nextSet([])),
       removeSet: activities.removeSet(setId),
       updateWorkoutSet: activities.updateWorkoutSet(setId, { reps: 9 }),
+      changeSetValue: activities.changeSetValue(setId, "reps", 9),
       updateWorkout: activities.updateWorkout(activityId, { title: "Too late", notes: "No" }),
       finishWorkout: activities.finishWorkout(activityId),
     };
@@ -377,7 +378,7 @@ describe("logging a workout", () => {
     await database.runtime.runPromise(database.clock.advance(60_000));
     const before = storedRows(database);
     const results = (await database.runtime.runPromise(Effect.forEach(targets, refusals))).flat();
-    expect(results).toHaveLength(22);
+    expect(results).toHaveLength(24);
     for (const [name, exit] of results) {
       expect({ name, exit }).toMatchObject({
         name,
@@ -487,5 +488,30 @@ describe("logging a workout", () => {
       }),
     );
     expect(sets).toMatchObject([{ setType: "warm_up", ...REPLACED_SET }]);
+  });
+
+  it("marks a set to do again when its last value is cleared, judged by the stored set", async () => {
+    const database = openTestDatabase();
+    const steps = await database.runtime.runPromise(
+      Effect.gen(function* () {
+        const activities = yield* ActivityRepository;
+        const id = yield* startEmptyWorkout(9);
+        yield* addExercisesToWorkout(id, [squat]);
+        const setId = (yield* log).exercises[0]!.sets[0]!.id;
+        const shown = Effect.map(log, ({ exercises }) => {
+          const set = exercises[0]!.sets[0]!;
+          return [set.weightKg, set.reps, set.done];
+        });
+        yield* activities.updateWorkoutSet(setId, { weightKg: 60, reps: 5, done: true });
+        yield* activities.changeSetValue(setId, "weight", null);
+        const weightCleared = yield* shown;
+        yield* activities.changeSetValue(setId, "reps", null);
+        return [weightCleared, yield* shown];
+      }),
+    );
+    expect(steps).toEqual([
+      [null, 5, true],
+      [null, null, false],
+    ]);
   });
 });

@@ -98,17 +98,15 @@ export const toggleSetDone = (exercise: LoggedExercise, index: number): string |
   return null;
 };
 
-export const typeValue = (
-  exercise: LoggedExercise,
-  set: ActivitySet,
-  column: SetColumn,
-  value: number | null,
-) => {
-  const patch = fieldPatch(set, exercise.row.setFields, column, value);
+/**
+ * Types a value into a set. Clearing its last recorded value also marks it to do again, worked
+ * out from the set as it is when the change applies, so a save still waiting ahead counts.
+ */
+export const typeValue = (set: ActivitySet, column: SetColumn, value: number | null) => {
   changeSet(
     set.id,
-    patch,
-    withActivities((activities) => activities.updateWorkoutSet(set.id, patch)),
+    (current, fields) => fieldPatch(current, fields, column, value),
+    withActivities((activities) => activities.changeSetValue(set.id, column, value)),
   );
 };
 

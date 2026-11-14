@@ -5,6 +5,7 @@ import {
   loadWorkoutLog,
   withPrevious,
   type ExerciseRepository,
+  type SetFields,
   type WorkoutLog,
 } from "@svett/core";
 import { type Effect, Option } from "effect";
@@ -20,6 +21,8 @@ export type WorkoutState =
       readonly log: WorkoutLog | null;
       /** Why the last change was not saved. The workout shows what the database holds. */
       readonly problem: string | null;
+      /** How many saves have failed since launch. A field typed before the last one shows what is stored. */
+      readonly failures: number;
     }
   | { readonly status: "failed"; readonly message: string };
 
@@ -31,6 +34,7 @@ let saved: WorkoutState = { status: "loading" };
 /** Changes shown before they are saved, oldest first. Each read is shown with them on top. */
 let unsaved: ReadonlyArray<{ readonly change: Change }> = [];
 let state: WorkoutState = saved;
+let failures = 0;
 const listeners = new Set<() => void>();
 
 const show = () => {
@@ -62,7 +66,7 @@ const run = <A>(effect: Effect.Effect<A, unknown, Services>) => appDatabase().ru
 const read = async () => {
   try {
     const log = await run(loadWorkoutLog);
-    saved = { status: "ready", log: Option.getOrNull(log), problem: null };
+    saved = { status: "ready", log: Option.getOrNull(log), problem: null, failures };
   } catch (error) {
     saved = { status: "failed", message: String(error) };
   }
@@ -74,6 +78,7 @@ export const reloadWorkout = (): Promise<void> => enqueue(read);
 
 const failed = (error: unknown) =>
   enqueue(async () => {
+    failures += 1;
     await read();
     keepSaved((log) => log, String(error));
     show();
@@ -120,10 +125,14 @@ export const changeWorkout = (
   }).catch(failed);
 };
 
-/** Shows a change to one set, with last time's sets lined up again, and saves it. */
+/**
+ * Shows a change to one set, with last time's sets lined up again, and saves it. A patch that
+ * depends on the set is worked out from the set as shown at the time, so it builds on every
+ * change before it, saved or not.
+ */
 export const changeSet = (
   id: ActivitySetId,
-  patch: Partial<ActivitySet>,
+  patch: Partial<ActivitySet> | ((set: ActivitySet, fields: SetFields) => Partial<ActivitySet>),
   save: Effect.Effect<unknown, unknown, Services>,
   shown: "now" | "once saved" = "now",
 ) =>
@@ -135,7 +144,16 @@ export const changeSet = (
           ? withPrevious(
               {
                 ...exercise,
-                sets: exercise.sets.map((set) => (set.id === id ? { ...set, ...patch } : set)),
+                sets: exercise.sets.map((set) =>
+                  set.id === id
+                    ? {
+                        ...set,
+                        ...(typeof patch === "function"
+                          ? patch(set, exercise.row.setFields)
+                          : patch),
+                      }
+                    : set,
+                ),
               },
               log.last.get(exercise.row.exerciseId),
             )
@@ -151,10 +169,11 @@ const subscribe = (listener: () => void) => {
   return () => listeners.delete(listener);
 };
 
-const current = () => state;
-
 /** The workout in progress as every screen and the bar above the tabs show it. */
-export const useWorkout = (): WorkoutState => useSyncExternalStore(subscribe, current, current);
+export const workoutState = (): WorkoutState => state;
+
+export const useWorkout = (): WorkoutState =>
+  useSyncExternalStore(subscribe, workoutState, workoutState);
 
 export const currentWorkout = (): WorkoutLog | null =>
   state.status === "ready" ? state.log : null;

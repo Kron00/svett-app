@@ -104,7 +104,15 @@ function Header({ log }: { readonly log: WorkoutLog }) {
   );
 }
 
-function Logger({ log, problem }: { readonly log: WorkoutLog; readonly problem: string | null }) {
+function Logger({
+  log,
+  problem,
+  failures,
+}: {
+  readonly log: WorkoutLog;
+  readonly problem: string | null;
+  readonly failures: number;
+}) {
   const navigation = useNavigation<RootNavigation>();
   const [focusState, setFocus] = useState<Focus | null>(null);
   const [typeSheet, setTypeSheet] = useState<ActivitySet | null>(null);
@@ -120,18 +128,18 @@ function Logger({ log, problem }: { readonly log: WorkoutLog; readonly problem: 
     );
   }, []);
 
-  const focus = liveFocus(log, focusState)?.focus ?? null;
+  const focus = liveFocus(log, focusState, failures)?.focus ?? null;
   const press = (key: KeypadKey) => {
-    const typed = pressKey(log, focus, key);
+    const typed = pressKey(log, focus, key, failures);
     if (typed === null) return;
     setFocus(typed.focus);
-    typeValue(typed.exercise, typed.set, typed.focus.column, typed.value);
+    typeValue(typed.set, typed.focus.column, typed.value);
   };
 
   const onFocus = useCallback(
     (exercise: LoggedExercise, set: ActivitySet, column: SetColumn) =>
-      setFocus(focusField(exercise, set, column)),
-    [],
+      setFocus(focusField(exercise, set, column, failures)),
+    [failures],
   );
   // Another screen over the workout, such as the one replacing an exercise, closes the keypad
   // and drops what it held, so no key lands on a set that changed meanwhile.
@@ -324,7 +332,7 @@ export function WorkoutScreen() {
     }, []),
   );
   if (workout.status === "ready" && workout.log !== null) {
-    return <Logger log={workout.log} problem={workout.problem} />;
+    return <Logger log={workout.log} problem={workout.problem} failures={workout.failures} />;
   }
   return (
     <ScrollView
