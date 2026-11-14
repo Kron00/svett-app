@@ -74,6 +74,7 @@ export const REFERENCES: ReadonlyArray<{
   { table: "activity", key: "importBatchId", target: "importBatch" },
   { table: "exercise", key: "importBatchId", target: "importBatch" },
   { table: "measurement", key: "importBatchId", target: "importBatch" },
+  { table: "activitySource", key: "importBatchId", target: "importBatch" },
 ];
 
 export const CHILDREN: Readonly<Record<TableKey, ReadonlyArray<TableKey>>> = Object.fromEntries(

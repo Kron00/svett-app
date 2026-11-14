@@ -27,7 +27,7 @@ export const STAY_MS = 60_000;
  * reading that reports its own speed keeps it.
  */
 export const withStops = (fixes: ReadonlyArray<Fix>): Array<Fix> => {
-  const still = new Array<boolean>(fixes.length).fill(false);
+  const still = Array.from({ length: fixes.length }, () => false);
   let start = 0;
   while (start < fixes.length) {
     const first = fixes[start]!;
@@ -76,10 +76,28 @@ export interface FilteredRoute {
   readonly distanceM: number;
 }
 
+/** One stretch through a filter of its own, as a recording's segment from its first point to its last. */
+const segmentOf = (stretch: ReadonlyArray<ImportedRoutePoint>, kind: CardioKind): Segment => {
+  const fixes = withStops(
+    stretch.map((point) => ({
+      at: point.recordedAt,
+      latitude: point.latitude,
+      longitude: point.longitude,
+      altitudeM: point.altitudeM,
+      altitudeAccuracyM: null,
+      accuracyM: null,
+    })),
+  );
+  return {
+    ...fixes.reduce(addReading, emptyTrack<Fix>(MOTION[kind])),
+    from: stretch[0]!.recordedAt,
+    to: stretch.at(-1)!.recordedAt,
+  };
+};
+
 /**
  * Each stretch of an imported route through K1's filter, one filter per stretch, as a
- * recording's stretches are. A stretch runs from its first point to its last, so a gap
- * between two stretches is a pause.
+ * recording's stretches are, so a gap between two stretches is a pause.
  */
 export const filterRoute = (
   stretches: ReadonlyArray<ReadonlyArray<ImportedRoutePoint>>,
@@ -87,23 +105,7 @@ export const filterRoute = (
 ): FilteredRoute => {
   const segments = stretches
     .filter((stretch) => stretch.length > 0)
-    .map((stretch): Segment => {
-      const fixes = withStops(
-        stretch.map((point) => ({
-          at: point.recordedAt,
-          latitude: point.latitude,
-          longitude: point.longitude,
-          altitudeM: point.altitudeM,
-          altitudeAccuracyM: null,
-          accuracyM: null,
-        })),
-      );
-      return {
-        ...fixes.reduce(addReading, emptyTrack<Fix>(MOTION[kind])),
-        from: stretch[0]!.recordedAt,
-        to: stretch.at(-1)!.recordedAt,
-      };
-    });
+    .map((stretch) => segmentOf(stretch, kind));
   const tracks = segments.map(segmentTrack);
   return {
     segments,

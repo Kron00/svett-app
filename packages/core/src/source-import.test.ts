@@ -299,7 +299,7 @@ const runWithStop = (seconds: number, seed: number): Array<GpxPoint> => {
     });
   for (let north = 0; north <= 300; north += 3) add(north);
   const next = seededRandom(seed);
-  for (let held = 0; held < seconds; ) {
+  for (let held = 0; held < seconds;) {
     const angle = next() * 2 * Math.PI;
     const radius = 10 * Math.sqrt(next());
     for (let hold = 1 + Math.floor(next() * 6); hold > 0 && held < seconds; hold--, held++) {
@@ -327,7 +327,11 @@ describe("an imported route without speeds", () => {
   });
 
   it("splits a route to add up to the distance its source measured", () => {
-    const measured = { ...run(runWithStop(120, 45)), source: "apple_health" as const, distanceM: 640 };
+    const measured = {
+      ...run(runWithStop(120, 45)),
+      source: "apple_health" as const,
+      distanceM: 640,
+    };
     const rows = sourceActivityRows(measured, ImportBatchId.make(UUID(9)), EpochMillis.make(T));
     const splits = (rows.activitySample ?? []).filter((sample) => sample["kind"] === "split");
     expect(rows.activityTrack?.[0]?.["distanceM"]).toBe(640);
