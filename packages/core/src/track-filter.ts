@@ -54,10 +54,12 @@ const append = <T>(chain: Chain<T> | null, value: T): Chain<T> => ({
 
 /** The latest `count` values of a chain, oldest first. */
 const latest = <T>(chain: Chain<T> | null, count: number): T[] => {
-  const values = new Array<T>(Math.min(count, chain?.length ?? 0));
-  let node = chain;
-  for (let index = values.length - 1; index >= 0; index--, node = node!.before) {
-    values[index] = node!.value;
+  const values: T[] = [];
+  for (let node = chain; node !== null && values.length < count; node = node.before) {
+    values.push(node.value);
+  }
+  for (let low = 0, high = values.length - 1; low < high; low++, high--) {
+    [values[low], values[high]] = [values[high]!, values[low]!];
   }
   return values;
 };
@@ -519,7 +521,7 @@ const turned = <R extends Reading>(
  */
 const smoothed = (estimates: ReadonlyArray<Estimate>, motion: Motion): LatLng[] => {
   const count = estimates.length;
-  const positions = new Array<LatLng>(count);
+  const positions: LatLng[] = estimates.slice();
   let afterEastMps = 0;
   let afterNorthMps = 0;
   for (let index = count - 1; index >= 0; index--) {

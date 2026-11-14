@@ -360,18 +360,13 @@ const BLOCK = [
 const gpxWalk = (seed: number, every: number) => {
   // A phone's error drifts slowly, half a metre a second, and stays 1 m to 5 m off.
   const error = wandering(seed, 0.5, 1, 5);
-  return along(BLOCK, 1.4, { every }).map((event): RecordingEvent => {
-    if (event.type !== "fix") return event;
+  return along(BLOCK, 1.4, { every }).map((event) => {
     const { east, north } = error();
-    const { latitude, longitude } = event.fix;
-    return {
-      ...event,
-      fix: {
-        ...event.fix,
-        latitude: latitude + north / DEGREE_M,
-        longitude: longitude + east / DEGREE_M,
-      },
-    };
+    const { latitude, longitude } = (event as Extract<RecordingEvent, { type: "fix" }>).fix;
+    return fixAt(secondsOf(event), {
+      latitude: latitude + north / DEGREE_M,
+      longitude: longitude + east / DEGREE_M,
+    });
   });
 };
 
