@@ -351,6 +351,40 @@ describe("history", () => {
     expect(() => byTestId(history, `workout-${newest}`)).not.toThrow();
     expect(() => byTestId(history, "undo-delete-banner")).toThrow();
   });
+
+  it("deletes once when Delete workout is tapped twice in the same frame", async () => {
+    const detail = await render(<WorkoutScreen {...screenProps("Workout", { id: newest })} />);
+    const remove = byTestId(detail, "workout-delete");
+    await act(async () => {
+      remove.props.onPress();
+      remove.props.onPress();
+    });
+    await showsTestId(detail, "workout-delete-error");
+    expect(() => byTestId(detail, "workout-delete-error")).toThrow();
+    expect(navigation.navigate).toHaveBeenCalledTimes(1);
+    expect(navigation.navigate).toHaveBeenCalledWith("Tabs", { screen: "Progress" });
+
+    const history = await render(<ProgressScreen />);
+    await press(byTestId(history, "undo-delete"));
+    await showsLine(history, "2 workouts, 5 sets");
+  });
+
+  it("brings a workout back once and keeps Close disabled while Undo runs", async () => {
+    const detail = await render(<WorkoutScreen {...screenProps("Workout", { id: newest })} />);
+    await press(byTestId(detail, "workout-delete"));
+    const history = await render(<ProgressScreen />);
+    expect(byTestId(history, "undo-delete-close").props.disabled).toBe(false);
+
+    const undo = byTestId(history, "undo-delete");
+    act(() => {
+      undo.props.onPress();
+      undo.props.onPress();
+    });
+    expect(byTestId(history, "undo-delete-close").props.disabled).toBe(true);
+    await showsLine(history, "2 workouts, 5 sets");
+    expect(() => byTestId(history, "undo-delete-error")).toThrow();
+    expect(() => byTestId(history, "undo-delete-banner")).toThrow();
+  });
 });
 
 describe("the calendar", () => {
