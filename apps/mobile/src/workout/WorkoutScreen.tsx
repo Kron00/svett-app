@@ -1,16 +1,27 @@
 import {
   type ActivitySet,
-  COLUMN_ENTRY,
+  columnEntry,
+  DurationSeconds,
+  formatDuration,
   type KeypadKey,
   type LoggedExercise,
+  REST_ADJUST_S,
+  REST_OPTIONS,
+  restAfterSet,
+  restLabel,
+  restLeft,
+  type RestTimer,
+  RPE_OPTIONS,
+  rpeFromChoice,
   SET_FIELDS_OPTIONS,
   SET_TYPE_OPTIONS,
   type SetColumn,
   setBadges,
+  supersetPlaces,
   type WorkoutLog,
 } from "@svett/core";
 import { useFocusEffect, useNavigation } from "@react-navigation/native";
-import { useCallback, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Alert, type HostInstance, ScrollView, type ScrollViewInstance, View } from "react-native";
 
 import type { RootNavigation } from "../navigation";
@@ -20,19 +31,26 @@ import { EmptyState } from "../ui/EmptyState";
 import { IconButton } from "../ui/IconButton";
 import { Keypad } from "../ui/NumberEntry";
 import { OptionSheet } from "../ui/OptionSheet";
+import { RestTimerBar } from "../ui/RestTimerBar";
 import { TextField } from "../ui/TextField";
+import { useWorkoutSettings } from "../settings/store";
 import {
   logBy,
   removeSet,
   renameWorkout,
+  setRestTime,
+  setSetRpe,
   setSetType,
   setWorkoutNotes,
   startEmpty,
+  leaveSupersetAt,
+  supersetWithNextAt,
   typeValue,
 } from "./actions";
-import { ExerciseCard } from "./ExerciseCard";
+import { ExerciseCard, type ExerciseTool } from "./ExerciseCard";
 import { confirmDiscard, finishItems } from "./finish";
 import { type Focus, focusField, liveFocus, nextField, pressKey } from "./focus";
+import { adjustRestTimer, restEnded, skipRestTimer, startRestTimer, useRestTimer } from "./rest";
 import { reloadWorkout, useWorkout } from "./store";
 import { showTiming, useElapsed, useLastDoneTiming } from "./timing";
 
@@ -52,6 +70,42 @@ function Timing() {
     </AppText>
   );
 }
+
+/** The running rest, counting down each second. It goes when it reaches zero. */
+function Rest({ timer, atBottom }: { readonly timer: RestTimer; readonly atBottom: boolean }) {
+  const [now, setNow] = useState(Date.now);
+  useEffect(() => {
+    const tick = setInterval(() => setNow(Date.now()), 250);
+    return () => clearInterval(tick);
+  }, []);
+  const left = restLeft(timer, now);
+  useEffect(() => {
+    if (left === 0) restEnded(timer);
+  }, [left, timer]);
+  return (
+    <RestTimerBar
+      left={formatDuration(DurationSeconds.make(left))}
+      leftLabel={left === 0 ? "no time" : restLabel(left)}
+      progress={timer.totalS === 0 ? 0 : left / timer.totalS}
+      adjustSeconds={REST_ADJUST_S}
+      onLess={() => adjustRestTimer(-REST_ADJUST_S)}
+      onMore={() => adjustRestTimer(REST_ADJUST_S)}
+      onSkip={skipRestTimer}
+      atBottom={atBottom}
+      testID="rest-timer"
+    />
+  );
+}
+
+/** The heaviest weight an exercise's sets hold, for the plate and warm-up calculators. */
+const heaviest = (exercise: LoggedExercise): number | null =>
+  exercise.sets.reduce<number | null>(
+    (most, set) =>
+      set.weightKg !== null && set.setType !== "warm_up" && (most === null || set.weightKg > most)
+        ? set.weightKg
+        : most,
+    null,
+  );
 
 function Header({ log }: { readonly log: WorkoutLog }) {
   const elapsed = useElapsed(log.activity.startedAt);
@@ -112,9 +166,18 @@ function Logger({
   readonly failures: number;
 }) {
   const navigation = useNavigation<RootNavigation>();
+  const { unit, logRpe } = useWorkoutSettings();
+  const rest = useRestTimer();
   const [focusState, setFocus] = useState<Focus | null>(null);
   const [typeSheet, setTypeSheet] = useState<ActivitySet | null>(null);
   const [fieldsSheet, setFieldsSheet] = useState<LoggedExercise | null>(null);
+  const [restSheet, setRestSheet] = useState<LoggedExercise | null>(null);
+  const [rpeSheet, setRpeSheet] = useState<ActivitySet | null>(null);
+  // Callbacks read the workout as it is now, so the memoised cards keep the same ones.
+  const current = useRef(log);
+  useLayoutEffect(() => {
+    current.current = log;
+  });
   const scroll = useRef<ScrollViewInstance>(null);
   const content = useRef<HostInstance>(null);
 
@@ -136,8 +199,46 @@ function Logger({
 
   const onFocus = useCallback(
     (exercise: LoggedExercise, set: ActivitySet, column: SetColumn) =>
-      setFocus(focusField(exercise, set, column, failures)),
-    [failures],
+      setFocus(focusField(exercise, set, column, failures, unit)),
+    [failures, unit],
+  );
+  const onPressRpe = useCallback((set: ActivitySet) => {
+    setFocus(null);
+    setRpeSheet(set);
+  }, []);
+  const onSetDone = useCallback((index: number) => {
+    const exercises = current.current.exercises;
+    const next = restAfterSet(
+      exercises.map((exercise) => exercise.row),
+      index,
+    );
+    const after = exercises[next?.next ?? -1];
+    if (next === null || after === undefined) return;
+    void startRestTimer(next.seconds, {
+      exercise: after.exercise?.name ?? "your next exercise",
+      activityId: current.current.activity.id,
+      activityExerciseId: after.row.id,
+    });
+  }, []);
+  const onTool = useCallback(
+    (exercise: LoggedExercise, index: number, tool: ExerciseTool) => {
+      setFocus(null);
+      switch (tool) {
+        case "rest":
+          return setRestSheet(exercise);
+        case "superset":
+          return void supersetWithNextAt(index);
+        case "leave-superset":
+          return void leaveSupersetAt(index);
+        case "warm-up":
+          return navigation.navigate("WarmUp", { exercise: exercise.row.id });
+        case "plates": {
+          const weight = heaviest(exercise);
+          return navigation.navigate("Plates", weight === null ? {} : { kg: String(weight) });
+        }
+      }
+    },
+    [navigation],
   );
   // Another screen over the workout, such as the one replacing an exercise, closes the keypad
   // and drops what it held, so no key lands on a set that changed meanwhile.
@@ -151,6 +252,8 @@ function Logger({
   );
 
   const typeSheetSet = typeSheet === null ? null : findSet(log, typeSheet.id);
+  const rpeSheetSet = rpeSheet === null ? null : findSet(log, rpeSheet.id);
+  const supersets = supersetPlaces(log.exercises.map((exercise) => exercise.row));
   const typeSheetTitle =
     typeSheetSet === null
       ? "Set"
@@ -185,10 +288,17 @@ function Logger({
               focus={
                 focus !== null && exercise.sets.some((set) => set.id === focus.setId) ? focus : null
               }
+              unit={unit}
+              logRpe={logRpe}
+              superset={supersets[index]?.letter ?? null}
+              joinsNext={supersets[index] !== null && supersets[index]?.last === false}
               onFocus={onFocus}
               onPressSetType={setTypeSheet}
+              onPressRpe={onPressRpe}
+              onSetDone={onSetDone}
               onReplace={replace}
               onLogBy={setFieldsSheet}
+              onTool={onTool}
               measure={measure}
             />
           ))}
@@ -216,12 +326,14 @@ function Logger({
           {showTiming() ? <Timing /> : null}
         </View>
       </ScrollView>
+      {/* The rest stays in view above the keypad, as the next set is typed. */}
+      {rest !== null ? <Rest timer={rest} atBottom={focus === null} /> : null}
       {focus !== null ? (
         <View
           className="gap-2 border-t border-separator bg-surface px-gutter pt-3 pb-8"
           testID="keypad"
         >
-          <Keypad onKey={press} limits={COLUMN_ENTRY[focus.column]} />
+          <Keypad onKey={press} limits={columnEntry(focus.column, focus.unit)} />
           <View className="flex-row gap-2">
             <View className="flex-1">
               <Button
@@ -271,6 +383,35 @@ function Logger({
         isPresented={fieldsSheet !== null}
         onDismiss={() => setFieldsSheet(null)}
         testID="set-fields-sheet"
+      />
+      <OptionSheet
+        title={`Rest after each set${restSheet?.exercise ? ` of ${restSheet.exercise.name}` : ""}`}
+        mode="single"
+        options={REST_OPTIONS}
+        selected={restSheet === null ? null : String(restSheet.row.restS ?? 0)}
+        onSelect={(value) => {
+          if (restSheet !== null && value !== null) {
+            setRestTime(restSheet.row.id, DurationSeconds.make(Number(value)));
+          }
+        }}
+        isPresented={restSheet !== null}
+        onDismiss={() => setRestSheet(null)}
+        testID="rest-sheet"
+      />
+      <OptionSheet
+        title="RPE"
+        mode="single"
+        options={RPE_OPTIONS}
+        noneLabel="No RPE"
+        selected={
+          rpeSheetSet?.set.rpe === null || rpeSheetSet === null ? null : String(rpeSheetSet.set.rpe)
+        }
+        onSelect={(value) => {
+          if (rpeSheetSet !== null) setSetRpe(rpeSheetSet.set, rpeFromChoice(value));
+        }}
+        isPresented={rpeSheetSet !== null}
+        onDismiss={() => setRpeSheet(null)}
+        testID="rpe-sheet"
       />
     </View>
   );

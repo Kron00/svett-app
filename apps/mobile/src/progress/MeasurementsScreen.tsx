@@ -6,6 +6,7 @@ import {
   formatDay,
   formatMeasurement,
   formatMeasurementChange,
+  formatShownMeasurement,
   isChartRange,
   isMeasurementKind,
   latestMeasurements,
@@ -18,6 +19,7 @@ import {
   measurementUnitText,
   parseMeasurementEntry,
   rangeStart,
+  type WeightUnit,
 } from "@svett/core";
 import { type RouteProp, useNavigation, useRoute } from "@react-navigation/native";
 import { useRef, useState } from "react";
@@ -26,6 +28,7 @@ import { ScrollView, View } from "react-native";
 import { write } from "../data/store";
 import { useQuery } from "../data/useQuery";
 import type { RootNavigation, RootStackParamList } from "../navigation";
+import { useWorkoutSettings } from "../settings/store";
 import { AppText } from "../ui/AppText";
 import { Button } from "../ui/Button";
 import { ListRow, ListSection } from "../ui/List";
@@ -51,6 +54,7 @@ export function MeasurementsScreen() {
   const sheetOpen = params?.sheet === "open";
   const setParams = (next: { kind?: MeasurementKind; range?: ChartRange; sheet?: "open" }) =>
     navigation.setParams({ kind, range, sheet: undefined, ...next });
+  const { unit } = useWorkoutSettings();
   const { state, reload } = useQuery(measurements);
 
   return (
@@ -58,7 +62,7 @@ export function MeasurementsScreen() {
       {({ rows, now }) => {
         const latest = new Map(latestMeasurements(rows).map((entry) => [entry.kind, entry]));
         const current = latest.get(kind);
-        const format = (value: number) => formatMeasurement(kind, value);
+        const shown = (value: number) => formatShownMeasurement(kind, value, unit);
         return (
           <>
             <ScrollView
@@ -78,19 +82,21 @@ export function MeasurementsScreen() {
               <ChartCard
                 testID="chart-measurement"
                 title={MEASUREMENT_LABEL[kind]}
-                value={current === undefined ? null : format(current.latest.value)}
+                value={
+                  current === undefined ? null : formatMeasurement(kind, current.latest.value, unit)
+                }
                 detail={
                   current === undefined
                     ? "Not measured yet."
                     : `On ${formatDay(current.latest.measuredAt)}${
                         current.change === null
                           ? "."
-                          : `, ${formatMeasurementChange(kind, current.change)} since the one before.`
+                          : `, ${formatMeasurementChange(kind, current.change, unit)} since the one before.`
                       }`
                 }
                 rule="Each point is one measurement."
-                points={measurementSeries(rows, kind, rangeStart(range, now))}
-                format={format}
+                points={measurementSeries(rows, kind, unit, rangeStart(range, now))}
+                format={shown}
               />
               <View className="px-gutter">
                 <Button
@@ -115,7 +121,7 @@ export function MeasurementsScreen() {
                       value={
                         entry === undefined
                           ? undefined
-                          : formatMeasurement(each, entry.latest.value)
+                          : formatMeasurement(each, entry.latest.value, unit)
                       }
                       testID={`measurement-row-${each}`}
                       trailing={{ type: "chevron", onPress: () => setParams({ kind: each }) }}
@@ -134,6 +140,7 @@ export function MeasurementsScreen() {
             </ScrollView>
             <AddMeasurementSheet
               kind={kind}
+              unit={unit}
               isPresented={sheetOpen}
               onDismiss={() => setParams({})}
               onSaved={() => {
@@ -150,11 +157,13 @@ export function MeasurementsScreen() {
 
 function AddMeasurementSheet({
   kind,
+  unit,
   isPresented,
   onDismiss,
   onSaved,
 }: {
   readonly kind: MeasurementKind;
+  readonly unit: WeightUnit;
   readonly isPresented: boolean;
   readonly onDismiss: () => void;
   readonly onSaved: () => void;
@@ -164,7 +173,7 @@ function AddMeasurementSheet({
   const [saving, setSaving] = useState(false);
   // State only disables Save after a render, and taps can land before it.
   const savingNow = useRef(false);
-  const value = parseMeasurementEntry(kind, entry);
+  const value = parseMeasurementEntry(kind, entry, unit);
   const close = (done: () => void) => {
     setEntry("");
     setError(null);
@@ -194,7 +203,7 @@ function AddMeasurementSheet({
         <EntryField
           label={MEASUREMENT_LABEL[kind]}
           value={entry}
-          unit={measurementUnitText(kind)}
+          unit={measurementUnitText(kind, unit)}
           focused
           onPress={() => {}}
         />
@@ -203,7 +212,7 @@ function AddMeasurementSheet({
           onKey={(key) => setEntry((current) => editNumberEntry(current, key, MEASUREMENT_ENTRY))}
         />
         <AppText testID="measurement-range" variant="footnote" tone="secondary">
-          {measurementRangeText(kind)}
+          {measurementRangeText(kind, unit)}
         </AppText>
         {error === null ? null : <AppText tone="destructive">{error}</AppText>}
         <Button

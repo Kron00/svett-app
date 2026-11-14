@@ -36,6 +36,7 @@ import { SetRow, SetRowHeader } from "../ui/SetRow";
 import { Sheet } from "../ui/Sheet";
 import { StatTile } from "../ui/StatTile";
 import { TextField } from "../ui/TextField";
+import { RestTimerBar } from "../ui/RestTimerBar";
 import { WorkoutBar } from "../ui/WorkoutBar";
 
 type SetField = "weight" | "reps";
@@ -496,6 +497,18 @@ export function GalleryScreen() {
             <WorkoutBar title="Push day" elapsed="42:07" onPress={noop} />
           </View>
         </View>
+      </Section>
+
+      <Section id="rest-timer" title="Rest timer">
+        <RestTimerBar
+          left="1:23"
+          leftLabel="1 minute 23 seconds"
+          progress={83 / 90}
+          adjustSeconds={15}
+          onLess={noop}
+          onMore={noop}
+          onSkip={noop}
+        />
       </Section>
 
       <Section id="sheet" title="Sheet">

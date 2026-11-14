@@ -20,6 +20,7 @@ import { useQuery } from "../data/store";
 import { useIsAccessibilityTextSize } from "../design/hooks";
 import { SPORTS } from "../design/tokens";
 import type { RootNavigation } from "../navigation";
+import { useWorkoutSettings } from "../settings/store";
 import { AppText } from "../ui/AppText";
 import { Button } from "../ui/Button";
 import { EmptyState } from "../ui/EmptyState";
@@ -43,12 +44,13 @@ function HistoryRow({
   readonly onPress: () => void;
 }) {
   const { activity } = row;
+  const { unit } = useWorkoutSettings();
   const sport = SPORTS[activity.kind];
   const when = `${formatDay(activity.startedAt)} · ${formatWorkoutDuration(activity.durationS)}`;
   const exercises =
     activity.kind === "strength" ? exerciseNameList(row.exerciseNames) : sport.label;
   const totals =
-    row.setCount === 0 ? null : `${row.setCount} sets · ${formatVolumeKg(row.volumeKg)}`;
+    row.setCount === 0 ? null : `${row.setCount} sets · ${formatVolumeKg(row.volumeKg, unit)}`;
   return (
     <View testID="history-row" className="px-gutter pb-3">
       <Pressable
@@ -132,6 +134,7 @@ function UndoDeleteBar({ workout }: { readonly workout: UndoableDelete }) {
 
 function RecentRecords() {
   const navigation = useNavigation<RootNavigation>();
+  const { unit } = useWorkoutSettings();
   const query = useQuery("recent-records", () => RECENT);
   const records = query.status === "ready" ? query.value : [];
   return (
@@ -150,7 +153,7 @@ function RecentRecords() {
               key={`${record.setId} ${record.kind}`}
               title={exerciseName}
               subtitle={`${RECORD_RULES[record.kind].label}, ${formatDay(record.achievedAt)}`}
-              value={formatRecordValue(RECORD_RULES[record.kind].unit, record.value)}
+              value={formatRecordValue(RECORD_RULES[record.kind].unit, record.value, unit)}
               testID="recent-record"
               icon={{ symbol: "trophy.fill", color: "set-warm-up" }}
               trailing={{

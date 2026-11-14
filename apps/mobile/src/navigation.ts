@@ -49,6 +49,12 @@ export type RootStackParamList = {
   AddWorkoutExercise: { q?: string; muscle?: string; equipment?: string } | undefined;
   /** The exercise library choosing the exercise that takes the place of `exercise`, a workout exercise's ID. */
   ReplaceWorkoutExercise: { exercise: string; q?: string; muscle?: string; equipment?: string };
+  /** Warm-up sets for `exercise`, a workout exercise's ID. */
+  WarmUp: { exercise: string };
+  /** The plate calculator, opened on `kg` kilograms when given. */
+  Plates: { kg?: string } | undefined;
+  /** Units, RPE, and your plates and bars. */
+  WorkoutSettings: undefined;
   Account: undefined;
 };
 

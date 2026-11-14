@@ -1,5 +1,6 @@
 import {
   AccountId,
+  ActivityExerciseId,
   type ActivityRepository,
   ANONYMOUS,
   databaseLayer,
@@ -18,6 +19,8 @@ import { MOVE_UNFINISHED } from "../data/store";
 const app = vi.hoisted(() => ({
   databases: new Map<string, unknown>(),
   storage: new Map<string, string>(),
+  defaults: new Map<string, unknown>(),
+  notifications: new Set<string>(),
 }));
 
 vi.mock("expo-sqlite/kv-store", () => ({
@@ -25,6 +28,26 @@ vi.mock("expo-sqlite/kv-store", () => ({
     getItemSync: (key: string) => app.storage.get(key) ?? null,
     setItemSync: (key: string, value: string) => app.storage.set(key, value),
     removeItemSync: (key: string) => app.storage.delete(key),
+  },
+}));
+// The phone's user defaults, where a running rest is kept.
+vi.mock("react-native", () => ({
+  Settings: {
+    get: (key: string) => app.defaults.get(key),
+    set: (values: Record<string, unknown>) => {
+      for (const [key, value] of Object.entries(values)) app.defaults.set(key, value);
+    },
+  },
+}));
+vi.mock("expo-notifications", () => ({
+  SchedulableTriggerInputTypes: { TIME_INTERVAL: "timeInterval" },
+  requestPermissionsAsync: async () => ({ granted: true }),
+  cancelScheduledNotificationAsync: async (id: string) => {
+    app.notifications.delete(id);
+  },
+  scheduleNotificationAsync: async (request: { identifier: string }) => {
+    app.notifications.add(request.identifier);
+    return request.identifier;
   },
 }));
 vi.mock("../account/config", () => ({ CLERK_PUBLISHABLE_KEY: "pk_test_svett" }));
@@ -57,9 +80,10 @@ const launch = async () => {
   const current = await import("../data/current");
   const store = await import("./store");
   const actions = await import("./actions");
+  const rest = await import("./rest");
   current.switchOwner(ANONYMOUS);
   await store.reloadWorkout();
-  return { current, store, actions };
+  return { current, store, actions, rest };
 };
 
 /** Waits for every read and save the store has queued, including the one a switch queues. */
@@ -82,6 +106,8 @@ beforeEach(async () => {
   app.databases.set(FIRST, first);
   app.databases.set("empty", empty);
   app.storage.clear();
+  app.defaults.clear();
+  app.notifications.clear();
   await phone.runPromise(startEmptyWorkout(7));
 });
 
@@ -91,13 +117,21 @@ afterEach(async () => {
 
 describe("the workout in progress when someone signs in or out", () => {
   it("stays in the database it was started in, and shows only the open database's", async () => {
-    const { current, store, actions } = await launch();
+    const { current, store, actions, rest } = await launch();
     const started = await inProgress(phone);
     expect(store.currentWorkout()?.activity.title).toBe(started?.title);
+    await rest.startRestTimer(90, {
+      exercise: "Barbell Squat",
+      activityId: started!.id,
+      activityExerciseId: ActivityExerciseId.make("0190a0b2-0000-7000-8000-000000000001"),
+    });
+    expect(rest.currentRestTimer()).not.toBeNull();
 
     current.switchOwner({ kind: "account", accountId: FIRST });
-    // The bar above the tabs drops the phone's workout at once, before the account's is read.
+    // The bar above the tabs drops the phone's workout and its rest at once, before the
+    // account's workout is read.
     expect(store.workoutState()).toEqual({ status: "loading" });
+    expect(rest.currentRestTimer()).toBeNull();
     await settled(store);
     expect(store.workoutState()).toMatchObject({ status: "ready", log: null, problem: null });
 

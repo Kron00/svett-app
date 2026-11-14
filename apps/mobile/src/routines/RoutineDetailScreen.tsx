@@ -13,6 +13,7 @@ import { useState } from "react";
 import { Alert, ScrollView, View } from "react-native";
 
 import { write } from "../data/store";
+import { useWorkoutSettings } from "../settings/store";
 import type { RootNavigation, RootStackParamList } from "../navigation";
 import { AppText } from "../ui/AppText";
 import { Button } from "../ui/Button";
@@ -47,6 +48,7 @@ function Details({ view, reload }: { readonly view: RoutineView; readonly reload
   const { routine, exercises } = view.detail;
   const [choosingFolder, setChoosingFolder] = useState(false);
   const [starting, setStarting] = useState(false);
+  const { unit } = useWorkoutSettings();
   const folder = view.folders.find((candidate) => candidate.id === routine.folderId);
   const index = view.siblings.findIndex((sibling) => sibling.id === routine.id);
 
@@ -126,7 +128,7 @@ function Details({ view, reload }: { readonly view: RoutineView; readonly reload
               <ListRow key="none" title="No sets" />
             ) : (
               sets.map((set, setIndex) => {
-                const target = setTargetText(set);
+                const target = setTargetText(set, unit);
                 const badge = badges[setIndex]!;
                 return (
                   <ListRow

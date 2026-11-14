@@ -62,8 +62,10 @@ export type PlannedSet = Pick<
  * An exercise to write with its sets. Without set fields it records what its sets hold, as
  * setFieldsFromSets decides, so importers need not choose.
  */
-export type ExerciseRows<S> = Omit<Draft<ActivityExercise, "activityId">, "setFields"> & {
+export type ExerciseRows<S> = Omit<Draft<ActivityExercise, "activityId">, "setFields" | "restS"> & {
   readonly setFields?: SetFields;
+  /** Without one the exercise has no rest time, as imported workouts do. */
+  readonly restS?: ActivityExercise["restS"];
   readonly sets: ReadonlyArray<S>;
 };
 
@@ -83,6 +85,7 @@ export class NothingDoneError extends Data.TaggedError("NothingDoneError")<{
 export interface LastPerformance {
   readonly activityId: ActivityId;
   readonly setFields: SetFields;
+  readonly restS: ActivityExercise["restS"];
   readonly sets: ReadonlyArray<ActivitySet>;
 }
 
@@ -168,7 +171,7 @@ const insertExercises = (
 ) =>
   Effect.gen(function* () {
     const ids: Array<ActivityExerciseId> = [];
-    for (const [index, { sets, setFields, ...exercise }] of exercises.entries()) {
+    for (const [index, { sets, setFields, restS, ...exercise }] of exercises.entries()) {
       const position = from + index;
       const exerciseId = ActivityExerciseId.make(
         yield* rowId(TABLES.activityExercise, origin, `/exercise/${position}`),
@@ -177,6 +180,7 @@ const insertExercises = (
         {
           ...exercise,
           setFields: setFields ?? setFieldsFromSets(sets) ?? "weight_reps",
+          restS: restS ?? null,
           id: exerciseId,
           activityId,
           position,
@@ -451,6 +455,63 @@ const makeActivityRepository = Effect.gen(function* () {
       ),
     );
 
+  /**
+   * Puts warm-up sets, such as the ones a calculator worked out, before the working sets of an
+   * exercise of the workout in progress, in place of its warm-ups still to do. Done warm-ups
+   * stay first, so adding warm-ups again never doubles them. Returns the new sets' IDs.
+   */
+  const replaceWarmUpSets = (id: ActivityExerciseId, sets: ReadonlyArray<PlannedSet>) =>
+    run(
+      sql.transaction(
+        Effect.gen(function* () {
+          yield* inProgressExercise(id);
+          const at = yield* currentTime;
+          const current = yield* exerciseSets(id);
+          const stale = current.filter((set) => set.setType === "warm_up" && !set.done);
+          for (const set of stale) {
+            yield* softDeleteRows(TABLES.activitySet, "id = ?", [set.id], at);
+          }
+          const done = current.filter((set) => set.setType === "warm_up" && set.done);
+          const working = current.filter((set) => set.setType !== "warm_up");
+          const after = done.length + sets.length;
+          for (const [position, row] of [
+            ...done.map((one, index) => [index, one] as const),
+            ...working.map((one, index) => [after + index, one] as const),
+          ]) {
+            if (row.position !== position) {
+              yield* updateRow(TABLES.activitySet, row.id, { position });
+            }
+          }
+          const added: Array<ActivitySetId> = [];
+          for (const [index, set] of sets.entries()) {
+            added.push(yield* insertSet(id, MADE_HERE, "", done.length + index, set, false, at));
+          }
+          return added;
+        }),
+      ),
+    );
+
+  /** Changes the superset groups of exercises of the workout in progress, all at once. */
+  const groupExercises = (
+    changes: ReadonlyArray<{
+      readonly id: ActivityExerciseId;
+      readonly supersetGroup: number | null;
+    }>,
+  ) =>
+    run(
+      sql.transaction(
+        Effect.forEach(
+          changes,
+          ({ id, supersetGroup }) =>
+            Effect.andThen(
+              inProgressExercise(id),
+              updateRow(TABLES.activityExercise, id, { supersetGroup }),
+            ),
+          { discard: true },
+        ),
+      ),
+    );
+
   /** Removes a set of the workout in progress. */
   const removeSet = (id: ActivitySetId) =>
     run(
@@ -536,6 +597,7 @@ const makeActivityRepository = Effect.gen(function* () {
           found.set(exerciseId, {
             activityId: exercise.value.activityId,
             setFields: exercise.value.setFields,
+            restS: exercise.value.restS,
             sets: yield* exerciseSets(exercise.value.id),
           });
         }
@@ -650,7 +712,7 @@ const makeActivityRepository = Effect.gen(function* () {
     /** Changes an exercise of the workout in progress. */
     updateExercise: (
       id: ActivityExerciseId,
-      patch: Pick<Patch<ActivityExercise>, "notes" | "supersetGroup">,
+      patch: Pick<Patch<ActivityExercise>, "notes" | "supersetGroup" | "restS">,
     ) =>
       run(
         sql.transaction(
@@ -684,6 +746,8 @@ const makeActivityRepository = Effect.gen(function* () {
         ),
       ),
     addSet,
+    replaceWarmUpSets,
+    groupExercises,
     removeSet,
     finishWorkout,
     lastPerformances,

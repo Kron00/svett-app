@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { exerciseMetrics, exerciseSeries } from "./exercise-progress.ts";
+import { exerciseMetrics, exerciseSeries, seriesIn } from "./exercise-progress.ts";
+import { niceTicks } from "./chart-scale.ts";
 import { describeSeries, labelByMonth, summarizeSeries } from "./series.ts";
 import { BENCH, PLANK, PULLUPS, workoutSets } from "./test-sets.ts";
 
@@ -90,5 +91,25 @@ describe("series helpers", () => {
       "Estimated 1RM, 3 points from 5 Jan 2026 to 2 Feb 2026, from 93.5 kg to 101.5 kg, highest 101.5 kg",
     );
     expect(describeSeries("Estimated 1RM", [], String)).toBe("Estimated 1RM, no data");
+  });
+});
+
+describe("seriesIn", () => {
+  it("charts weights in pounds when weights show in pounds, so the ticks land on round pounds", () => {
+    const points = seriesIn(exerciseSeries(bench, "heaviest_weight"), "kg", "lb");
+    expect(values(points).map((value) => Math.round(value * 100) / 100)).toEqual([
+      187.39, 187.39, 198.42,
+    ]);
+    const ticks = niceTicks(values(points), 4);
+    expect(ticks.values.every((tick) => Number.isInteger(tick))).toBe(true);
+    expect(ticks.min).toBeLessThanOrEqual(187.39);
+    expect(ticks.max).toBeGreaterThanOrEqual(198.42);
+  });
+
+  it("leaves kilograms and every other unit as they are", () => {
+    expect(values(seriesIn(exerciseSeries(bench, "heaviest_weight"), "kg", "kg"))).toEqual([
+      85, 85, 90,
+    ]);
+    expect(values(seriesIn(exerciseSeries(pullups, "total_reps"), "reps", "lb"))).toEqual([18, 10]);
   });
 });

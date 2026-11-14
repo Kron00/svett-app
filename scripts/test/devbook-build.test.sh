@@ -2047,9 +2047,9 @@ node -e '
     CREATE TABLE exercise (id TEXT PRIMARY KEY, name TEXT);
     CREATE TABLE activity (id TEXT PRIMARY KEY, deleted_at INTEGER, title TEXT, status TEXT, notes TEXT, started_at INTEGER);
     CREATE TABLE activity_exercise (id TEXT PRIMARY KEY, deleted_at INTEGER, activity_id TEXT, exercise_id TEXT,
-      position INTEGER, set_fields TEXT, notes TEXT);
+      position INTEGER, set_fields TEXT, notes TEXT, superset_group INTEGER);
     CREATE TABLE activity_set (id TEXT PRIMARY KEY, deleted_at INTEGER, activity_exercise_id TEXT, position INTEGER,
-      set_type TEXT, weight_kg REAL, reps INTEGER, duration_s REAL, distance_m REAL, done INTEGER);
+      set_type TEXT, weight_kg REAL, reps INTEGER, duration_s REAL, distance_m REAL, done INTEGER, rpe REAL);
     INSERT INTO routine VALUES ('\''push-routine'\'', NULL, '\''Push'\'', 0), ('\''legs-routine'\'', NULL, '\''Legs'\'', 2);
   `);
 ' "$3"
@@ -2075,9 +2075,9 @@ const save = () => {
     database.prepare("INSERT INTO activity VALUES (?, NULL, ?, ?, '', ?)").run(`a${w}`, workout.title, workout.status, w);
     workout.exercises.forEach((exercise, e) => {
       database.prepare("INSERT OR IGNORE INTO exercise VALUES (?, ?)").run(exercise.name, exercise.name);
-      database.prepare("INSERT INTO activity_exercise VALUES (?, NULL, ?, ?, ?, ?, '')").run(`a${w}e${e}`, `a${w}`, exercise.name, e, exercise.fields);
+      database.prepare("INSERT INTO activity_exercise VALUES (?, NULL, ?, ?, ?, ?, '', NULL)").run(`a${w}e${e}`, `a${w}`, exercise.name, e, exercise.fields);
       exercise.sets.forEach((set, s) => {
-        database.prepare("INSERT INTO activity_set VALUES (?, NULL, ?, ?, ?, ?, ?, ?, NULL, ?)")
+        database.prepare("INSERT INTO activity_set VALUES (?, NULL, ?, ?, ?, ?, ?, ?, NULL, ?, NULL)")
           .run(`a${w}e${e}s${s}`, `a${w}e${e}`, s, set.type, set.weight, set.reps, set.time, set.done ? 1 : 0);
       });
     });
@@ -2395,6 +2395,435 @@ run_logger FAKE_NO_TIMING=1 "$root/logger-untimed"
 check "logger.sh fails without the time a set took to show done" test "$logger_status" -ne 0
 check "logger.sh says what the timing line showed" \
   grep -qxF 'The workout did not time the set marked done. It says "No set marked done yet"' "$output"
+
+# tools.sh runs against the logger's fake fixture, a fake app and the real
+# workout-rows.ts. The fake device keeps the workout in $FAKE_STATE and writes it
+# to the database it was launched on after every change, as the app saves each
+# change. Romanian Deadlift's elements and the plate calculator's heavier load
+# sit below the fold until a scroll down reaches them. A press acts on the
+# element whose frame was read last. The rest notification shows on the Home
+# Screen while a rest runs, unless FAKE_NO_NOTIFICATION, and the rest has run out
+# once it shows. A relaunch keeps a running rest, unless FAKE_FORGETS_REST.
+# FAKE_REST_IN_SUPERSET rests after the first exercise of a superset, and
+# FAKE_STORES_LB stores a weight typed in pounds as kilograms without converting it.
+# An entry field is selected while the keypad types into it. FAKE_FIELD_MISSES=n
+# makes the first n presses on entry fields miss. With FAKE_GLIDES an entry field
+# is still moving up for its first three reads, and a press where it was before
+# it stopped misses.
+cat >"$fake/tools-device" <<'EOF'
+#!/usr/bin/env node
+const fs = require("node:fs");
+const { DatabaseSync } = require("node:sqlite");
+const args = process.argv.slice(2);
+fs.appendFileSync(`${process.env.FAKE_ROOT}/bound-calls`, `${args.join(" ")}\n`);
+const command = args.slice(4);
+const KG_PER_LB = 0.45359237;
+const stateFile = `${process.env.FAKE_STATE}/state.json`;
+const state = fs.existsSync(stateFile)
+  ? JSON.parse(fs.readFileSync(stateFile, "utf8"))
+  : { screen: "home", unit: "kg", workout: null, scrolled: [], rest: null, focus: null, fieldPresses: 0, reads: {} };
+const save = () => {
+  fs.mkdirSync(process.env.FAKE_STATE, { recursive: true });
+  fs.writeFileSync(stateFile, JSON.stringify(state));
+  if (!state.db || state.workout === null) return;
+  const database = new DatabaseSync(state.db);
+  database.exec("DELETE FROM activity; DELETE FROM activity_exercise; DELETE FROM activity_set; DELETE FROM exercise;");
+  const workout = state.workout;
+  database.prepare("INSERT INTO activity VALUES ('a0', NULL, ?, ?, '', 0)").run(workout.title, workout.status);
+  workout.exercises.forEach((exercise, e) => {
+    database.prepare("INSERT OR IGNORE INTO exercise VALUES (?, ?)").run(exercise.name, exercise.name);
+    database.prepare("INSERT INTO activity_exercise VALUES (?, NULL, 'a0', ?, ?, 'weight_reps', '', ?)")
+      .run(`e${e}`, exercise.name, e, exercise.superset);
+    exercise.sets.forEach((set, s) => {
+      database.prepare("INSERT INTO activity_set VALUES (?, NULL, ?, ?, ?, ?, ?, NULL, NULL, ?, NULL)")
+        .run(`e${e}s${s}`, `e${e}`, s, set.type, set.weight, set.reps, set.done ? 1 : 0);
+    });
+  });
+  database.close();
+};
+const LIBRARY = { "barbell squat": "Barbell Squat", "romanian deadlift": "Romanian Deadlift" };
+// Last time's sets, which marking a set done fills in, in kilograms.
+const LAST = {
+  "Barbell Squat": [["warm_up", 60, 10], ["normal", 100, 5], ["normal", 100, 5]],
+  "Romanian Deadlift": [["normal", 80, 8], ["normal", 80, 8]],
+};
+const shown = (kg) => String(Math.round((state.unit === "lb" ? kg / KG_PER_LB : kg) * 100) / 100);
+const badges = (exercise) => {
+  let normal = 0;
+  return exercise.sets.map((one) => one.type === "normal" ? `Set ${++normal}` : "Warm-up set");
+};
+const doneLabel = (exercise, index) => {
+  const one = exercise.sets[index];
+  const parts = [];
+  if (one.weight !== null) parts.push(`${process.env.FAKE_STORES_LB ? one.typed : shown(one.weight)} ${state.unit}`);
+  if (one.reps !== null) parts.push(`${one.reps} reps`);
+  return [badges(exercise)[index], ...(parts.length ? parts : ["No target"]), one.done ? "Done" : "To do"].join(", ");
+};
+const inSuperset = (e) => state.workout.exercises[e]?.superset != null;
+const joinsNext = (e) => inSuperset(e) && state.workout.exercises[e + 1]?.superset === state.workout.exercises[e].superset;
+const options = (e) => {
+  const count = state.workout.exercises.length;
+  return [
+    ...(inSuperset(e) ? ["Remove from superset"] : []),
+    ...(e < count - 1 && !joinsNext(e) ? ["Superset with next exercise"] : []),
+    `Rest timer: ${state.workout.exercises[e].rest === 30 ? "0:30" : "1:30"}`,
+    "Warm-up sets", "Plate calculator", "Replace exercise", "Log by: Weight and reps", "Remove exercise", "Cancel",
+  ];
+};
+const PLATES = {
+  "225": [["plates-result", "On the barbell, 225 lb. Each side, 2 plates of 45 lb."]],
+  "220.46": [
+    ["plates-result", "Your plates cannot make 220.46 lb exactly."],
+    ["plates-lighter", "Nearest lighter, 220 lb. Each side, 1 plate of 45 lb, 1 plate of 35 lb, 1 plate of 5 lb, 1 plate of 2.5 lb."],
+    ["plates-heavier", "Nearest heavier, 225 lb. Each side, 2 plates of 45 lb."],
+  ],
+};
+const elements = () => {
+  const found = [];
+  const add = (id, label = "", selected = false, role = null) => found.push({ id, label, selected, role });
+  if (state.screen === "home") return found;
+  if (state.screen === "springboard") {
+    if (state.rest !== null && !process.env.FAKE_NO_NOTIFICATION) add(null, "Rest is over");
+    return found;
+  }
+  add(null, "Train, tab, 2 of 5");
+  const workout = state.workout?.status === "in_progress" ? state.workout : null;
+  if (state.screen === "tabs" && workout) add("workout-bar", `Workout in progress, ${workout.title}, 12:34`);
+  if (state.screen === "settings") {
+    add("workout-settings");
+    add(null, "Kilograms");
+    add(null, "Pounds");
+    add("unit-note", `Weights show and are typed in ${state.unit === "lb" ? "pounds" : "kilograms"}. svett stores kilograms, so switching changes no workout.`);
+  }
+  if (state.screen === "train") { add("train"); if (!workout) add("start-empty-workout"); }
+  if (state.screen === "picker") { add("exercise-library"); add("exercise-result-0", `${LIBRARY[state.query]}, Hamstrings · Barbell`); }
+  // iOS nests each action sheet button in three containers with the same label.
+  if (state.screen === "options") for (const label of options(state.options)) add(null, label, false, "button");
+  if (state.screen === "rest-sheet") { add("rest-sheet"); for (const seconds of [0, 15, 30, 45, 60, 90]) add(`rest-sheet-${seconds}`); }
+  if (state.screen === "plates") {
+    add("plates");
+    for (const [id, label] of PLATES[shown(state.platesKg)] ?? [["plates-result", `Plates for ${shown(state.platesKg)} ${state.unit}`]]) add(id, label);
+  }
+  if (state.screen === "workout") {
+    add("workout");
+    if (!workout) return found;
+    add("workout-title", workout.title);
+    add("bar-finish", "Finish");
+    if (state.alert) add("alert-finish", "Finish workout", false, "button");
+    workout.exercises.forEach((exercise, e) => {
+      add(`workout-exercise-${e}`, exercise.name);
+      add(`exercise-options-${e}`);
+      if (inSuperset(e)) add(`workout-superset-${e}`, "Superset A");
+      exercise.sets.forEach((_, s) => {
+        add(`workout-set-${e}-${s}`, doneLabel(exercise, s));
+        for (const column of ["weight", "reps"]) {
+          const focus = state.focus;
+          add(`set-${e}-${s}-${column}`, "", focus?.e === e && focus.s === s && focus.column === column);
+        }
+      });
+    });
+    if (state.focus) for (const key of "0123456789") add(`key-${key}`);
+    if (state.rest !== null) { add("rest-timer"); add("rest-timer-left", `Rest, ${state.rest} seconds left`); }
+  }
+  return found;
+};
+const parse = (selector) => ({
+  id: /id="([^"]*)"/.exec(selector)?.[1] ?? null,
+  label: /label="([^"]*)"/.exec(selector)?.[1] ?? null,
+  selected: /selected=true/.test(selector),
+  role: /role="([^"]*)"/.exec(selector)?.[1] ?? null,
+});
+const find = (selector) => {
+  const wanted = parse(selector);
+  return elements().find((element) =>
+    (wanted.id === null || element.id === wanted.id) && (wanted.label === null || element.label === wanted.label) &&
+    (!wanted.selected || element.selected) && (element.role === null || wanted.role === element.role)) ?? null;
+};
+const isField = (id) => /^set-\d+-\d+-(weight|reps)$/.test(id ?? "");
+// Where an element is after `reads` reads of its frame. A gliding field stops after three.
+const topAt = (id, reads) =>
+  process.env.FAKE_LOW && id === process.env.FAKE_LOW && !state.panned
+    ? 905
+    : process.env.FAKE_GLIDES && isField(id)
+      ? 600 + 20 * Math.max(0, 3 - reads)
+      : 600;
+const centre = (top) => `${16 + 408 / 2} ${top + 50 / 2}`;
+const belowFold = (element) =>
+  /^(workout-exercise|workout-superset|workout-set|exercise-options|set)-1/.test(element.id ?? "") ||
+  element.id === "plates-heavier";
+const visible = (element) => element !== null && (!belowFold(element) || state.scrolled.includes(element.id));
+const show = (screen) => { state.screen = screen; state.scrolled = []; };
+const heaviest = (exercise) => Math.max(...exercise.sets.filter((one) => one.type !== "warm_up" && one.weight !== null).map((one) => one.weight));
+const press = (point) => {
+  const target = state.target;
+  if (isField(target)) {
+    state.fieldPresses += 1;
+    const missed = state.fieldPresses <= Number(process.env.FAKE_FIELD_MISSES ?? 0) ||
+      point !== centre(topAt(target, state.reads[target] ?? 0));
+    if (missed) return;
+  }
+  const workout = state.workout;
+  let m;
+  if (target === "label:Pounds") state.unit = "lb";
+  else if (target === "label:Kilograms") state.unit = "kg";
+  else if (target === "start-empty-workout") {
+    state.workout = { title: "Evening workout", status: "in_progress", exercises: [] };
+    show("workout");
+  } else if (target === "exercise-result-0") {
+    const name = LIBRARY[state.query];
+    workout.exercises.push({ name, rest: 90, superset: null,
+      sets: LAST[name].map(([type]) => ({ type, weight: null, reps: null, done: false, typed: null })) });
+    show("workout");
+  } else if ((m = /^exercise-options-(\d+)$/.exec(target))) { state.options = Number(m[1]); show("options"); }
+  else if (target === "label:Rest timer: 1:30" || target === "label:Rest timer: 0:30") show("rest-sheet");
+  else if ((m = /^rest-sheet-(\d+)$/.exec(target))) {
+    workout.exercises[state.options].rest = Number(m[1]);
+    show("workout");
+  } else if (target === "label:Superset with next exercise") {
+    workout.exercises[state.options].superset = 0;
+    workout.exercises[state.options + 1].superset = 0;
+    show("workout");
+  } else if (target === "label:Plate calculator") {
+    state.platesKg = heaviest(workout.exercises[state.options]);
+    show("plates");
+  } else if ((m = /^set-(\d+)-(\d+)-(\w+)$/.exec(target))) {
+    state.focus = { e: Number(m[1]), s: Number(m[2]), column: m[3], text: "" };
+  } else if ((m = /^key-(\d)$/.exec(target))) {
+    const focus = state.focus;
+    focus.text += m[1];
+    const one = workout.exercises[focus.e].sets[focus.s];
+    if (focus.column === "weight") {
+      one.typed = focus.text;
+      one.weight = state.unit === "lb" && !process.env.FAKE_STORES_LB ? Number(focus.text) * KG_PER_LB : Number(focus.text);
+    } else one.reps = Number(focus.text);
+  } else if ((m = /^workout-set-(\d+)-(\d+)$/.exec(target))) {
+    const e = Number(m[1]);
+    const exercise = workout.exercises[e];
+    const one = exercise.sets[Number(m[2])];
+    const [, weight, reps] = LAST[exercise.name][Number(m[2])];
+    one.weight ??= weight;
+    one.reps ??= reps;
+    one.done = true;
+    const last = !inSuperset(e) || !inSuperset(e + 1);
+    if (last || process.env.FAKE_REST_IN_SUPERSET) state.rest = exercise.rest;
+  } else if (target === "bar-finish") state.alert = true;
+  else if (target === "alert-finish") {
+    state.alert = false;
+    for (const exercise of workout.exercises) exercise.sets = exercise.sets.filter((one) => one.done);
+    workout.exercises = workout.exercises.filter((exercise) => exercise.sets.length > 0);
+    workout.status = "finished";
+    state.rest = null;
+    show("tabs");
+  } else process.exit(1);
+};
+const fail = () => process.exit(1);
+switch (command[0]) {
+  case "settings":
+  case "screenshot":
+    break;
+  case "home":
+    show("home");
+    break;
+  case "open": {
+    const url = command[1] === "com.apple.springboard" ? "springboard" : command[2];
+    if (url === "springboard") show("springboard");
+    else if (url === "--relaunch") {
+      state.db = command.find((arg) => arg.endsWith(".db"))?.replace("--launch-args=", "") ?? state.db;
+      if (process.env.FAKE_FORGETS_REST) state.rest = null;
+      state.focus = null;
+      show("tabs");
+    } else if (url === "svett://settings/workout") show("settings");
+    else if (url === "svett://train") show("train");
+    else if (url === "svett://train/workout") show("workout");
+    else if (url === "svett://tools/plates?kg=100") { state.platesKg = 100; show("plates"); }
+    else if (url.startsWith("svett://train/workout/exercises?q=")) {
+      state.query = decodeURIComponent(url.slice("svett://train/workout/exercises?q=".length));
+      show("picker");
+    } else fail();
+    break;
+  }
+  case "wait":
+    if (/^\d+$/.test(command[1])) break;
+    if (command[1] === "text") {
+      if (find(`label="${command[2]}"`) === null) fail();
+      if (command[2] === "Rest is over") state.rest = null;
+      break;
+    }
+    if (command[1] === "absent") { if (find(command[2]) !== null) fail(); break; }
+    if (!visible(find(command[1]))) fail();
+    break;
+  case "is":
+    if (!visible(find(command[2]))) fail();
+    break;
+  case "scroll": {
+    const element = find(command[3]);
+    if (element === null || (command[1] === "up" && !visible(element))) fail();
+    state.scrolled.push(element.id);
+    break;
+  }
+  case "get": {
+    const element = find(command[2]);
+    if (element === null) fail();
+    state.target = element.id ?? `label:${element.label}`;
+    const reads = state.reads[state.target] ?? 0;
+    state.reads[state.target] = reads + 1;
+    console.log(JSON.stringify({ label: element.label, rect: { x: 16, y: topAt(state.target, reads), width: 408, height: 50 } }));
+    break;
+  }
+  case "press":
+    // A press at a point must get two numbers, as agent-device would demand.
+    if (!command[1].includes("=") && !/^\d+ \d+$/.test(`${command[1]} ${command[2]}`)) fail();
+    press(`${command[1]} ${command[2]}`);
+    break;
+  case "gesture":
+    // agent-device reports each gesture on stdout, which must not reach a coordinate.
+    state.panned = true;
+    console.log(`Panned (${command[2]}, ${command[3]}) by (${command[4]}, ${command[5]})`);
+    break;
+  case "alert":
+    if (command[1] === "wait" && !state.alert) fail();
+    if (command[1] === "accept") fail();
+    break;
+  default:
+    fail();
+}
+save();
+EOF
+chmod +x "$fake/tools-device"
+
+# run_tools [VAR=value...] [tools.sh args...] leaves the exit status in tools_status.
+run_tools() {
+  local -a vars=()
+  while [[ "${1:-}" == *=* ]]; do
+    vars+=("$1")
+    shift
+  done
+  rm -rf "$root/tools-state" "$root/data container"
+  rm -f "$root/simctl-calls" "$root/bound-calls"
+  tools_status=0
+  env PATH="$logger_bin:$fake:$PATH" FAKE_ROOT="$root" FAKE_STATE="$root/tools-state" \
+    SVETT_DEVICE_CMD="tools-device --session 't3-test session' --device FAKE-UDID" \
+    "${vars[@]}" "$repo/scripts/sim/tools.sh" "$@" >"$output" 2>&1 || tools_status=$?
+}
+
+tools_args="--launch-args=-svettFixture --launch-args=$root/data container/Documents/svett-tools.db"
+tools_links=("com.kron00.svett svett://settings/workout" "com.kron00.svett svett://train"
+  "com.kron00.svett svett://train/workout/exercises?q=barbell%20squat"
+  "com.kron00.svett svett://train/workout/exercises?q=romanian%20deadlift"
+  "com.apple.springboard")
+squat_kg=$(node -e 'console.log(225 * 0.45359237)')
+
+case_name="tools.sh Debug with SVETT_DEVICE_CMD"
+run_tools "$root/tools"
+[[ "$tools_status" == 0 ]] || fail "tools.sh failed"
+check "tools.sh launches on the copied fixture, goes to the Home Screen for the rest, and launches again during the next" \
+  only_open "$debug_open $tools_args" "${tools_links[@]}" "$debug_open $tools_args" \
+  "com.kron00.svett svett://train/workout" "$debug_open $tools_args" \
+  "com.kron00.svett svett://train/workout" "com.kron00.svett svett://tools/plates?kg=100" \
+  "com.kron00.svett svett://train/workout"
+check "tools.sh never launches or opens a link with simctl" no_simctl_launch_or_openurl
+check "tools.sh grants notifications ahead, and shoots at the largest text size, then restores the default" \
+  only_calls "settings" "settings permission grant notifications" \
+  "settings text-size accessibility-extra-extra-extra-large" "settings text-size large"
+# done_then_home checks the call right after the press that marks the set done,
+# which starts the rest, is the Home Screen, before any screenshot or database check.
+done_then_home() {
+  grep -A2 -F 'get attrs id="workout-set-0-1"' "$root/bound-calls" | sed 's/^.*FAKE-UDID //' |
+    tail -2 | tr '\n' '|' | grep -qxE "press [0-9]+ [0-9]+\|home\|"
+}
+check "tools.sh leaves svett in the call right after it marks the set done" done_then_home
+check "tools.sh waits on the Home Screen for the rest notification" \
+  bound_got "--session t3-test session --device FAKE-UDID wait text Rest is over 60000"
+check "tools.sh types 225 lb on the keypad, then the reps, without the keypad's Next or Done" \
+  only_calls 'get attrs id="(set-[0-9]+-[0-9]+-|key-|keypad-)' \
+  'get attrs id="set-0-1-weight"' 'get attrs id="set-0-1-weight"' 'get attrs id="set-0-1-weight"' \
+  'get attrs id="key-2"' 'get attrs id="key-2"' 'get attrs id="key-5"' \
+  'get attrs id="set-0-1-reps"' 'get attrs id="set-0-1-reps"' 'get attrs id="set-0-1-reps"' \
+  'get attrs id="key-5"'
+check "tools.sh types only once the field it pressed is selected with the keypad open" \
+  only_calls 'wait id="(set-[0-9]+-[0-9]+-[a-z]+" selected=true|key-2")' \
+  'wait id="set-0-1-weight" selected=true 3000' 'wait id="key-2" 3000' \
+  'wait id="set-0-1-reps" selected=true 3000' 'wait id="key-2" 3000'
+check "tools.sh scrolls down to the second exercise's superset before it checks it" \
+  bound_got '--session t3-test session --device FAKE-UDID scroll down --until id="workout-superset-1" label="Superset A"'
+check "tools.sh finds 225 lb stored as kilograms while the workout is in progress" \
+  grep -qxF "Set 1.2: normal, $squat_kg kg, 5 reps, done" "$root/tools/pounds.txt"
+check "tools.sh finds the finished workout's superset in the database" \
+  grep -qxF "Exercise 2: Romanian Deadlift, by weight_reps, superset 0" "$root/tools/finished.txt"
+check "tools.sh screenshots each step" \
+  only_calls "screenshot" \
+  "screenshot $root/tools/01-pounds.png" "screenshot $root/tools/02-pounds-typed.png" \
+  "screenshot $root/tools/03-rest-notification.png" "screenshot $root/tools/04-set-done.png" \
+  "screenshot $root/tools/05-superset.png" "screenshot $root/tools/06-rest-restored.png" \
+  "screenshot $root/tools/07-plates.png" "screenshot $root/tools/08-plates-nearest.png" \
+  "screenshot $root/tools/09-finished.png"
+
+case_name="tools.sh Release with SVETT_DEVICE_CMD"
+run_tools --release "$root/tools-release"
+[[ "$tools_status" == 0 ]] || fail "tools.sh --release failed"
+check "tools.sh Release launches the installed app on the fixture without Metro" \
+  only_open "com.kron00.svett --relaunch $tools_args" "${tools_links[@]}" \
+  "com.kron00.svett --relaunch $tools_args" "com.kron00.svett svett://train/workout" \
+  "com.kron00.svett --relaunch $tools_args" "com.kron00.svett svett://train/workout" \
+  "com.kron00.svett svett://tools/plates?kg=100" "com.kron00.svett svett://train/workout"
+
+case_name="tools.sh when Start empty workout sits at the screen's bottom edge"
+run_tools FAKE_LOW=start-empty-workout "$root/tools-low"
+check "tools.sh drags a control up from the bottom edge and still presses a number" \
+  test "$tools_status" -eq 0
+check "tools.sh drags once before pressing Start empty workout" \
+  only_calls "gesture" "gesture pan 20 600 0 -300 400"
+
+case_name="tools.sh when the rest notification never shows"
+run_tools FAKE_NO_NOTIFICATION=1 "$root/tools-silent"
+check "tools.sh fails without the rest notification" test "$tools_status" -ne 0
+check "tools.sh says the notification did not show in the background" \
+  grep -qxF "The rest timer's notification did not show with svett in the background" "$output"
+check "tools.sh restores the default text size after a failure" \
+  only_calls "settings" "settings permission grant notifications" \
+  "settings text-size accessibility-extra-extra-extra-large" "settings text-size large"
+
+case_name="tools.sh when the first exercise of a superset rests"
+run_tools FAKE_REST_IN_SUPERSET=1 "$root/tools-superset"
+check "tools.sh fails when a superset rests before its round ends" test "$tools_status" -ne 0
+check "tools.sh names the set that rested" \
+  grep -qxF "A set of Barbell Squat, first in its superset, started a rest" "$output"
+
+case_name="tools.sh when a relaunch forgets the running rest"
+run_tools FAKE_FORGETS_REST=1 "$root/tools-forgets"
+check "tools.sh fails when the rest does not come back after svett is killed" test "$tools_status" -ne 0
+check "tools.sh says the rest did not come back" \
+  grep -qxF "The rest did not come back after svett was killed" "$output"
+
+case_name="tools.sh when a weight typed in pounds is stored unconverted"
+run_tools FAKE_STORES_LB=1 "$root/tools-unconverted"
+check "tools.sh fails when the database holds pounds as kilograms" test "$tools_status" -ne 0
+check "tools.sh says the workout is not stored as logged" \
+  grep -qxF "The database does not hold \"Evening workout\" as logged. See $root/tools-unconverted/pounds.txt" "$output"
+
+case_name="tools.sh when the first press on an entry field misses"
+run_tools FAKE_FIELD_MISSES=1 "$root/tools-missed"
+[[ "$tools_status" == 0 ]] || fail "tools.sh failed after one missed press"
+check "tools.sh presses the weight field again, then types 225 lb into it" \
+  grep -qxF "Set 1.2: normal, $squat_kg kg, 5 reps, done" "$root/tools-missed/pounds.txt"
+check "tools.sh says the first press did not select the field" \
+  grep -qxF "Pressing the weight of Barbell Squat's first working set did not select it with the keypad open, try 1 of 2" "$output"
+
+case_name="tools.sh when every press on an entry field misses"
+run_tools FAKE_FIELD_MISSES=99 "$root/tools-missing"
+check "tools.sh fails when the field never takes a press" test "$tools_status" -ne 0
+check "tools.sh names the field the keypad never opened for" \
+  grep -qxF "Pressing the weight of Barbell Squat's first working set (id=\"set-0-1-weight\") did not select it and open the keypad, after two presses" "$output"
+check "tools.sh never types on the keypad when the field never took a press" \
+  only_calls 'get attrs id="key-'
+
+case_name="tools.sh when an entry field is still moving after a scroll"
+run_tools FAKE_GLIDES=1 "$root/tools-glides"
+[[ "$tools_status" == 0 ]] || fail "tools.sh failed on a field that was still moving"
+check "tools.sh presses the field where it stopped, at the first try" \
+  bash -c '! grep -qF "try 1 of 2" "$1"' _ "$output"
+check "tools.sh still types 225 lb into the field" \
+  grep -qxF "Set 1.2: normal, $squat_kg kg, 5 reps, done" "$root/tools-glides/pounds.txt"
 
 # Stands in for the bound command on the account sign-in. It tracks the screen
 # (the tab root, Progress or Account), the sign-in step, who is signed in, and

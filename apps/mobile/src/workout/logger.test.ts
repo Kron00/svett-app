@@ -12,6 +12,8 @@ import {
   type SetColumn,
   type SqlDriver,
   startEmptyWorkout,
+  supersetPlaces,
+  type WeightUnit,
 } from "@svett/core";
 import { openNodeDatabase } from "@svett/core/node";
 import { Effect, ManagedRuntime } from "effect";
@@ -30,7 +32,13 @@ vi.mock("../data/current", () => ({
   subscribeDatabase: () => () => {},
 }));
 const alert = vi.hoisted(() => vi.fn());
-vi.mock("react-native", () => ({ Alert: { alert } }));
+vi.mock("react-native", () => ({
+  Alert: { alert },
+  Settings: { get: () => undefined, set: () => undefined },
+}));
+vi.mock("expo-notifications", () => ({
+  cancelScheduledNotificationAsync: async () => undefined,
+}));
 
 const squat = libraryExerciseId("Barbell_Squat");
 const plank = libraryExerciseId("Plank");
@@ -119,6 +127,7 @@ const typeKeys = (
   set: ActivitySet,
   column: SetColumn,
   keys: ReadonlyArray<KeypadKey>,
+  unit: WeightUnit = "kg",
 ) => {
   const { store, actions, focus } = running;
   let field = focus.focusField(
@@ -126,6 +135,7 @@ const typeKeys = (
     set,
     column,
     failures(running),
+    unit,
   );
   for (const key of keys) {
     const typed = focus.pressKey(store.currentWorkout()!, field, key, failures(running))!;
@@ -222,7 +232,7 @@ describe("the workout store", () => {
     const running = await launch(opened.runtime);
     const { store, actions, focus } = running;
     const exercise = store.currentWorkout()!.exercises[0]!;
-    let field = focus.focusField(exercise, exercise.sets[0]!, "weight", 0);
+    let field = focus.focusField(exercise, exercise.sets[0]!, "weight", 0, "kg");
     for (const key of ["1", "0"] as const) {
       const typed = focus.pressKey(store.currentWorkout()!, field, key, 0)!;
       field = typed.focus;
@@ -281,6 +291,47 @@ describe("the workout store", () => {
     );
     expect(shownSet(running).reps).toBe(5);
     expect(shownText(running, field)).toBe("5");
+  });
+
+  it("types a weight in pounds, stores kilograms, and keeps them when retyped as shown", async () => {
+    const opened = openApp(":memory:");
+    await startSquats(opened.runtime);
+    const running = await launch(opened.runtime);
+    const field = typeKeys(running, shownSet(running), "weight", ["2", "2", "5"], "lb");
+    expect(shownText(running, field)).toBe("225");
+    await running.store.reloadWorkout();
+    expect(shownSet(running).weightKg).toBe(225 * 0.45359237);
+
+    running.actions.typeValue(shownSet(running), "weight", 102.5);
+    await running.store.reloadWorkout();
+    const retyped = typeKeys(running, shownSet(running), "weight", ["delete", "7"], "lb");
+    expect(retyped.text).toBe("225.97");
+    await running.store.reloadWorkout();
+    expect(shownSet(running).weightKg).toBe(102.5);
+  });
+});
+
+describe("supersets in the logger", () => {
+  it("brings a third exercise into a superset from its last exercise, and takes one out", async () => {
+    const opened = openApp(":memory:");
+    await opened.runtime.runPromise(
+      Effect.gen(function* () {
+        const id = yield* startEmptyWorkout(9);
+        yield* addExercisesToWorkout(id, [squat, plank, squat]);
+      }),
+    );
+    const running = await launch(opened.runtime);
+    const letters = () =>
+      supersetPlaces(running.store.currentWorkout()!.exercises.map((exercise) => exercise.row))
+        .map((place) => place?.letter ?? "-")
+        .join("");
+
+    await running.actions.supersetWithNextAt(0);
+    expect(letters()).toBe("AA-");
+    await running.actions.supersetWithNextAt(1);
+    expect(letters()).toBe("AAA");
+    await running.actions.leaveSupersetAt(2);
+    expect(letters()).toBe("AA-");
   });
 });
 

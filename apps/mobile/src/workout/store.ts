@@ -19,6 +19,7 @@ import {
   subscribeDatabase,
 } from "../data/current";
 import { quietWriteTo, writeTo } from "../data/store";
+import { skipRestTimer } from "./rest";
 
 export type WorkoutState =
   | { readonly status: "loading" }
@@ -93,7 +94,8 @@ const target = (): OpenDatabase => shownFrom ?? currentDatabase();
 
 /**
  * Signing in or out opens another database, with its own workout in progress or none. The
- * previous owner's workout stays in their database, and nothing of it shows or saves here.
+ * previous owner's workout stays in their database, and nothing of it shows or saves here,
+ * its rest timer included.
  */
 subscribeDatabase(() => {
   if (shownFrom !== null && !sameDatabase(shownFrom, currentDatabase())) {
@@ -102,6 +104,7 @@ subscribeDatabase(() => {
     failures = 0;
     shownFrom = null;
     show();
+    void skipRestTimer();
   }
   void enqueue(read);
 });

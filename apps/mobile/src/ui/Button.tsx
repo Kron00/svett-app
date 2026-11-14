@@ -21,6 +21,8 @@ export type ButtonProps = {
   readonly variant?: ButtonVariant;
   readonly symbol?: SymbolName;
   readonly disabled?: boolean;
+  /** What VoiceOver reads, when the label reads badly, such as "−15". */
+  readonly accessibilityLabel?: string;
   readonly accessibilityHint?: string;
   readonly testID?: string;
 };
@@ -32,6 +34,7 @@ export function Button({
   variant = "primary",
   symbol,
   disabled = false,
+  accessibilityLabel,
   accessibilityHint,
   testID,
 }: ButtonProps) {
@@ -39,7 +42,7 @@ export function Button({
   return (
     <Pressable
       accessibilityRole="button"
-      accessibilityLabel={label}
+      accessibilityLabel={accessibilityLabel ?? label}
       accessibilityHint={accessibilityHint}
       accessibilityState={{ disabled }}
       disabled={disabled}
