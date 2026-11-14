@@ -66,9 +66,6 @@ export const matchNames = (
   });
 };
 
-/** Two workouts with the same sets this close together may be one workout whose start moved. */
-export const SAME_SETS_WINDOW_MS = 24 * 3_600_000;
-
 type Rows = Partial<Record<TableKey, Array<AnyRow>>>;
 
 const add = (rows: Rows, table: TableKey, row: AnyRow) => (rows[table] ??= []).push(row);
@@ -110,17 +107,38 @@ const summaryOf = (id: string, workout: HevyWorkout): ItemSummary => ({
   at: workout.startedAt as EpochMillis,
 });
 
+const summaryHere = (row: AnyRow): ItemSummary => ({
+  key: `${TABLES.activity.name}/${row.id}`,
+  table: "activity",
+  id: row.id,
+  title: String(row["title"]) || "Workout",
+  at: row["startedAt"] as EpochMillis,
+});
+
+const endOf = (startedAt: number, durationS: number) => startedAt + durationS * 1_000;
+
+/** True when two workouts share any time, or start together. */
+const overlaps = (aStart: number, aEnd: number, bStart: number, bEnd: number) =>
+  aStart === bStart || (aStart < bEnd && bStart < aEnd);
+
 /**
  * Reads a Hevy file as svett rows. A workout's identity is its start time, so its rows get the
  * same IDs on every import and every device: the workout from `importedId` of its start, and
  * its exercises and sets from paths below it. A live workout here whose Hevy content has not
  * changed since it was imported comes back exactly as it is here, so your own edits to it never
- * show as a change. One you deleted, or an Undo removed, shows as changed, so you can take it. One whose content changed brings its new rows, and marks deleted the exercises and
- * sets of yours it no longer has, so taking it gives exactly Hevy's version.
+ * show as a change. One you deleted, or an Undo removed, shows as changed, so you can take it.
+ * One whose content changed brings its new rows, and marks deleted the exercises and sets of
+ * yours it no longer has, so taking it gives exactly Hevy's version. Its start keeps the
+ * instant saved here, since the same clock time read in another zone is still the same start.
  *
- * A second workout with the same start, and a new workout with the same sets as one here less
- * than a day away, are possible duplicates. Each is imported only when its key is in `keep`.
- * A kept second workout's identity adds its place in the file, so the two get different IDs.
+ * Following the plan's repeat rules, these new workouts are possible duplicates: a second one
+ * with the same start as another in the file, one with a new start and the same exercises and
+ * sets as one here, and one whose time overlaps a workout here from another source. Each is
+ * imported only when its key is in `keep`. A kept second workout's identity adds its place in
+ * the file, so the two get different IDs.
+ *
+ * A custom exercise an earlier import made, and Undo or you deleted, comes back with any
+ * workout taken from the file that uses it.
  */
 export const hevyImport = (file: HevyFile, keep: ReadonlySet<string> = new Set()): ImportInput => ({
   source: "hevy",
@@ -143,26 +161,21 @@ export const hevyImport = (file: HevyFile, keep: ReadonlySet<string> = new Set()
       list.push(row);
       setsOf.set(String(row["activityExerciseId"]), list);
     }
-    const signatures = local.activity
-      .filter((row) => row.deletedAt === null && row["kind"] === "strength")
-      .map((row) => ({
-        row,
-        signature: setsSignature(liveOnly(exercisesOf.get(row.id)), (id) =>
-          liveOnly(setsOf.get(id)),
-        ),
-      }));
+    const liveActivities = local.activity.filter((row) => row.deletedAt === null);
+    const sameSets = new Map<string, AnyRow>();
+    for (const row of liveActivities) {
+      if (row["kind"] !== "strength") continue;
+      const signature = setsSignature(liveOnly(exercisesOf.get(row.id)), (id) =>
+        liveOnly(setsOf.get(id)),
+      );
+      if (!sameSets.has(signature)) sameSets.set(signature, row);
+    }
+    const otherSources = liveActivities.filter((row) => row["source"] !== "hevy");
 
     const matches = new Map(
       matchNames(exerciseNames(file), local).map((match) => [match.name, match.exerciseId]),
     );
     const usedNew = new Map<string, { cardio: boolean }>();
-    const exerciseFor = (name: string, cardio: boolean) => {
-      const matched = matches.get(name);
-      if (matched !== undefined && matched !== null) return matched;
-      const seen = usedNew.get(name);
-      usedNew.set(name, { cardio: (seen?.cardio ?? true) && cardio });
-      return hevyExerciseId(name);
-    };
 
     const firstAt = new Map<string, { id: string; workout: HevyWorkout }>();
     for (const workout of file.workouts) {
@@ -203,6 +216,14 @@ export const hevyImport = (file: HevyFile, keep: ReadonlySet<string> = new Set()
       }
 
       const built: Rows = {};
+      const newHere = new Map<string, { cardio: boolean }>();
+      const exerciseFor = (name: string, cardio: boolean) => {
+        const matched = matches.get(name);
+        if (matched !== undefined && matched !== null) return matched;
+        const seen = newHere.get(name) ?? usedNew.get(name);
+        newHere.set(name, { cardio: (seen?.cardio ?? true) && cardio });
+        return hevyExerciseId(name);
+      };
       const path = (suffix: string) => `${identity}${suffix}`;
       workout.exercises.forEach((exercise, position) => {
         const exerciseRowId = importedId(
@@ -241,36 +262,37 @@ export const hevyImport = (file: HevyFile, keep: ReadonlySet<string> = new Set()
         const signature = setsSignature(built.activityExercise ?? [], (exerciseRowId) =>
           (built.activitySet ?? []).filter((set) => set["activityExerciseId"] === exerciseRowId),
         );
-        const twin = signatures.find(
-          (other) =>
-            other.signature === signature &&
-            Math.abs(Number(other.row["startedAt"]) - workout.startedAt) < SAME_SETS_WINDOW_MS,
+        const twin = sameSets.get(signature);
+        const end = endOf(workout.startedAt, workout.durationS);
+        const overlapping = otherSources.find((other) =>
+          overlaps(
+            workout.startedAt,
+            end,
+            Number(other["startedAt"]),
+            endOf(Number(other["startedAt"]), Number(other["durationS"])),
+          ),
         );
-        if (twin !== undefined) {
+        const other = twin ?? overlapping;
+        if (other !== undefined) {
           const key = `hevy/${identity}`;
           duplicates.push({
             key,
             summary: summaryOf(id, workout),
-            reason: "same_sets",
-            other: {
-              key: `${TABLES.activity.name}/${twin.row.id}`,
-              table: "activity",
-              id: twin.row.id,
-              title: String(twin.row["title"]) || "Workout",
-              at: twin.row["startedAt"] as EpochMillis,
-            },
+            reason: twin === undefined ? "overlap" : "same_sets",
+            other: summaryHere(other),
             kept: keep.has(key),
           });
           if (!keep.has(key)) continue;
         }
       }
 
+      for (const [name, used] of newHere) usedNew.set(name, used);
       add(rows, "activity", {
         id,
         updatedAt: at,
         deletedAt: null,
         kind: "strength",
-        startedAt: workout.startedAt,
+        startedAt: here?.["startedAt"] ?? workout.startedAt,
         durationS: workout.durationS,
         title: workout.title,
         notes: workout.description,
@@ -298,7 +320,12 @@ export const hevyImport = (file: HevyFile, keep: ReadonlySet<string> = new Set()
 
     for (const [name, { cardio }] of usedNew) {
       const id = hevyExerciseId(name);
-      if (exercisesHere.has(id)) continue;
+      const existing = exercisesHere.get(id);
+      if (existing !== undefined) {
+        // planImport brings it back with each workout taken that uses it, and only then.
+        if (existing.deletedAt !== null) add(rows, "exercise", { ...existing, deletedAt: null });
+        continue;
+      }
       add(rows, "exercise", {
         id,
         updatedAt: at,

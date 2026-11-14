@@ -114,10 +114,17 @@ async function preview(source: ImportFileSource | null, kind: "svett" | "hevy"):
   return names.length > 0 ? { kind: "matching", file, names } : plan({ kind: "hevy", file });
 }
 
-const duplicateReason = ({ reason, other }: PossibleDuplicate) =>
-  reason === "same_start"
-    ? `Same start as ${other.title}`
-    : `Same sets as ${other.title}${other.at === null ? "" : `, ${formatDay(other.at)}`}`;
+const duplicateReason = ({ reason, other }: PossibleDuplicate) => {
+  const day = other.at === null ? "" : `, ${formatDay(other.at)}`;
+  switch (reason) {
+    case "same_start":
+      return `Same start as ${other.title}`;
+    case "same_sets":
+      return `Same sets as ${other.title}${day}`;
+    case "overlap":
+      return `Overlaps ${other.title}${day}`;
+  }
+};
 
 function FileSummary({ loaded }: { readonly loaded: Loaded }) {
   if (loaded.kind === "svett") {

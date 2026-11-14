@@ -365,7 +365,8 @@ const makeTransferRepository = Effect.gen(function* () {
 
   /**
    * Adds the file's new records and, for each changed record named in `take`, replaces
-   * yours with the file's. Nothing is written when there is nothing to add or take.
+   * yours with the file's. Each brings back the deleted records it names, such as its
+   * exercises. Nothing is written when there is nothing to add or take.
    * The plan is made again inside the transaction, so it matches what is here.
    */
   const applyImport = (file: SvettFile | ImportInput, take: ReadonlyArray<string>) =>
@@ -375,12 +376,21 @@ const makeTransferRepository = Effect.gen(function* () {
           const input = inputOf(file);
           const local = yield* snapshot;
           const plan = planImport(local, input.read(local, yield* currentTime).tables);
-          const chosen = plan.items.filter(
+          const picked = plan.items.filter(
             (item) =>
               item.status === "new" ||
               (item.status === "changed" && take.includes(item.summary.key)),
           );
-          if (chosen.length === 0) return Option.none<ImportResult>();
+          if (picked.length === 0) return Option.none<ImportResult>();
+          const required = new Set(
+            picked.flatMap((item) => (item.status === "unchanged" ? [] : item.requires)),
+          );
+          const chosen = [
+            ...plan.items.filter(
+              (item) => item.status === "restore" && required.has(item.summary.key),
+            ),
+            ...picked,
+          ];
           const importBatchId = yield* imports.create(input.source);
           yield* imports.setStatus(importBatchId, "applied");
           const at = yield* currentTime;
@@ -402,7 +412,7 @@ const makeTransferRepository = Effect.gen(function* () {
                 item.replaced,
               );
               if (isLive(item.writes)) added++;
-            } else if (item.status === "changed") {
+            } else if (item.status === "changed" || item.status === "restore") {
               // A version taken from the file is the newest change to the record, also for sync.
               const written = fromBatch(restamped(item.writes, at), input, importBatchId);
               yield* putAll(written);
@@ -414,7 +424,7 @@ const makeTransferRepository = Effect.gen(function* () {
                 written,
                 item.replaced,
               );
-              replaced++;
+              if (item.status === "changed") replaced++;
             }
           }
           return Option.some<ImportResult>({ importBatchId, added, replaced });

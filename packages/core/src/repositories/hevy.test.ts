@@ -4,14 +4,16 @@ import { Effect, Option, Result } from "effect";
 import { describe, expect, it } from "vite-plus/test";
 
 import { libraryExerciseId } from "../exercise-library.ts";
-import { decodeHevyFile, type HevyFile, wallTimeAsUtc } from "../hevy-file.ts";
+import { DurationSeconds } from "../duration.ts";
+import { decodeHevyFile, type HevyFile, type ToInstant, wallTimeAsUtc } from "../hevy-file.ts";
 import { hevyExerciseId, hevyImport } from "../hevy-import.ts";
 import { importedId } from "../ids.ts";
-import { ActivityId, type ImportBatchId } from "../schema.ts";
+import { ActivityId, EpochMillis, type ImportBatchId } from "../schema.ts";
 import { openTestDatabase } from "../test-database.ts";
 import { isNothingToImport } from "../transfer.ts";
 import { ActivityRepository } from "./activities.ts";
 import { ExerciseAliasRepository } from "./exercises.ts";
+import { MADE_HERE } from "./origin.ts";
 import { TransferRepository } from "./transfer.ts";
 
 type Database = ReturnType<typeof openTestDatabase>;
@@ -19,7 +21,8 @@ type Database = ReturnType<typeof openTestDatabase>;
 const sampleText = (name: string) =>
   readFileSync(new URL(`../../test-data/${name}`, import.meta.url), "utf8");
 
-const hevy = (text: string): HevyFile => Result.getOrThrow(decodeHevyFile(text, wallTimeAsUtc));
+const hevy = (text: string, toInstant: ToInstant = wallTimeAsUtc): HevyFile =>
+  Result.getOrThrow(decodeHevyFile(text, toInstant));
 
 const SAMPLE = hevy(sampleText("hevy-sample.csv"));
 const CHANGED = hevy(sampleText("hevy-sample-changed.csv"));
@@ -85,6 +88,13 @@ const workouts = (database: Database) =>
       ).map((set) => Object.values(set).join(" ")),
     })),
   }));
+
+/** Live sets whose exercise is deleted or missing, which no screen could show. */
+const setsWithoutExercise = (database: Database) =>
+  query(
+    database,
+    "SELECT s.id FROM activity_set s JOIN activity_exercise ae ON ae.id = s.activity_exercise_id JOIN activity a ON a.id = ae.activity_id LEFT JOIN exercise e ON e.id = ae.exercise_id AND e.deleted_at IS NULL WHERE s.deleted_at IS NULL AND ae.deleted_at IS NULL AND a.deleted_at IS NULL AND e.id IS NULL",
+  );
 
 const pushId = ActivityId.make(importedId("activity", "hevy", "2026-11-03T18:30:00"));
 const pullId = ActivityId.make(importedId("activity", "hevy", "2026-11-05T07:15:00"));
@@ -250,6 +260,82 @@ describe("Hevy import", () => {
     expect(count(database, "activity_set")).toBe(25);
   });
 
+  it("imports again after Undo, bringing back the custom exercises the workouts use", async () => {
+    const { database, batch } = await importSample();
+    const before = workouts(database);
+    await undo(database, batch);
+    expect(count(database, "activity")).toBe(0);
+    const landmine = () =>
+      query(
+        database,
+        "SELECT deleted_at FROM exercise WHERE id = ?",
+        hevyExerciseId("Landmine Press"),
+      );
+    expect(landmine()).toEqual([{ deleted_at: expect.any(Number) }]);
+
+    const plan = await preview(database, SAMPLE);
+    // The exercise is not a choice of its own. It comes back with the workouts that use it.
+    expect(plan.changed.map(({ title }) => title)).toEqual(["Legs", "Pull Day", "Push Day"]);
+    expect(plan.added).toEqual([]);
+
+    const again = await apply(
+      database,
+      SAMPLE,
+      plan.changed.map(({ key }) => key),
+    );
+    expect(again).toMatchObject({ added: 0, replaced: 3 });
+    expect(workouts(database)).toEqual(before);
+    expect(setsWithoutExercise(database)).toEqual([]);
+    expect(landmine()).toEqual([{ deleted_at: null }]);
+    expect(isNothingToImport(await preview(database, SAMPLE))).toBe(true);
+
+    // Undo of the second import removes the workouts and the exercise together again.
+    await undo(database, again!.importBatchId);
+    expect(count(database, "activity")).toBe(0);
+    expect(landmine()).toEqual([{ deleted_at: expect.any(Number) }]);
+  });
+
+  it("brings back a deleted custom exercise only with a workout that uses it", async () => {
+    const { database, batch } = await importSample();
+    await undo(database, batch);
+    const plan = await preview(database, SAMPLE);
+    const pull = plan.changed.find(({ title }) => title === "Pull Day");
+    // Pull Day uses no custom exercise, so taking it alone leaves Landmine Press deleted.
+    await apply(database, SAMPLE, [pull!.key]);
+    expect(count(database, "activity")).toBe(1);
+    expect(setsWithoutExercise(database)).toEqual([]);
+    expect(
+      query(
+        database,
+        "SELECT deleted_at FROM exercise WHERE id = ?",
+        hevyExerciseId("Landmine Press"),
+      ),
+    ).toEqual([{ deleted_at: expect.any(Number) }]);
+  });
+
+  it("keeps a workout's saved start when its new version is read in another zone", async () => {
+    const { database } = await importSample();
+    const starts = () => query(database, "SELECT id, started_at FROM activity ORDER BY id");
+    const before = starts();
+    // The phone moved an hour east, so the same clock time is an hour earlier.
+    const east = hevy(
+      sampleText("hevy-sample-changed.csv"),
+      (time) => wallTimeAsUtc(time) - 3_600_000,
+    );
+    const plan = await preview(database, east);
+    expect(plan.changed.map(({ title }) => title)).toEqual(["Back Day", "Push Day"]);
+    expect(plan.duplicates).toEqual([]);
+
+    await apply(
+      database,
+      east,
+      plan.changed.map(({ key }) => key),
+    );
+    expect(workouts(database).map(({ title }) => title)).toEqual(["Push Day", "Back Day", "Legs"]);
+    expect(starts()).toEqual(before);
+    expect(workouts(database)[0]?.startedAt).toBe(Date.UTC(2026, 10, 3, 18, 30));
+  });
+
   it("does not list a workout you edited here when Hevy's copy has not changed", async () => {
     const { database } = await importSample();
     await database.runtime.runPromise(
@@ -337,32 +423,75 @@ describe("Hevy import", () => {
     expect(isNothingToImport(await preview(database, file, keep))).toBe(true);
   });
 
-  it("holds back a new start with the same sets as a workout here that day, but not a week later", async () => {
+  it("holds back a new start with the same sets as a workout here, however far it moved", async () => {
     const { database } = await importSample();
     const legs = sampleText("hevy-sample.csv")
       .split("\n")
       .filter((line, index) => index === 0 || line.startsWith('"Legs"'))
       .join("\n");
-    const moved = hevy(
-      legs
-        .replaceAll("7 Nov 2026, 17:00", "7 Nov 2026, 17:30")
-        .replaceAll("7 Nov 2026, 18:10", "7 Nov 2026, 18:40"),
-    );
-    const plan = await preview(database, moved);
-    expect(plan.added).toEqual([]);
+    for (const [start, end, at] of [
+      ["7 Nov 2026, 17:30", "7 Nov 2026, 18:40", Date.UTC(2026, 10, 7, 17, 30)],
+      ["11 Nov 2026, 17:00", "11 Nov 2026, 18:10", Date.UTC(2026, 10, 11, 17)],
+    ] as const) {
+      const moved = hevy(
+        legs.replaceAll("7 Nov 2026, 17:00", start).replaceAll("7 Nov 2026, 18:10", end),
+      );
+      const plan = await preview(database, moved);
+      expect(plan.added).toEqual([]);
+      expect(plan.duplicates).toEqual([
+        expect.objectContaining({
+          reason: "same_sets",
+          kept: false,
+          summary: expect.objectContaining({ title: "Legs", at }),
+          other: expect.objectContaining({ title: "Legs", at: Date.UTC(2026, 10, 7, 17) }),
+        }),
+      ]);
+      const key = plan.duplicates[0]!.key;
+      expect((await preview(database, moved, new Set([key]))).added).toEqual([
+        { table: "activity", count: 1 },
+      ]);
+    }
+  });
+
+  it("holds back a new workout that overlaps one from another source", async () => {
+    const database = openTestDatabase();
+    await matchMachineRow(database);
+    const run = (startedAt: number, title: string) =>
+      database.runtime.runPromise(
+        Effect.flatMap(Effect.service(ActivityRepository), (activities) =>
+          activities.create({
+            origin: MADE_HERE,
+            kind: "run",
+            startedAt: EpochMillis.make(startedAt),
+            durationS: DurationSeconds.make(1_800),
+            title,
+            notes: "",
+            energyKcal: null,
+            audience: "only_you",
+            hiddenFields: [],
+            exercises: [],
+            track: null,
+          }),
+        ),
+      );
+    // Legs runs from 17:00 to 18:10 on 7 Nov. The first run is inside it, the second after it.
+    await run(Date.UTC(2026, 10, 7, 17, 20), "Treadmill run");
+    await run(Date.UTC(2026, 10, 7, 18, 10), "Cool down");
+
+    const plan = await preview(database, SAMPLE);
+    expect(plan.added).toEqual([
+      { table: "exercise", count: 1 },
+      { table: "activity", count: 2 },
+    ]);
     expect(plan.duplicates).toEqual([
       expect.objectContaining({
-        reason: "same_sets",
+        key: "hevy/2026-11-07T17:00:00",
+        reason: "overlap",
         kept: false,
-        summary: expect.objectContaining({ title: "Legs", at: Date.UTC(2026, 10, 7, 17, 30) }),
-        other: expect.objectContaining({ title: "Legs", at: Date.UTC(2026, 10, 7, 17) }),
+        summary: expect.objectContaining({ title: "Legs" }),
+        other: expect.objectContaining({ title: "Treadmill run" }),
       }),
     ]);
-
-    const nextWeek = hevy(legs.replaceAll("7 Nov 2026", "14 Nov 2026"));
-    const later = await preview(database, nextWeek);
-    expect(later.duplicates).toEqual([]);
-    expect(later.added).toEqual([{ table: "activity", count: 1 }]);
   });
 
   it("imports 300 workouts of 20 sets in under 10 seconds", async () => {
