@@ -113,12 +113,7 @@ function OwnProfileContent({ own }: { readonly own: OwnProfile }) {
           />
         </View>
       ) : (
-        <Counts
-          username={own.username}
-          followers={own.followers}
-          following={own.following}
-          own
-        />
+        <Counts username={own.username} followers={own.followers} following={own.following} own />
       )}
       <ListSection footer="People who asked to follow your private profile wait here until you answer.">
         <ListRow

@@ -55,6 +55,20 @@ const log = (database: Database, title: string) =>
 type Crash = "copy" | "delete";
 class Crashed extends Error {}
 
+const run = <A>(effect: Effect.Effect<A, unknown>) =>
+  Effect.runPromise(
+    effect.pipe(
+      Effect.map((value) => ({ done: value }) as const),
+      Effect.catch((error) =>
+        Effect.succeed(
+          error instanceof Crashed
+            ? ({ crashed: error.message } as const)
+            : ({ failed: String(error) } as const),
+        ),
+      ),
+    ),
+  );
+
 /**
  * A phone signed in to Alice's account, whose database holds two workouts, and whose own
  * database holds one logged before any account. The journal says the data moved into Alice.
@@ -95,20 +109,6 @@ const phone = async () => {
         }),
       ),
   };
-
-  const run = <A>(effect: Effect.Effect<A, unknown>) =>
-    Effect.runPromise(
-      effect.pipe(
-        Effect.map((value) => ({ done: value }) as const),
-        Effect.catch((error) =>
-          Effect.succeed(
-            error instanceof Crashed
-              ? ({ crashed: error.message } as const)
-              : ({ failed: String(error) } as const),
-          ),
-        ),
-      ),
-    );
 
   return {
     crashes,

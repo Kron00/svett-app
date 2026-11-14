@@ -98,13 +98,19 @@ export const safetyProof = async (options: SafetyProofOptions) => {
   const { owner, blocked } = options.usernames;
   await ok("owner", "PUT", "/v1/profile", { username: owner, private: false });
   await ok("blocked", "PUT", "/v1/profile", { username: blocked, private: false });
-  // An earlier run that stopped half way may have left the block or the follow in place.
-  const left = (await ok("owner", "GET", "/v1/blocks")) as {
-    readonly blocks: ReadonlyArray<{ readonly id: string; readonly username: string }>;
+  // Ends the owner's block of the other account, which an earlier run that stopped half way
+  // may have left in place.
+  const unblock = async () => {
+    const { blocks } = (await ok("owner", "GET", "/v1/blocks")) as {
+      readonly blocks: ReadonlyArray<{ readonly id: string; readonly username: string }>;
+    };
+    await Promise.all(
+      blocks
+        .filter((block) => block.username === blocked)
+        .map((block) => ok("owner", "DELETE", `/v1/blocks/${block.id}`)),
+    );
   };
-  for (const block of left.blocks) {
-    if (block.username === blocked) await ok("owner", "DELETE", `/v1/blocks/${block.id}`);
-  }
+  await unblock();
 
   const shared = activity("Safety proof, everyone");
   await ok("owner", "PUT", "/v1/rows", { rows: [{ table: "activity", row: shared }] });
@@ -153,12 +159,7 @@ export const safetyProof = async (options: SafetyProofOptions) => {
       `Blocked: ${blocked} finds no profile, search result, feed post or post of ${owner}, and cannot follow, like or comment`,
     );
   } finally {
-    const blocks = (await ok("owner", "GET", "/v1/blocks")) as {
-      readonly blocks: ReadonlyArray<{ readonly id: string; readonly username: string }>;
-    };
-    for (const block of blocks.blocks) {
-      if (block.username === blocked) await ok("owner", "DELETE", `/v1/blocks/${block.id}`);
-    }
+    await unblock();
     await ok("owner", "PUT", "/v1/rows", {
       rows: [{ table: "activity", row: { ...shared, updatedAt: now() + 1, deletedAt: now() + 1 } }],
     });
@@ -172,7 +173,8 @@ export const safetyProof = async (options: SafetyProofOptions) => {
     readonly tables?: Readonly<Record<string, ReadonlyArray<{ readonly id: string }>>>;
   };
   expect(
-    exported.format === "svett" && (exported.tables?.["activity"] ?? []).some((row) => row.id === kept.id),
+    exported.format === "svett" &&
+      (exported.tables?.["activity"] ?? []).some((row) => row.id === kept.id),
     "The export does not hold the account's activity",
   );
   // A second phone of the same account, offline during the deletion, still holds this token.

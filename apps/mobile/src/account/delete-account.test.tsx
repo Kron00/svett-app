@@ -19,7 +19,11 @@ import { currentDatabase, switchOwner } from "../data/current";
 import { AccountScreen } from "./AccountScreen";
 
 type Runtime = ManagedRuntime.ManagedRuntime<ActivityRepository, unknown>;
-type AlertButton = { readonly text: string; readonly style?: string; readonly onPress?: () => void };
+type AlertButton = {
+  readonly text: string;
+  readonly style?: string;
+  readonly onPress?: () => void;
+};
 
 const app = vi.hoisted(() => ({
   databases: new Map<string, unknown>(),

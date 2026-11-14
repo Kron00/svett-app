@@ -1,7 +1,13 @@
 import { Schema } from "effect";
 
 /** The groups of server routes that each have their own limit per account. */
-export const RateLimitGroup = Schema.Literals(["likes", "comments", "follows", "search", "sync_push"]);
+export const RateLimitGroup = Schema.Literals([
+  "likes",
+  "comments",
+  "follows",
+  "search",
+  "sync_push",
+]);
 export type RateLimitGroup = typeof RateLimitGroup.Type;
 
 /**
@@ -41,7 +47,11 @@ export type Take =
  * stored. A bucket never seen before starts full. A clock that went back fills nothing. When
  * the bucket is empty, `retryAfterSeconds` is the whole seconds until the next token.
  */
-export const takeToken = (bucket: Bucket | undefined, limit: RateLimit, nowMillis: number): Take => {
+export const takeToken = (
+  bucket: Bucket | undefined,
+  limit: RateLimit,
+  nowMillis: number,
+): Take => {
   const elapsed = bucket === undefined ? 0 : Math.max(0, nowMillis - bucket.atMillis) / 1000;
   const tokens =
     bucket === undefined
@@ -58,7 +68,8 @@ export const takeToken = (bucket: Bucket | undefined, limit: RateLimit, nowMilli
 
 /** What the app says when the server answers that an account sent too many requests. */
 export const rateLimitedMessage = (retryAfterSeconds: number | undefined): string => {
-  if (retryAfterSeconds === undefined) return "That was a lot at once. Wait a moment and try again.";
+  if (retryAfterSeconds === undefined)
+    return "That was a lot at once. Wait a moment and try again.";
   if (retryAfterSeconds < 60) {
     return `That was a lot at once. Try again in ${retryAfterSeconds} ${retryAfterSeconds === 1 ? "second" : "seconds"}.`;
   }
