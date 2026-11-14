@@ -145,10 +145,14 @@ function ExerciseProgress({
                 ))}
               </ListSection>
             ) : null}
-            <AppText variant="footnote" tone="secondary" className="px-8">
+            <AppText
+              testID="exercise-progress-end"
+              variant="footnote"
+              tone="secondary"
+              className="px-8"
+            >
               {EXERCISE_CHART_RULE}
             </AppText>
-            <View testID="exercise-progress-end" />
           </ScrollView>
         );
       }}

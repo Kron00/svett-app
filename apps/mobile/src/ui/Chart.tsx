@@ -49,6 +49,7 @@ export function Chart({
   accessibilityLabel,
   includeZero = false,
   formatValue = String,
+  testID,
   children,
 }: {
   readonly points: ReadonlyArray<ChartPoint>;
@@ -57,6 +58,7 @@ export function Chart({
   /** Bars start at zero. A line can start near its lowest value. */
   readonly includeZero?: boolean;
   readonly formatValue?: (value: number) => string;
+  readonly testID?: string;
   readonly children: ReactNode;
 }) {
   const large = useIsAccessibilityTextSize();
@@ -100,7 +102,12 @@ export function Chart({
   );
 
   return (
-    <View accessible accessibilityRole="image" accessibilityLabel={accessibilityLabel}>
+    <View
+      accessible
+      accessibilityRole="image"
+      accessibilityLabel={accessibilityLabel}
+      testID={testID}
+    >
       <View className="flex-row gap-2">
         <View
           className="flex-1 gap-1"

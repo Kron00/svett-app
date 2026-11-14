@@ -115,16 +115,15 @@ const texts = (node: ReactTestInstance): ReadonlyArray<string> =>
     .map((each) => [each.props.children].flat().join(""));
 
 const chartIn = (root: ReactTestInstance, testID: string) =>
-  root.find(byTestID(testID)).findByType(Chart);
+  root.find((node) => node.type === Chart && node.props.testID === testID);
 
 describe("Progress screens with the 300-workout fixture", () => {
   it("shows the workout counts and the five newest records on the Progress tab", async () => {
-    const root = await show(<ProgressScreen />, "recent-records");
+    const root = await show(<ProgressScreen />, "progress");
     const counts = () => texts(root.find(byTestID("workout-counts")))[0] ?? "";
     await until(() => counts() !== "Opening the database", "counting workouts");
     expect(counts()).toMatch(/^300 workouts, \d+ sets$/);
-    const records = root.find(byTestID("recent-records"));
-    expect(records.findAll((node) => node.props.icon?.symbol === "trophy.fill")).toHaveLength(5);
+    expect(root.findAll(byTestID("recent-record"))).toHaveLength(5);
   });
 
   it("charts every bench press workout with its three lifting metrics and lists its records", async () => {

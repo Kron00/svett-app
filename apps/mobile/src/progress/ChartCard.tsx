@@ -18,7 +18,6 @@ export function ChartCard({
   format,
   mark = "line",
   color,
-  labels,
   testID,
 }: {
   readonly title: string;
@@ -29,16 +28,11 @@ export function ChartCard({
   readonly format: (value: number) => string;
   readonly mark?: "line" | "bars";
   readonly color?: ColorToken;
-  /** X-axis labels by point. Month labels when left out. */
-  readonly labels?: ReadonlyArray<string>;
+  /** Goes on the chart itself, so a proof that finds it knows the chart drew. */
   readonly testID?: string;
 }) {
-  const monthly = labelByMonth(points);
-  const chartPoints = labels
-    ? monthly.map((point, index) => ({ ...point, label: labels[index] ?? "" }))
-    : monthly;
   return (
-    <View testID={testID} className="mx-gutter gap-3 rounded-card bg-surface p-4">
+    <View className="mx-gutter gap-3 rounded-card bg-surface p-4">
       <View className="gap-1">
         <AppText variant="subheadline" tone="secondary" accessibilityRole="header">
           {title}
@@ -58,10 +52,11 @@ export function ChartCard({
         <AppText tone="secondary">Nothing logged in this range.</AppText>
       ) : (
         <Chart
-          points={chartPoints}
+          points={labelByMonth(points)}
           includeZero={mark === "bars"}
           formatValue={(tick) => String(tick)}
           accessibilityLabel={describeSeries(title, points, format)}
+          testID={testID}
         >
           <ChartGrid />
           {mark === "bars" ? <ChartBars color={color} /> : <ChartLine color={color} />}

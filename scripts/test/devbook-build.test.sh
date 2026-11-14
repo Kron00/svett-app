@@ -704,6 +704,25 @@ chmod +x "$fake/exercises-device"
 
 # run_exercises [VAR=value...] [exercises.sh args...] leaves the exit status in exercises_status.
 run_exercises() {
+# Stands in for the bound command on the Progress screens. A screen's closing
+# element, whose id ends in -end, is on screen after FAKE_PROGRESS_SCROLLS scrolls
+# since the last open, by default 1. Every other element is on screen, except the
+# one FAKE_HIDDEN names. The workout counts read FAKE_COUNTS.
+cat >"$fake/progress-device" <<EOF
+#!/usr/bin/env bash
+echo "\$*" >>"$root/bound-calls"
+case "\$*" in
+  *' is visible id="'*'-end"')
+    scrolls=\$(awk '/ open / { n = 0 } / scroll down 0[.]6$/ { n++ } END { print n + 0 }' "$root/bound-calls")
+    ((scrolls >= \${FAKE_PROGRESS_SCROLLS:-1})) ;;
+  *" is visible "*) [[ -z "\${FAKE_HIDDEN:-}" || "\$*" != *"id=\"\$FAKE_HIDDEN\""* ]] ;;
+  *" get text "*) echo "\${FAKE_COUNTS:-300 workouts, 6012 sets}" ;;
+esac
+EOF
+chmod +x "$fake/progress-device"
+
+# run_progress [VAR=value...] [progress.sh args...] leaves the exit status in progress_status.
+run_progress() {
   local -a vars=()
   while [[ "${1:-}" == *=* ]]; do
     vars+=("$1")
@@ -762,5 +781,75 @@ run_exercises FAKE_LIBRARY="Barbell Squat Jump" "$root/exercises-other"
 check "exercises.sh fails when the first result is not the library exercise" test "$exercises_status" -ne 0
 check "exercises.sh names the result it found instead" \
   grep -qxF 'The first result was not "Barbell Squat". Its label is "Barbell Squat Jump, Chest · Cable".' "$output"
+  rm -f "$root/simctl-calls" "$root/bound-calls" "$container_fixture"
+  progress_status=0
+  env PATH="$fake:$PATH" SVETT_DEVICE_CMD="progress-device --session 't3-test session' --device FAKE-UDID" \
+    "${vars[@]}" "$repo/scripts/sim/progress.sh" "$@" >"$output" 2>&1 || progress_status=$?
+}
+
+progress_fails() {
+  [[ "$progress_status" != 0 ]] || fail "progress.sh succeeded"
+  grep -qF -- "$1" "$output" || fail "progress.sh did not print \"$1\""
+}
+
+bench_id=76d53b4c-195c-578c-8797-16475c947397
+progress_links=(
+  "com.kron00.svett svett://progress/exercise/$bench_id?range=all"
+  "com.kron00.svett svett://progress/muscles?week=2026-10-26"
+  "com.kron00.svett svett://progress/measurements?kind=body_weight&range=all"
+  "com.kron00.svett svett://progress/measurements?kind=body_weight&range=all&sheet=open"
+)
+largest_text="settings text-size accessibility-extra-extra-extra-large"
+
+case_name="progress.sh Debug with SVETT_DEVICE_CMD"
+proof="$root/proof progress"
+run_progress "$proof"
+[[ "$progress_status" == 0 ]] || fail "progress.sh failed"
+check "progress.sh copies the generated fixture into the app's data container" \
+  grep -qxF "fake fixture" "$container_fixture"
+check "progress.sh relaunches into the dev client on the fixture, then opens each chart's link" only_open \
+  "com.kron00.svett --relaunch --launch-url $local_dev_client_url --launch-args=-svettFixture --launch-args=$container_fixture" \
+  "${progress_links[@]}"
+check "progress.sh shoots at the largest text size and restores the default" \
+  only_calls "settings" "$largest_text" "settings text-size large"
+check "progress.sh pages each screen down to its closing rule, then shoots the add sheet" \
+  only_calls "screenshot" \
+  "screenshot $proof/01-progress-01.png" "screenshot $proof/01-progress-02.png" \
+  "screenshot $proof/02-bench-01.png" "screenshot $proof/02-bench-02.png" \
+  "screenshot $proof/03-muscles-01.png" "screenshot $proof/03-muscles-02.png" \
+  "screenshot $proof/04-body-weight-01.png" "screenshot $proof/04-body-weight-02.png" \
+  "screenshot $proof/05-add-measurement.png"
+check "progress.sh looks for each chart on the first page it shoots of the screen" \
+  only_calls 'is visible id="chart' \
+  'is visible id="chart-best_one_rep_max"' 'is visible id="chart-heaviest_weight"' \
+  'is visible id="chart-session_volume"' 'is visible id="chart-muscle-weeks"' \
+  'is visible id="chart-measurement"'
+check "progress.sh presses only the Progress tab, since agent-device refuses presses in screen content" \
+  only_calls "press" 'press label="Progress, tab, 3 of 5"'
+check "progress.sh with SVETT_DEVICE_CMD calls neither simctl launch nor openurl" no_simctl_launch_or_openurl
+
+case_name="progress.sh Release with SVETT_DEVICE_CMD"
+run_progress --release "$root/proof-progress-release"
+[[ "$progress_status" == 0 ]] || fail "progress.sh --release failed"
+check "progress.sh Release relaunches the installed app on the fixture without Metro" only_open \
+  "com.kron00.svett --relaunch --launch-args=-svettFixture --launch-args=$container_fixture" \
+  "${progress_links[@]}"
+
+case_name="progress.sh when the fixture does not open"
+run_progress FAKE_COUNTS="0 workouts, 0 sets" "$root/proof-progress-empty"
+check "progress.sh fails when the Progress tab does not show the fixture's 300 workouts" \
+  progress_fails "The Progress tab did not show the fixture's 300 workouts: 0 workouts, 0 sets"
+check "progress.sh restores the default text size after a failure" \
+  only_calls "settings" "$largest_text" "settings text-size large"
+
+case_name="progress.sh when a chart does not draw"
+run_progress FAKE_HIDDEN=chart-heaviest_weight "$root/proof-progress-hidden"
+check "progress.sh fails naming a chart that was on none of the pages" \
+  progress_fails "02-bench: never on screen: chart-heaviest_weight"
+
+case_name="progress.sh without a closing rule"
+run_progress FAKE_PROGRESS_SCROLLS=1000 "$root/proof-progress-endless"
+check "progress.sh stops after 40 pages when a screen's closing rule never shows" \
+  progress_fails "01-progress: progress-end was not on screen after 40 pages"
 
 echo "$passed passed"

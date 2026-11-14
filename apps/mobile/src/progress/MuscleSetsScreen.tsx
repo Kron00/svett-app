@@ -99,7 +99,7 @@ export function MuscleSetsScreen() {
               title={`${MUSCLE_LABEL[charted]}, sets per week`}
               value={sets(shown)}
               detail={`Week of ${formatShortDay(weekStart)}, and the ${CHART_WEEKS - 1} weeks before.`}
-              rule={MUSCLE_SET_RULE}
+              rule="Each bar is one week, Monday to Sunday."
               points={points}
               format={sets}
               mark="bars"
@@ -112,7 +112,7 @@ export function MuscleSetsScreen() {
                 message="Sets from workouts you finish this week count here."
               />
             ) : (
-              <ListSection header="Sets this week" footer={MUSCLE_SET_RULE}>
+              <ListSection header="Sets this week">
                 {week.map((entry) => (
                   <ListRow
                     key={entry.muscle}
@@ -133,7 +133,9 @@ export function MuscleSetsScreen() {
                 ))}
               </ListSection>
             )}
-            <View testID="muscle-sets-end" />
+            <AppText testID="muscle-sets-end" variant="footnote" tone="secondary" className="px-8">
+              {MUSCLE_SET_RULE}
+            </AppText>
           </ScrollView>
         );
       }}

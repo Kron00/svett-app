@@ -87,7 +87,7 @@ export function MeasurementsScreen() {
                           : `, ${formatMeasurementChange(kind, current.change)} since the one before.`
                       }`
                 }
-                rule="Each point is one measurement. Only you can see your measurements."
+                rule="Each point is one measurement."
                 points={measurementSeries(rows, kind, rangeStart(range, now))}
                 format={format}
               />
@@ -122,7 +122,14 @@ export function MeasurementsScreen() {
                   );
                 })}
               </ListSection>
-              <View testID="measurements-end" />
+              <AppText
+                testID="measurements-end"
+                variant="footnote"
+                tone="secondary"
+                className="px-8"
+              >
+                Only you can see your measurements.
+              </AppText>
             </ScrollView>
             <AddMeasurementSheet
               kind={kind}
