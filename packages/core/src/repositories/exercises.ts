@@ -122,6 +122,16 @@ const makeExerciseRepository = Effect.gen(function* () {
     create,
     remove,
     get: (id: ExerciseId) => run(selectById(TABLES.exercise, id)),
+    /** The names of these exercises in one read. A deleted or missing exercise has none. */
+    names: (exerciseIds: Iterable<ExerciseId>) =>
+      run(
+        Effect.map(
+          selectRows(TABLES.exercise, "id IN (SELECT value FROM json_each(?))", [
+            JSON.stringify([...new Set(exerciseIds)]),
+          ]),
+          (rows) => new Map(rows.map((row) => [row.id, row.name] as const)),
+        ),
+      ),
     list: run(selectRows(TABLES.exercise, "1 = 1", [], "name COLLATE NOCASE, id")),
     update: (
       id: ExerciseId,

@@ -15,9 +15,10 @@ import { Option, Result } from "effect";
 import { useEffect, useState } from "react";
 import { ScrollView, View } from "react-native";
 
+import { type OpenDatabase, sameDatabase, useCurrentDatabase } from "../data/current";
 import { SPORTS } from "../design/tokens";
 import type { RootNavigation, RootStackParamList } from "../navigation";
-import { withTransfers } from "../transfer/files";
+import { changeTransfers, databaseKey, withTransfers } from "../transfer/files";
 import { formatDay } from "../transfer/format";
 import { AppText } from "../ui/AppText";
 import { Button } from "../ui/Button";
@@ -25,13 +26,53 @@ import { EmptyState } from "../ui/EmptyState";
 import { ListRow, ListSection } from "../ui/List";
 import { readWorkoutFile } from "./files";
 
-type State =
+type Read =
   | { readonly kind: "reading"; readonly fraction: number }
   | { readonly kind: "refused"; readonly message: string }
-  | { readonly kind: "ready"; readonly file: SourceFile; readonly plan: SourcePlan }
+  | { readonly kind: "read"; readonly file: SourceFile };
+
+type State =
+  | { readonly kind: "previewing" }
+  | {
+      readonly kind: "ready";
+      readonly file: SourceFile;
+      readonly plan: SourcePlan;
+      /** The data the plan compares the file with, the only data Import may change. */
+      readonly database: OpenDatabase;
+    }
   | { readonly kind: "importing" }
   | { readonly kind: "imported"; readonly result: Option.Option<SourceImportResult> }
   | { readonly kind: "failed"; readonly message: string };
+
+const PREVIEWING: State = { kind: "previewing" };
+
+const firstRead = ({ uri, file }: RootStackParamList["HealthImport"]): Read =>
+  uri === undefined && file === undefined
+    ? { kind: "refused", message: "No file was chosen." }
+    : { kind: "reading", fraction: 0 };
+
+interface Shown {
+  readonly params: RootStackParamList["HealthImport"];
+  readonly read: Read;
+  readonly state: State;
+}
+
+/** What `params` shows once `read` is how far its file was read. */
+const withRead =
+  (params: Shown["params"], read: Read) =>
+  (before: Shown): Shown => ({
+    params,
+    read,
+    state: before.params === params ? before.state : PREVIEWING,
+  });
+
+/** What `params` shows once `next` changed its state. */
+const withState =
+  (params: Shown["params"], next: (before: State) => State) =>
+  (before: Shown): Shown =>
+    before.params === params
+      ? { ...before, state: next(before.state) }
+      : { params, read: firstRead(params), state: next(PREVIEWING) };
 
 /** A long list stops here, with a line for the rest, so a whole Health history stays quick. */
 const LISTED = 30;
@@ -189,62 +230,98 @@ function Plan({
   );
 }
 
-/** What an Apple Health export or a GPX file adds, links and changes, before anything is saved. */
+/**
+ * What an Apple Health export or a GPX file adds, links and changes, before anything is saved.
+ * The file is read once. Its plan is made again for whoever is signed in, and Import changes
+ * only the data the plan on screen was made for.
+ */
 export function HealthImportScreen() {
   const navigation = useNavigation<RootNavigation>();
   const { params } = useRoute<RouteProp<RootStackParamList, "HealthImport">>();
-  const { uri, file: fileName } = params;
-  const [state, setState] = useState<State>(() =>
-    uri === undefined && fileName === undefined
-      ? { kind: "refused", message: "No file was chosen." }
-      : { kind: "reading", fraction: 0 },
-  );
+  // A link to another file reuses this screen with new params, which start it over.
+  const [shown, show] = useState<Shown>({ params, read: firstRead(params), state: PREVIEWING });
+  const fresh = shown.params === params;
+  const read = fresh ? shown.read : firstRead(params);
+  const state = fresh ? shown.state : PREVIEWING;
+  const setState = (next: (before: State) => State) => show(withState(params, next));
+  const { owner, handle } = useCurrentDatabase();
 
   useEffect(() => {
     let current = true;
+    const { uri, file: fileName } = params;
     const source = uri !== undefined ? { uri } : fileName !== undefined ? { file: fileName } : null;
     if (source === null) return;
-    let shown = 0;
+    let percent = 0;
     const progress = (fraction: number) => {
       // One update per percent, not one per megabyte read.
-      if (!current || Math.floor(fraction * 100) === shown) return;
-      shown = Math.floor(fraction * 100);
-      setState({ kind: "reading", fraction });
+      if (!current || Math.floor(fraction * 100) === percent) return;
+      percent = Math.floor(fraction * 100);
+      show(withRead(params, { kind: "reading", fraction }));
     };
-    readWorkoutFile(source, progress)
-      .then(async (read) => {
-        if (!current) return;
-        if (Result.isFailure(read)) {
-          setState({ kind: "refused", message: read.failure.message });
-          return;
-        }
-        const file = read.success;
-        const plan = await withTransfers((transfers) =>
-          transfers.previewSourceImport(file.workouts),
-        );
-        if (current) setState({ kind: "ready", file, plan });
-      })
-      .catch(
-        (error: unknown) =>
-          current &&
-          setState({ kind: "refused", message: `The file did not open. ${String(error)}` }),
-      );
+    readWorkoutFile(source, progress).then(
+      (result) =>
+        current &&
+        show(
+          withRead(
+            params,
+            Result.isFailure(result)
+              ? { kind: "refused", message: result.failure.message }
+              : { kind: "read", file: result.success },
+          ),
+        ),
+      (error: unknown) =>
+        current &&
+        show(
+          withRead(params, { kind: "refused", message: `The file did not open. ${String(error)}` }),
+        ),
+    );
     return () => {
       current = false;
     };
-  }, [uri, fileName]);
+  }, [params]);
+
+  // Plans the file against the data open now, and again after someone signs in or out. A plan
+  // made for someone else never shows, and once Import is pressed the plan stays as it was.
+  const file = read.kind === "read" ? read.file : undefined;
+  useEffect(() => {
+    if (file === undefined) return;
+    let current = true;
+    const database = { owner, handle };
+    const replace = (next: State) =>
+      current &&
+      show(
+        withState(params, (before) =>
+          before.kind === "previewing" || before.kind === "ready" ? next : before,
+        ),
+      );
+    withTransfers((transfers) => transfers.previewSourceImport(file.workouts), database).then(
+      (plan) => replace({ kind: "ready", file, plan, database }),
+      (error: unknown) => replace({ kind: "failed", message: String(error) }),
+    );
+    return () => {
+      current = false;
+    };
+  }, [params, file, owner, handle]);
 
   const done = () => (navigation.canGoBack() ? navigation.goBack() : navigation.navigate("Tabs"));
 
-  const runImport = (file: SourceFile, choices: SourceChoices) => {
-    setState({ kind: "importing" });
-    withTransfers((transfers) =>
-      transfers.applySourceImport(file.source, file.workouts, choices),
+  /** Imports into the data the plan was made for. It refuses once that is not open. */
+  const runImport = (ready: Extract<State, { kind: "ready" }>, choices: SourceChoices) => {
+    setState(() => ({ kind: "importing" }));
+    changeTransfers(ready.database, (transfers) =>
+      transfers.applySourceImport(ready.file.source, ready.file.workouts, choices),
     ).then(
-      (result) => setState({ kind: "imported", result }),
-      (error: unknown) => setState({ kind: "failed", message: String(error) }),
+      (result) => setState(() => ({ kind: "imported", result })),
+      (error: unknown) =>
+        setState(() => ({
+          kind: "failed",
+          message: error instanceof Error ? error.message : String(error),
+        })),
     );
   };
+
+  const stale = state.kind === "ready" && !sameDatabase(state.database, { owner, handle });
+  const refused = read.kind === "refused" ? read.message : undefined;
 
   return (
     <ScrollView
@@ -253,30 +330,38 @@ export function HealthImportScreen() {
       contentContainerClassName="gap-6 pt-4 pb-12"
       contentInsetAdjustmentBehavior="automatic"
     >
-      {state.kind === "reading" || state.kind === "importing" ? (
+      {read.kind === "reading" ||
+      (read.kind === "read" && state.kind === "previewing") ||
+      state.kind === "importing" ||
+      stale ? (
         <AppText tone="secondary" className="px-gutter" testID="health-reading">
-          {state.kind === "reading"
-            ? `Reading the file, ${Math.floor(state.fraction * 100)}%`
-            : "Importing"}
+          {state.kind === "importing"
+            ? "Importing"
+            : read.kind === "reading"
+              ? `Reading the file, ${Math.floor(read.fraction * 100)}%`
+              : "Reading the file"}
         </AppText>
       ) : null}
-      {state.kind === "refused" || state.kind === "failed" ? (
+      {refused !== undefined || state.kind === "failed" ? (
         <View testID="health-refused">
           <EmptyState
             symbol="exclamationmark.triangle"
-            title={state.kind === "refused" ? "svett cannot import this file" : "Import failed"}
+            title={refused !== undefined ? "svett cannot import this file" : "Import failed"}
             message={
-              state.kind === "refused" ? state.message : `Nothing was saved. ${state.message}`
+              refused !== undefined
+                ? refused
+                : `Nothing was saved. ${state.kind === "failed" ? state.message : ""}`
             }
             action={{ label: "Done", onPress: done }}
           />
         </View>
       ) : null}
-      {state.kind === "ready" ? (
+      {state.kind === "ready" && !stale ? (
         <Plan
+          key={databaseKey(state.database)}
           file={state.file}
           plan={state.plan}
-          onImport={(choices) => runImport(state.file, choices)}
+          onImport={(choices) => runImport(state, choices)}
           onDecline={done}
         />
       ) : null}

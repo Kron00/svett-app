@@ -13,7 +13,7 @@ import {
   type WorkoutSummary,
 } from "@svett/core";
 import { Effect } from "effect";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Pressable, View } from "react-native";
 
 import { openActivity } from "../cardio/open-activity";
@@ -21,6 +21,7 @@ import { useQuery } from "../data/store";
 import { useIsAccessibilityTextSize } from "../design/hooks";
 import { SPORTS } from "../design/tokens";
 import type { RootNavigation } from "../navigation";
+import { useWorkoutSettings } from "../settings/store";
 import { AppText } from "../ui/AppText";
 import { Button } from "../ui/Button";
 import { EmptyState } from "../ui/EmptyState";
@@ -28,7 +29,7 @@ import { Icon } from "../ui/Icon";
 import { ListRow, ListSection, SectionHeader } from "../ui/List";
 import { StatTile } from "../ui/StatTile";
 import { formatDay, PHONE_OFFSET, useNow } from "./dates";
-import { type DeletedWorkout, setDeletedWorkout, undoDelete, useDeletedWorkout } from "./deleted";
+import { closeDeletedWorkout, type UndoableDelete, undoDelete, useDeletedWorkout } from "./deleted";
 import { recentRecords } from "./queries";
 
 const PAGE = 60;
@@ -44,12 +45,13 @@ function HistoryRow({
   readonly onPress: () => void;
 }) {
   const { activity } = row;
+  const { unit } = useWorkoutSettings();
   const sport = SPORTS[activity.kind];
   const when = `${formatDay(activity.startedAt)} · ${formatWorkoutDuration(activity.durationS)}`;
   const exercises =
     activity.kind === "strength" ? exerciseNameList(row.exerciseNames) : sport.label;
   const totals =
-    row.setCount === 0 ? null : `${row.setCount} sets · ${formatVolumeKg(row.volumeKg)}`;
+    row.setCount === 0 ? null : `${row.setCount} sets · ${formatVolumeKg(row.volumeKg, unit)}`;
   return (
     <View testID="history-row" className="px-gutter pb-3">
       <Pressable
@@ -83,10 +85,12 @@ function HistoryRow({
   );
 }
 
-function UndoDeleteBar({ workout }: { readonly workout: DeletedWorkout }) {
+function UndoDeleteBar({ workout }: { readonly workout: UndoableDelete }) {
   const stacked = useIsAccessibilityTextSize();
   const [undoing, setUndoing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // State only disables Undo after a render, and taps can land before it.
+  const undoingNow = useRef(false);
   return (
     <View testID="undo-delete-banner" className="absolute inset-x-0 bottom-0 px-gutter pb-3">
       <View
@@ -108,11 +112,17 @@ function UndoDeleteBar({ workout }: { readonly workout: DeletedWorkout }) {
             accessibilityHint="Brings the workout back"
             disabled={undoing}
             onPress={() => {
+              if (undoingNow.current) return;
+              undoingNow.current = true;
               setUndoing(true);
               setError(null);
               undoDelete(workout).then(
-                () => setUndoing(false),
+                () => {
+                  undoingNow.current = false;
+                  setUndoing(false);
+                },
                 (failure: unknown) => {
+                  undoingNow.current = false;
                   setUndoing(false);
                   setError(String(failure));
                 },
@@ -123,7 +133,8 @@ function UndoDeleteBar({ workout }: { readonly workout: DeletedWorkout }) {
             label="Close"
             variant="plain"
             testID="undo-delete-close"
-            onPress={() => setDeletedWorkout(null)}
+            disabled={undoing}
+            onPress={closeDeletedWorkout}
           />
         </View>
       </View>
@@ -133,6 +144,7 @@ function UndoDeleteBar({ workout }: { readonly workout: DeletedWorkout }) {
 
 function RecentRecords() {
   const navigation = useNavigation<RootNavigation>();
+  const { unit } = useWorkoutSettings();
   const query = useQuery("recent-records", () => RECENT);
   const records = query.status === "ready" ? query.value : [];
   return (
@@ -151,7 +163,7 @@ function RecentRecords() {
               key={`${record.setId} ${record.kind}`}
               title={exerciseName}
               subtitle={`${RECORD_RULES[record.kind].label}, ${formatDay(record.achievedAt)}`}
-              value={formatRecordValue(RECORD_RULES[record.kind].unit, record.value)}
+              value={formatRecordValue(RECORD_RULES[record.kind].unit, record.value, unit)}
               testID="recent-record"
               icon={{ symbol: "trophy.fill", color: "set-warm-up" }}
               trailing={{

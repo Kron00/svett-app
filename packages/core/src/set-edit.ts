@@ -1,5 +1,5 @@
 import type { ActivitySet, SetType } from "./schema.ts";
-import { formatWeightKg } from "./set-format.ts";
+import { formatWeight, kgFromText, type WeightUnit } from "./weight-unit.ts";
 
 /** The set type and the keypad text of each field, as the set edit screen holds them. */
 export type SetEdit = {
@@ -10,9 +10,10 @@ export type SetEdit = {
 
 type EditedSet = Pick<ActivitySet, "setType" | "weightKg" | "reps" | "durationS" | "distanceM">;
 
-export const setEditFrom = (set: EditedSet): SetEdit => ({
+/** The edit a set opens with, its weight in `unit`. */
+export const setEditFrom = (set: EditedSet, unit: WeightUnit = "kg"): SetEdit => ({
   setType: set.setType,
-  weight: set.weightKg === null ? "" : formatWeightKg(set.weightKg),
+  weight: set.weightKg === null ? "" : formatWeight(set.weightKg, unit),
   reps: set.reps === null ? "" : String(set.reps),
 });
 
@@ -28,14 +29,19 @@ const parse = (text: string): number | null => (text === "" ? null : Number(text
 /**
  * Turns the edit into the change to save. An empty field clears that value.
  * The set keeps its time and distance, and it must still record reps, a time
- * or a distance. A weight field left as it was filled keeps the stored weight,
- * because the field shows it rounded, as for 225 lb in kilograms.
+ * or a distance. The weight is typed in `unit` and stored in kilograms. A weight
+ * field that still reads as the stored weight keeps it, because the field shows it
+ * rounded, as for 225 lb in kilograms.
  */
-export const setEditPatch = (edit: SetEdit, set: EditedSet): SetEditResult => {
+export const setEditPatch = (
+  edit: SetEdit,
+  set: EditedSet,
+  unit: WeightUnit = "kg",
+): SetEditResult => {
   const reps = parse(edit.reps);
   if (reps === null && set.durationS === null && set.distanceM === null) {
     return { ok: false, message: "A set needs reps. Enter how many you did." };
   }
-  const weightKg = edit.weight === setEditFrom(set).weight ? set.weightKg : parse(edit.weight);
+  const weightKg = kgFromText(edit.weight, set.weightKg, unit);
   return { ok: true, patch: { setType: edit.setType, weightKg, reps } };
 };

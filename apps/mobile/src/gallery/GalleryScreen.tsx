@@ -26,16 +26,20 @@ import { AppText } from "../ui/AppText";
 import { Button } from "../ui/Button";
 import { Chart, ChartBars, ChartGrid, ChartLine } from "../ui/Chart";
 import { EmptyState } from "../ui/EmptyState";
+import { IconButton } from "../ui/IconButton";
 import { ListRow, ListSection, SectionHeader } from "../ui/List";
 import { EntryField, Keypad, Stepper } from "../ui/NumberEntry";
 import { OptionSheet } from "../ui/OptionSheet";
 import { SearchField } from "../ui/SearchField";
 import { SegmentedControl } from "../ui/SegmentedControl";
-import { type SetField, SetRow, SetRowHeader } from "../ui/SetRow";
+import { SetRow, SetRowHeader } from "../ui/SetRow";
 import { Sheet } from "../ui/Sheet";
 import { StatTile } from "../ui/StatTile";
 import { TextField } from "../ui/TextField";
+import { RestTimerBar } from "../ui/RestTimerBar";
 import { WorkoutBar } from "../ui/WorkoutBar";
+
+type SetField = "weight" | "reps";
 
 const LIMITS: Readonly<Record<SetField, NumberEntryLimits>> = {
   weight: WEIGHT_KG_ENTRY,
@@ -184,11 +188,25 @@ function SetRowsDemo() {
       {SETS.map((set, index) => (
         <SetRow
           key={set.id}
-          {...set}
-          weightPlaceholder={set.previous === null ? undefined : "80"}
-          repsPlaceholder={set.previous === null ? undefined : "8"}
+          setType={set.setType}
+          normalSetNumber={set.normalSetNumber}
+          previous={set.previous}
+          fields={[
+            {
+              name: "weight",
+              value: set.weight,
+              placeholder: set.previous === null ? undefined : "80",
+              unit: "kg",
+            },
+            {
+              name: "reps",
+              value: set.reps,
+              placeholder: set.previous === null ? undefined : "8",
+              unit: "reps",
+            },
+          ]}
           done={done[index] ?? false}
-          focusedField={index === 2 ? "reps" : undefined}
+          focusedField={index === 2 ? 1 : undefined}
           onPressSetType={noop}
           onPressField={noop}
           onToggleDone={() =>
@@ -302,6 +320,30 @@ export function GalleryScreen() {
           <Button label="Discard workout" symbol="trash" variant="destructive" onPress={noop} />
           <Button label="Add set" variant="plain" onPress={noop} />
           <Button label="Finish" disabled onPress={noop} />
+          <View className="flex-row gap-2">
+            <IconButton symbol="arrow.up" label="Move up" onPress={noop} />
+            <IconButton symbol="arrow.down" label="Move down" disabled onPress={noop} />
+            <IconButton symbol="trash" label="Remove" destructive onPress={noop} />
+            <IconButton symbol="ellipsis.circle" label="Options" variant="plain" onPress={noop} />
+          </View>
+        </View>
+      </Section>
+
+      <Section id="text-fields" title="Text fields">
+        <View className="gap-4 px-gutter">
+          <TextField
+            label="Email"
+            value="lifter@example.com"
+            note="Filled in from your ChatGPT sign-in."
+            onChangeText={noop}
+          />
+          <TextField
+            label="Code from the email"
+            value="4242"
+            problem="Enter the six-digit code from the email."
+            onChangeText={noop}
+          />
+          <TextField label="Email" placeholder="name@example.com" editable={false} />
         </View>
       </Section>
 
@@ -487,6 +529,18 @@ export function GalleryScreen() {
             <WorkoutBar title="Push day" elapsed="42:07" onPress={noop} />
           </View>
         </View>
+      </Section>
+
+      <Section id="rest-timer" title="Rest timer">
+        <RestTimerBar
+          left="1:23"
+          leftLabel="1 minute 23 seconds"
+          progress={83 / 90}
+          adjustSeconds={15}
+          onLess={noop}
+          onMore={noop}
+          onSkip={noop}
+        />
       </Section>
 
       <Section id="sheet" title="Sheet">

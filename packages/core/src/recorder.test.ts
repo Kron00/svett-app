@@ -1,6 +1,7 @@
 import { Effect, Exit, Option } from "effect";
 import { describe, expect, it } from "vite-plus/test";
 
+import { AccountId, ANONYMOUS } from "./database.ts";
 import type { Ids } from "./ids.ts";
 import { makeRecorder } from "./recorder.ts";
 import { type Fix, isPaused, movingMs, parseJournal } from "./recording.ts";
@@ -78,7 +79,7 @@ const setup = (initialJournal = "") => {
 describe("the recorder", () => {
   it("times start, pause, resume and finish by the Effect clock", async () => {
     const { recorder, run, advance, phone } = setup();
-    await run(recorder.start("run"));
+    await run(recorder.start("run", ANONYMOUS));
     await advance(60);
     await run(recorder.pause);
     await advance(30);
@@ -101,7 +102,7 @@ describe("the recorder", () => {
   it("starts nothing and writes no journal when GPS will not start", async () => {
     const { recorder, exit, phone } = setup();
     phone.startFails = true;
-    const result = await exit(recorder.start("walk"));
+    const result = await exit(recorder.start("walk", ANONYMOUS));
     expect(result).toMatchObject({ _tag: "Failure" });
     expect(String(Exit.isFailure(result) && result.cause)).toContain(
       "Location updates are not allowed",
@@ -112,7 +113,7 @@ describe("the recorder", () => {
 
   it("stays paused and says why when GPS will not resume", async () => {
     const { recorder, run, exit, phone, advance } = setup();
-    await run(recorder.start("run"));
+    await run(recorder.start("run", ANONYMOUS));
     await run(recorder.pause);
     await advance(10);
     phone.startFails = true;
@@ -133,7 +134,7 @@ describe("the recorder", () => {
 
   it("pauses, and says why, when GPS will not stop", async () => {
     const { recorder, run, exit, phone } = setup();
-    await run(recorder.start("run"));
+    await run(recorder.start("run", ANONYMOUS));
     phone.stopFails = true;
     expect(await exit(recorder.pause)).toMatchObject({
       _tag: "Failure",
@@ -144,7 +145,7 @@ describe("the recorder", () => {
 
   it("keeps the recording as it was when the journal cannot be written", async () => {
     const { recorder, run, exit, phone, advance } = setup();
-    await run(recorder.start("run"));
+    await run(recorder.start("run", ANONYMOUS));
     await advance(1);
     phone.appendFails = true;
     const result = await exit(recorder.addFixes([reading(T0 + 1000, 0)]));
@@ -157,7 +158,7 @@ describe("the recorder", () => {
 
   it("finishes writing readings before a change that follows, and before removing the journal", async () => {
     const { recorder, run, phone } = setup();
-    await run(recorder.start("run"));
+    await run(recorder.start("run", ANONYMOUS));
     const gate = Promise.withResolvers<void>();
     phone.appendGate = gate.promise;
     phone.calls.length = 0;
@@ -174,7 +175,7 @@ describe("the recorder", () => {
 
   it("saves once when finished again after svett closed between the save and the journal's removal", async () => {
     const { recorder, run, exit, phone, database, ports } = setup();
-    await run(recorder.start("ride"));
+    await run(recorder.start("ride", ANONYMOUS));
     await run(recorder.addFixes([reading(T0, 0), reading(T0 + 1000, 10), reading(T0 + 2000, 20)]));
     phone.removeFails = true;
     expect(await exit(recorder.finish)).toMatchObject({ _tag: "Failure" });
@@ -194,7 +195,7 @@ describe("the recorder", () => {
 
   it("pauses a running recording when GPS will not start again after svett reopens", async () => {
     const first = setup();
-    await first.run(first.recorder.start("run"));
+    await first.run(first.recorder.start("run", ANONYMOUS));
     const { phone, ports } = fakePhone(first.phone.journal);
     phone.startFails = true;
     const reopened = makeRecorder(ports);
@@ -202,6 +203,39 @@ describe("the recorder", () => {
     expect(result).toMatchObject({ _tag: "Failure" });
     expect(isPaused(reopened.get()!)).toBe(true);
     expect(parseJournal(phone.journal).at(-1)?.type).toBe("pause");
+  });
+
+  it("keeps a pause made after a crash cut the journal's last line short", async () => {
+    const first = setup();
+    await first.run(first.recorder.start("run", ANONYMOUS));
+    await first.run(first.recorder.addFixes([reading(T0, 0), reading(T0 + 1000, 3)]));
+    const whole = first.phone.journal;
+    const cut = whole.slice(0, whole.lastIndexOf("\n", whole.length - 2) + 20);
+
+    const { phone, ports } = fakePhone(cut);
+    const reopened = makeRecorder(ports);
+    expect(isPaused(reopened.get()!)).toBe(false);
+    await first.run(reopened.pause);
+    expect(isPaused(reopened.get()!)).toBe(true);
+
+    const again = makeRecorder(fakePhone(phone.journal).ports);
+    expect(isPaused(again.get()!)).toBe(true);
+    expect(again.get()?.activityId).toBe(first.recorder.get()?.activityId);
+  });
+
+  it("remembers whose database the recording saves into after svett reopens", async () => {
+    const first = setup();
+    const owner = { kind: "account", accountId: AccountId.make("user_svett_runner") } as const;
+    await first.run(first.recorder.start("run", owner));
+    expect(makeRecorder(fakePhone(first.phone.journal).ports).get()?.owner).toEqual(owner);
+  });
+
+  it("reads a journal written before accounts as the phone's own recording", async () => {
+    const first = setup();
+    await first.run(first.recorder.start("run", ANONYMOUS));
+    const before = first.phone.journal.replace(/,"owner":\{[^}]*\}/, "");
+    expect(before).not.toContain("owner");
+    expect(makeRecorder(fakePhone(before).ports).get()?.owner).toEqual(ANONYMOUS);
   });
 
   it("drops readings that arrive with no recording", async () => {

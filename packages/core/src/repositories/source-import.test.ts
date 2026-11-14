@@ -238,6 +238,42 @@ describe("importing from Apple Health and GPX", () => {
     expect(await importAll(database, file)).toEqual(Option.none());
   });
 
+  it("leaves a workout in progress that overlaps an import as it is, and saves the import as finished", async () => {
+    const database = openTestDatabase();
+    const running = await activities(database, (repository) =>
+      Effect.gen(function* () {
+        const id = yield* repository.startWorkout({
+          title: "Push in progress",
+          routineId: null,
+          exercises: [],
+        });
+        yield* repository.update(id, {
+          startedAt: EpochMillis.make(SAMPLE_STRENGTH_START + 5 * 60_000),
+          durationS: DurationSeconds.make(1800),
+        });
+        return id;
+      }),
+    );
+    const before = await activities(database, (repository) => repository.inProgress);
+    const file = await health();
+
+    const plan = await planOf(database, file);
+    expect(plan.duplicates).toEqual([]);
+    expect(plan.added).toBe(4);
+    expect(Option.getOrThrow(await importAll(database, file))).toMatchObject({
+      added: 4,
+      linked: 0,
+    });
+
+    expect(await activities(database, (repository) => repository.inProgress)).toEqual(before);
+    expect(await activities(database, (repository) => repository.sources(running))).toEqual([]);
+    const strength = file.workouts.find((workout) => workout.kind === "strength")!;
+    const saved = Option.getOrThrow(
+      await activities(database, (repository) => repository.get(sourceActivityId(strength))),
+    );
+    expect(saved.activity).toMatchObject({ status: "finished", routineId: null });
+  });
+
   it("keeps both when asked, and Undo takes a link back to the Hevy workout as it was", async () => {
     const database = openTestDatabase();
     const hevyId = await seedHevy(database);
@@ -268,7 +304,7 @@ describe("importing from Apple Health and GPX", () => {
     const undone = await transfers(database, (repository) =>
       repository.undoImport(result.importBatchId, []),
     );
-    expect(undone).toEqual({ removed: 3, restored: 1, left: 0, kept: 0 });
+    expect(undone).toEqual({ removed: 3, restored: 1, left: 0, kept: 0, discarded: 0 });
     expect(await counts(database)).toEqual({ activities: 1, sets: 9 });
     const back = Option.getOrThrow(
       await activities(database, (repository) => repository.get(hevyId)),
@@ -347,7 +383,7 @@ describe("importing from Apple Health and GPX", () => {
     expect(preview.changes).toHaveLength(1);
     expect(
       await transfers(database, (repository) => repository.undoImport(result.importBatchId, [])),
-    ).toEqual({ removed: 0, restored: 1, left: 0, kept: 0 });
+    ).toEqual({ removed: 0, restored: 1, left: 0, kept: 0, discarded: 0 });
     expect(liveRows(database, "activity_source")).toBe(0);
     const back = Option.getOrThrow(
       await activities(database, (repository) => repository.get(hevyId)),
@@ -459,7 +495,7 @@ describe("importing from Apple Health and GPX", () => {
 
     expect(
       await transfers(database, (repository) => repository.undoImport(taken.importBatchId, [])),
-    ).toEqual({ removed: 0, restored: 1, left: 0, kept: 0 });
+    ).toEqual({ removed: 0, restored: 1, left: 0, kept: 0, discarded: 0 });
     expect(await heartOf(database, hevyId)).toEqual({ averageBpm: 112, maxBpm: 124 });
     expect(linkFingerprints(database)).toEqual(linkedBefore);
     expect(await counts(database)).toEqual({ activities: 4, sets: 9 });
@@ -508,7 +544,7 @@ describe("importing from Apple Health and GPX", () => {
     expect(preview.changes.map(({ edited }) => edited)).toEqual([false]);
     expect(
       await transfers(database, (repository) => repository.undoImport(taken.importBatchId, [])),
-    ).toEqual({ removed: 0, restored: 1, left: 0, kept: 0 });
+    ).toEqual({ removed: 0, restored: 1, left: 0, kept: 0, discarded: 0 });
     expect(await heartOf(database, hevyId)).toEqual({ averageBpm: 112, maxBpm: 124 });
     expect(linkFingerprints(database)).toEqual(linkedBefore);
     expect(await counts(database)).toEqual({ activities: 1, sets: 9 });
@@ -586,7 +622,7 @@ describe("importing from Apple Health and GPX", () => {
       await transfers(titled.database, (repository) =>
         repository.undoImport(titled.result.importBatchId, []),
       ),
-    ).toEqual({ removed: 3, restored: 0, left: 1, kept: 0 });
+    ).toEqual({ removed: 3, restored: 0, left: 1, kept: 0, discarded: 0 });
     expect(liveRows(titled.database, "activity_source")).toBe(1);
 
     const set = await linked();
@@ -600,7 +636,7 @@ describe("importing from Apple Health and GPX", () => {
       await transfers(set.database, (repository) =>
         repository.undoImport(set.result.importBatchId, [set.changeId]),
       ),
-    ).toEqual({ removed: 3, restored: 1, left: 0, kept: 0 });
+    ).toEqual({ removed: 3, restored: 1, left: 0, kept: 0, discarded: 0 });
     expect(liveRows(set.database, "activity_source")).toBe(0);
     expect(await heartOf(set.database, set.hevyId)).toBeNull();
     const after = Option.getOrThrow(

@@ -151,6 +151,22 @@ export const PAUSE_READINGS = 4;
 export const MOVE_READINGS = 3;
 /** A moving reading with no speed is still when the filter went slowly over this long. */
 export const SPEED_WINDOW_MS = 20_000;
+/**
+ * Readings with no speed that all lie within this of their centre for `DRIFT_MS`, and keep
+ * changing direction as `DRIFT_REVERSALS` says, are a phone standing still. A still phone's
+ * readings wander about 10 m either way.
+ */
+export const DRIFT_RADIUS_M = 15;
+export const DRIFT_MS = 20_000;
+/**
+ * The share of turns between successive steps sharper than 120 degrees that marks drift.
+ * Drift jumps about at random, while a walk, a turn or a zigzag mostly keeps its heading.
+ */
+export const DRIFT_REVERSALS = 1 / 3;
+/** Steps shorter than this are no change of heading. */
+const DRIFT_STEP_M = 1;
+/** Drift shows itself in at least this many turns between steps. */
+const DRIFT_TURNS = 3;
 /** The filter's uncertainty, this many standard deviations of it, is taken off how far it went. */
 export const SIGMAS = 1;
 /**
@@ -349,6 +365,92 @@ const pointOf = <R extends Reading>(
     movedM: previous.movedM + (stepM ?? 0),
     movedMs: previous.movedMs + (stepM === null ? 0 : fix.at - previous.fix.at),
   };
+};
+
+/** The middle of some readings. */
+const centreOf = (readings: ReadonlyArray<Reading>): LatLng => {
+  const origin = readings[0]!;
+  const offsets = readings.map((reading) => offsetM(origin, reading));
+  return moved(origin, {
+    east: offsets.reduce((total, offset) => total + offset.east, 0) / offsets.length,
+    north: offsets.reduce((total, offset) => total + offset.north, 0) / offsets.length,
+  });
+};
+
+/** Whether every reading lies within `DRIFT_RADIUS_M` of their centre. */
+const huddled = (readings: ReadonlyArray<Reading>): boolean => {
+  const centre = centreOf(readings);
+  return readings.every((reading) => flatM(centre, reading) <= DRIFT_RADIUS_M);
+};
+
+/** Whether the steps between readings change heading sharply as often as drift does. */
+const wanders = (readings: ReadonlyArray<Reading>): boolean => {
+  const steps: Offset[] = [];
+  for (let index = 1; index < readings.length; index++) {
+    const step = offsetM(readings[index - 1]!, readings[index]!);
+    if (step.east ** 2 + step.north ** 2 >= DRIFT_STEP_M ** 2) steps.push(step);
+  }
+  let turns = 0;
+  let sharp = 0;
+  for (let index = 1; index < steps.length; index++) {
+    const a = steps[index - 1]!;
+    const b = steps[index]!;
+    const cosine =
+      (a.east * b.east + a.north * b.north) /
+      Math.sqrt((a.east ** 2 + a.north ** 2) * (b.east ** 2 + b.north ** 2));
+    turns++;
+    if (cosine < -0.5) sharp++;
+  }
+  return turns >= DRIFT_TURNS && sharp >= DRIFT_REVERSALS * turns;
+};
+
+/**
+ * The points with a stop found among the open ones. Without speeds the filter cannot tell
+ * drift where a recording stopped from movement as each reading arrives, so it looks back
+ * at the readings with no speed that lie close together up to the latest one. From the
+ * earliest of them that has done so for `DRIFT_MS` and wandered as drift does since, every
+ * one after it is paused after all, and the path ends at it. The recording moves on once a
+ * reading leaves the gate around the middle of the drift, not around the first reading,
+ * which may lie on the way in.
+ */
+const drifted = <R extends Reading>(track: Track<R>): Chain<Point<R>> | null => {
+  const points = track.points;
+  if (points === null || reportedMps(points.value.fix) !== null) return points;
+  // A stop already found keeps every reading after it paused.
+  if (!points.value.moving && points.before?.value.moving !== true) return points;
+  const open = latest(points, points.length - (track.settled?.length ?? 0));
+  let from = open.length - 1;
+  while (
+    from > 0 &&
+    reportedMps(open[from - 1]!.fix) === null &&
+    huddled(open.slice(from - 1).map(({ fix }) => fix))
+  ) {
+    from--;
+  }
+  // The last readings before a stop can lie close to it too, and they keep their heading.
+  const latestAt = open.at(-1)!.fix.at;
+  while (
+    from < open.length - 1 &&
+    latestAt - open[from]!.fix.at >= DRIFT_MS &&
+    !wanders(open.slice(from).map(({ fix }) => fix))
+  ) {
+    from++;
+  }
+  const stretch = open.slice(from);
+  if (
+    latestAt - stretch[0]!.fix.at < DRIFT_MS ||
+    stretch.slice(1).every(({ moving }) => !moving) ||
+    !wanders(stretch.map(({ fix }) => fix))
+  ) {
+    return points;
+  }
+  const end = { ...points.value.estimate, ...centreOf(stretch.slice(1).map(({ fix }) => fix)) };
+  let rebuilt: Chain<Point<R>> | null = points;
+  for (let index = 1; index < stretch.length; index++) rebuilt = rebuilt!.before;
+  for (const point of stretch.slice(1)) {
+    rebuilt = append(rebuilt, { ...point, moving: false, against: 0, end });
+  }
+  return rebuilt;
 };
 
 /** Two estimates of one position, combined by how sure each is. */
@@ -651,6 +753,7 @@ const withPoint = <R extends Reading>(track: Track<R>, fix: R, estimate: Estimat
     ...track,
     ...turned(track, pointOf(track.points, fix, estimate)),
   };
+  next = { ...next, points: drifted(next) };
   const { points, positions } = unsettled(next);
   let skip = 0;
   if (points.length > LAG) {

@@ -2,6 +2,8 @@ import { Schema } from "effect";
 
 import { DurationSeconds } from "./duration.ts";
 import { Uuid } from "./ids.ts";
+import { BarsAndPlates } from "./plates.ts";
+import { WeightUnit } from "./weight-unit.ts";
 
 export const EpochMillis = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)).pipe(
   Schema.brand("EpochMillis"),
@@ -48,6 +50,8 @@ export const CoachMessageId = Uuid.pipe(Schema.brand("CoachMessageId"));
 export type CoachMessageId = typeof CoachMessageId.Type;
 export const ConversationId = Uuid.pipe(Schema.brand("ConversationId"));
 export type ConversationId = typeof ConversationId.Type;
+export const GearId = Uuid.pipe(Schema.brand("GearId"));
+export type GearId = typeof GearId.Type;
 
 /** Every row carries these, so phase 6 sync needs no table rewrite. */
 const rowFields = <Id extends Schema.Top>(id: Id) => ({
@@ -113,9 +117,16 @@ export const HiddenField = Schema.Literals([
 ]);
 export type HiddenField = typeof HiddenField.Type;
 
+/** A workout is in progress from its start until it is finished or discarded. */
+export const ActivityStatus = Schema.Literals(["in_progress", "finished"]);
+export type ActivityStatus = typeof ActivityStatus.Type;
+
 export const Activity = Schema.Struct({
   ...rowFields(ActivityId),
   kind: ActivityKind,
+  status: ActivityStatus,
+  /** The routine a workout was started from, so the logger can read its rest times. */
+  routineId: Schema.NullOr(RoutineId),
   startedAt: EpochMillis,
   durationS: DurationSeconds,
   title: Schema.String,
@@ -127,6 +138,17 @@ export const Activity = Schema.Struct({
 }).check(provenanceRule);
 export type Activity = typeof Activity.Type;
 
+/** What each set of an exercise records, such as weight and reps, or a time. */
+export const SetFields = Schema.Literals([
+  "weight_reps",
+  "reps",
+  "time",
+  "weight_time",
+  "distance_time",
+  "weight_distance",
+]);
+export type SetFields = typeof SetFields.Type;
+
 export const ActivityExercise = Schema.Struct({
   ...rowFields(ActivityExerciseId),
   activityId: ActivityId,
@@ -135,6 +157,9 @@ export const ActivityExercise = Schema.Struct({
   /** Exercises in one activity that share a group number form a superset. */
   supersetGroup: Schema.NullOr(NonNegativeInt),
   notes: Schema.String,
+  setFields: SetFields,
+  /** The rest after each set, for the rest timer. 0 is off. Null before svett had the timer. */
+  restS: Schema.NullOr(DurationSeconds),
 });
 export type ActivityExercise = typeof ActivityExercise.Type;
 
@@ -151,8 +176,16 @@ type SetValues = {
   readonly distanceM: number | null;
 };
 
-const setRecordsSomething = Schema.makeFilter<SetValues>((set) =>
-  set.reps !== null || set.durationS !== null || set.distanceM !== null
+type RepRange = { readonly repsMin: number | null; readonly repsMax: number | null };
+
+const repRangeInOrder = ({ repsMin, repsMax }: RepRange) =>
+  repsMin === null || repsMax === null || repsMin <= repsMax
+    ? undefined
+    : "a rep range starts at or below its end";
+
+// A set still to do in a workout in progress may be empty. Once done it records something.
+const setRecordsSomething = Schema.makeFilter<SetValues & { readonly done: boolean }>((set) =>
+  !set.done || set.reps !== null || set.durationS !== null || set.distanceM !== null
     ? undefined
     : "a set records reps, a time or a distance",
 );
@@ -167,7 +200,17 @@ export const ActivitySet = Schema.Struct({
   durationS: Schema.NullOr(DurationSeconds),
   distanceM: Schema.NullOr(NonNegative),
   rpe: Schema.NullOr(Rpe),
-}).check(setRecordsSomething);
+  done: Schema.BooleanFromBit,
+  /** The rep range the routine set as the goal, shown while the set is still to do. */
+  targetRepsMin: Schema.NullOr(NonNegativeInt),
+  targetRepsMax: Schema.NullOr(NonNegativeInt),
+})
+  .check(setRecordsSomething)
+  .check(
+    Schema.makeFilter((set) =>
+      repRangeInOrder({ repsMin: set.targetRepsMin, repsMax: set.targetRepsMax }),
+    ),
+  );
 export type ActivitySet = typeof ActivitySet.Type;
 
 export const ActivityTrack = Schema.Struct({
@@ -338,13 +381,7 @@ export const RoutineSet = Schema.Struct({
   repsMax: Schema.NullOr(NonNegativeInt),
   durationS: Schema.NullOr(DurationSeconds),
   distanceM: Schema.NullOr(NonNegative),
-}).check(
-  Schema.makeFilter((set) =>
-    set.repsMin === null || set.repsMax === null || set.repsMin <= set.repsMax
-      ? undefined
-      : "a rep range starts at or below its end",
-  ),
-);
+}).check(Schema.makeFilter(repRangeInOrder));
 export type RoutineSet = typeof RoutineSet.Type;
 
 export const MeasurementKind = Schema.Literals([
@@ -501,3 +538,15 @@ export const CoachMessage = Schema.Struct({
   createdAt: EpochMillis,
 });
 export type CoachMessage = typeof CoachMessage.Type;
+
+/**
+ * The plates and bars you own in one unit, for the plate and warm-up calculators. Each unit
+ * has one row, and a unit with none has a commercial gym's.
+ */
+export const Gear = Schema.Struct({
+  ...rowFields(GearId),
+  unit: WeightUnit,
+  plates: Schema.fromJsonString(BarsAndPlates.fields.plates),
+  bars: Schema.fromJsonString(BarsAndPlates.fields.bars),
+});
+export type Gear = typeof Gear.Type;

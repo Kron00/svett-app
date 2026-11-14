@@ -1,6 +1,7 @@
 import { useNavigation } from "@react-navigation/native";
 import {
   type CardioKind,
+  type DatabaseOwner,
   DurationSeconds,
   formatDuration,
   formatKm,
@@ -12,9 +13,10 @@ import {
   recordedDistanceM,
 } from "@svett/core";
 import { useEffect, useState } from "react";
-import { Alert, Linking, ScrollView, View } from "react-native";
+import { AccessibilityInfo, Alert, Linking, ScrollView, View } from "react-native";
 
 import { useStore } from "../checks/store";
+import type { OpenDatabase } from "../data/current";
 import { SPORTS } from "../design/tokens";
 import type { RootNavigation } from "../navigation";
 import { AppText } from "../ui/AppText";
@@ -23,14 +25,16 @@ import { Icon } from "../ui/Icon";
 import { SegmentedControl } from "../ui/SegmentedControl";
 import { StatTile } from "../ui/StatTile";
 import {
+  discardOtherRecording,
   discardRecording,
   finishRecording,
+  otherOwnerRecording,
   pauseRecording,
-  recording,
   recordingProblem,
   resumeRecording,
   startRecording,
   type StartOutcome,
+  useRecording,
 } from "./recorder";
 
 const KINDS: ReadonlyArray<CardioKind> = ["run", "walk", "hike", "ride"];
@@ -46,16 +50,54 @@ function useNow(ticking: boolean): number {
   return now;
 }
 
-function Setup() {
+/** What the Record screen says when Start did not start a recording, word for word. */
+export const startProblemText = (problem: Exclude<StartOutcome, { kind: "started" }>): string =>
+  problem.kind === "denied"
+    ? "svett needs your location to record a route. Allow it in Settings."
+    : `The recording did not start, at the ${problem.step} step. ${problem.message}`;
+
+/**
+ * Why Start did not start, right under the sport picker, so it shows without scrolling
+ * at the largest text size, where Start itself sits near the bottom of the screen.
+ */
+function StartProblem({
+  problem,
+}: {
+  readonly problem: Exclude<StartOutcome, { kind: "started" }>;
+}) {
+  const text = startProblemText(problem);
+  useEffect(() => {
+    AccessibilityInfo.announceForAccessibility(text);
+  }, [text]);
+  return (
+    <View className="gap-3" accessibilityLiveRegion="polite" testID="record-start-problem">
+      <AppText tone="destructive" testID="record-start-problem-text">
+        {text}
+      </AppText>
+      {problem.kind === "denied" ? (
+        <Button
+          label="Open Settings"
+          variant="secondary"
+          onPress={() => void Linking.openSettings()}
+        />
+      ) : null}
+    </View>
+  );
+}
+
+function Setup({ database }: { readonly database: OpenDatabase }) {
   const [kind, setKind] = useState<CardioKind>("run");
   const [problem, setProblem] = useState<Exclude<StartOutcome, { kind: "started" }>>();
   const [starting, setStarting] = useState(false);
 
   const start = async () => {
     setStarting(true);
-    const outcome = await startRecording(kind);
-    setStarting(false);
-    setProblem(outcome.kind === "started" ? undefined : outcome);
+    try {
+      const outcome = await startRecording(kind, database);
+      setProblem(outcome.kind === "started" ? undefined : outcome);
+    } finally {
+      setStarting(false);
+    }
   };
 
   return (
@@ -66,6 +108,7 @@ function Setup() {
         selected={kind}
         onSelect={setKind}
       />
+      {problem === undefined ? null : <StartProblem problem={problem} />}
       <AppText tone="secondary">
         svett records your route with GPS, also with the screen locked. Pause when you stop, and
         finish to save it.
@@ -77,32 +120,73 @@ function Setup() {
         onPress={() => void start()}
         testID="record-start"
       />
-      {problem?.kind === "denied" ? (
-        <View className="gap-3">
-          <AppText tone="destructive">
-            svett needs your location to record a route. Allow it in Settings.
-          </AppText>
-          <Button
-            label="Open Settings"
-            variant="secondary"
-            onPress={() => void Linking.openSettings()}
-          />
-        </View>
-      ) : null}
-      {problem?.kind === "error" ? (
-        <AppText tone="destructive">The recording did not start. {problem.message}</AppText>
-      ) : null}
     </View>
   );
 }
 
-const confirmDiscard = () =>
+/** Says why a change to the recording was refused, such as someone signing in or out first. */
+const showRefusal = (error: unknown) =>
+  Alert.alert("Nothing changed", error instanceof Error ? error.message : String(error));
+
+const confirmDiscard = (database: OpenDatabase) =>
   Alert.alert("Discard this recording?", "Its route and time are deleted.", [
     { text: "Keep it", style: "cancel" },
-    { text: "Discard", style: "destructive", onPress: () => void discardRecording() },
+    {
+      text: "Discard",
+      style: "destructive",
+      onPress: () => void discardRecording(database).catch(showRefusal),
+    },
   ]);
 
-function Live({ current }: { readonly current: Recording }) {
+const confirmDiscardOther = (database: OpenDatabase, owner: DatabaseOwner) =>
+  Alert.alert(
+    "Discard the other recording?",
+    "GPS stops and its route and time are deleted. Nothing is saved.",
+    [
+      { text: "Keep it", style: "cancel" },
+      {
+        text: "Discard",
+        style: "destructive",
+        onPress: () => void discardOtherRecording(database, owner).catch(showRefusal),
+      },
+    ],
+  );
+
+/**
+ * Another owner's recording, still going on this phone, which keeps this owner from starting
+ * one. It shows whose it is and nothing of its route, distance or times.
+ */
+function OtherRecording({
+  database,
+  owner,
+}: {
+  readonly database: OpenDatabase;
+  readonly owner: DatabaseOwner;
+}) {
+  return (
+    <View className="gap-3 px-gutter" testID="record-other">
+      <AppText tone="warning" testID="record-other-text">
+        {otherOwnerRecording(owner)}
+      </AppText>
+      <Button
+        label="Discard it"
+        symbol="trash"
+        variant="destructive"
+        accessibilityHint="Stops the other recording and deletes it without saving."
+        onPress={() => confirmDiscardOther(database, owner)}
+        testID="record-other-discard"
+      />
+    </View>
+  );
+}
+
+function Live({
+  current,
+  database,
+}: {
+  readonly current: Recording;
+  readonly database: OpenDatabase;
+}) {
   const navigation = useNavigation<RootNavigation>();
   const paused = isPaused(current);
   const now = useNow(!paused);
@@ -116,7 +200,7 @@ function Live({ current }: { readonly current: Recording }) {
   const finish = async () => {
     setFinishing(true);
     try {
-      const id = await finishRecording();
+      const id = await finishRecording(database);
       navigation.replace("Activity", { id });
     } catch (error) {
       setFinishing(false);
@@ -171,7 +255,7 @@ function Live({ current }: { readonly current: Recording }) {
             <Button
               label="Resume"
               symbol="play.fill"
-              onPress={() => void resumeRecording()}
+              onPress={() => void resumeRecording(database).catch(showRefusal)}
               testID="record-resume"
             />
             <Button
@@ -187,7 +271,7 @@ function Live({ current }: { readonly current: Recording }) {
               symbol="trash"
               variant="destructive"
               disabled={finishing}
-              onPress={confirmDiscard}
+              onPress={() => confirmDiscard(database)}
               testID="record-discard"
             />
           </>
@@ -195,7 +279,7 @@ function Live({ current }: { readonly current: Recording }) {
           <Button
             label="Pause"
             symbol="pause.fill"
-            onPress={() => void pauseRecording()}
+            onPress={() => void pauseRecording(database).catch(showRefusal)}
             testID="record-pause"
           />
         )}
@@ -206,7 +290,7 @@ function Live({ current }: { readonly current: Recording }) {
 
 /** Starts a run, walk, hike or ride, and shows it live until it is saved or discarded. */
 export function RecordScreen() {
-  const current = useStore(recording);
+  const { current, database, otherOwner } = useRecording();
   return (
     <ScrollView
       testID="record-cardio"
@@ -214,7 +298,16 @@ export function RecordScreen() {
       className="bg-background"
       contentContainerClassName="py-6"
     >
-      {current === undefined ? <Setup /> : <Live current={current} />}
+      {current === undefined ? (
+        <View className="gap-6">
+          {otherOwner === undefined ? null : (
+            <OtherRecording database={database} owner={otherOwner} />
+          )}
+          <Setup database={database} />
+        </View>
+      ) : (
+        <Live current={current} database={database} />
+      )}
     </ScrollView>
   );
 }

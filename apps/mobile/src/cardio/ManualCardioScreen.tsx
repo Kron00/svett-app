@@ -11,7 +11,8 @@ import { Effect, Result } from "effect";
 import { useState } from "react";
 import { ScrollView, View } from "react-native";
 
-import { appDatabase } from "../data/database";
+import { currentDatabase } from "../data/current";
+import { writeTo } from "../data/store";
 import { useColor } from "../design/hooks";
 import { SPORTS } from "../design/tokens";
 import type { RootStackParamList } from "../navigation";
@@ -48,6 +49,8 @@ export function ManualCardioScreen({ route, navigation }: Props) {
   const [saving, setSaving] = useState(false);
   const accent = useColor("accent");
   const [opened] = useState(() => new Date());
+  // The workout belongs to whoever was signed in when the form opened, or to nobody.
+  const [database] = useState(currentDatabase);
 
   const save = async () => {
     const draft = manualEntryDraft(
@@ -62,7 +65,8 @@ export function ManualCardioScreen({ route, navigation }: Props) {
     setProblem(undefined);
     setSaving(true);
     try {
-      const id = await appDatabase().runPromise(
+      const id = await writeTo(
+        database,
         Effect.flatMap(Effect.service(ActivityRepository), (activities) =>
           activities.create(draft.success),
         ),
@@ -70,7 +74,10 @@ export function ManualCardioScreen({ route, navigation }: Props) {
       navigation.replace("Activity", { id });
     } catch (error) {
       setSaving(false);
-      setProblem({ field: "start", message: `It was not saved. ${String(error)}` });
+      setProblem({
+        field: "start",
+        message: `It was not saved. ${error instanceof Error ? error.message : String(error)}`,
+      });
     }
   };
 
@@ -135,6 +142,7 @@ export function ManualCardioScreen({ route, navigation }: Props) {
         value={notes}
         onChangeText={setNotes}
         multiline
+        returnKeyType="default"
         testID="manual-notes"
       />
       <View className="flex-row">

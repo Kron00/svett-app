@@ -3,8 +3,10 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   estimatedOneRepMax,
   formatRecordValue,
+  formatShownRecordValue,
   type PersonalRecord,
   personalRecords,
+  recordValueIn,
   workoutRecords,
 } from "./records.ts";
 import type { PerformedSet } from "./performed-set.ts";
@@ -182,11 +184,27 @@ describe("workoutRecords", () => {
 
 describe("formatRecordValue", () => {
   it("writes each unit as the app shows it", () => {
-    expect(formatRecordValue("kg", 101.5)).toBe("101.5 kg");
-    expect(formatRecordValue("reps", 1)).toBe("1 rep");
-    expect(formatRecordValue("reps", 12)).toBe("12 reps");
-    expect(formatRecordValue("duration", 75)).toBe("1:15");
-    expect(formatRecordValue("metres", 400)).toBe("400 m");
-    expect(formatRecordValue("metres", 1500)).toBe("1.5 km");
+    expect(formatRecordValue("kg", 101.5, "kg")).toBe("101.5 kg");
+    expect(formatRecordValue("reps", 1, "kg")).toBe("1 rep");
+    expect(formatRecordValue("reps", 12, "kg")).toBe("12 reps");
+    expect(formatRecordValue("duration", 75, "kg")).toBe("1:15");
+    expect(formatRecordValue("metres", 400, "kg")).toBe("400 m");
+    expect(formatRecordValue("metres", 1500, "kg")).toBe("1.5 km");
+  });
+
+  it("writes a weight in pounds when weights show in pounds, and leaves the other units alone", () => {
+    expect(formatRecordValue("kg", 101.5, "lb")).toBe("223.77 lb");
+    expect(formatRecordValue("kg", 100, "lb")).toBe("220.46 lb");
+    expect(formatRecordValue("reps", 12, "lb")).toBe("12 reps");
+    expect(formatRecordValue("duration", 75, "lb")).toBe("1:15");
+    expect(formatRecordValue("metres", 1500, "lb")).toBe("1.5 km");
+  });
+});
+
+describe("formatShownRecordValue", () => {
+  it("writes a value already in pounds without converting it again", () => {
+    expect(formatShownRecordValue("kg", recordValueIn("kg", 100, "lb"), "lb")).toBe("220.46 lb");
+    expect(formatShownRecordValue("kg", 200, "lb")).toBe("200 lb");
+    expect(recordValueIn("reps", 12, "lb")).toBe(12);
   });
 });

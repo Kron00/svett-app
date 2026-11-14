@@ -1,6 +1,7 @@
 import { libraryExerciseId } from "./exercise-library.ts";
 import type { PerformedSet } from "./performed-set.ts";
 import {
+  ActivityExerciseId,
   ActivityId,
   ActivitySetId,
   EpochMillis,
@@ -17,6 +18,13 @@ export const PLANK = libraryExerciseId("Plank");
 
 const uuid = (prefix: string, n: number) =>
   `${prefix}-0000-4000-8000-${String(n).padStart(12, "0")}`;
+
+/** The squat of a workout in progress, as a rest names the set it waits for. */
+export const SQUAT_NEXT = {
+  exercise: "Barbell Squat",
+  activityId: ActivityId.make(uuid("00000000", 9001)),
+  activityExerciseId: ActivityExerciseId.make(uuid("00000000", 9002)),
+};
 
 const EQUIPMENT: ReadonlyMap<ExerciseId, Equipment> = new Map([
   [BENCH, "barbell"],

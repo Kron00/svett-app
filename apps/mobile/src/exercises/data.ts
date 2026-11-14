@@ -1,39 +1,27 @@
 import { type Exercise, ExerciseId, ExerciseRepository } from "@svett/core";
-import { useFocusEffect } from "@react-navigation/native";
 import { Effect, Option, Schema } from "effect";
-import { useCallback, useState } from "react";
+import { useCallback } from "react";
 
-import { appDatabase } from "../data/database";
+import type { OpenDatabase } from "../data/current";
+import { type Loaded, useOnFocus } from "../data/loaded";
+import { readFrom, writeTo } from "../data/store";
 
-export type Loaded<A> =
-  | { readonly state: "loading" }
-  | { readonly state: "ready"; readonly value: A }
-  | { readonly state: "failed"; readonly message: string };
-
-/** Runs one call on the exercise repository of the database this launch opened. */
+/** Runs one call on the exercise repository of `database`. */
 export const withExercises = <A, E>(
+  database: OpenDatabase,
   body: (exercises: typeof ExerciseRepository.Service) => Effect.Effect<A, E>,
-): Promise<A> => appDatabase().runPromise(Effect.flatMap(Effect.service(ExerciseRepository), body));
+): Promise<A> => readFrom(database, Effect.flatMap(Effect.service(ExerciseRepository), body));
 
-/** Loads on focus, so a screen shows what another screen saved before it came back. */
-function useOnFocus<A>(load: () => Promise<A>): Loaded<A> {
-  const [loaded, setLoaded] = useState<Loaded<A>>({ state: "loading" });
-  useFocusEffect(
-    useCallback(() => {
-      let current = true;
-      load().then(
-        (value) => current && setLoaded({ state: "ready", value }),
-        (error: unknown) => current && setLoaded({ state: "failed", message: String(error) }),
-      );
-      return () => {
-        current = false;
-      };
-    }, [load]),
-  );
-  return loaded;
-}
+/**
+ * Saves through the exercise repository of `database`, the one the screen opened in. It refuses
+ * once someone signed in or out, so a form never saves into another owner's exercises.
+ */
+export const changeExercises = <A, E>(
+  database: OpenDatabase,
+  body: (exercises: typeof ExerciseRepository.Service) => Effect.Effect<A, E>,
+): Promise<A> => writeTo(database, Effect.flatMap(Effect.service(ExerciseRepository), body));
 
-const listAll = () => withExercises((exercises) => exercises.list);
+const listAll = (database: OpenDatabase) => withExercises(database, (exercises) => exercises.list);
 
 /** Every exercise, library and custom, that is not deleted. */
 export const useExerciseList = (): Loaded<ReadonlyArray<Exercise>> => useOnFocus(listAll);
@@ -41,9 +29,9 @@ export const useExerciseList = (): Loaded<ReadonlyArray<Exercise>> => useOnFocus
 /** The exercise a link or a list row names, or null when there is none. */
 export function useExercise(id: string): Loaded<Exercise | null> {
   const load = useCallback(
-    () =>
+    (database: OpenDatabase) =>
       Schema.is(ExerciseId)(id)
-        ? withExercises((exercises) => exercises.get(id)).then(Option.getOrNull)
+        ? withExercises(database, (exercises) => exercises.get(id)).then(Option.getOrNull)
         : Promise.resolve(null),
     [id],
   );

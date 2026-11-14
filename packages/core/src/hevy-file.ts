@@ -81,8 +81,6 @@ export interface HevyWorkout {
   readonly title: string;
   readonly description: string;
   readonly exercises: ReadonlyArray<HevyExercise>;
-  /** The workout's place among the file's workouts, from 0. */
-  readonly position: number;
   /** Changes when anything Hevy holds for the workout changes, other than its start. */
   readonly fingerprint: string;
 }
@@ -378,7 +376,7 @@ export const decodeHevyFile = (
   }
 
   return Result.succeed({
-    workouts: [...workouts.values()].map((workout, position) => {
+    workouts: [...workouts.values()].map((workout) => {
       const exercises = workout.exercises.map(
         ({ name, supersetGroup, notes, sets: exerciseSets }): HevyExercise => ({
           name,
@@ -398,7 +396,6 @@ export const decodeHevyFile = (
         title: workout.title,
         description: workout.description,
         exercises,
-        position,
         fingerprint: contentFingerprint({
           title: workout.title,
           description: workout.description,

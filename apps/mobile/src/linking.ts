@@ -3,26 +3,36 @@ import type { LinkingOptions } from "@react-navigation/native";
 import type { RootStackParamList } from "./navigation";
 
 // The scripts in scripts/sim/ open screens through these links, such as
-// svett://gallery?sheet=open, svett://exercises?q=bench, svett://progress/muscles and
-// svett://chatgpt,
-// because agent-device refuses taps in screen content on iOS 27. It reads UIKit's
-// touch-transparent floating bar containers as toolbars that cover the whole screen.
-// scripts/sim/data.sh reaches export and import the same way, through svett://data,
-// svett://import?file=<name> and svett://imports/<id>/undo. scripts/sim/hevy.sh
-// adds &kind=hevy for a Hevy CSV. scripts/sim/health.sh uses
-// svett://health-import?file=<name> and svett://manual?kind=...&duration=..., which
-// fills manual entry's fields.
+// svett://gallery?sheet=open, svett://exercises?q=bench, svett://progress/muscles,
+// svett://chatgpt, svett://account, svett://coach?ask=..., svett://proposal/<id>,
+// svett://train, svett://routine/<id>, svett://train/workout and
+// svett://train/workout/exercises?q=plank, because agent-device refuses taps in screen
+// content on iOS 27. It reads UIKit's touch-transparent floating bar containers as
+// toolbars that cover the whole screen. scripts/sim/data.sh reaches export and import
+// the same way, through svett://data, svett://import?file=<name> and
+// svett://imports/<id>/undo. scripts/sim/hevy.sh adds &kind=hevy for a Hevy CSV.
+// scripts/sim/health.sh uses svett://health-import?file=<name> and
+// svett://manual?kind=...&duration=..., which fills manual entry's fields.
+// scripts/sim/tools.sh opens svett://settings/workout and svett://tools/plates?kg=100.
 export const linking: LinkingOptions<RootStackParamList> = {
   prefixes: ["svett://"],
   filter: (url) => !url.includes("expo-development-client"),
   config: {
     initialRouteName: "Tabs",
     screens: {
-      Tabs: { screens: { Progress: "progress" } },
+      Tabs: {
+        screens: {
+          Progress: "progress",
+          Train: "train",
+          Coach: { screens: { CoachRoot: "coach" } },
+        },
+      },
       Gallery: "gallery",
       RecordCardio: "record",
       Activity: "activity/:id",
       ChatGPT: "chatgpt",
+      Account: "account",
+      Proposal: "proposal/:id",
       NewExercise: "exercises/new",
       Exercises: "exercises",
       EditExercise: "exercise/:id/edit",
@@ -37,6 +47,16 @@ export const linking: LinkingOptions<RootStackParamList> = {
       Data: "data",
       ImportPreview: "import",
       UndoImport: "imports/:importBatchId/undo",
+      NewRoutine: "routines/new",
+      PickExercise: "routines/new/exercises",
+      EditRoutine: "routine/:id/edit",
+      Routine: "routine/:id",
+      ActiveWorkout: "train/workout",
+      AddWorkoutExercise: "train/workout/exercises",
+      ReplaceWorkoutExercise: "train/workout/exercise/:exercise/replace",
+      WarmUp: "train/workout/exercise/:exercise/warm-up",
+      Plates: "tools/plates",
+      WorkoutSettings: "settings/workout",
       HealthImport: "health-import",
       ManualCardio: "manual",
     },

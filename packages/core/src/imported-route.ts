@@ -1,4 +1,3 @@
-import { distanceM } from "./geo.ts";
 import {
   type CardioKind,
   type Fix,
@@ -8,70 +7,6 @@ import {
   type TrackPoint,
 } from "./recording.ts";
 import { addReading, emptyTrack } from "./track-filter.ts";
-
-/** A phone at rest drifts up to about 10 m either way, so its readings stay this close to each other. */
-export const STAY_RADIUS_M = 20;
-/**
- * Readings that stay that close to the first of them for this long are a stop. Moving
- * at `STILL_SPEED_MPS` or faster leaves the radius sooner.
- */
-export const STAY_MS = 60_000;
-
-/**
- * This many readings at each end of a stop go to the filter, enough for it to pause and
- * resume. The filter is paused through the rest and adds nothing for them.
- */
-export const STOP_EDGE_READINGS = 10;
-
-const hasSpeed = (fix: Fix) => fix.speedMps !== undefined && fix.speedMps !== null;
-
-/**
- * The readings for K1's filter from a route read from a file, with a speed of 0 where
- * they are part of a stop. The phone's own speed tells the filter a stop from slow
- * movement, but files rarely carry it, and by position alone the filter counts drift at
- * a stop after moving as distance. A file holds every reading at once, so a stop is
- * found by looking ahead: readings that all lie within `STAY_RADIUS_M` of the first of
- * them for `STAY_MS`. It lasts while each next reading lies that close to the average
- * of the stop so far. Inside a stop only the readings near its ends are kept, so a long
- * stop costs the filter little. A reading that reports its own speed keeps it, and is
- * always kept.
- */
-export const withStops = (fixes: ReadonlyArray<Fix>): Array<Fix> => {
-  const readings: Array<Fix> = [];
-  let start = 0;
-  while (start < fixes.length) {
-    const first = fixes[start]!;
-    let end = start + 1;
-    while (end < fixes.length && distanceM(first, fixes[end]!) <= STAY_RADIUS_M) end++;
-    if (fixes[end - 1]!.at - first.at < STAY_MS) {
-      readings.push(first);
-      start++;
-      continue;
-    }
-    let latitude = 0;
-    let longitude = 0;
-    for (let index = start; index < end; index++) {
-      latitude += fixes[index]!.latitude;
-      longitude += fixes[index]!.longitude;
-    }
-    for (; end < fixes.length; end++) {
-      const count = end - start;
-      const centre = { latitude: latitude / count, longitude: longitude / count };
-      if (distanceM(centre, fixes[end]!) > STAY_RADIUS_M) break;
-      latitude += fixes[end]!.latitude;
-      longitude += fixes[end]!.longitude;
-    }
-    for (let index = start; index < end; index++) {
-      const fix = fixes[index]!;
-      if (hasSpeed(fix)) readings.push(fix);
-      else if (index < start + STOP_EDGE_READINGS || index >= end - STOP_EDGE_READINGS) {
-        readings.push({ ...fix, speedMps: 0 });
-      }
-    }
-    start = end;
-  }
-  return readings;
-};
 
 /** A point of an imported route, as K1's filter reads it. */
 export interface ImportedRoutePoint {
@@ -91,16 +26,14 @@ export interface FilteredRoute {
 
 /** One stretch through a filter of its own, as a recording's segment from its first point to its last. */
 const segmentOf = (stretch: ReadonlyArray<ImportedRoutePoint>, kind: CardioKind): Segment => {
-  const fixes = withStops(
-    stretch.map((point) => ({
-      at: point.recordedAt,
-      latitude: point.latitude,
-      longitude: point.longitude,
-      altitudeM: point.altitudeM,
-      altitudeAccuracyM: null,
-      accuracyM: null,
-    })),
-  );
+  const fixes = stretch.map((point): Fix => ({
+    at: point.recordedAt,
+    latitude: point.latitude,
+    longitude: point.longitude,
+    altitudeM: point.altitudeM,
+    altitudeAccuracyM: null,
+    accuracyM: null,
+  }));
   return {
     ...fixes.reduce(addReading, emptyTrack<Fix>(MOTION[kind])),
     from: stretch[0]!.recordedAt,

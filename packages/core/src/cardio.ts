@@ -36,7 +36,8 @@ interface Mark {
 
 type Tracks = ReadonlyArray<ReadonlyArray<TrackPoint>>;
 
-const tracksOf = (recording: Recording): Tracks => recording.segments.map(segmentTrack);
+const tracksOf = (recording: Pick<Recording, "segments">): Tracks =>
+  recording.segments.map(segmentTrack);
 
 const marksOf = (
   segments: Recording["segments"],
@@ -70,7 +71,7 @@ const marksOf = (
  * moving time are left, so the splits always add up to the whole recording.
  */
 export const splitsOf = (
-  recording: Recording,
+  recording: Pick<Recording, "segments">,
   end: number,
   everyM = SPLIT_M,
   tracks: Tracks = tracksOf(recording),
@@ -218,6 +219,17 @@ export const summarizeRecording = (recording: Recording, end: number): CardioSum
 
 /** How much of each end of a new route is hidden from others. */
 export const DEFAULT_HIDE_M = 200;
+
+/** The distances the owner can choose to hide at each end of a route. */
+export const HIDE_CHOICES_M = [0, 200, 500, 1000] as const;
+export type HideChoiceM = (typeof HIDE_CHOICES_M)[number];
+
+/** The choice nearest a hidden distance, such as one another app set. */
+export const nearestHideChoiceM = (metres: number): HideChoiceM =>
+  HIDE_CHOICES_M.reduce<HideChoiceM>(
+    (best, choice) => (Math.abs(choice - metres) < Math.abs(best - metres) ? choice : best),
+    0,
+  );
 
 const SPORT_NAME: Readonly<Record<ActivityKind, string>> = {
   run: "run",

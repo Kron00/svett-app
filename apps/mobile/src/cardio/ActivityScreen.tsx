@@ -13,16 +13,19 @@ import {
   formatKm,
   formatPace,
   heartRateSummary,
+  nearestHideChoiceM,
   paceMeasure,
   type RouteLines,
   sourceName,
   trackParts,
 } from "@svett/core";
 import { Effect, Option, Schema } from "effect";
-import { useCallback, useEffect, useLayoutEffect, useMemo, useState } from "react";
-import { ScrollView, View } from "react-native";
+import { useCallback, useLayoutEffect, useMemo } from "react";
+import { Alert, ScrollView, View } from "react-native";
 
-import { appDatabase } from "../data/database";
+import type { OpenDatabase } from "../data/current";
+import { useOnFocus } from "../data/loaded";
+import { readFrom, writeTo } from "../data/store";
 import { SPORTS } from "../design/tokens";
 import type { RootStackParamList } from "../navigation";
 import { AppText } from "../ui/AppText";
@@ -54,41 +57,48 @@ type HideOption = (typeof HIDE_OPTIONS)[number]["value"];
 
 const decodeId = Schema.decodeUnknownOption(ActivityId);
 const MISSING: Loaded = { kind: "missing" };
+const LOADING: Loaded = { kind: "loading" };
 const isCardio = Schema.is(CardioKindSchema);
 
-const repository = <A, E>(
+const withActivities = <A, E>(
   body: (activities: typeof ActivityRepository.Service) => Effect.Effect<A, E>,
-) => appDatabase().runPromise(Effect.flatMap(Effect.service(ActivityRepository), body));
+) => Effect.flatMap(Effect.service(ActivityRepository), body);
 
-const fetchActivity = (id: ActivityId): Promise<Loaded> =>
-  repository((activities) =>
-    Effect.gen(function* () {
-      const detail = yield* activities.get(id);
-      if (Option.isNone(detail)) return MISSING;
-      const track = detail.value.track;
-      const samples = track === null ? [] : yield* activities.samples(track.id);
-      const sources = yield* activities.sources(id);
-      return { kind: "found", detail: detail.value, samples, sources } as const;
-    }),
+const fetchActivity = (database: OpenDatabase, id: ActivityId): Promise<Loaded> =>
+  readFrom(
+    database,
+    withActivities((activities) =>
+      Effect.gen(function* () {
+        const detail = yield* activities.get(id);
+        if (Option.isNone(detail)) return MISSING;
+        const track = detail.value.track;
+        const samples = track === null ? [] : yield* activities.samples(track.id);
+        const sources = yield* activities.sources(id);
+        return { kind: "found", detail: detail.value, samples, sources } as const;
+      }),
+    ),
   ).catch(() => MISSING);
 
+/**
+ * The activity as the open database holds it, with that database, where its privacy setting
+ * saves. After someone signs in or out it is read again from theirs.
+ */
 function useActivity(rawId: string) {
   const id = useMemo(() => decodeId(rawId), [rawId]);
-  const [loaded, setLoaded] = useState<Loaded>({ kind: "loading" });
-  useEffect(() => {
-    if (Option.isNone(id)) return;
-    let current = true;
-    void fetchActivity(id.value).then((next) => {
-      if (current) setLoaded(next);
-    });
-    return () => {
-      current = false;
-    };
-  }, [id]);
-  const reload = useCallback(async () => {
-    if (Option.isSome(id)) setLoaded(await fetchActivity(id.value));
-  }, [id]);
-  return { loaded: Option.isNone(id) ? MISSING : loaded, reload };
+  const load = useCallback(
+    (database: OpenDatabase) =>
+      Option.isNone(id) ? Promise.resolve(MISSING) : fetchActivity(database, id.value),
+    [id],
+  );
+  const loaded = useOnFocus(load);
+  if (loaded.state === "ready") {
+    return { loaded: loaded.value, database: loaded.database, reload: loaded.reload };
+  }
+  return {
+    loaded: loaded.state === "failed" ? MISSING : LOADING,
+    database: undefined,
+    reload: loaded.reload,
+  };
 }
 
 function Splits({
@@ -185,7 +195,7 @@ type Props = NativeStackScreenProps<RootStackParamList, "Activity">;
 
 /** An activity: its map, numbers, splits and elevation for cardio, and its heart rate and sources. */
 export function ActivityScreen({ route, navigation }: Props) {
-  const { loaded, reload } = useActivity(route.params.id);
+  const { loaded, database, reload } = useActivity(route.params.id);
   const title = loaded.kind === "found" ? loaded.detail.activity.title : "";
   useLayoutEffect(() => navigation.setOptions({ title }), [navigation, title]);
 
@@ -213,17 +223,24 @@ export function ActivityScreen({ route, navigation }: Props) {
   const cardio = isCardio(kind) ? kind : undefined;
   const sport = SPORTS[kind];
   const distanceM = track?.distanceM ?? (cardio ? 0 : null);
-  const hidden = String(track?.hideStartM ?? 0) as HideOption;
   const sets = exercises.reduce((total, exercise) => total + exercise.sets.length, 0);
   const hasRoute = cardio !== undefined && parts.route.length > 0 && track !== null;
+  const hidden = String(nearestHideChoiceM(track?.hideStartM ?? 0)) as HideOption;
 
   const hide = async (value: HideOption) => {
-    if (track === null) return;
+    if (track === null || database === undefined) return;
     const metres = Number(value);
-    await repository((activities) =>
-      activities.updateTrack(track.id, { hideStartM: metres, hideEndM: metres }),
-    );
-    await reload();
+    try {
+      await writeTo(
+        database,
+        withActivities((activities) =>
+          activities.updateTrack(track.id, { hideStartM: metres, hideEndM: metres }),
+        ),
+      );
+    } catch (error) {
+      Alert.alert("Not changed", error instanceof Error ? error.message : String(error));
+    }
+    reload();
   };
 
   return (
@@ -258,11 +275,7 @@ export function ActivityScreen({ route, navigation }: Props) {
             testID="activity-distance"
           />
         )}
-        <StatTile
-          label={cardio ? "Moving time" : "Time"}
-          value={formatDuration(activity.durationS)}
-          testID="activity-time"
-        />
+        <StatTile label="Time" value={formatDuration(activity.durationS)} testID="activity-time" />
         {cardio === undefined ? null : (
           <>
             <StatTile

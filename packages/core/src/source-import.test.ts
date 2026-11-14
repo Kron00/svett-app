@@ -49,6 +49,7 @@ const local = (
   title: id,
   startedAt: EpochMillis.make(start),
   durationS: DurationSeconds.make(3600),
+  status: "finished",
   source,
   sourceId: source === "svett" ? null : SourceIdentity.make(id),
   fingerprint: source === "svett" ? null : Fingerprint.make("b".repeat(64)),
@@ -95,6 +96,26 @@ describe("planSourceImport", () => {
       ["a", UUID(2)],
     ]);
     expect(plan.added).toBe(1);
+  });
+
+  it("never offers a workout still in progress as a duplicate, so the logger's workout stays as it is", () => {
+    const plan = planSourceImport(
+      {
+        activities: [
+          local(UUID(1), T, "svett", { status: "in_progress" }),
+          local(UUID(2), T + 2 * HOUR, "svett", { status: "in_progress" }),
+          local(UUID(3), T + 2 * HOUR + 10 * 60_000, "hevy"),
+        ],
+        links: [],
+      },
+      [workout("a", T + 5 * 60_000, 50), workout("b", T + 2 * HOUR, 30)],
+    );
+    expect(plan.duplicates.map((item) => [item.workout.identity, item.match.id])).toEqual([
+      ["b", UUID(3)],
+    ]);
+    expect(plan.items.filter((item) => item.status === "new").map((item) => item.key)).toEqual([
+      "apple_health:a",
+    ]);
   });
 
   it("counts a workout already linked, or already here, as unchanged, and one repeated in the file once", () => {

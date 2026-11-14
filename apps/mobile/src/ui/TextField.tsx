@@ -1,71 +1,73 @@
-import { useState } from "react";
-import { TextInput, type TextInputProps, View } from "react-native";
+import { type ComponentProps, useState } from "react";
+import { TextInput, View } from "react-native";
 
 import { useColor } from "../design/hooks";
 import { AppText } from "./AppText";
 import { FieldOutline } from "./FieldOutline";
 
-/**
- * A labelled text field on the system keyboard, for words and numbers typed away from
- * a set, such as a name, a note or a duration. Its text grows with Dynamic Type. A
- * problem shows under it and is read with it.
- */
+export type TextFieldProps = Omit<
+  ComponentProps<typeof TextInput>,
+  "className" | "style" | "accessibilityLabel"
+> & {
+  readonly label: string;
+  /** Shown under the field in red, and read out with it. */
+  readonly problem?: string;
+  /** Shown under the field when there is no problem. */
+  readonly note?: string;
+};
+
+/** A labelled one-line text field, at least 44 points tall, with an optional problem under it. Its text grows with Dynamic Type. */
 export function TextField({
   label,
-  value,
-  onChangeText,
-  placeholder,
-  maxLength,
   problem,
-  keyboardType,
-  multiline = false,
-  testID,
-}: {
-  readonly label: string;
-  readonly value: string;
-  readonly onChangeText: (text: string) => void;
-  readonly placeholder?: string;
-  readonly maxLength?: number;
-  readonly problem?: string;
-  readonly keyboardType?: TextInputProps["keyboardType"];
-  readonly multiline?: boolean;
-  readonly testID?: string;
-}) {
+  note,
+  editable = true,
+  onFocus,
+  onBlur,
+  ...props
+}: TextFieldProps) {
   const [focused, setFocused] = useState(false);
+  const message = problem ?? note;
   return (
     <View className="gap-1">
-      <AppText variant="footnote" tone="secondary" accessibilityElementsHidden>
+      <AppText variant="footnote" tone="secondary" importantForAccessibility="no">
         {label}
       </AppText>
       <View
-        className={`min-h-target justify-center rounded-field bg-control px-3 ${problem ? "border-2 border-destructive" : ""}`}
+        className="min-h-target justify-center rounded-field bg-control px-3"
+        style={{ opacity: editable ? 1 : 0.6 }}
       >
         <TextInput
-          accessibilityLabel={label}
-          accessibilityHint={problem}
-          value={value}
-          onChangeText={onChangeText}
-          placeholder={placeholder}
+          accessibilityLabel={problem === undefined ? label : `${label}, ${problem}`}
+          accessibilityState={{ disabled: !editable }}
+          editable={editable}
           placeholderTextColor={useColor("tertiary-label")}
           selectionColor={useColor("accent")}
-          maxLength={maxLength}
-          keyboardType={keyboardType}
-          multiline={multiline}
-          onFocus={() => setFocused(true)}
-          onBlur={() => setFocused(false)}
           autoCapitalize="sentences"
           autoCorrect={false}
-          returnKeyType={multiline ? "default" : "done"}
-          testID={testID}
-          className={`py-2.5 text-body text-label ${multiline ? "min-h-24" : ""}`}
+          returnKeyType="done"
+          className="py-2.5 text-body text-label"
+          onFocus={(event) => {
+            setFocused(true);
+            onFocus?.(event);
+          }}
+          onBlur={(event) => {
+            setFocused(false);
+            onBlur?.(event);
+          }}
+          {...props}
         />
-        {problem ? null : <FieldOutline focused={focused} />}
+        <FieldOutline focused={focused} problem={problem !== undefined} />
       </View>
-      {problem ? (
-        <AppText variant="footnote" tone="destructive">
-          {problem}
+      {message === undefined ? null : (
+        <AppText
+          variant="footnote"
+          tone={problem === undefined ? "secondary" : "destructive"}
+          accessibilityLiveRegion="polite"
+        >
+          {message}
         </AppText>
-      ) : null}
+      )}
     </View>
   );
 }

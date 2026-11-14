@@ -1,16 +1,15 @@
 import { useNavigation } from "@react-navigation/native";
 import { isPaused } from "@svett/core";
 
-import { useStore } from "../checks/store";
 import { SPORTS } from "../design/tokens";
 import type { RootNavigation } from "../navigation";
 import { ListRow } from "../ui/List";
-import { recording } from "./recorder";
+import { useRecording } from "./recorder";
 
 /** The Train tab's way into recording cardio, and back to a recording in progress. */
 export function RecordCardioRow() {
   const navigation = useNavigation<RootNavigation>();
-  const current = useStore(recording);
+  const { current } = useRecording();
   const subtitle =
     current === undefined
       ? "Run, walk, hike or ride with GPS"

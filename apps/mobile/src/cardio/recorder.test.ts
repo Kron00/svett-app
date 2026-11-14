@@ -42,7 +42,14 @@ vi.mock("expo-task-manager", () => ({
     phone.task = task;
   },
 }));
-vi.mock("../data/database", () => ({ appDatabase: () => undefined }));
+vi.mock("expo-sqlite/kv-store", () => ({
+  default: { getItemSync: () => null, setItemSync: () => {}, removeItemSync: () => {} },
+}));
+vi.mock("../account/config", () => ({ CLERK_PUBLISHABLE_KEY: undefined }));
+vi.mock("../data/database", () => ({
+  launchFixture: () => undefined,
+  openDatabaseHandle: (target: unknown) => ({ target, close: async () => {} }),
+}));
 
 const T = 1_800_000_000_000;
 phone.journal = `${encodeRecordingEvent({

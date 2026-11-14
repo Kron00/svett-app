@@ -247,7 +247,15 @@ export const fromGpx = (
 /** An activity here, as the duplicate check sees it. */
 export type LocalActivity = Pick<
   Activity,
-  "id" | "kind" | "title" | "startedAt" | "durationS" | "source" | "sourceId" | "fingerprint"
+  | "id"
+  | "kind"
+  | "title"
+  | "startedAt"
+  | "durationS"
+  | "status"
+  | "source"
+  | "sourceId"
+  | "fingerprint"
 >;
 
 export type LocalLink = Pick<ActivitySource, "activityId" | "source" | "sourceId" | "fingerprint">;
@@ -382,7 +390,8 @@ const newestFirst = (a: SourcePlanItem, b: SourcePlanItem) =>
  * Compares workouts from a source with the activities here. One already here, or
  * linked to an activity from another source, is unchanged when its content is the same
  * as when it was saved or linked, and changed when not. One that overlaps the time of
- * an activity from another source is a possible duplicate. The rest are new. Workouts
+ * a finished activity from another source is a possible duplicate. A workout still in
+ * progress is never one, since linking would change it under the logger. The rest are new. Workouts
  * in the file that share an identity get their own first, matched against the
  * identities saved here, as `distinctIdentities` says.
  */
@@ -423,7 +432,7 @@ export const planSourceImport = (
     let match: LocalActivity | undefined;
     let best = 0;
     for (const activity of local.activities) {
-      if (activity.source === workout.source) continue;
+      if (activity.source === workout.source || activity.status !== "finished") continue;
       const overlap = overlapMs(activity, workout);
       if (overlap > best) {
         best = overlap;
@@ -477,12 +486,11 @@ const importedSplits = (
   route: ReadonlyArray<TimedRoutePoint>,
   kind: CardioKind,
   totalM: number | null,
-  activityId: ActivityId,
 ) => {
   const filtered = filterRoute(stretchesOf(route), kind);
   const scale = totalM !== null && filtered.distanceM > 0 ? totalM / filtered.distanceM : 1;
   return splitsOf(
-    { activityId, kind, startedAt: route[0]!.recordedAt, segments: filtered.segments },
+    { segments: filtered.segments },
     route.at(-1)!.recordedAt,
     SPLIT_M,
     filtered.tracks.map((track) =>
@@ -514,6 +522,8 @@ export const sourceActivityRows = (
     energyKcal: workout.energyKcal,
     audience: "only_you",
     hiddenFields: [],
+    status: "finished",
+    routineId: null,
     source: workout.source,
     sourceId: workout.identity,
     fingerprint: workout.fingerprint,
@@ -548,7 +558,7 @@ export const sourceActivityRows = (
   // own when it has one.
   const splits =
     route.length > 1 && isCardio(workout.kind)
-      ? importedSplits(route, workout.kind as CardioKind, workout.distanceM, activityId)
+      ? importedSplits(route, workout.kind as CardioKind, workout.distanceM)
       : [];
   const sample = (index: number) =>
     ActivitySampleId.make(idIn("activitySample", workout, `/track/sample/${index}`));

@@ -475,6 +475,45 @@ const MOVEMENT: ReadonlyArray<MovementCase> = [
     events: stopping(30, seed).events,
     expect: { near: 600, within: 0.02, live: 0.03 },
   })),
+  // The same runs and stops with no speeds, as a GPX file or an Apple Health route has them.
+  ...SEEDS.map((seed): MovementCase => {
+    const { before, stop, events } = stopping(120, seed);
+    return {
+      name: `a two minute stop mid-run with no speeds adds at most 8 m, and the run comes within 3% of 600 m (seed ${seed})`,
+      kind: "run",
+      events: withSpeeds(events, () => null),
+      expect: { near: 600, within: 0.03 },
+      also: ({ shown }) => {
+        const arrived = shown[before.length + 1]!;
+        const aMinuteIn = shown[before.length + 60]!;
+        const leaving = shown[before.length + stop.length]!;
+        expect(leaving - arrived).toBeLessThanOrEqual(8);
+        expect(leaving).toBe(aMinuteIn);
+      },
+    };
+  }),
+  ...SEEDS.map((seed): MovementCase => ({
+    name: `a 30 s stop on a 600 m run with no speeds comes within 2% saved and 3% shown (seed ${seed})`,
+    kind: "run",
+    events: withSpeeds(stopping(30, seed).events, () => null),
+    expect: { near: 600, within: 0.02, live: 0.03 },
+  })),
+  ...SEEDS.map((seed): MovementCase => {
+    const error = wandering(seed);
+    return {
+      name: `a 600 m run with no speeds and no stop, its error wandering 3 m to 8 m, comes within 3% (seed ${seed})`,
+      kind: "run",
+      events: along([point(0, 0), point(0, 600)], 3).map((event) => {
+        const { east, north } = error();
+        const { latitude, longitude } = (event as Extract<RecordingEvent, { type: "fix" }>).fix;
+        return fixAt(secondsOf(event), {
+          latitude: latitude + north / DEGREE_M,
+          longitude: longitude + east / DEGREE_M,
+        });
+      }),
+      expect: { near: 600, within: 0.03 },
+    };
+  }),
   {
     name: "one reading 100 m off after standing still, then a 60 m walk read every 10 s, saves within 5 m of 60 m",
     kind: "walk",
@@ -805,14 +844,25 @@ const twoHours = (() => {
   return { events, travelled };
 })();
 
-describe("a long recording", () => {
-  it("replays 7,200 readings within 100 ms, adding each without copying the ones before", () => {
-    const times = Array.from({ length: 3 }, () => {
+/** The fastest of five replays of the first `count` readings, in milliseconds. */
+const fastestReplay = (count: number) =>
+  Math.min(
+    ...Array.from({ length: 5 }, () => {
       const started = performance.now();
-      replay([start, ...twoHours.events]);
+      replay([start, ...twoHours.events.slice(0, count)]);
       return performance.now() - started;
-    });
-    expect(Math.min(...times)).toBeLessThan(100);
+    }),
+  );
+
+describe("a long recording", () => {
+  it("replays readings in time that grows with their number, adding each without copying the ones before", () => {
+    const quarter = fastestReplay(1800);
+    const all = fastestReplay(7200);
+    // Four times the readings take about four times as long. Copying the readings before
+    // each one would take sixteen. A shared CI runner can be a few times slower than a
+    // phone, so the bound on two hours is loose.
+    expect(all / Math.max(quarter, 1)).toBeLessThan(8);
+    expect(all).toBeLessThan(400);
   });
 
   it("comes within 1% of two hours of laps with a stop", () => {
