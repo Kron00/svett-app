@@ -186,6 +186,21 @@ const setIds = (tree: ReactTestRenderer) =>
     .map((node) => String(node.props.testID).slice("set-".length));
 
 /** Lets reads finish until `line` is on screen, as a detail reads a set again after a save. */
+/** Lets reads finish until the element with `testID` is on screen, or gone when `shown` is false. */
+const showsTestId = async (
+  tree: ReactTestRenderer,
+  testID: string,
+  shown = true,
+  tries = 50,
+): Promise<void> => {
+  const found =
+    tree.root.findAll((node) => typeof node.type === "string" && node.props.testID === testID)
+      .length > 0;
+  if (tries === 0 || found === shown) return;
+  await settle();
+  return showsTestId(tree, testID, shown, tries - 1);
+};
+
 const showsLine = async (tree: ReactTestRenderer, line: string, tries = 50): Promise<void> => {
   if (tries === 0 || lines(tree).includes(line)) return;
   await settle();
@@ -295,11 +310,14 @@ describe("history", () => {
     // The screen keeps showing the workout while it slides away.
     expect(lines(detail)).toContain("105 kg × 5");
     expect(textOf(byTestId(history, "workout-counts"))).toBe("1 workouts, 2 sets");
+    // The list reads again after the counts do, so wait for it rather than one tick.
+    await showsTestId(history, `workout-${newest}`, false);
     expect(() => byTestId(history, `workout-${newest}`)).toThrow();
     expect(textOf(byTestId(history, "undo-delete-banner"))).toContain("Deleted Heavy legs.");
 
     await press(byTestId(history, "undo-delete"));
     expect(textOf(byTestId(history, "workout-counts"))).toBe("2 workouts, 5 sets");
+    await showsTestId(history, `workout-${newest}`);
     expect(() => byTestId(history, `workout-${newest}`)).not.toThrow();
     expect(() => byTestId(history, "undo-delete-banner")).toThrow();
   });
