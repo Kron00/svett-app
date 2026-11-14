@@ -94,7 +94,7 @@ const refusals = (target: {
 }) =>
   Effect.flatMap(Effect.service(ActivityRepository), (activities) => {
     const { activityId, exerciseId, setId } = target;
-    const changes = {
+    const changes: Record<string, Effect.Effect<unknown, unknown>> = {
       addExercises: activities.addExercises(activityId, [
         { exerciseId: plank, supersetGroup: null, notes: "", sets: [nextSet([])] },
       ]),
@@ -376,15 +376,13 @@ describe("logging a workout", () => {
     );
     await database.runtime.runPromise(database.clock.advance(60_000));
     const before = storedRows(database);
-    for (const target of targets) {
-      const results = await database.runtime.runPromise(refusals(target));
-      expect(results).toHaveLength(11);
-      for (const [name, exit] of results) {
-        expect({ name, exit }).toMatchObject({
-          name,
-          exit: { _tag: "Failure", cause: { reasons: [{ error: { _tag: "RowNotFoundError" } }] } },
-        });
-      }
+    const results = (await database.runtime.runPromise(Effect.forEach(targets, refusals))).flat();
+    expect(results).toHaveLength(22);
+    for (const [name, exit] of results) {
+      expect({ name, exit }).toMatchObject({
+        name,
+        exit: { _tag: "Failure", cause: { reasons: [{ error: { _tag: "RowNotFoundError" } }] } },
+      });
     }
     expect(storedRows(database)).toEqual(before);
   });
@@ -393,9 +391,9 @@ describe("logging a workout", () => {
     const database = openTestDatabase();
     const { id, squatId, curlId } = await database.runtime.runPromise(
       Effect.gen(function* () {
-        const id = yield* startEmptyWorkout(9);
-        const [squatId, curlId] = yield* addExercisesToWorkout(id, [squat, curl]);
-        return { id, squatId: squatId!, curlId: curlId! };
+        const workout = yield* startEmptyWorkout(9);
+        const [first, second] = yield* addExercisesToWorkout(workout, [squat, curl]);
+        return { id: workout, squatId: first!, curlId: second! };
       }),
     );
     const before = storedRows(database);
@@ -406,12 +404,13 @@ describe("logging a workout", () => {
       [curlId, squatId, squatId],
       [],
     ];
-    for (const order of orders) {
-      const exit = await database.runtime.runPromiseExit(
-        Effect.flatMap(Effect.service(ActivityRepository), (activities) =>
-          activities.orderExercises(id, order),
-        ),
-      );
+    const exits = await database.runtime.runPromise(
+      Effect.flatMap(Effect.service(ActivityRepository), (activities) =>
+        Effect.forEach(orders, (order) => Effect.exit(activities.orderExercises(id, order))),
+      ),
+    );
+    expect(exits).toHaveLength(orders.length);
+    for (const exit of exits) {
       expect(exit).toMatchObject({
         _tag: "Failure",
         cause: { reasons: [{ error: { _tag: "ExerciseOrderError" } }] },

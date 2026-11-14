@@ -27,12 +27,12 @@ const plank = libraryExerciseId("Plank");
 const openApp = (path: string) => {
   const { database, driver } = openNodeDatabase(path);
   let held: Array<() => void> | null = null;
-  let reached = () => {};
+  let reached: (() => void) | null = null;
   const slow: SqlDriver = {
     ...driver,
     run: async (sql, params) => {
       if (held !== null && sql.startsWith("UPDATE activity_set")) {
-        reached();
+        reached?.();
         await new Promise<void>((resume) => held!.push(resume));
       }
       return driver.run(sql, params);
