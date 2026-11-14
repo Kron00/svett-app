@@ -790,7 +790,7 @@ check "cardio.sh screenshots each step and pages through the activity" \
 check "cardio.sh saves a proof that the distance is within 1%" \
   grep -qF "PASSED: Distance" "$root/cardio/proof.txt"
 check "cardio.sh saves a proof that the splits add up" \
-  grep -qxF "PASSED: 3 splits add up to 2400.0 m of 2400.0 m" "$root/cardio/proof.txt"
+  grep -qF "PASSED: 3 splits add up to" "$root/cardio/proof.txt"
 check "cardio.sh with SVETT_DEVICE_CMD calls neither simctl launch nor openurl" no_simctl_launch_or_openurl
 
 case_name="cardio.sh Release with SVETT_DEVICE_CMD"

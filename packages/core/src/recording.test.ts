@@ -1,6 +1,13 @@
+import { readFileSync } from "node:fs";
+
 import { describe, expect, it } from "vite-plus/test";
 
+import { summarize } from "./cardio.ts";
+import { type LatLng, pathLengthM } from "./geo.ts";
+import { seededRandom } from "./ids.ts";
 import {
+  applyEvent,
+  type CardioKind,
   encodeRecordingEvent,
   type Fix,
   fixOf,
@@ -10,6 +17,7 @@ import {
   movingMs,
   parseJournal,
   recordedDistanceM,
+  type Recording,
   type RecordingEvent,
   replay,
   segmentFixes,
@@ -34,20 +42,249 @@ const fix = (seconds: number, metres: number, extra: Partial<Fix> = {}): Recordi
 });
 
 const ACTIVITY = ActivityId.make("0190a000-0000-7000-8000-000000000001");
-const start: RecordingEvent = { type: "start", at: T, kind: "run", activityId: ACTIVITY };
+const startAs = (kind: CardioKind): RecordingEvent => ({
+  type: "start",
+  at: T,
+  kind,
+  activityId: ACTIVITY,
+});
+const start = startAs("run");
 const pause = (seconds: number): RecordingEvent => ({ type: "pause", at: T + seconds * 1000 });
 const resume = (seconds: number): RecordingEvent => ({ type: "resume", at: T + seconds * 1000 });
 
 /** Readings every second at `speed` metres a second, from `from` to `to` seconds. */
-const moving = (from: number, to: number, speed: number, offsetM = 0): RecordingEvent[] =>
-  Array.from({ length: to - from + 1 }, (_, index) =>
-    fix(from + index, offsetM + (from + index) * speed),
+const moving = (from: number, to: number, speed: number): RecordingEvent[] =>
+  Array.from({ length: to - from + 1 }, (_, index) => fix(from + index, (from + index) * speed));
+
+/** A point `east` and `north` metres from where the equator meets the prime meridian. */
+const point = (east: number, north: number): LatLng => ({
+  latitude: north / DEGREE_M,
+  longitude: east / DEGREE_M,
+});
+
+const fixAt = (
+  seconds: number,
+  { latitude, longitude }: LatLng,
+  accuracyM = 5,
+): RecordingEvent => ({
+  type: "fix",
+  fix: {
+    at: T + seconds * 1000,
+    latitude,
+    longitude,
+    altitudeM: null,
+    altitudeAccuracyM: null,
+    accuracyM,
+  },
+});
+
+/** Readings every `every` seconds along `route` at `speed`, from `from` seconds, ending at its end. */
+const along = (
+  route: ReadonlyArray<LatLng>,
+  speed: number,
+  {
+    from = 0,
+    every = 1,
+    accuracyM = () => 5,
+  }: { from?: number; every?: number; accuracyM?: () => number } = {},
+): RecordingEvent[] => {
+  const length = pathLengthM(route);
+  const at = (travelled: number): LatLng => {
+    for (let index = 1; index < route.length; index++) {
+      const a = route[index - 1]!;
+      const b = route[index]!;
+      const leg = pathLengthM([a, b]);
+      if (travelled <= leg || index === route.length - 1) {
+        const share = leg === 0 ? 0 : Math.min(1, travelled / leg);
+        return {
+          latitude: a.latitude + (b.latitude - a.latitude) * share,
+          longitude: a.longitude + (b.longitude - a.longitude) * share,
+        };
+      }
+      travelled -= leg;
+    }
+    return route[0]!;
+  };
+  const steps = Math.ceil(length / (speed * every));
+  return Array.from({ length: steps + 1 }, (_, step) =>
+    fixAt(from + step * every, at(Math.min(length, step * every * speed)), accuracyM()),
   );
+};
+
+/**
+ * Drift while standing at `spot` for `seconds`: a fixed sequence of places within 10 m
+ * of it, each held for one to six seconds.
+ */
+const lingering = (spot: LatLng, seconds: number, from: number, seed: number) => {
+  const next = seededRandom(seed);
+  const drift: RecordingEvent[] = [];
+  while (drift.length < seconds) {
+    const angle = next() * 2 * Math.PI;
+    const radius = 10 * Math.sqrt(next());
+    const place = {
+      latitude: spot.latitude + (radius * Math.cos(angle)) / DEGREE_M,
+      longitude: spot.longitude + (radius * Math.sin(angle)) / DEGREE_M,
+    };
+    for (let held = 1 + Math.floor(next() * 6); held > 0 && drift.length < seconds; held--) {
+      drift.push(fixAt(from + drift.length, place));
+    }
+  }
+  return drift;
+};
+
+const ROUTE = JSON.parse(
+  readFileSync(new URL("../../../scripts/sim/cardio-route.json", import.meta.url), "utf8"),
+) as { readonly pauseAt: number; readonly waypoints: ReadonlyArray<LatLng> };
+
+const secondsOf = (event: RecordingEvent) =>
+  ((event.type === "fix" ? event.fix.at : event.type === "start" ? event.at : event.at) - T) / 1000;
+
+/** The distance shown after each event, and the recording at the end. */
+const play = (kind: CardioKind, events: ReadonlyArray<RecordingEvent>) => {
+  let recording: Recording | undefined;
+  const shown: number[] = [];
+  for (const event of [startAs(kind), ...events]) {
+    recording = applyEvent(recording, event);
+    shown.push(recordedDistanceM(recording!));
+  }
+  return { recording: recording!, shown };
+};
+
+const run300 = along([point(0, 0), point(0, 300)], 3);
+const afterRun300 = secondsOf(run300.at(-1)!);
+const stop = lingering(point(0, 300), 120, afterRun300 + 1, 7);
+const jumpedRun = [
+  ...run300,
+  fixAt(afterRun300 + 1, point(2000, 300)),
+  ...along([point(0, 300), point(0, 600)], 3, { from: afterRun300 + 2 }).slice(1),
+];
+const unjumpedRun = [
+  ...run300,
+  ...along([point(0, 300), point(0, 600)], 3, { from: afterRun300 + 2 }).slice(1),
+];
+const firstLeg = along(ROUTE.waypoints.slice(0, ROUTE.pauseAt + 1), 6);
+const pausedAt = secondsOf(firstLeg.at(-1)!);
+const quarterCircle = Array.from({ length: 91 }, (_, degree) => {
+  const angle = (degree * Math.PI) / 180;
+  return point(100 - 100 * Math.cos(angle), 100 * Math.sin(angle));
+});
+const varying = seededRandom(10);
+
+interface MovementCase {
+  readonly name: string;
+  readonly kind: CardioKind;
+  readonly events: ReadonlyArray<RecordingEvent>;
+  /** The distance to land within a share of, or never to go over. */
+  readonly expect: { readonly near: number; readonly within: number } | { readonly atMost: number };
+  readonly also?: (shown: ReadonlyArray<number>) => void;
+}
+
+const MOVEMENT: ReadonlyArray<MovementCase> = [
+  {
+    name: "ten minutes of drift between two points 10 m apart adds at most 20 m",
+    kind: "run",
+    events: Array.from({ length: 600 }, (_, second) =>
+      fixAt(second, point(0, second % 2 === 0 ? 0 : 10)),
+    ),
+    expect: { atMost: 20 },
+  },
+  ...[7, 11, 1234].map((seed): MovementCase => ({
+    name: `ten minutes of drift lingering within 10 m of one place adds at most 20 m (seed ${seed})`,
+    kind: "run",
+    events: lingering(point(0, 0), 600, 0, seed),
+    expect: { atMost: 20 },
+  })),
+  {
+    name: "a ten minute walk at 1 m/s in a straight line comes within 3% of 600 m",
+    kind: "walk",
+    events: along([point(0, 0), point(0, 600)], 1),
+    expect: { near: 600, within: 0.03 },
+  },
+  {
+    name: "the proof route at 6 m/s, paused where the proof pauses, comes within 1% of its length",
+    kind: "run",
+    events: [
+      ...firstLeg,
+      pause(pausedAt),
+      resume(pausedAt + 10),
+      ...along(ROUTE.waypoints.slice(ROUTE.pauseAt), 6, { from: pausedAt + 10 }),
+    ],
+    expect: { near: pathLengthM(ROUTE.waypoints), within: 0.01 },
+  },
+  {
+    name: "a 200 m out-and-back at 3 m/s comes within 3% of 200 m",
+    kind: "run",
+    events: along([point(0, 0), point(0, 100), point(0, 0)], 3),
+    expect: { near: 200, within: 0.03 },
+  },
+  {
+    name: "a walk around a quarter circle of 100 m radius comes within 3% of its length",
+    kind: "walk",
+    events: along(quarterCircle, 1.4),
+    expect: { near: pathLengthM(quarterCircle), within: 0.03 },
+  },
+  {
+    name: "a two minute stop mid-run adds no drift, and the run comes within 3% of 600 m",
+    kind: "run",
+    events: [
+      ...run300,
+      ...stop,
+      ...along([point(0, 300), point(0, 600)], 3, { from: afterRun300 + 121 }).slice(1),
+    ],
+    expect: { near: 600, within: 0.03 },
+    also: (shown) => {
+      const stopping = shown[run300.length]!;
+      const starting = shown[run300.length + stop.length]!;
+      expect(Math.abs(starting - stopping)).toBeLessThan(1);
+    },
+  },
+  {
+    name: "one reading 100 m off after standing still, then a 60 m walk read every 10 s, comes within 5% of 60 m",
+    kind: "walk",
+    events: [
+      ...Array.from({ length: 60 }, (_, second) => fixAt(second, point(0, 0))),
+      fixAt(69, point(0, 100)),
+      ...Array.from({ length: 6 }, (_, step) => fixAt(79 + step * 10, point(0, 10 * (step + 1)))),
+    ],
+    expect: { near: 60, within: 0.05 },
+  },
+  {
+    name: "a single 2 km jump that comes back adds nothing",
+    kind: "run",
+    events: jumpedRun,
+    expect: { near: 600, within: 0.01 },
+    also: (shown) => {
+      expect(shown.at(-1)).toBeCloseTo(play("run", unjumpedRun).shown.at(-1)!, 6);
+    },
+  },
+  {
+    name: "a 1 km run with accuracy varying from 3 m to 25 m comes within 3% of 1 km",
+    kind: "run",
+    events: along([point(0, 0), point(0, 1000)], 3, { accuracyM: () => 3 + 22 * varying() }),
+    expect: { near: 1000, within: 0.03 },
+  },
+];
+
+describe("movement", () => {
+  it.each(MOVEMENT)("$name", ({ kind, events, expect: expected, also }) => {
+    const { recording, shown } = play(kind, events);
+    const end = T + (secondsOf(events.at(-1)!) + 1) * 1000;
+    const live = shown.at(-1)!;
+    const saved = summarize(applyEvent(recording, { type: "pause", at: end })!, end).distanceM;
+    expect(saved).toBeCloseTo(live, 6);
+    if ("atMost" in expected) {
+      expect(Math.max(...shown)).toBeLessThanOrEqual(expected.atMost);
+    } else {
+      expect(Math.abs(live - expected.near) / expected.near).toBeLessThanOrEqual(expected.within);
+    }
+    also?.(shown);
+  });
+});
 
 describe("a recording", () => {
   it("counts the distance and time of every reading after start", () => {
     const recording = replay([start, ...moving(0, 100, 4)])!;
-    expect(recordedDistanceM(recording, true)).toBeCloseTo(400, 6);
+    expect(recordedDistanceM(recording)).toBeCloseTo(400, 6);
     expect(recording.activityId).toBe(ACTIVITY);
     expect(movingMs(recording, T + 100_000)).toBe(100_000);
     expect(isPaused(recording)).toBe(false);
@@ -69,7 +306,7 @@ describe("a recording", () => {
     ])!;
     expect(isPaused(recording)).toBe(false);
     expect(movingMs(recording, T + 180_000)).toBe(120_000);
-    expect(recordedDistanceM(recording, true)).toBeCloseTo(480, 6);
+    expect(recordedDistanceM(recording)).toBeCloseTo(480, 6);
   });
 
   it("keeps the clock still while it is paused", () => {
@@ -85,77 +322,25 @@ describe("a recording", () => {
     expect(recordedDistanceM(late)).toBeCloseTo(recordedDistanceM(onTime), 6);
   });
 
-  it("adds nothing for drift between two points 10 m apart while standing still", () => {
-    const drift = Array.from({ length: 60 }, (_, second) => fix(second, second % 2 === 0 ? 0 : 10));
-    const recording = replay([start, ...drift, pause(60)])!;
-    expect(recordedDistanceM(recording)).toBeLessThanOrEqual(10);
-    expect(recordedDistanceM(replay([start, ...drift, fix(60, 0), pause(61)])!)).toBe(0);
-  });
-
-  it("adds next to nothing in ten minutes of drift that sits at each of two points in turn", () => {
-    const drift = Array.from({ length: 600 }, (_, second) =>
-      fix(second, Math.floor(second / 2) % 2 === 0 ? 0 : 10),
-    );
-    expect(recordedDistanceM(replay([start, ...drift, pause(600)])!)).toBeLessThan(20);
-  });
-
-  it("adds next to nothing in ten minutes of drift that lingers at spots around one place", () => {
-    // A fixed sequence of spots within 10 m of a place, each held for one to six seconds.
-    let seed = 7;
-    const next = () => (seed = (seed * 48_271) % 2_147_483_647) / 2_147_483_647;
-    const drift: RecordingEvent[] = [];
-    while (drift.length < 600) {
-      const angle = next() * 2 * Math.PI;
-      const radius = 10 * Math.sqrt(next());
-      const north = radius * Math.cos(angle);
-      const east = radius * Math.sin(angle);
-      for (let held = 1 + Math.floor(next() * 6); held > 0 && drift.length < 600; held--) {
-        drift.push(fix(drift.length, north, { longitude: east / DEGREE_M }));
-      }
-    }
-    expect(recordedDistanceM(replay([start, ...drift, pause(600)])!)).toBeLessThan(20);
-  });
-
-  it("counts ten minutes of walking at 1 m/s to within 3%, though each step is under the accuracy", () => {
-    const distance = recordedDistanceM(replay([start, ...moving(0, 600, 1), pause(600)])!);
-    expect(Math.abs(distance - 600) / 600).toBeLessThan(0.03);
-  });
-
-  it("counts a slow walk whose every step is shorter than the readings' accuracy", () => {
-    const recording = replay([start, ...moving(0, 100, 1.2), pause(100)])!;
-    // Only the last few metres, too short to tell from drift, are left out.
-    expect(recordedDistanceM(recording)).toBeGreaterThan(120 - Math.hypot(5, 5));
-    expect(recordedDistanceM(recording)).toBeLessThanOrEqual(120 + 1e-6);
-  });
-
-  it("counts movement once a second reading shows it went on, or once the stretch ends", () => {
-    const recording = replay([start, fix(0, 0), fix(1, 10)])!;
-    expect(recordedDistanceM(recording)).toBe(0);
-    expect(recordedDistanceM(recording, true)).toBeCloseTo(10, 6);
-    expect(recordedDistanceM(replay([start, fix(0, 0), fix(1, 10), fix(2, 20)])!)).toBeCloseTo(
-      10,
-      6,
-    );
-  });
-
-  it("leaves out readings that are too unsure, too close, or a jump no one could make", () => {
+  it("leaves out readings that are too unsure, out of order, or a jump no one could make", () => {
     const sure = { accuracyM: null };
     const recording = replay([
       start,
       fix(0, 0, sure),
       fix(1, 500, { accuracyM: MAX_ACCURACY_M + 1 }),
-      fix(2, 1, sure),
-      fix(3, 4, sure),
+      fix(2, 3, sure),
+      fix(3, 6, sure),
       fix(4, 2_000, sure),
-      fix(5, 8, sure),
+      fix(5, 9, sure),
       fix(5, 50, sure),
     ])!;
-    expect(segmentFixes(recording.segments[0]!, true).map((f) => f.at)).toEqual([
+    expect(segmentFixes(recording.segments[0]!).map((f) => f.at)).toEqual([
       T,
+      T + 2000,
       T + 3000,
       T + 5000,
     ]);
-    expect(recordedDistanceM(recording, true)).toBeCloseTo(8, 6);
+    expect(recordedDistanceM(recording)).toBeCloseTo(9, 6);
   });
 
   it("ignores a second start, a pause while paused and a resume while recording", () => {

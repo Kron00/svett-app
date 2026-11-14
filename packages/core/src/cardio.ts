@@ -6,6 +6,7 @@ import {
   type Recording,
   recordedDistanceM,
   segmentFixes,
+  segmentTrack,
 } from "./recording.ts";
 import type { ActivityDraft, SampleDraft } from "./repositories/activities.ts";
 import { MADE_HERE } from "./repositories/origin.ts";
@@ -35,15 +36,15 @@ const marksOf = (segments: Recording["segments"], end: number): ReadonlyArray<Ma
   for (const segment of segments) {
     const to = segment.to ?? end;
     let clock = segment.from;
-    let previous: Fix | undefined;
+    let travelled = 0;
     marks.push({ at: clock, movingMs: moving, distanceM: distance });
-    for (const fix of segmentFixes(segment, true)) {
+    for (const { fix, alongM } of segmentTrack(segment)) {
       moving += fix.at - clock;
       clock = fix.at;
-      if (previous !== undefined) distance += distanceM(previous, fix);
-      previous = fix;
-      marks.push({ at: clock, movingMs: moving, distanceM: distance });
+      travelled = alongM;
+      marks.push({ at: clock, movingMs: moving, distanceM: distance + alongM });
     }
+    distance += travelled;
     moving += Math.max(0, to - clock);
     marks.push({ at: Math.max(to, clock), movingMs: moving, distanceM: distance });
   }
@@ -177,13 +178,13 @@ export interface CardioSummary {
 /** The finished recording, with any stretch still open ending at `end`. */
 export const summarize = (recording: Recording, end: number): CardioSummary => {
   const splits = splitsOf(recording, end);
-  const segments = recording.segments.map((segment) => segmentFixes(segment, true));
+  const segments = recording.segments.map((segment) => segmentFixes(segment));
   return {
     activityId: recording.activityId,
     kind: recording.kind,
     startedAt: recording.startedAt,
     durationS: splits.reduce((total, split) => total + split.durationS, 0),
-    distanceM: recordedDistanceM(recording, true),
+    distanceM: recordedDistanceM(recording),
     elevationGainM: elevationGainM(segments),
     segments,
     splits,
