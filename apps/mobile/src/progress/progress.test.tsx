@@ -185,6 +185,13 @@ const setIds = (tree: ReactTestRenderer) =>
     .findAll((node) => isHost(node, "Pressable") && String(node.props.testID).startsWith("set-"))
     .map((node) => String(node.props.testID).slice("set-".length));
 
+/** Lets reads finish until `line` is on screen, as a detail reads a set again after a save. */
+const showsLine = async (tree: ReactTestRenderer, line: string, tries = 50): Promise<void> => {
+  if (tries === 0 || lines(tree).includes(line)) return;
+  await settle();
+  return showsLine(tree, line, tries - 1);
+};
+
 const calendar = () => render(<CalendarScreen {...screenProps("Calendar", undefined)} />);
 
 let older: ActivityId;
@@ -244,8 +251,7 @@ describe("a past workout", () => {
     });
     expect(byTestId(edit, "set-edit-save").props.disabled).toBe(true);
     expect(byTestId(edit, "set-edit-cancel").props.disabled).toBe(true);
-    // The detail reads the set again after the save lands, which can take more than one tick.
-    for (let wait = 0; wait < 50 && !lines(detail).includes("100 kg × 7"); wait++) await settle();
+    await showsLine(detail, "100 kg × 7");
 
     expect(navigation.goBack).toHaveBeenCalledTimes(1);
     expect(lines(detail)).toEqual(expect.arrayContaining(["122.5 kg × 4", "100 kg × 7"]));
