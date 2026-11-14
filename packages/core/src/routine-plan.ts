@@ -21,13 +21,26 @@ export const endPosition = (rows: ReadonlyArray<{ readonly position: number }>):
   rows.reduce((end, row) => Math.max(end, row.position + 1), 0);
 
 /**
+ * The start of `text` that fits in `units` UTF-16 code units, the length a text field's
+ * `maxLength` counts, without cutting a character such as an emoji in half.
+ */
+const fitTitle = (text: string, units: number): string => {
+  let end = 0;
+  for (const character of text) {
+    if (end + character.length > units) break;
+    end += character.length;
+  }
+  return text.slice(0, end);
+};
+
+/**
  * The title for a copy of a routine, such as "Push copy", that no other routine has. A long
  * title is shortened so the copy's title still fits `ROUTINE_TITLE_MAX_LENGTH`.
  */
 export const copyTitle = (title: string, taken: Iterable<string>): string => {
   const names = new Set(taken);
   const named = (suffix: string) =>
-    `${title.slice(0, ROUTINE_TITLE_MAX_LENGTH - suffix.length).trimEnd()}${suffix}`;
+    `${fitTitle(title, ROUTINE_TITLE_MAX_LENGTH - suffix.length).trimEnd()}${suffix}`;
   let candidate = named(" copy");
   for (let number = 2; names.has(candidate); number += 1) candidate = named(` copy ${number}`);
   return candidate;
@@ -255,7 +268,7 @@ export const newRoutineForm = (title = "", folderId: FolderId | null = null): Ro
 export const routineFormFromParams = (params: unknown): RoutineForm => {
   const record = linkParams(params);
   return newRoutineForm(
-    (linkParam(Schema.String, record["title"]) ?? "").slice(0, ROUTINE_TITLE_MAX_LENGTH),
+    fitTitle(linkParam(Schema.String, record["title"]) ?? "", ROUTINE_TITLE_MAX_LENGTH),
     linkParam(FolderId, record["folder"]),
   );
 };
@@ -351,7 +364,7 @@ export const routineFromForm = (form: RoutineForm): RoutineFormResult => {
   return {
     ok: true,
     routine: {
-      title: title.slice(0, ROUTINE_TITLE_MAX_LENGTH),
+      title: fitTitle(title, ROUTINE_TITLE_MAX_LENGTH),
       notes: form.notes.trim(),
       folderId: form.folderId,
       exercises: form.exercises.map(({ key: _key, ...exercise }) => exercise),

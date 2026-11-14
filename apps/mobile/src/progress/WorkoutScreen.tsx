@@ -18,7 +18,7 @@ import {
   type WorkoutView,
 } from "@svett/core";
 import { Effect, Option, Schema } from "effect";
-import { useLayoutEffect, useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import { Pressable, ScrollView, View } from "react-native";
 
 import { useQuery, write } from "../data/store";
@@ -174,6 +174,8 @@ export function WorkoutScreen({ route, navigation }: Props) {
   // A deleted workout stays on screen while the screen slides away, instead of reading as missing.
   const [leaving, setLeaving] = useState<WorkoutView | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+  // State only disables Delete after a render, and taps can land before it.
+  const deletingNow = useRef(false);
   const view = leaving ?? (query.status === "ready" ? Option.getOrNull(query.value) : null);
   const title = view ? view.activity.title || SPORTS[view.activity.kind].label : "Workout";
 
@@ -285,11 +287,14 @@ export function WorkoutScreen({ route, navigation }: Props) {
           accessibilityHint="Deletes it. History offers Undo."
           disabled={leaving !== null}
           onPress={() => {
+            if (deletingNow.current) return;
+            deletingNow.current = true;
             setLeaving(view);
             setDeleteError(null);
             deleteWorkout({ id, title }).then(
               () => navigation.navigate("Tabs", { screen: "Progress" }),
               (error: unknown) => {
+                deletingNow.current = false;
                 setLeaving(null);
                 setDeleteError(String(error));
               },

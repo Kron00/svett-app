@@ -13,7 +13,7 @@ import {
   type WorkoutSummary,
 } from "@svett/core";
 import { Effect } from "effect";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Pressable, View } from "react-native";
 
 import { useQuery } from "../data/store";
@@ -88,6 +88,8 @@ function UndoDeleteBar({ workout }: { readonly workout: DeletedWorkout }) {
   const stacked = useIsAccessibilityTextSize();
   const [undoing, setUndoing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // State only disables Undo after a render, and taps can land before it.
+  const undoingNow = useRef(false);
   return (
     <View testID="undo-delete-banner" className="absolute inset-x-0 bottom-0 px-gutter pb-3">
       <View
@@ -109,11 +111,17 @@ function UndoDeleteBar({ workout }: { readonly workout: DeletedWorkout }) {
             accessibilityHint="Brings the workout back"
             disabled={undoing}
             onPress={() => {
+              if (undoingNow.current) return;
+              undoingNow.current = true;
               setUndoing(true);
               setError(null);
               undoDelete(workout).then(
-                () => setUndoing(false),
+                () => {
+                  undoingNow.current = false;
+                  setUndoing(false);
+                },
                 (failure: unknown) => {
+                  undoingNow.current = false;
                   setUndoing(false);
                   setError(String(failure));
                 },
@@ -124,6 +132,7 @@ function UndoDeleteBar({ workout }: { readonly workout: DeletedWorkout }) {
             label="Close"
             variant="plain"
             testID="undo-delete-close"
+            disabled={undoing}
             onPress={() => setDeletedWorkout(null)}
           />
         </View>
