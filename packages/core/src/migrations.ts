@@ -100,12 +100,18 @@ UPDATE activity_exercise SET set_fields = CASE
 END;
 `;
 
+// Exercises logged before the rest timer have no rest time, which the timer reads as off.
+const restTimer = `
+ALTER TABLE activity_exercise ADD COLUMN rest_s REAL;
+`;
+
 /** Applied in order and never edited once released. A change to the schema is a new migration. */
 export const MIGRATIONS: ReadonlyArray<Migration> = [
   { version: 1, name: "initial", sql: initial },
   { version: 2, name: "import changes", sql: importChanges },
   { version: 3, name: "workout in progress", sql: workoutInProgress },
   { version: 4, name: "set fields", sql: setFields },
+  { version: 5, name: "rest timer", sql: restTimer },
 ];
 
 export class DatabaseTooNewError extends Data.TaggedError("DatabaseTooNewError")<{

@@ -194,6 +194,12 @@ describe("svett file", () => {
     expect(tables.activityExercise?.map((row) => row["setFields"])).toEqual(["distance_time"]);
   });
 
+  it("reads a version 3 file's exercises with no rest time, as svett had no rest timer then", () => {
+    const row = { ...exercise(1), setFields: "weight_reps", supersetGroup: 1 };
+    const tables = decoded(file({ activity_exercise: [row] }, 3));
+    expect(tables.activityExercise).toEqual([{ ...row, restS: null }]);
+  });
+
   it.each([
     ["text that is not JSON", "not json"],
     ["JSON that is not a svett file", JSON.stringify({ workouts: [] })],

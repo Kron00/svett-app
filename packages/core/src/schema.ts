@@ -146,6 +146,8 @@ export const ActivityExercise = Schema.Struct({
   supersetGroup: Schema.NullOr(NonNegativeInt),
   notes: Schema.String,
   setFields: SetFields,
+  /** The rest after each set, for the rest timer. 0 is off. Null before svett had the timer. */
+  restS: Schema.NullOr(DurationSeconds),
 });
 export type ActivityExercise = typeof ActivityExercise.Type;
 

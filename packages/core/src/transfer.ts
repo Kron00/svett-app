@@ -133,6 +133,7 @@ const addedFields = (beside: RawRows): Partial<Record<TableKey, (row: Fields) =>
     activity: () => ({ status: "finished", routineId: null }),
     activityExercise: (row) => ({
       setFields: (setFieldsOf ??= setFieldsBySets(beside.activitySet ?? []))(row["id"]),
+      restS: null,
     }),
     activitySet: () => ({ done: true, targetRepsMin: null, targetRepsMax: null }),
   };

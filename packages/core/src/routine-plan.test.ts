@@ -237,6 +237,7 @@ describe("workoutFromRoutine", () => {
         {
           exerciseId: bench,
           supersetGroup: null,
+          restS: 90,
           notes: "Pause on the chest",
           sets: [
             {
@@ -262,6 +263,7 @@ describe("workoutFromRoutine", () => {
         {
           exerciseId: plank,
           supersetGroup: null,
+          restS: 90,
           notes: "",
           sets: [
             {

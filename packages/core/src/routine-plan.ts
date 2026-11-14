@@ -14,6 +14,7 @@ import {
   type SetType,
 } from "./schema.ts";
 import { formatWeightKg } from "./set-format.ts";
+import { formatWeightWithUnit, type WeightUnit } from "./weight-unit.ts";
 
 /** The position after the last of `rows`, so a new row goes to the end. */
 export const endPosition = (rows: ReadonlyArray<{ readonly position: number }>): number =>
@@ -113,10 +114,10 @@ export type TargetValues = Pick<
 >;
 
 /** A routine set's target, such as "60 kg × 8-12 reps", or "No target" when it has none. */
-export const setTargetText = (set: TargetValues): TargetText => {
+export const setTargetText = (set: TargetValues, unit: WeightUnit = "kg"): TargetText => {
   const parts: Array<TargetText> = [];
   if (set.weightKg !== null) {
-    const weight = `${formatWeightKg(set.weightKg)} kg`;
+    const weight = formatWeightWithUnit(set.weightKg, unit);
     parts.push({ text: weight, label: weight });
   }
   const reps = repTarget(set.repsMin, set.repsMax);
@@ -148,14 +149,18 @@ export const plannedSetText = (
     ActivitySet,
     "weightKg" | "reps" | "durationS" | "distanceM" | "targetRepsMin" | "targetRepsMax"
   >,
+  unit: WeightUnit = "kg",
 ): TargetText =>
-  setTargetText({
-    weightKg: set.weightKg,
-    repsMin: set.reps ?? set.targetRepsMin,
-    repsMax: set.reps ?? set.targetRepsMax,
-    durationS: set.durationS,
-    distanceM: set.distanceM,
-  });
+  setTargetText(
+    {
+      weightKg: set.weightKg,
+      repsMin: set.reps ?? set.targetRepsMin,
+      repsMax: set.reps ?? set.targetRepsMax,
+      durationS: set.durationS,
+      distanceM: set.distanceM,
+    },
+    unit,
+  );
 
 /**
  * Where a saved routine goes: it keeps its place while it stays in its folder, and goes to
@@ -199,6 +204,7 @@ export const workoutFromRoutine = ({ routine, exercises }: RoutineDetail): NewWo
   exercises: exercises.map(({ exercise, sets }) => ({
     exerciseId: exercise.exerciseId,
     supersetGroup: exercise.supersetGroup,
+    restS: exercise.restS,
     notes: exercise.notes,
     sets: sets.map(plannedSet),
   })),
