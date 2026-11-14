@@ -25,7 +25,7 @@ export const newestBackupsFirst = (names: ReadonlyArray<string>): Array<string> 
       const at = backupTakenAt(name);
       return at === undefined ? [] : [{ name, at }];
     })
-    .toSorted((a, b) => b.at - a.at)
+    .sort((a, b) => b.at - a.at)
     .map(({ name }) => name);
 
 /** The backups to delete so only the newest `keep` remain. Other files are never listed. */
