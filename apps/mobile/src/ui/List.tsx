@@ -83,6 +83,12 @@ export type RowTrailing =
       readonly value: boolean;
       readonly onValueChange: (value: boolean) => void;
     }
+  | {
+      /** One choice among the rows of a section. The chosen row shows a checkmark. */
+      readonly type: "check";
+      readonly selected: boolean;
+      readonly onPress: () => void;
+    }
   | { readonly type: "none" };
 
 const NO_TRAILING: RowTrailing = { type: "none" };
@@ -139,6 +145,11 @@ export function ListRow({
       {trailing.type === "chevron" ? (
         <Icon name="chevron.right" color="tertiary-label" size={14} weight="semibold" />
       ) : null}
+      {trailing.type === "check" ? (
+        <View className={trailing.selected ? "" : "opacity-0"}>
+          <Icon name="checkmark" color="accent" size={17} weight="semibold" />
+        </View>
+      ) : null}
       {trailing.type === "switch" ? (
         <View accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
           <Switch value={trailing.value} onValueChange={trailing.onValueChange} />
@@ -169,6 +180,19 @@ export function ListRow({
           accessibilityState={{ checked: trailing.value }}
           onPress={() => trailing.onValueChange(!trailing.value)}
           testID={testID}
+        >
+          {content}
+        </Pressable>
+      );
+    case "check":
+      return (
+        <Pressable
+          accessibilityRole="radio"
+          accessibilityLabel={label}
+          accessibilityState={{ checked: trailing.selected }}
+          onPress={trailing.onPress}
+          testID={testID}
+          style={({ pressed }) => ({ opacity: pressed ? 0.6 : 1 })}
         >
           {content}
         </Pressable>

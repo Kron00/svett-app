@@ -1041,6 +1041,193 @@ run_data FAKE_NO_EXPORT=1 "$root/data-no-export"
 check "data.sh fails when export writes no file" \
   grep -qF "Export wrote no svett-export-*.json to svett's cache folder" "$output"
 
+# hevy.sh runs against a fake app that keeps a small database in the shape the
+# script reads. Import writes the sample's workouts, or with both changed
+# workouts switched on the changed sample's, and Undo writes the sample's back.
+# FAKE_HEVY_TWICE records another import when the sample opens again,
+# FAKE_HEVY_NEW shows new records for the changed sample, and FAKE_HEVY_UNDO
+# leaves the changed workouts after Undo. From the second link on,
+# FAKE_HEVY_NO_SUMMARY never shows the Hevy summary, and FAKE_HEVY_STALE also
+# keeps the last import's result on screen, as the app did before a link
+# started a new preview. Import and Undo start below the fold, as at the
+# largest text size, so only a scroll finds them.
+cat >"$data_fake/hevy-device" <<EOF
+#!/usr/bin/env bash
+echo "\$*" >>"$root/bound-calls"
+database="$root/data container/Documents/svett-hevy.db"
+sql() {
+  node -e 'new (require("node:sqlite").DatabaseSync)(process.argv[1]).exec(process.argv[2])' "\$database" "\$1"
+}
+# write_state "<title> <sets> <kg> | ..." replaces the workouts with these.
+write_state() {
+  node -e '
+    const database = new (require("node:sqlite").DatabaseSync)(process.argv[1]);
+    database.exec("DELETE FROM activity; DELETE FROM activity_exercise; DELETE FROM activity_set");
+    process.argv[2].split(" | ").forEach((workout, at) => {
+      const [, title, sets, kg] = /^(.*) (\\d+) ([\\d.]+)\$/.exec(workout);
+      database.prepare("INSERT INTO activity VALUES (?, NULL, ?, ?)").run("a" + at, title, at);
+      database.prepare("INSERT INTO activity_exercise VALUES (?, NULL, ?)").run("e" + at, "a" + at);
+      for (let set = 0; set < Number(sets); set++) {
+        database.prepare("INSERT INTO activity_set VALUES (?, NULL, ?, ?)").run("s" + at + "-" + set, "e" + at, Number(kg));
+      }
+    });
+  ' "\$database" "\$1"
+}
+args=" \$* "
+case "\$args" in
+  *" --launch-args=/"*) echo "\${args##*--launch-args=}" | sed 's/ *\$//' >"$root/launched" ;;
+  *" open com.kron00.svett svett://import?file="*)
+    file=\${args##*file=}
+    echo "\${file%%&*}" >"$root/hevy-opened"
+    echo "\${file%%&*}" >>"$root/hevy-opens"
+    rm -f "$root/hevy-taken"
+    if [[ -n "\${FAKE_HEVY_TWICE:-}" && -e "\$database" ]]; then
+      sql "INSERT INTO import_batch VALUES ('b9', NULL, 9, 'applied')"
+    fi ;;
+  *'id="import-new"'*) [[ -n "\${FAKE_HEVY_NEW:-}" ]] || exit 1 ;;
+  *' wait id="hevy-summary"'*)
+    [[ -z "\${FAKE_HEVY_NO_SUMMARY:-}\${FAKE_HEVY_STALE:-}" || "\$(wc -l <"$root/hevy-opens")" -lt 2 ]] || exit 1 ;;
+  *' is visible id="import-done"'*) [[ -n "\${FAKE_HEVY_STALE:-}" ]] || exit 1 ;;
+  *' wait id="import-apply"'* | *' wait id="undo-apply"'* | *' is visible id="import-apply"'* | *' is visible id="undo-apply"'*)
+    exit 1 ;;
+  *" get attrs "*)
+    echo "\$*" >"$root/last-attrs"
+    echo '{"rect": {"x": 20, "y": 300, "width": 120, "height": 40}}' ;;
+  *" press "[0-9]*)
+    case "\$(cat "$root/last-attrs")" in
+      *import-changed-*) echo x >>"$root/hevy-taken" ;;
+      *import-apply*)
+        if [[ "\$(cat "$root/hevy-opened")" == svett-hevy-sample.csv ]]; then
+          sql "CREATE TABLE activity (id TEXT PRIMARY KEY, deleted_at INTEGER, title TEXT, started_at INTEGER);
+               CREATE TABLE activity_exercise (id TEXT PRIMARY KEY, deleted_at INTEGER, activity_id TEXT);
+               CREATE TABLE activity_set (id TEXT PRIMARY KEY, deleted_at INTEGER, activity_exercise_id TEXT, weight_kg REAL);
+               CREATE TABLE import_batch (id TEXT PRIMARY KEY, deleted_at INTEGER, created_at INTEGER, status TEXT);
+               CREATE TABLE exercise (id TEXT PRIMARY KEY, name TEXT);
+               CREATE TABLE exercise_alias (id TEXT PRIMARY KEY, deleted_at INTEGER, name TEXT, exercise_id TEXT);
+               INSERT INTO import_batch VALUES ('b1', NULL, 1, 'applied');
+               INSERT INTO exercise VALUES ('x1', 'Leverage Iso Row');
+               INSERT INTO exercise_alias VALUES ('m1', NULL, 'Chest Supported Machine Row', 'x1');"
+          write_state "Push Day 8 100 | Pull Day 8 160 | Legs 9 120"
+        elif [[ "\$(wc -l <"$root/hevy-taken" 2>/dev/null)" -eq 2 ]]; then
+          sql "INSERT INTO import_batch VALUES ('b2', NULL, 2, 'applied')"
+          write_state "Push Day 7 102.5 | Back Day 8 160 | Legs 9 120"
+        fi ;;
+      *undo-apply*)
+        sql "UPDATE import_batch SET status = 'undone' WHERE id = 'b2'"
+        [[ -n "\${FAKE_HEVY_UNDO:-}" ]] || write_state "Push Day 8 100 | Pull Day 8 160 | Legs 9 120" ;;
+    esac ;;
+  *" get text "*)
+    case "\$args" in
+      *hevy-summary*) echo "A Hevy export with 3 workouts and 25 sets." ;;
+      *import-changed-0*) echo "Back Day, 5 Nov 2026, Yours" ;;
+      *import-changed-1*) echo "Push Day, 3 Nov 2026, Yours" ;;
+      *)
+        if [[ -e "\$database" ]]; then
+          node -e '
+            const database = new (require("node:sqlite").DatabaseSync)(process.argv[1]);
+            const count = (table) => database.prepare("SELECT count(*) AS n FROM " + table + " WHERE deleted_at IS NULL").get().n;
+            console.log(count("activity") + " workouts, " + count("activity_set") + " sets");
+          ' "\$database"
+        else
+          echo "0 workouts, 0 sets"
+        fi ;;
+    esac ;;
+esac
+exit 0
+EOF
+chmod +x "$data_fake/hevy-device"
+
+# run_hevy [VAR=value...] [hevy.sh args...] leaves the exit status in hevy_status.
+run_hevy() {
+  local -a vars=()
+  while [[ "${1:-}" == *=* ]]; do
+    vars+=("$1")
+    shift
+  done
+  rm -rf "$root/simctl-calls" "$root/bound-calls" "$root/launched" "$root/data container" \
+    "$root/hevy-opened" "$root/hevy-opens" "$root/hevy-taken"
+  hevy_status=0
+  env PATH="$data_fake:$fake:$PATH" SVETT_DEVICE_CMD="hevy-device --session 't3-test session' --device FAKE-UDID" \
+    "${vars[@]}" "$repo/scripts/sim/hevy.sh" "$@" >"$output" 2>&1 || hevy_status=$?
+}
+
+hevy_db_args="--launch-args=-svettFixture --launch-args=$documents/svett-hevy.db"
+hevy_sample_link="com.kron00.svett svett://import?file=svett-hevy-sample.csv&kind=hevy"
+hevy_changed_link="com.kron00.svett svett://import?file=svett-hevy-changed.csv&kind=hevy"
+
+case_name="hevy.sh Debug with SVETT_DEVICE_CMD"
+run_hevy "$root/hevy proof"
+[[ "$hevy_status" == 0 ]] || fail "hevy.sh failed"
+check "hevy.sh copies both Hevy samples into svett's documents" \
+  cmp -s "$repo/packages/core/test-data/hevy-sample-changed.csv" "$documents/svett-hevy-changed.csv"
+check "hevy.sh opens an empty database, imports the sample twice, then the changed sample, then relaunches" \
+  only_open "$debug_open $hevy_db_args" "$hevy_sample_link" "$hevy_sample_link" "$hevy_changed_link" \
+  "$debug_open $hevy_db_args"
+check "hevy.sh presses the match, Import, Done, both changed workouts, Undo and its confirmation at their centres" \
+  only_calls "get attrs" 'get attrs id="match-1-0"' 'get attrs id="match-continue"' \
+  'get attrs id="import-apply"' 'get attrs id="import-close"' 'get attrs id="import-changed-0"' \
+  'get attrs id="import-changed-1"' 'get attrs id="import-apply"' 'get attrs id="import-undo"' \
+  'get attrs id="undo-apply"'
+check "hevy.sh waits for Done to close the import before it opens the sample again" \
+  grep -qF 'wait absent id="import-preview" 10000' "$root/bound-calls"
+check "hevy.sh shoots at the largest text size, then restores the default" \
+  only_calls "settings text-size" \
+  "settings text-size accessibility-extra-extra-extra-large" "settings text-size large"
+check "hevy.sh screenshots every step" only_calls "screenshot" \
+  "screenshot $root/hevy proof/01-empty.png" "screenshot $root/hevy proof/02-match.png" \
+  "screenshot $root/hevy proof/03-match-chosen.png" "screenshot $root/hevy proof/04-preview.png" \
+  "screenshot $root/hevy proof/05-imported.png" "screenshot $root/hevy proof/06-import-again.png" \
+  "screenshot $root/hevy proof/07-changed-preview.png" "screenshot $root/hevy proof/08-changed-taken.png" \
+  "screenshot $root/hevy proof/09-changed-imported.png" "screenshot $root/hevy proof/10-undo-preview.png" \
+  "screenshot $root/hevy proof/11-undone.png" "screenshot $root/hevy proof/12-counts-after-undo.png"
+check "hevy.sh writes the remembered match to the summary" grep -qF \
+  "Chest Supported Machine Row matched to Leverage Iso Row, and remembered." "$root/hevy proof/summary.txt"
+check "hevy.sh writes the taken and the undone workouts to the summary" grep -qxF \
+  "Undo: Push Day 8 100 | Pull Day 8 160 | Legs 9 120, the earlier versions." "$root/hevy proof/summary.txt"
+check "hevy.sh checks Progress after Undo" grep -qxF \
+  "After a relaunch: 3 workouts, 25 sets." "$root/hevy proof/summary.txt"
+check "hevy.sh with SVETT_DEVICE_CMD calls neither simctl launch nor openurl" no_simctl_launch_or_openurl
+
+case_name="hevy.sh Release with SVETT_DEVICE_CMD"
+run_hevy --release "$root/hevy-release"
+[[ "$hevy_status" == 0 ]] || fail "hevy.sh --release failed"
+check "hevy.sh Release relaunches the installed app without Metro" only_open \
+  "com.kron00.svett --relaunch $hevy_db_args" "$hevy_sample_link" "$hevy_sample_link" \
+  "$hevy_changed_link" "com.kron00.svett --relaunch $hevy_db_args"
+
+case_name="hevy.sh when the same sample imports twice"
+run_hevy FAKE_HEVY_TWICE=1 "$root/hevy-twice"
+check "hevy.sh fails when importing the sample again records another import" \
+  grep -qF "Importing the sample again recorded another import" "$output"
+
+case_name="hevy.sh when the changed sample shows new records"
+run_hevy FAKE_HEVY_NEW=1 "$root/hevy-new"
+check "hevy.sh fails when a changed workout would be added as new" \
+  grep -qF "The changed sample shows new records" "$output"
+
+case_name="hevy.sh when the sample opened again shows no summary"
+run_hevy FAKE_HEVY_NO_SUMMARY=1 "$root/hevy-no-summary"
+[[ "$hevy_status" != 0 ]] || fail "hevy.sh passed although the Hevy summary never came"
+check "hevy.sh fails with a clear message when the Hevy summary never comes" grep -qxF \
+  "svett://import?file=svett-hevy-sample.csv&kind=hevy did not show the Hevy summary within 60 seconds" "$output"
+check "hevy.sh never waits three minutes for the summary" \
+  test -z "$(grep -F 'wait id="hevy-summary" 180000' "$root/bound-calls")"
+
+case_name="hevy.sh when the sample opened again keeps the last import's result"
+run_hevy FAKE_HEVY_STALE=1 "$root/hevy-stale"
+[[ "$hevy_status" != 0 ]] || fail "hevy.sh passed although the link started no new preview"
+check "hevy.sh says the link left the last import's result on screen" grep -qxF \
+  "svett://import?file=svett-hevy-sample.csv&kind=hevy left the last import's result on screen instead of starting a new preview" \
+  "$output"
+
+case_name="hevy.sh when Undo leaves the new versions"
+run_hevy FAKE_HEVY_UNDO=1 "$root/hevy-undo"
+check "hevy.sh fails when Undo does not give back the earlier versions" \
+  grep -qF "Undo did not give back the earlier versions" "$output"
+check "hevy.sh restores the default text size after a failure" \
+  only_calls "settings text-size" \
+  "settings text-size accessibility-extra-extra-extra-large" "settings text-size large"
+
 # A fixture with the rows history.sh reads. It has an older and a newest workout,
 # one deleted later still, and the newest workout's warm-up and first normal set.
 history_fixture="$root/history-fixture.db"

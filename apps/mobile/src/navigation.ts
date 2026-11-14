@@ -28,8 +28,11 @@ export type RootStackParamList = {
   /** A month such as "2026-10". Without one the calendar opens on this month. */
   Calendar: { month?: string } | undefined;
   Data: undefined;
-  /** `uri` is a picked file. `file` names a file in svett's documents, for svett://import links. */
-  ImportPreview: { uri?: string; file?: string };
+  /**
+   * `uri` is a picked file. `file` names a file in svett's documents, for svett://import links.
+   * `kind` is hevy for Hevy's workout CSV, and a svett export otherwise.
+   */
+  ImportPreview: { uri?: string; file?: string; kind?: "svett" | "hevy" };
   UndoImport: { importBatchId: string };
   Account: undefined;
 };

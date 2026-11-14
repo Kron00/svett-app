@@ -308,6 +308,9 @@ importers:
       '@expo/fingerprint':
         specifier: ~0.21.10
         version: 0.21.10(supports-color@8.1.1)
+      '@react-navigation/core':
+        specifier: 7.24.0
+        version: 7.24.0(react@19.3.0)
       '@types/node':
         specifier: 'catalog:'
         version: 26.6.6

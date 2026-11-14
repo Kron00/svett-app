@@ -1,4 +1,4 @@
-import { TransferRepository } from "@svett/core";
+import { ExerciseAliasRepository, ExerciseRepository, TransferRepository } from "@svett/core";
 import { Effect } from "effect";
 import * as DocumentPicker from "expo-document-picker";
 import { File, Paths } from "expo-file-system";
@@ -33,6 +33,34 @@ export const changeTransfers = <A, E>(
       : Promise.reject(new Error(DATABASE_SWITCHED)),
   );
 
+/** Runs `body` with the exercise name matches of `database`, by default the open one. */
+export const withAliases = <A, E>(
+  body: (aliases: typeof ExerciseAliasRepository.Service) => Effect.Effect<A, E>,
+  database: OpenDatabase = currentDatabase(),
+) =>
+  database.handle.runtime.runPromise(Effect.flatMap(Effect.service(ExerciseAliasRepository), body));
+
+/**
+ * Saves exercise name matches to `database`, the one the match screen read its names from. It
+ * takes its turn like an import and refuses after someone signed in or out, because the
+ * exercises it names belong to the other data.
+ */
+export const changeAliases = <A, E>(
+  database: OpenDatabase,
+  body: (aliases: typeof ExerciseAliasRepository.Service) => Effect.Effect<A, E>,
+) =>
+  transferInTurn(() =>
+    stillOpen(database)
+      ? write(Effect.flatMap(Effect.service(ExerciseAliasRepository), body))
+      : Promise.reject(new Error(DATABASE_SWITCHED)),
+  );
+
+/** Runs `body` with the exercises of `database`, by default the open one. */
+export const withExercises = <A, E>(
+  body: (exercises: typeof ExerciseRepository.Service) => Effect.Effect<A, E>,
+  database: OpenDatabase = currentDatabase(),
+) => database.handle.runtime.runPromise(Effect.flatMap(Effect.service(ExerciseRepository), body));
+
 /**
  * Writes the export to the cache folder and opens the share sheet on it. The copy stays in
  * the cache, where iOS may clear it, so the file the user saves is the one that counts.
@@ -54,10 +82,18 @@ export const exportAndShare = async () => {
 /** Where an import's file comes from: the document picker, or a file in svett's documents. */
 export type ImportFileSource = { readonly uri: string } | { readonly file: string };
 
+/** What a file to import holds: a svett export, or Hevy's workout CSV. */
+export type ImportKind = "svett" | "hevy";
+
+const PICKER_TYPES: Readonly<Record<ImportKind, ReadonlyArray<string>>> = {
+  svett: ["application/json"],
+  hevy: ["text/csv", "text/comma-separated-values"],
+};
+
 /** Opens the document picker and returns the picked file, or nothing when cancelled. */
-export const pickImportFile = async (): Promise<ImportFileSource | null> => {
+export const pickImportFile = async (kind: ImportKind): Promise<ImportFileSource | null> => {
   const picked = await DocumentPicker.getDocumentAsync({
-    type: "application/json",
+    type: [...PICKER_TYPES[kind]],
     copyToCacheDirectory: true,
   });
   const asset = picked.canceled ? undefined : picked.assets[0];
