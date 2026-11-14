@@ -17,6 +17,7 @@ import { SocialRoutes } from "./social-routes.ts";
 import { PAGE, SocialRows, type SocialRowsShape } from "./social-rows.ts";
 import { type StandInIssuer, startStandInIssuer } from "./test-issuer.ts";
 import { startTestPostgres, type TestPostgres } from "./test-postgres.ts";
+import { Safety } from "./safety.ts";
 
 let postgres: TestPostgres;
 let issuer: StandInIssuer;
@@ -48,7 +49,12 @@ const routes = async () => {
       audience: undefined,
     }),
   );
-  const services = Layer.mergeAll(AccountRows.layer, SocialRows.layer, Sessions.layer).pipe(
+  const services = Layer.mergeAll(
+    AccountRows.layer,
+    SocialRows.layer,
+    Sessions.layer,
+    Safety.layer(),
+  ).pipe(
     Layer.provide(databaseLayer(url)),
     Layer.provide(clerk),
   );

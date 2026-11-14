@@ -28,6 +28,7 @@ import { SocialRoutes } from "./social-routes.ts";
 import { SocialRows } from "./social-rows.ts";
 import { type StandInIssuer, startStandInIssuer } from "./test-issuer.ts";
 import { startTestPostgres, type TestPostgres } from "./test-postgres.ts";
+import { Safety } from "./safety.ts";
 
 let postgres: TestPostgres;
 let issuer: StandInIssuer;
@@ -65,6 +66,7 @@ const routes = async () => {
     SocialRows.layer,
     FeedRows.layer,
     Sessions.layer,
+    Safety.layer(),
   ).pipe(Layer.provideMerge(databaseLayer(url)), Layer.provide(clerk));
   return HttpRouter.serve(Layer.mergeAll(AccountRoutes, SocialRoutes, FeedRoutes), {
     disableLogger: true,

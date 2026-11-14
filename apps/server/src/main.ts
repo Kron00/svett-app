@@ -4,17 +4,20 @@ import { NodeHttpServer, NodeRuntime } from "@effect/platform-node";
 import { Effect, Layer } from "effect";
 import { HttpRouter } from "effect/http";
 
-import { AccountRoutes } from "./account-routes.ts";
+import { AccountDeletion } from "./account-deletion.ts";
+import { AccountRoutes, DeletionRoutes } from "./account-routes.ts";
 import { AccountRows } from "./account-rows.ts";
 import { Sessions } from "./auth.ts";
 import { Backups, NightlyBackups } from "./backups.ts";
 import { ClerkConfig } from "./clerk-config.ts";
+import { ClerkUsers } from "./clerk-users.ts";
 import { ServerConfig } from "./config.ts";
 import { Database, migrate } from "./database.ts";
 import { FeedRoutes } from "./feed-routes.ts";
 import { FeedRows } from "./feed-rows.ts";
 import { Routes } from "./http.ts";
 import { PgTools } from "./pg-tools.ts";
+import { Safety } from "./safety.ts";
 import { SocialRoutes } from "./social-routes.ts";
 import { SocialRows } from "./social-rows.ts";
 
@@ -38,8 +41,11 @@ const Services = Layer.mergeAll(
   SocialRows.layer,
   FeedRows.layer,
   Sessions.layer,
+  AccountDeletion.layer,
 ).pipe(
+  Layer.provideMerge(Safety.layer()),
   Layer.provideMerge(Database),
+  Layer.provide(ClerkUsers.fromEnv),
   Layer.provide(PgTools.layer()),
   // Without a valid Clerk setup the server still starts, with sign-in off.
   Layer.provideMerge(ClerkConfig.fromEnv),
@@ -47,7 +53,9 @@ const Services = Layer.mergeAll(
 );
 
 const App = Layer.mergeAll(
-  HttpRouter.serve(Layer.mergeAll(Routes, AccountRoutes, SocialRoutes, FeedRoutes)),
+  HttpRouter.serve(
+    Layer.mergeAll(Routes, AccountRoutes, DeletionRoutes, SocialRoutes, FeedRoutes),
+  ),
   NightlyBackups,
 ).pipe(Layer.provide(Migrated), Layer.provide(HttpServer), Layer.provide(Services));
 
