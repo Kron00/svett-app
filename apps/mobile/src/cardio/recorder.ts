@@ -57,15 +57,6 @@ const recorder = makeRecorder({
 });
 recording.set(recorder.get());
 
-TaskManager.defineTask<{ locations: ReadonlyArray<LocationReading> }>(
-  CARDIO_TASK,
-  async ({ data, error }) => {
-    if (error !== null) return;
-    // Awaited, so iOS does not suspend svett before the readings are in the journal.
-    await Effect.runPromise(recorder.addFixes(data.locations.map(fixOf)));
-  },
-);
-
 /** Why the last change to the recording did not happen, until one does. */
 export const recordingProblem = createStore<string | undefined>(undefined);
 
@@ -84,6 +75,27 @@ const tracked = async <A>(change: Promise<A>): Promise<A> => {
     throw error;
   }
 };
+
+let lostReadings: string | undefined;
+
+TaskManager.defineTask<{ locations: ReadonlyArray<LocationReading> }>(
+  CARDIO_TASK,
+  async ({ data, error }) => {
+    if (error !== null) return;
+    // Awaited, so iOS does not suspend svett before the readings are in the journal.
+    try {
+      await Effect.runPromise(recorder.addFixes(data.locations.map(fixOf)));
+      // Only its own problem, so a reading saved does not hide why a pause failed.
+      if (lostReadings !== undefined && recordingProblem.get() === lostReadings) {
+        recordingProblem.set(undefined);
+      }
+      lostReadings = undefined;
+    } catch (cause) {
+      lostReadings = `GPS readings are being lost. ${problemOf(cause)}`;
+      recordingProblem.set(lostReadings);
+    }
+  },
+);
 
 // iOS stops the updates when svett is closed from the app switcher. Opening svett
 // again picks the recording back up, or pauses it when GPS will not start.
