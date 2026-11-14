@@ -26,6 +26,10 @@ export type RootStackParamList = {
   SetEdit: { activityId: string; setId: string };
   /** A month such as "2026-10". Without one the calendar opens on this month. */
   Calendar: { month?: string } | undefined;
+  Data: undefined;
+  /** `uri` is a picked file. `file` names a file in svett's documents, for svett://import links. */
+  ImportPreview: { uri?: string; file?: string };
+  UndoImport: { importBatchId: string };
 };
 
 export type RootNavigation = NativeStackNavigationProp<RootStackParamList>;

@@ -10,6 +10,7 @@ import { PhoneChecksRow } from "./PhoneChecksRow";
 import { PlaceholderScreen } from "./PlaceholderScreen";
 import { ProgressScreen } from "./progress/ProgressScreen";
 import { type Tab, TABS } from "./tabs";
+import { DataRow } from "./transfer/DataRow";
 import { ListSection } from "./ui/List";
 
 const Tabs = createBottomTabNavigator<TabParamList>();
@@ -29,6 +30,7 @@ function TabContent({ tab }: { readonly tab: Tab }) {
       {tab.name === "You" ? (
         <View className="mt-6 self-stretch">
           <ListSection>
+            <DataRow />
             <PhoneChecksRow />
             <DesignGalleryRow />
           </ListSection>
