@@ -4,6 +4,8 @@ import { Ids } from "./ids.ts";
 import { migrate } from "./migrations.ts";
 import { ActivityRepository } from "./repositories/activities.ts";
 import { ExerciseRepository } from "./repositories/exercises.ts";
+import { ProgressRepository } from "./repositories/progress.ts";
+import { HistoryRepository } from "./repositories/history.ts";
 import {
   CoachMessageRepository,
   ImportRepository,
@@ -11,6 +13,7 @@ import {
   ProposalRepository,
 } from "./repositories/records.ts";
 import { RoutineRepository } from "./repositories/routines.ts";
+import { TransferRepository } from "./repositories/transfer.ts";
 import { Sql, type SqlDriver } from "./sql.ts";
 
 export const AccountId = Schema.String.check(Schema.isPattern(/^[A-Za-z0-9_-]{1,128}$/)).pipe(
@@ -36,6 +39,9 @@ export const Repositories = Layer.mergeAll(
   ImportRepository.layer,
   ProposalRepository.layer,
   CoachMessageRepository.layer,
+  ProgressRepository.layer,
+  HistoryRepository.layer,
+  TransferRepository.layer,
 );
 
 const prepared = Layer.effectDiscard(

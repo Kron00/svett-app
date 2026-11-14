@@ -26,7 +26,8 @@ cat >"$fake/pnpm" <<'EOF'
 case "$1 $2" in
   "install --frozen-lockfile") ;;
   "exec fingerprint") printf '{"hash":"%s"}' "$(cat native-inputs)" ;;
-  "fixture --out") echo "fake fixture" >"$3" ;;
+  "fixture --out")
+    if [[ -n "${FAKE_FIXTURE_DB:-}" ]]; then cp "$FAKE_FIXTURE_DB" "$3"; else echo "fake fixture" >"$3"; fi ;;
   "exec expo")
     rm -rf ios
     mkdir -p ios
@@ -97,14 +98,25 @@ exit 1
 EOF
 
 # Stands in for the command that T3 Code's device_open returns. The gallery's end
-# marker counts as on screen after FAKE_GALLERY_SCROLLS scrolls since the last open.
+# marker counts as on screen after FAKE_GALLERY_SCROLLS drags since the last open.
+# Each element fills a 440 by 956 point screen. A drag moves the gallery only when
+# it starts in the left gutter, and with FAKE_GALLERY_STALL only that many times,
+# and a screenshot shows how far it moved.
 cat >"$fake/bound-device" <<EOF
 #!/usr/bin/env bash
 echo "\$*" >>"$root/bound-calls"
-if [[ "\$*" == *" is visible "* ]]; then
-  scrolls=\$(awk '/ open / { n = 0 } / scroll down 0[.]6$/ { n++ } END { print n + 0 }' "$root/bound-calls")
-  ((scrolls >= \${FAKE_GALLERY_SCROLLS:-0}))
-fi
+moved() {
+  awk -v stall="\${FAKE_GALLERY_STALL:-1000}" '
+    / open / { n = 0 }
+    / gesture pan 8 765 0 -574 400$/ && n < stall { n++ }
+    END { print n + 0 }' "$root/bound-calls"
+}
+args=" \$* "
+case "\$args" in
+  *" is visible "*) (("\$(moved)" >= \${FAKE_GALLERY_SCROLLS:-0})) ;;
+  *" get attrs "*) echo '{"rect": {"x": 0, "y": 0, "width": 440, "height": 956}}' ;;
+  *" screenshot "*) echo "gallery moved \$(moved) times" >"\${@: -1}" ;;
+esac
 EOF
 
 printf '#!/usr/bin/env bash\n' >"$fake/fnm"
@@ -440,6 +452,17 @@ check "gallery.sh stops after 40 pages when the end marker never shows" \
 check "gallery.sh restores the default text size after a failure" \
   only_calls "settings" "settings text-size large" "settings text-size large"
 
+case_name="gallery.sh when the gallery stops moving"
+rm -f "$root/bound-calls"
+! env PATH="$fake:$PATH" SVETT_DEVICE_CMD="$bound_cmd" FAKE_GALLERY_SCROLLS=1000 FAKE_GALLERY_STALL=4 \
+  "$repo/scripts/sim/gallery.sh" "$root/gallery-stalled" >"$output" 2>&1 || fail "gallery.sh succeeded"
+check "gallery.sh stops at the first page that matches the one before it" \
+  grep -qxF "dark-06.png matches dark-05.png, so the drag at 8,765 did not move the gallery" "$output"
+check "gallery.sh shoots no page after the stalled one" \
+  only_calls "screenshot" "$(printf "screenshot $root/gallery-stalled/dark-%02d.png\n" 1 2 3 4 5 6)"
+check "gallery.sh drags in the gallery's left gutter, not down the middle where a control can keep the touch" \
+  only_calls "scroll|gesture" "$(printf 'gesture pan 8 765 0 -574 400\n%.0s' 1 2 3 4 5)"
+
 # Stands in for the bound command on Phone checks. It tracks what is in front:
 # the Home Screen, or svett on its tab root, the You tab or Phone checks. Like the
 # iOS 27 simulator, a Debug open by bundle id alone leaves the Home Screen in
@@ -642,6 +665,725 @@ check "checks.sh still saves the report when a check did not pass" \
   grep -qF "Notification in the background: WAITING." "$root/checks-unpassed/report.txt"
 check "checks.sh still screenshots the report when a check did not pass" \
   bound_got "$bound_prefix screenshot $root/checks-unpassed/08-report.png"
+
+# Stands in for the bound command on the Progress screens. A screen's closing
+# element, whose id ends in -end, is on screen after FAKE_PROGRESS_SCROLLS scrolls
+# since the last open, by default 1. Every other element is on screen, except the
+# one FAKE_HIDDEN names. The workout counts read FAKE_COUNTS.
+cat >"$fake/progress-device" <<EOF
+#!/usr/bin/env bash
+echo "\$*" >>"$root/bound-calls"
+case "\$*" in
+  *' is visible id="'*'-end"')
+    scrolls=\$(awk '/ open / { n = 0 } / scroll down 0[.]6$/ { n++ } END { print n + 0 }' "$root/bound-calls")
+    ((scrolls >= \${FAKE_PROGRESS_SCROLLS:-1})) ;;
+  *" is visible "*) [[ -z "\${FAKE_HIDDEN:-}" || "\$*" != *"id=\"\$FAKE_HIDDEN\""* ]] ;;
+  *" get text "*) echo "\${FAKE_COUNTS:-300 workouts, 6012 sets}" ;;
+esac
+EOF
+chmod +x "$fake/progress-device"
+
+# run_progress [VAR=value...] [progress.sh args...] leaves the exit status in progress_status.
+run_progress() {
+  local -a vars=()
+  while [[ "${1:-}" == *=* ]]; do
+    vars+=("$1")
+    shift
+  done
+  rm -f "$root/simctl-calls" "$root/bound-calls" "$container_fixture"
+  progress_status=0
+  env PATH="$fake:$PATH" SVETT_DEVICE_CMD="progress-device --session 't3-test session' --device FAKE-UDID" \
+    "${vars[@]}" "$repo/scripts/sim/progress.sh" "$@" >"$output" 2>&1 || progress_status=$?
+}
+
+progress_fails() {
+  [[ "$progress_status" != 0 ]] || fail "progress.sh succeeded"
+  grep -qF -- "$1" "$output" || fail "progress.sh did not print \"$1\""
+}
+
+bench_id=76d53b4c-195c-578c-8797-16475c947397
+progress_links=(
+  "com.kron00.svett svett://progress/exercise/$bench_id?range=all"
+  "com.kron00.svett svett://progress/muscles?week=2026-10-26"
+  "com.kron00.svett svett://progress/measurements?kind=body_weight&range=all"
+  "com.kron00.svett svett://progress/measurements?kind=body_weight&range=all&sheet=open"
+)
+largest_text="settings text-size accessibility-extra-extra-extra-large"
+
+case_name="progress.sh Debug with SVETT_DEVICE_CMD"
+proof="$root/proof progress"
+run_progress "$proof"
+[[ "$progress_status" == 0 ]] || fail "progress.sh failed"
+check "progress.sh copies the generated fixture into the app's data container" \
+  grep -qxF "fake fixture" "$container_fixture"
+check "progress.sh relaunches into the dev client on the fixture, then opens each chart's link" only_open \
+  "com.kron00.svett --relaunch --launch-url $local_dev_client_url --launch-args=-svettFixture --launch-args=$container_fixture" \
+  "${progress_links[@]}"
+check "progress.sh shoots at the largest text size and restores the default" \
+  only_calls "settings" "$largest_text" "settings text-size large"
+check "progress.sh pages each screen down to its closing rule, then shoots the add sheet" \
+  only_calls "screenshot" \
+  "screenshot $proof/01-progress-01.png" "screenshot $proof/01-progress-02.png" \
+  "screenshot $proof/02-bench-01.png" "screenshot $proof/02-bench-02.png" \
+  "screenshot $proof/03-muscles-01.png" "screenshot $proof/03-muscles-02.png" \
+  "screenshot $proof/04-body-weight-01.png" "screenshot $proof/04-body-weight-02.png" \
+  "screenshot $proof/05-add-measurement.png"
+check "progress.sh looks for each chart on the first page it shoots of the screen" \
+  only_calls 'is visible id="chart' \
+  'is visible id="chart-best_one_rep_max"' 'is visible id="chart-heaviest_weight"' \
+  'is visible id="chart-session_volume"' 'is visible id="chart-muscle-weeks"' \
+  'is visible id="chart-measurement"'
+check "progress.sh presses only the Progress tab, since agent-device refuses presses in screen content" \
+  only_calls "press" 'press label="Progress, tab, 3 of 5"'
+check "progress.sh with SVETT_DEVICE_CMD calls neither simctl launch nor openurl" no_simctl_launch_or_openurl
+
+case_name="progress.sh Release with SVETT_DEVICE_CMD"
+run_progress --release "$root/proof-progress-release"
+[[ "$progress_status" == 0 ]] || fail "progress.sh --release failed"
+check "progress.sh Release relaunches the installed app on the fixture without Metro" only_open \
+  "com.kron00.svett --relaunch --launch-args=-svettFixture --launch-args=$container_fixture" \
+  "${progress_links[@]}"
+
+case_name="progress.sh when the fixture does not open"
+run_progress FAKE_COUNTS="0 workouts, 0 sets" "$root/proof-progress-empty"
+check "progress.sh fails when the Progress tab does not show the fixture's 300 workouts" \
+  progress_fails "The Progress tab did not show the fixture's 300 workouts: 0 workouts, 0 sets"
+check "progress.sh restores the default text size after a failure" \
+  only_calls "settings" "$largest_text" "settings text-size large"
+
+case_name="progress.sh when a chart does not draw"
+run_progress FAKE_HIDDEN=chart-heaviest_weight "$root/proof-progress-hidden"
+check "progress.sh fails naming a chart that was on none of the pages" \
+  progress_fails "02-bench: never on screen: chart-heaviest_weight"
+
+case_name="progress.sh without a closing rule"
+run_progress FAKE_PROGRESS_SCROLLS=1000 "$root/proof-progress-endless"
+check "progress.sh stops after 40 pages when a screen's closing rule never shows" \
+  progress_fails "01-progress: progress-end was not on screen after 40 pages"
+
+# Stands in for the bound command on the exercise library. It tracks the screen in
+# front and the saved custom exercises, which a relaunch keeps unless FAKE_FORGETS
+# is set. The bundled library holds FAKE_LIBRARY, by default "Barbell Squat".
+# A search link lists the exercises whose name starts with its text, ignoring case.
+# A press on the library opens the first result. A press on the form saves it.
+# The detail's "From" row starts below the fold, so only a scroll finds it.
+cat >"$fake/exercises-device" <<EOF
+#!/usr/bin/env bash
+echo "\$*" >>"$root/bound-calls"
+screen=\$(cat "$root/screen" 2>/dev/null || echo home)
+state() { cat "$root/\$1" 2>/dev/null || true; }
+names() {
+  echo "\${FAKE_LIBRARY:-Barbell Squat}"
+  state custom
+}
+first_result() {
+  local query
+  query=\$(state query)
+  names | awk -v q="\$query" 'index(tolower(\$0), tolower(q)) == 1 { print; exit }'
+}
+decode() { node -e 'process.stdout.write(decodeURIComponent(process.argv[1]))' "\$1"; }
+args=" \$* "
+case "\$args" in
+  *" open com.kron00.svett --relaunch "*)
+    echo tabs >"$root/screen"
+    [[ -z "\${FAKE_FORGETS:-}" ]] || rm -f "$root/custom" ;;
+  *" open com.kron00.svett svett://exercises?q="*)
+    echo library >"$root/screen"
+    decode "\${args#* svett://exercises?q=}" | sed 's/ \$//' >"$root/query" ;;
+  *" open com.kron00.svett svett://exercises/new?name="*)
+    echo form >"$root/screen"
+    query=\${args#* svett://exercises/new?name=}
+    decode "\${query%%&*}" >"$root/pending" ;;
+  *' get attrs id="exercise-result-0" '*)
+    [[ "\$screen" == library && -n "\$(first_result)" ]] || exit 1
+    printf '{"label": "%s, Chest · Cable", "rect": {"x": 0, "y": 200, "width": 440, "height": 80}}\n' "\$(first_result)" ;;
+  *" get attrs "*) echo '{"label": "Save exercise", "rect": {"x": 16, "y": 700, "width": 408, "height": 50}}' ;;
+  *' wait label="Train, tab, 2 of 5" '*) [[ "\$screen" != home ]] ;;
+  *' wait id="exercise-library" '*) [[ "\$screen" == library ]] ;;
+  *' wait id="exercise-form" '*) [[ "\$screen" == form ]] ;;
+  *' wait id="exercise-detail" '*) [[ "\$screen" == detail ]] ;;
+  *' wait id="exercise-name" label='*) [[ "\$screen" == detail && "\$args" == *"label=\"\$(state detail)\" "* ]] ;;
+  *' is visible id="exercise-source" '* | *' wait id="exercise-source" '*) exit 1 ;;
+  *' --until id="exercise-source" label="From, Custom" '*) grep -qxF -- "\$(state detail)" "$root/custom" 2>/dev/null ;;
+  *' --until id="exercise-source" label="From, svett library" '*) names | grep -qxF -- "\$(state detail)" ;;
+  *" is visible "*) [[ "\$screen" == form ]] ;;
+  *" press "[0-9]*)
+    case \$screen in
+      library) first_result >"$root/detail" ;;
+      form)
+        state pending >>"$root/custom"
+        state pending >"$root/detail" ;;
+      *) exit 1 ;;
+    esac
+    echo detail >"$root/screen" ;;
+esac
+EOF
+chmod +x "$fake/exercises-device"
+
+# run_exercises [VAR=value...] [exercises.sh args...] leaves the exit status in exercises_status.
+run_exercises() {
+  local -a vars=()
+  while [[ "${1:-}" == *=* ]]; do
+    vars+=("$1")
+    shift
+  done
+  rm -f "$root/simctl-calls" "$root/bound-calls" "$root/screen" "$root/query" "$root/pending" \
+    "$root/detail" "$root/custom"
+  exercises_status=0
+  env PATH="$fake:$PATH" SVETT_DEVICE_CMD="exercises-device --session 't3-test session' --device FAKE-UDID" \
+    SVETT_EXERCISE_NAME="Proof press 1" "${vars[@]}" "$repo/scripts/sim/exercises.sh" "$@" \
+    >"$output" 2>&1 || exercises_status=$?
+}
+
+exercise_links=("com.kron00.svett svett://exercises?q=barbell%20squat"
+  "com.kron00.svett svett://exercises/new?name=Proof%20press%201&muscle=chest&equipment=cable")
+custom_search="com.kron00.svett svett://exercises?q=Proof%20press%201"
+
+case_name="exercises.sh Debug with SVETT_DEVICE_CMD"
+run_exercises "$root/exercises"
+[[ "$exercises_status" == 0 ]] || fail "exercises.sh failed"
+check "exercises.sh searches the library, creates an exercise, relaunches into the dev client and searches for it" \
+  only_open "$debug_open" "${exercise_links[@]}" "$debug_open" "$custom_search"
+check "exercises.sh shoots at the largest text size, then restores the default" \
+  only_calls "settings text-size|settings appearance" \
+  "settings text-size accessibility-extra-extra-extra-large" "settings text-size large"
+check "exercises.sh opens the first result, saves the form and opens the saved exercise, each by its centre" \
+  only_calls "press|get attrs" \
+  'get attrs id="exercise-result-0"' "press 220 240" 'get attrs id="save-exercise"' "press 220 725" \
+  'get attrs id="exercise-result-0"' "press 220 240"
+check "exercises.sh checks the custom exercise's name and source after the relaunch" \
+  bound_got "$bound_prefix wait id=\"exercise-name\" label=\"Proof press 1\" 10000"
+check "exercises.sh screenshots each step" \
+  only_calls "screenshot" \
+  "screenshot $root/exercises/01-library-search.png" "screenshot $root/exercises/02-library-detail.png" \
+  "screenshot $root/exercises/03-new-exercise.png" "screenshot $root/exercises/04-custom-detail.png" \
+  "screenshot $root/exercises/05-custom-search-after-relaunch.png" \
+  "screenshot $root/exercises/06-custom-detail-after-relaunch.png"
+check "exercises.sh with SVETT_DEVICE_CMD never calls simctl" test ! -e "$root/simctl-calls"
+
+case_name="exercises.sh Release with SVETT_DEVICE_CMD"
+run_exercises --release "$root/exercises-release"
+[[ "$exercises_status" == 0 ]] || fail "exercises.sh --release failed"
+check "exercises.sh Release relaunches the installed app without Metro" \
+  only_open "com.kron00.svett --relaunch" "${exercise_links[@]}" "com.kron00.svett --relaunch" "$custom_search"
+
+case_name="exercises.sh when the custom exercise does not survive the relaunch"
+run_exercises FAKE_FORGETS=1 "$root/exercises-forgets"
+check "exercises.sh fails when the custom exercise is gone after the relaunch" test "$exercises_status" -ne 0
+check "exercises.sh says the search found nothing" \
+  grep -qxF 'The search for "Proof press 1" showed no result' "$output"
+check "exercises.sh restores the default text size after a failure" \
+  only_calls "settings" "settings text-size accessibility-extra-extra-extra-large" "settings text-size large"
+
+case_name="exercises.sh when the library search shows another exercise first"
+run_exercises FAKE_LIBRARY="Barbell Squat Jump" "$root/exercises-other"
+check "exercises.sh fails when the first result is not the library exercise" test "$exercises_status" -ne 0
+check "exercises.sh names the result it found instead" \
+  grep -qxF 'The first result was not "Barbell Squat". Its label is "Barbell Squat Jump, Chest · Cable".' "$output"
+
+# data.sh runs against a fake fixture, a fake app and the real compare script.
+# The fake pnpm writes a small fixture database. The fake device stands in for
+# svett: Export writes a svett file to the cache folder, Import copies the
+# fixture to the wiped database with one import batch, and Undo deletes every
+# workout and marks the batch undone. FAKE_IMPORT_DIFFERS changes a workout on
+# import, FAKE_IMPORT_TWICE records a second batch when the same file opens
+# again, and FAKE_NO_EXPORT writes no export. The Import and Undo buttons and the
+# past import start below the fold, as at the largest text size, so only a scroll
+# finds them.
+data_fake="$root/data-bin"
+mkdir -p "$data_fake"
+cat >"$data_fake/pnpm" <<'EOF'
+#!/usr/bin/env bash
+[[ "$1 $2" == "fixture --out" ]] || { echo "fake pnpm: unexpected $*" >&2; exit 1; }
+node -e 'new (require("node:sqlite").DatabaseSync)(process.argv[1]).exec(process.argv[2])' "$3" "
+  CREATE TABLE import_batch (id TEXT PRIMARY KEY, updated_at INTEGER, deleted_at INTEGER, source TEXT, created_at INTEGER, status TEXT);
+  CREATE TABLE import_change (id TEXT PRIMARY KEY, updated_at INTEGER, deleted_at INTEGER, import_batch_id TEXT);
+  CREATE TABLE activity (id TEXT PRIMARY KEY, updated_at INTEGER, deleted_at INTEGER, title TEXT);
+  CREATE TABLE activity_set (id TEXT PRIMARY KEY, updated_at INTEGER, deleted_at INTEGER, reps INTEGER);
+  INSERT INTO activity VALUES ('a1', 1, NULL, 'Legs'), ('a2', 1, NULL, 'Back');
+  INSERT INTO activity_set VALUES ('s1', 1, NULL, 5), ('s2', 1, NULL, 5), ('s3', 1, NULL, 8);
+"
+EOF
+
+cat >"$data_fake/data-device" <<EOF
+#!/usr/bin/env bash
+echo "\$*" >>"$root/bound-calls"
+documents="$root/data container/Documents"
+sql() {
+  node -e 'new (require("node:sqlite").DatabaseSync)(process.argv[1]).exec(process.argv[2])' "\$@"
+}
+args=" \$* "
+case "\$args" in
+  *" --launch-args=/"*) echo "\${args##*--launch-args=}" | sed 's/ *$//' >"$root/launched" ;;
+  *" open com.kron00.svett svett://import?file="*)
+    if [[ -n "\${FAKE_IMPORT_TWICE:-}" && -e "\$documents/svett-wiped.db" ]]; then
+      sql "\$documents/svett-wiped.db" "INSERT INTO import_batch VALUES ('b2', 2, NULL, 'svett_file', 2, 'applied')"
+    fi ;;
+  *' wait id="import-apply"'* | *' wait id="undo-apply"'* | *' wait id="import-batch-0"'* | *' is visible id="import-apply"'* | *' is visible id="undo-apply"'* | *' is visible id="import-batch-0"'*)
+    exit 1 ;;
+  *" get attrs "*)
+    echo "\$*" >"$root/last-attrs"
+    echo '{"rect": {"x": 20, "y": 300, "width": 120, "height": 40}}' ;;
+  *" press "[0-9]*)
+    case "\$(cat "$root/last-attrs")" in
+      *export-button*)
+        if [[ -z "\${FAKE_NO_EXPORT:-}" ]]; then
+          mkdir -p "$root/data container/Library/Caches"
+          echo '{"format":"svett","version":1,"exportedAt":0,"tables":{"activity":[{}],"folder":[]}}' \
+            >"$root/data container/Library/Caches/svett-export-2026-11-13.json"
+        fi ;;
+      *import-apply*)
+        cp "\$documents/svett-fixture.db" "\$documents/svett-wiped.db"
+        sql "\$documents/svett-wiped.db" "INSERT INTO import_batch VALUES ('b1', 1, NULL, 'svett_file', 1, 'applied'); INSERT INTO import_change VALUES ('c1', 1, NULL, 'b1')"
+        [[ -z "\${FAKE_IMPORT_DIFFERS:-}" ]] ||
+          sql "\$documents/svett-wiped.db" "UPDATE activity SET title = 'Changed' WHERE id = 'a1'" ;;
+      *undo-apply*)
+        sql "\$documents/svett-wiped.db" "UPDATE activity SET deleted_at = 9; UPDATE activity_set SET deleted_at = 9; UPDATE import_batch SET status = 'undone'" ;;
+    esac ;;
+  *" get text "*)
+    launched=\$(cat "$root/launched")
+    if [[ -e "\$launched" ]]; then
+      node -e '
+        const database = new (require("node:sqlite").DatabaseSync)(process.argv[1]);
+        const count = (table) => database.prepare("SELECT count(*) AS n FROM " + table + " WHERE deleted_at IS NULL").get().n;
+        console.log(count("activity") + " workouts, " + count("activity_set") + " sets");
+      ' "\$launched"
+    else
+      echo "0 workouts, 0 sets"
+    fi ;;
+esac
+exit 0
+EOF
+chmod +x "$data_fake"/*
+
+# run_data [VAR=value...] [data.sh args...] leaves the exit status in data_status.
+run_data() {
+  local -a vars=()
+  while [[ "${1:-}" == *=* ]]; do
+    vars+=("$1")
+    shift
+  done
+  rm -rf "$root/simctl-calls" "$root/bound-calls" "$root/launched" "$root/data container"
+  data_status=0
+  env PATH="$data_fake:$fake:$PATH" SVETT_DEVICE_CMD="data-device --session 't3-test session' --device FAKE-UDID" \
+    "${vars[@]}" "$repo/scripts/sim/data.sh" "$@" >"$output" 2>&1 || data_status=$?
+}
+
+documents="$root/data container/Documents"
+fixture_args="--launch-args=-svettFixture --launch-args=$documents/svett-fixture.db"
+wiped_args="--launch-args=-svettFixture --launch-args=$documents/svett-wiped.db"
+import_link="com.kron00.svett svett://import?file=svett-proof-import.json"
+
+case_name="data.sh Debug with SVETT_DEVICE_CMD"
+run_data "$root/data proof"
+[[ "$data_status" == 0 ]] || fail "data.sh failed"
+check "data.sh opens the fixture, exports, wipes, imports twice and undoes, in that order" only_open \
+  "$debug_open $fixture_args" "com.kron00.svett svett://data" "$debug_open $wiped_args" "$import_link" \
+  "$debug_open $wiped_args" "$import_link" "com.kron00.svett svett://data" "$debug_open $wiped_args"
+check "data.sh presses Export, Import, the past import and Undo at their centres" \
+  only_calls "get attrs" 'get attrs id="export-button"' 'get attrs id="import-apply"' \
+  'get attrs id="import-batch-0"' 'get attrs id="undo-apply"'
+check "data.sh presses only the Progress tab by selector, which agent-device allows" \
+  only_calls 'press [^0-9]' 'press label="Progress, tab, 3 of 5"' 'press label="Progress, tab, 3 of 5"' \
+  'press label="Progress, tab, 3 of 5"'
+check "data.sh shoots at the largest text size, then restores the default" \
+  only_calls "settings text-size" \
+  "settings text-size accessibility-extra-extra-extra-large" "settings text-size large"
+check "data.sh keeps the export it made" test -e "$root/data proof/svett-export-2026-11-13.json"
+check "data.sh finds the imported database equal to the fixture row for row" \
+  grep -qxF "Equal row for row." "$root/data proof/compare-import.txt"
+check "data.sh writes each step's result to the summary" grep -qF \
+  "Export, wipe, import: equal to the fixture row for row." "$root/data proof/summary.txt"
+check "data.sh checks Progress after the import and after Undo" grep -qxF \
+  "Undo: 0 workouts, 0 sets, and the import is marked undone." "$root/data proof/summary.txt"
+check "data.sh screenshots every step" only_calls "screenshot" \
+  "screenshot $root/data proof/01-data.png" "screenshot $root/data proof/02-share-sheet.png" \
+  "screenshot $root/data proof/03-wiped.png" "screenshot $root/data proof/04-import-preview.png" \
+  "screenshot $root/data proof/05-imported.png" "screenshot $root/data proof/06-counts-after-import.png" \
+  "screenshot $root/data proof/07-import-again.png" "screenshot $root/data proof/08-data-with-import.png" \
+  "screenshot $root/data proof/09-undo-preview.png" "screenshot $root/data proof/10-undone.png" \
+  "screenshot $root/data proof/11-counts-after-undo.png"
+check "data.sh with SVETT_DEVICE_CMD calls neither simctl launch nor openurl" no_simctl_launch_or_openurl
+
+case_name="data.sh Release with SVETT_DEVICE_CMD"
+run_data --release "$root/data-release"
+[[ "$data_status" == 0 ]] || fail "data.sh --release failed"
+check "data.sh Release relaunches the installed app without Metro" only_open \
+  "com.kron00.svett --relaunch $fixture_args" "com.kron00.svett svett://data" \
+  "com.kron00.svett --relaunch $wiped_args" "$import_link" "com.kron00.svett --relaunch $wiped_args" \
+  "$import_link" "com.kron00.svett svett://data" "com.kron00.svett --relaunch $wiped_args"
+
+case_name="data.sh when the import differs from the fixture"
+run_data FAKE_IMPORT_DIFFERS=1 "$root/data-differs"
+check "data.sh fails when the imported database differs" test "$data_status" -ne 0
+check "data.sh says the imported database differs" grep -qF "The imported database differs from the fixture" "$output"
+check "data.sh restores the default text size after a failure" \
+  only_calls "settings text-size" \
+  "settings text-size accessibility-extra-extra-extra-large" "settings text-size large"
+
+case_name="data.sh when the same file imports twice"
+run_data FAKE_IMPORT_TWICE=1 "$root/data-twice"
+check "data.sh fails when importing the same file again records another import" \
+  grep -qF "Importing the same file again" "$output"
+
+case_name="data.sh when export writes no file"
+run_data FAKE_NO_EXPORT=1 "$root/data-no-export"
+check "data.sh fails when export writes no file" \
+  grep -qF "Export wrote no svett-export-*.json to svett's cache folder" "$output"
+
+# A fixture with the rows history.sh reads. It has an older and a newest workout,
+# one deleted later still, and the newest workout's warm-up and first normal set.
+history_fixture="$root/history-fixture.db"
+cat >"$root/history-fixture.cjs" <<'EOF'
+const { DatabaseSync } = require("node:sqlite");
+const database = new DatabaseSync(process.argv[2]);
+database.exec(`
+  CREATE TABLE activity (id TEXT, started_at INTEGER, deleted_at INTEGER);
+  CREATE TABLE activity_exercise (id TEXT, activity_id TEXT, position INTEGER);
+  CREATE TABLE activity_set (
+    id TEXT, activity_exercise_id TEXT, position INTEGER, set_type TEXT, reps INTEGER, deleted_at INTEGER
+  );
+  INSERT INTO activity VALUES ('older', 1, NULL), ('newest', 2, NULL), ('gone', 3, 4);
+  INSERT INTO activity_exercise VALUES ('newest-squat', 'newest', 0), ('older-squat', 'older', 0);
+  INSERT INTO activity_set VALUES
+    ('warm-up', 'newest-squat', 0, 'warm_up', 10, NULL),
+    ('first', 'newest-squat', 1, 'normal', 8, NULL),
+    ('older-set', 'older-squat', 0, 'normal', 5, NULL);
+`);
+EOF
+node "$root/history-fixture.cjs" "$history_fixture" 2>/dev/null
+
+# Stands in for the bound command on the Progress screens. It counts 300 workouts,
+# 299 after a press on Delete workout and 300 again after Undo, unless
+# FAKE_UNDO_BROKEN. The set reads its new weight after Save unless FAKE_EDIT_LOST.
+# The history list shows no row after FAKE_BLANK_AFTER scrolls, and shows the
+# oldest workout after FAKE_OLDEST_AFTER scrolls, by default 120, or never when it
+# is "never". Every element has the same frame, except that with FAKE_ROUTINE_LOW
+# Save as routine sits at the screen's bottom edge until a drag moves it up.
+cat >"$fake/history-device" <<EOF
+#!/usr/bin/env bash
+echo "\$*" >>"$root/bound-calls"
+state="$root/history-state"
+mkdir -p "\$state"
+flag() { [[ -e "\$state/\$1" ]]; }
+args=" \$* "
+case "\$args" in
+  *" get attrs "*)
+    echo "\$*" >"\$state/last-attrs"
+    if [[ -n "\${FAKE_ROUTINE_LOW:-}" && "\$args" == *workout-save-routine* ]] &&
+      ! grep -q ' gesture pan ' "$root/bound-calls"; then
+      echo '{"label": "Save as routine", "rect": {"x": 20, "y": 905, "width": 400, "height": 50}}'
+    else
+      echo '{"label": "Save", "rect": {"x": 20, "y": 300, "width": 120, "height": 40}}'
+    fi ;;
+  *" press "*)
+    attrs=\$(cat "\$state/last-attrs" 2>/dev/null || true)
+    case "\$attrs" in
+      *workout-delete*) touch "\$state/deleted" ;;
+      *undo-delete*) [[ -n "\${FAKE_UNDO_BROKEN:-}" ]] || rm -f "\$state/deleted"; touch "\$state/undone" ;;
+      *set-edit-save*) [[ -n "\${FAKE_EDIT_LOST:-}" ]] || touch "\$state/edited" ;;
+      *workout-save-routine*) touch "\$state/routine" ;;
+    esac ;;
+  *' get text id="workout-counts" '*)
+    # The first read after a delete still shows the counts loading, as on iOS.
+    if flag deleted && [[ ! -e "\$state/counts-loading" ]]; then
+      touch "\$state/counts-loading"
+      echo "Opening the database"
+    elif flag deleted; then echo "299 workouts, 6000 sets"; else echo "300 workouts, 6023 sets"; fi ;;
+  *' get text id="set-first" '*)
+    if flag edited; then echo "Set 1, 222.5 kg × 8, Heaviest weight record"; else echo "Set 1, 92.5 kg × 8"; fi ;;
+  *' get text id="workout-records" '*) echo "Records, 3" ;;
+  *' get text id="calendar-month" '*) echo "October 2026" ;;
+  *' get text id="calendar-count" '*) echo "13 workouts in October 2026" ;;
+  *' wait id="history-row" '*) exit 1 ;;
+  *' is visible id="history-row" '*)
+    # The first row starts below the fold until a scroll brings it up, and once rows
+    # show there are two on screen, which makes the selector ambiguous, as on iOS.
+    grep -q -- '--until id="history-row"' "$root/bound-calls" || exit 1
+    echo "Error (AMBIGUOUS_MATCH): Selector matched 2 elements" >&2
+    exit 1 ;;
+  *" snapshot "*)
+    scrolls=\$(grep -c ' scroll down\$' "$root/bound-calls" || true)
+    if [[ -z "\${FAKE_BLANK_AFTER:-}" ]] || ((scrolls < FAKE_BLANK_AFTER)); then
+      echo '@e11 [other] "history-row"'
+      echo '@e13 [other] "history-row"'
+    fi ;;
+  *' is visible id="workout-older" '*)
+    scrolls=\$(grep -c ' scroll down\$' "$root/bound-calls" || true)
+    oldest_after=\${FAKE_OLDEST_AFTER:-120}
+    [[ "\$oldest_after" != never ]] && ((scrolls >= oldest_after)) ;;
+  *' wait id="undo-delete-banner" '*) flag deleted ;;
+  *' wait absent id="undo-delete-banner" '*) flag undone ;;
+  *' wait id="routine-saved" '*) flag routine ;;
+esac
+EOF
+chmod +x "$fake/history-device"
+
+# run_history [VAR=value...] [history.sh args...] leaves the exit status in history_status.
+run_history() {
+  local -a vars=()
+  while [[ "${1:-}" == *=* ]]; do
+    vars+=("$1")
+    shift
+  done
+  rm -rf "$root/simctl-calls" "$root/bound-calls" "$root/history-state" "$root/data container"
+  history_status=0
+  env PATH="$fake:$PATH" FAKE_FIXTURE_DB="$history_fixture" \
+    SVETT_DEVICE_CMD="history-device --session 't3-test session' --device FAKE-UDID" \
+    "${vars[@]}" "$repo/scripts/sim/history.sh" "$@" >"$output" 2>&1 || history_status=$?
+}
+
+history_sh() {
+  run_history "$@"
+  [[ "$history_status" == 0 ]] || fail "history.sh $* failed"
+}
+
+history_failed() {
+  [[ "$history_status" != 0 ]] || fail "history.sh succeeded"
+  grep -qF -- "$1" "$output" || fail "history.sh did not say \"$1\""
+}
+
+# only_screen_presses_at_centres checks every press is the Progress tab by selector or a point.
+only_screen_presses_at_centres() {
+  if grep -E -- "^$bound_prefix press " "$root/bound-calls" |
+    grep -vxF -e "$bound_prefix press label=\"Progress, tab, 3 of 5\"" -e "$bound_prefix $centre_press" >>"$output"; then
+    fail "history.sh pressed screen content by selector"
+  fi
+}
+
+history_links=(
+  "com.kron00.svett svett://workout/newest"
+  "com.kron00.svett svett://workout/newest/set/first"
+  "com.kron00.svett svett://calendar?month=2026-10"
+)
+history_fixture_args="--launch-args=-svettFixture --launch-args=$root/data container/Documents/svett-fixture.db"
+
+case_name="history.sh Debug with SVETT_DEVICE_CMD"
+history_sh "$root/history"
+check "history.sh copies the generated fixture into the app's data container" \
+  cmp -s "$history_fixture" "$root/data container/Documents/svett-fixture.db"
+check "history.sh relaunches into the dev client on the fixture, then opens the newest workout, its first normal set and the calendar" \
+  only_open "$debug_open $history_fixture_args" "${history_links[@]}"
+check "history.sh shoots at the largest text size, then restores the default" \
+  only_calls "settings" "settings text-size accessibility-extra-extra-extra-large" "settings text-size large"
+check "history.sh scrolls the history list until the oldest workout's row is on screen" \
+  test "$(grep -cxF -- "$bound_prefix scroll down" "$root/bound-calls")" -eq 120
+check "history.sh looks for rows in a snapshot after each scroll" \
+  test "$(grep -cxF -- "$bound_prefix snapshot" "$root/bound-calls")" -eq 120
+check "history.sh clears the weight and types 222.5 on the keypad" \
+  only_calls "get attrs label" \
+  'get attrs label="Delete"' 'get attrs label="Delete"' 'get attrs label="Delete"' 'get attrs label="Delete"' \
+  'get attrs label="Delete"' 'get attrs label="Delete"' 'get attrs label="Delete"' \
+  'get attrs label="2"' 'get attrs label="2"' 'get attrs label="2"' \
+  'get attrs label="Decimal point"' 'get attrs label="5"'
+check "history.sh saves the set, the routine, deletes and undoes, in that order" \
+  only_calls "get attrs id" 'get attrs id="set-edit-save"' 'get attrs id="workout-save-routine"' \
+  'get attrs id="workout-delete"' 'get attrs id="undo-delete"'
+check "history.sh reads the edited set back from the workout's detail" bound_got "$bound_prefix get text id=\"set-first\""
+check "history.sh presses tabs by selector and screen content only at an element's centre" \
+  only_screen_presses_at_centres
+check "history.sh screenshots each step of the proof" \
+  only_calls "screenshot" \
+  "screenshot $root/history/01-history.png" "screenshot $root/history/02-history-scroll-50.png" \
+  "screenshot $root/history/03-history-scroll-100.png" "screenshot $root/history/04-history-oldest.png" \
+  "screenshot $root/history/05-workout.png" "screenshot $root/history/06-muscle-split.png" \
+  "screenshot $root/history/07-set-before-edit.png" "screenshot $root/history/08-set-edit.png" \
+  "screenshot $root/history/09-set-typed.png" "screenshot $root/history/10-set-edited.png" \
+  "screenshot $root/history/11-records.png" "screenshot $root/history/12-saved-as-routine.png" \
+  "screenshot $root/history/13-deleted.png" "screenshot $root/history/14-undone.png" \
+  "screenshot $root/history/15-calendar.png" "screenshot $root/history/16-calendar-month.png"
+check "history.sh with SVETT_DEVICE_CMD calls neither simctl launch nor openurl" no_simctl_launch_or_openurl
+
+case_name="history.sh Release with SVETT_DEVICE_CMD"
+history_sh --release "$root/history-release"
+check "history.sh Release relaunches the installed app on the fixture without Metro" \
+  only_open "com.kron00.svett --relaunch $history_fixture_args" "${history_links[@]}"
+
+case_name="history.sh when Save as routine sits at the screen's bottom edge"
+history_sh FAKE_ROUTINE_LOW=1 "$root/history-low"
+check "history.sh drags a control up from the bottom edge before pressing it" \
+  only_calls "gesture pan" "gesture pan 20 600 0 -300 400"
+check "history.sh presses Save as routine only once it is clear of the bottom edge" \
+  test "$(grep -cxF -- "$bound_prefix press 220 930" "$root/bound-calls")" -eq 0
+
+case_name="history.sh when the history list goes blank"
+run_history FAKE_BLANK_AFTER=12 "$root/history-blank"
+check "history.sh fails on a screen of the history list with no row" \
+  history_failed "The history list showed no row after scroll 12"
+check "history.sh screenshots the blank screen" \
+  bound_got "$bound_prefix screenshot $root/history-blank/02-blank-after-scroll-12.png"
+check "history.sh restores the default text size after a failure" \
+  only_calls "settings" "settings text-size accessibility-extra-extra-extra-large" "settings text-size large"
+
+case_name="history.sh when the oldest workout never shows"
+run_history FAKE_OLDEST_AFTER=never "$root/history-endless"
+check "history.sh fails after 600 scrolls without the oldest workout" \
+  history_failed "The oldest workout was not on screen after 600 scrolls"
+check "history.sh screenshots where the list stopped" \
+  bound_got "$bound_prefix screenshot $root/history-endless/14-history-no-end.png"
+
+case_name="history.sh when the edit does not show"
+run_history FAKE_EDIT_LOST=1 "$root/history-edit"
+check "history.sh fails when the detail does not show the edited set" \
+  history_failed 'Expected id="set-first" to show "222.5 kg × 8"'
+
+case_name="history.sh when Undo does not bring the workout back"
+run_history FAKE_UNDO_BROKEN=1 "$root/history-undo"
+check "history.sh fails when the count does not come back to 300" \
+  history_failed 'Expected id="workout-counts" to show "300 workouts"'
+# Stands in for swift on the Mac. FAKE_SWIFT_FAIL fails the tests.
+cat >"$fake/swift" <<EOF
+#!/usr/bin/env bash
+echo "\$*" >>"$root/swift-calls"
+echo "fake swift test output"
+[[ -z "\${FAKE_SWIFT_FAIL:-}" ]]
+EOF
+
+# Stands in for the bound command on the ChatGPT settings. Every element has the same
+# frame, every wait succeeds except one for text containing FAKE_MISSING, the signed-in
+# state is always on screen, and no system alert shows. Pressing Sign out, or scrolling
+# down to an element below the fold, scrolls the signed-out state above the screen until a
+# scroll up or a relaunch brings it back. Only the signed-in state counts as visible, so
+# every other element is reached by a scroll.
+cat >"$fake/chatgpt-device" <<EOF
+#!/usr/bin/env bash
+echo "\$*" >>"$root/bound-calls"
+args=" \$* "
+case "\$args" in
+  *" get attrs "*)
+    echo "\$args" >"$root/chatgpt-last-attrs"
+    echo '{"rect": {"x": 20, "y": 300, "width": 120, "height": 40}}' ;;
+  *" press "[0-9]*)
+    [[ "\$(cat "$root/chatgpt-last-attrs" 2>/dev/null)" != *chatgpt-sign-out* ]] || touch "$root/chatgpt-scrolled" ;;
+  *' scroll up --until id="chatgpt-state-signedOut"'*|*" open "*" --relaunch "*) rm -f "$root/chatgpt-scrolled" ;;
+  *" scroll down 0.3 --until "*) touch "$root/chatgpt-scrolled" ;;
+  *' wait id="chatgpt-state-signedOut"'*)
+    [[ ! -e "$root/chatgpt-scrolled" ]] && [[ -z "\${FAKE_MISSING:-}" || "\$args" != *"\$FAKE_MISSING"* ]] ;;
+  *" is visible "*) [[ "\$args" == *chatgpt-state-signedIn* ]] ;;
+  *" alert wait "*) exit 1 ;;
+  *" wait "*) [[ -z "\${FAKE_MISSING:-}" || "\$args" != *"\$FAKE_MISSING"* ]] ;;
+esac
+EOF
+chmod +x "$fake/swift" "$fake/chatgpt-device"
+
+# run_chatgpt [VAR=value...] [chatgpt.sh args...] leaves the exit status in chatgpt_status.
+run_chatgpt() {
+  local -a vars=()
+  while [[ "${1:-}" == *=* ]]; do
+    vars+=("$1")
+    shift
+  done
+  rm -f "$root/simctl-calls" "$root/bound-calls" "$root/swift-calls" "$root/chatgpt-scrolled"
+  chatgpt_status=0
+  env PATH="$fake:$PATH" HOME="$root/home" \
+    SVETT_DEVICE_CMD="chatgpt-device --session 't3-test session' --device FAKE-UDID" \
+    "${vars[@]}" "$repo/scripts/sim/chatgpt.sh" "$@" >"$output" 2>&1 || chatgpt_status=$?
+}
+
+chatgpt_sh() {
+  run_chatgpt "$@"
+  [[ "$chatgpt_status" == 0 ]] || fail "chatgpt.sh $* failed"
+}
+
+stub() { echo "--launch-args=-svettChatGPTStub --launch-args=$1"; }
+chatgpt_link="com.kron00.svett svett://chatgpt"
+scenarios=(signedOut noPlanUsage renews lapsed badSignature wrongAudience expiredToken revokeFails twoAccounts signedOut)
+
+# stand_in_opens <relaunch> <front> lists the opens of a run through every scenario.
+stand_in_opens() {
+  local scenario
+  for scenario in "${scenarios[@]}"; do
+    echo "$1 $(stub "$scenario")"
+    echo "$chatgpt_link"
+  done
+  echo "$2"
+}
+
+case_name="chatgpt.sh Debug with SVETT_DEVICE_CMD"
+chatgpt_sh "$root/chatgpt"
+check "chatgpt.sh runs the Swift tests with their build outside the repo, and saves their output" \
+  grep -qxF "test --package-path $repo/apps/mobile/modules/svett-native/ios/ChatGPTCore --scratch-path $root/home/svett-app-build/chatgpt-core" "$root/swift-calls"
+check "chatgpt.sh saves the Swift test output" grep -qxF "fake swift test output" "$root/chatgpt/swift-test.txt"
+mapfile -t expected_opens < <(stand_in_opens "$debug_open" "$debug_front")
+check "chatgpt.sh relaunches into the dev client once per stand-in scenario and opens the ChatGPT settings by link" \
+  only_open "${expected_opens[@]}"
+check "chatgpt.sh shoots at the largest text size, then restores the default" \
+  only_calls "settings text-size" \
+  "settings text-size accessibility-extra-extra-extra-large" "settings text-size large"
+check "chatgpt.sh presses screen content only at an element's centre, which agent-device does not refuse on iOS 27" \
+  test "$(grep -E -- "^$bound_prefix press " "$root/bound-calls" | grep -cvxF -- "$bound_prefix press 80 320")" -eq 0
+check "chatgpt.sh signs in, signs out, allows plan usage, signs out unconfirmed, returns to an earlier account and signs in with Safari, in that order" \
+  only_calls "get attrs" \
+  'get attrs id="chatgpt-continue"' 'get attrs id="chatgpt-sign-out"' 'get attrs id="chatgpt-allow"' \
+  'get attrs id="chatgpt-continue"' 'get attrs id="chatgpt-continue"' 'get attrs id="chatgpt-continue"' \
+  'get attrs id="chatgpt-sign-out"' 'get attrs id="chatgpt-account-0"' 'get attrs id="chatgpt-safari"'
+check "chatgpt.sh checks each refusal names its reason" \
+  only_calls "wait text .*(match|another app|expired)" \
+  "wait text does not match OpenAI's published keys 15000" "wait text was made for another app 15000" \
+  "wait text has expired 15000"
+check "chatgpt.sh screenshots each state" \
+  only_calls "screenshot" \
+  "screenshot $root/chatgpt/01-signed-out.png" "screenshot $root/chatgpt/02-signed-in.png" \
+  "screenshot $root/chatgpt/03-signed-out-keeps-account.png" "screenshot $root/chatgpt/04-no-plan-usage.png" \
+  "screenshot $root/chatgpt/05-plan-usage-allowed.png" "screenshot $root/chatgpt/06-renewed.png" \
+  "screenshot $root/chatgpt/07-lapsed.png" "screenshot $root/chatgpt/08-refused-badSignature.png" \
+  "screenshot $root/chatgpt/09-refused-wrongAudience.png" "screenshot $root/chatgpt/10-refused-expiredToken.png" \
+  "screenshot $root/chatgpt/11-revocation-unconfirmed.png" "screenshot $root/chatgpt/12-two-accounts.png" \
+  "screenshot $root/chatgpt/13-returned-to-earlier-account.png" "screenshot $root/chatgpt/14-safari.png" \
+  "screenshot $root/chatgpt/15-safari-signed-in.png"
+# shot_after <call> <screenshot>: the bound command got <call> right before <screenshot>.
+shot_after() {
+  local before
+  before=$(grep -B1 -xF -- "$bound_prefix screenshot $2" "$root/bound-calls" | head -1)
+  [[ "$before" == "$bound_prefix $1" ]] || {
+    echo "before $2: $before" >>"$output"
+    fail "$2 was not shot right after: $1"
+  }
+}
+check "chatgpt.sh shoots the renewed sign-in after scrolling to the notice below its Sign-in row" \
+  shot_after 'scroll down 0.3 --until id="chatgpt-notice"' "$root/chatgpt/06-renewed.png"
+for shot in 07-lapsed 08-refused-badSignature 09-refused-wrongAudience 10-refused-expiredToken; do
+  check "chatgpt.sh shoots $shot after scrolling to Continue with ChatGPT, below the text it proves" \
+    shot_after 'scroll down 0.3 --until id="chatgpt-continue"' "$root/chatgpt/$shot.png"
+done
+check "chatgpt.sh checks the state before the refusal, so no scroll back up hides the refusal" \
+  only_calls "wait (id=\"chatgpt-state-signedOut\"|text (does not match|was made|has expired))" \
+  'wait id="chatgpt-state-signedOut" 15000' 'wait id="chatgpt-state-signedOut" 15000' \
+  'wait id="chatgpt-state-signedOut" 15000' 'wait id="chatgpt-state-signedOut" 15000' \
+  "wait text does not match OpenAI's published keys 15000" \
+  'wait id="chatgpt-state-signedOut" 15000' "wait text was made for another app 15000" \
+  'wait id="chatgpt-state-signedOut" 15000' "wait text has expired 15000" \
+  'wait id="chatgpt-state-signedOut" 15000'
+check "chatgpt.sh with SVETT_DEVICE_CMD never calls simctl" test ! -e "$root/simctl-calls"
+
+case_name="chatgpt.sh Release with SVETT_DEVICE_CMD"
+chatgpt_sh --release "$root/chatgpt-release"
+mapfile -t expected_opens < <(stand_in_opens "com.kron00.svett --relaunch" com.kron00.svett)
+check "chatgpt.sh Release relaunches the installed app without Metro" only_open "${expected_opens[@]}"
+
+case_name="chatgpt.sh when an expected message does not show"
+run_chatgpt FAKE_MISSING="has expired" "$root/chatgpt-missing"
+check "chatgpt.sh fails when a refusal does not show" test "$chatgpt_status" -ne 0
+check "chatgpt.sh names what did not show" grep -qF "Expected the expiredToken refusal, which did not show" "$output"
+check "chatgpt.sh restores the default text size after a failure" \
+  only_calls "settings text-size" \
+  "settings text-size accessibility-extra-extra-extra-large" "settings text-size large"
+
+case_name="chatgpt.sh when the Swift tests fail"
+run_chatgpt FAKE_SWIFT_FAIL=1 "$root/chatgpt-swift"
+check "chatgpt.sh fails when the Swift tests fail" test "$chatgpt_status" -ne 0
+check "chatgpt.sh opens nothing when the Swift tests fail" test ! -e "$root/bound-calls"
+
+case_name="chatgpt.sh --live"
+chatgpt_sh --release --live "$root/chatgpt-live"
+check "chatgpt.sh --live skips the Swift tests" test ! -e "$root/swift-calls"
+check "chatgpt.sh --live opens the real sign-in, with no stand-in" \
+  only_open "com.kron00.svett --relaunch" "$chatgpt_link"
+check "chatgpt.sh --live signs out an earlier sign-in, then waits 10 minutes for a person to sign in" \
+  only_calls "get attrs|wait id=\"chatgpt-state-signedIn\"" \
+  'get attrs id="chatgpt-sign-out"' 'get attrs id="chatgpt-continue"' \
+  'wait id="chatgpt-state-signedIn" 600000' 'get attrs id="chatgpt-sign-out"'
+
 
 # Stands in for the bound command on Record and the saved activity. It tracks what
 # is in front: the Home Screen, the tab root, Record before a recording, while

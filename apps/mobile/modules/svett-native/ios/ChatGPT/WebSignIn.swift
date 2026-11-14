@@ -8,14 +8,15 @@ import UIKit
 @MainActor
 final class WebSignIn: NSObject, ASWebAuthenticationPresentationContextProviding {
     /// The loopback listener sends the sheet here once it has the answer, and the sheet closes.
-    static let done = URL(string: "svett-auth://done")!
+    static let scheme = "svett-auth"
+    static let done = URL(string: "\(scheme)://done")!
 
     private var session: ASWebAuthenticationSession?
 
     /// Shows `page`. `closed` runs when the sheet goes away, whether the listener sent it to `done`
     /// or the user closed it.
     func open(_ page: URL, closed: @escaping @MainActor () -> Void) {
-        let session = ASWebAuthenticationSession(url: page, callbackURLScheme: Self.done.scheme) { _, _ in
+        let session = ASWebAuthenticationSession(url: page, callback: .customScheme(Self.scheme)) { _, _ in
             Task { @MainActor in closed() }
         }
         session.presentationContextProvider = self

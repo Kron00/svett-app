@@ -1,0 +1,151 @@
+import { Context, Effect, Layer, Option } from "effect";
+
+import {
+  describeWorkout,
+  routineFromWorkout,
+  summarizeWorkout,
+  type WorkoutView,
+} from "../history.ts";
+import { workoutRecords } from "../records.ts";
+import type { Activity, ActivityId } from "../schema.ts";
+import { Sql } from "../sql.ts";
+import { RowNotFoundError, selectById, selectRows, TABLES } from "../table.ts";
+import { type ActivityDetail, ActivityRepository } from "./activities.ts";
+import { ProgressRepository } from "./progress.ts";
+import { RoutineRepository } from "./routines.ts";
+
+const inList = (column: string) => `${column} IN (SELECT value FROM json_each(?))`;
+
+const groupBy = <A, K>(items: ReadonlyArray<A>, key: (item: A) => K) => {
+  const groups = new Map<K, Array<A>>();
+  for (const item of items) groups.set(key(item), [...(groups.get(key(item)) ?? []), item]);
+  return groups;
+};
+
+/** What the calendar and the streak need of every workout. */
+export type WorkoutStart = Pick<Activity, "id" | "startedAt" | "title" | "kind">;
+
+const details = (activities: ReadonlyArray<Activity>) =>
+  Effect.gen(function* () {
+    const exercises = yield* selectRows(
+      TABLES.activityExercise,
+      inList("activity_id"),
+      [JSON.stringify(activities.map((activity) => activity.id))],
+      "activity_id, position",
+    );
+    const sets = yield* selectRows(
+      TABLES.activitySet,
+      inList("activity_exercise_id"),
+      [JSON.stringify(exercises.map((exercise) => exercise.id))],
+      "activity_exercise_id, position",
+    );
+    const library = yield* selectRows(TABLES.exercise, inList("id"), [
+      JSON.stringify([...new Set(exercises.map((exercise) => exercise.exerciseId))]),
+    ]);
+    const exercisesOf = groupBy(exercises, (exercise) => exercise.activityId);
+    const setsOf = groupBy(sets, (set) => set.activityExerciseId);
+    return {
+      library: new Map(library.map((exercise) => [exercise.id, exercise])),
+      details: activities.map((activity): ActivityDetail => ({
+        activity,
+        exercises: (exercisesOf.get(activity.id) ?? []).map((exercise) => ({
+          exercise,
+          sets: setsOf.get(exercise.id) ?? [],
+        })),
+        track: null,
+      })),
+    };
+  });
+
+const makeHistoryRepository = Effect.gen(function* () {
+  const sql = yield* Sql;
+  const progress = yield* ProgressRepository;
+  const run = <A, E>(effect: Effect.Effect<A, E, Sql>) => Effect.provideService(effect, Sql, sql);
+
+  return {
+    /**
+     * The newest `limit` workouts, newest first, each with what its history row
+     * shows. The history list asks for more as it nears its end.
+     */
+    page: (options: { readonly limit: number }) =>
+      run(
+        Effect.gen(function* () {
+          const activities = yield* selectRows(
+            TABLES.activity,
+            "1 = 1",
+            [options.limit],
+            "started_at DESC, id DESC LIMIT ?",
+          );
+          const { library, details: page } = yield* details(activities);
+          const names = new Map([...library].map(([id, exercise]) => [id, exercise.name]));
+          return page.map((detail) => summarizeWorkout(detail, names));
+        }),
+      ),
+
+    /** A workout as its detail screen shows it, with its muscle split and record badges. */
+    workout: (id: ActivityId) =>
+      run(
+        Effect.gen(function* () {
+          const activity = yield* selectById(TABLES.activity, id);
+          if (Option.isNone(activity)) return Option.none<WorkoutView>();
+          const { library, details: found } = yield* details([activity.value]);
+          const [detail] = found;
+          if (detail === undefined) return Option.none<WorkoutView>();
+          const exerciseIds = new Set(detail.exercises.map((entry) => entry.exercise.exerciseId));
+          // A workout that started at the same time but sorts after this one cannot take its records.
+          const sets = yield* Effect.forEach(exerciseIds, (exerciseId) =>
+            progress.performedSets({ exerciseId, until: activity.value.startedAt + 1 }),
+          );
+          // Each exercise's sets come back in workout order. Merged, they keep that order so
+          // workouts that started at the same time are judged as the charts judge them.
+          const merged = sets
+            .flat()
+            .map((performed, index) => ({ performed, index }))
+            .sort(
+              (a, b) =>
+                a.performed.startedAt - b.performed.startedAt ||
+                (a.performed.activityId < b.performed.activityId
+                  ? -1
+                  : a.performed.activityId > b.performed.activityId
+                    ? 1
+                    : a.index - b.index),
+            )
+            .map(({ performed }) => performed);
+          const records = workoutRecords(merged, activity.value.id);
+          return Option.some(describeWorkout(detail, library, records));
+        }),
+      ),
+
+    /** Every live workout's start, newest first, for the calendar and the streak. */
+    starts: run(
+      Effect.map(
+        selectRows(TABLES.activity, "1 = 1", [], "started_at DESC, id DESC"),
+        (activities): ReadonlyArray<WorkoutStart> =>
+          activities.map(({ id, startedAt, title, kind }) => ({ id, startedAt, title, kind })),
+      ),
+    ),
+  };
+});
+
+/** Reads history for the Progress screens. It writes nothing: ActivityRepository owns those tables. */
+export class HistoryRepository extends Context.Service<
+  HistoryRepository,
+  Effect.Success<typeof makeHistoryRepository>
+>()("svett/HistoryRepository") {
+  static readonly layer = Layer.effect(HistoryRepository, makeHistoryRepository).pipe(
+    Layer.provide(ProgressRepository.layer),
+  );
+}
+
+/** Saves a past workout as a new routine at the end of the routine list. */
+export const saveWorkoutAsRoutine = (id: ActivityId) =>
+  Effect.gen(function* () {
+    const activities = yield* ActivityRepository;
+    const routines = yield* RoutineRepository;
+    const detail = yield* activities.get(id);
+    if (Option.isNone(detail)) return yield* new RowNotFoundError({ table: "activity", id });
+    const existing = yield* routines.listRoutines;
+    // Deleting a routine leaves a gap, so the count of routines can be a position already taken.
+    const end = existing.reduce((next, routine) => Math.max(next, routine.position + 1), 0);
+    return yield* routines.createRoutine(routineFromWorkout(detail.value, end));
+  });

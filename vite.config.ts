@@ -33,9 +33,10 @@ export default defineConfig({
     },
     overrides: [
       {
-        // The app runs on the Hermes that React Native 0.88.1 pins, which lacks these
-        // newer APIs. Tests run on Node, which has them, so they pass while the app
-        // throws as it loads.
+        // The app runs on the Hermes that React Native 0.88.1 pins (260318099.0.5), which
+        // lacks these newer APIs. Tests run on Node, which has them, so they pass while the
+        // app throws as it loads. After a Hermes bump, check this list against
+        // include/hermes/VM/PredefinedStrings.def and lib/VM/JSLib/Intl.cpp at the new tag.
         files: ["apps/mobile/**", "packages/core/src/**", "packages/tools/**"],
         rules: {
           "unicorn/no-array-sort": "off",
@@ -54,12 +55,58 @@ export default defineConfig({
               property,
               message: "Hermes has no resizable or transferable ArrayBuffer.",
             })),
+            ...["fromBase64", "toBase64", "fromHex", "toHex", "setFromBase64", "setFromHex"].map(
+              (property) => ({
+                property,
+                message: "Hermes has no Uint8Array base64 or hex methods.",
+              }),
+            ),
+            ...["getOrInsert", "getOrInsertComputed"].map((property) => ({
+              property,
+              message: "Hermes has no Map getOrInsert.",
+            })),
+            { object: "Math", property: "f16round", message: "Hermes has no Math.f16round." },
+            ...[
+              "PluralRules",
+              "RelativeTimeFormat",
+              "ListFormat",
+              "Segmenter",
+              "DisplayNames",
+              "DurationFormat",
+              "Locale",
+            ].map((property) => ({
+              object: "Intl",
+              property,
+              message: `Hermes has only Intl.Collator, DateTimeFormat and NumberFormat, not Intl.${property}.`,
+            })),
+            { object: "RegExp", property: "escape", message: "Hermes has no RegExp.escape." },
+            ...[
+              "Temporal",
+              "Float16Array",
+              "DisposableStack",
+              "AsyncDisposableStack",
+              "SuppressedError",
+            ].map((property) => ({
+              object: "globalThis",
+              property,
+              message: `Hermes has no ${property}.`,
+            })),
+          ],
+          "no-restricted-globals": [
+            "error",
+            ...[
+              "Temporal",
+              "Float16Array",
+              "DisposableStack",
+              "AsyncDisposableStack",
+              "SuppressedError",
+            ].map((name) => ({ name, message: `Hermes has no ${name}.` })),
           ],
         },
       },
       {
         files: ["**/*.test.ts", "**/*.test.tsx"],
-        rules: { "no-restricted-properties": "off" },
+        rules: { "no-restricted-properties": "off", "no-restricted-globals": "off" },
       },
     ],
   },

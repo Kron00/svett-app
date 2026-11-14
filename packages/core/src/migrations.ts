@@ -69,6 +69,13 @@ CREATE TABLE coach_message (${row}, conversation_id TEXT NOT NULL, role TEXT NOT
 CREATE INDEX coach_message_conversation ON coach_message (conversation_id, created_at);
 `;
 
+const importChanges = `
+CREATE TABLE import_change (${row}, import_batch_id TEXT NOT NULL, change TEXT NOT NULL, item_table TEXT NOT NULL,
+  item_id TEXT NOT NULL, title TEXT NOT NULL, item_at INTEGER, row_ids TEXT NOT NULL, replaced TEXT,
+  written TEXT NOT NULL) STRICT;
+CREATE INDEX import_change_batch ON import_change (import_batch_id);
+`;
+
 // A recorded route is one line per stretch between pauses. Earlier location samples
 // came from one stretch.
 const sampleSegment = `
@@ -79,7 +86,8 @@ UPDATE activity_sample SET segment = 0 WHERE kind = 'location';
 /** Applied in order and never edited once released. A change to the schema is a new migration. */
 export const MIGRATIONS: ReadonlyArray<Migration> = [
   { version: 1, name: "initial", sql: initial },
-  { version: 2, name: "sample segment", sql: sampleSegment },
+  { version: 2, name: "import changes", sql: importChanges },
+  { version: 3, name: "sample segment", sql: sampleSegment },
 ];
 
 export class DatabaseTooNewError extends Data.TaggedError("DatabaseTooNewError")<{

@@ -11,9 +11,11 @@ Pod::Spec.new do |s|
   s.static_framework = true
 
   s.dependency 'ExpoModulesCore'
-  s.frameworks = 'HealthKit', 'AuthenticationServices', 'Network'
+  s.frameworks = 'HealthKit', 'AuthenticationServices', 'Network', 'Security'
 
   s.source_files = '**/*.swift'
+  # ChatGPTCore is also a Swift package, so that `swift test` runs its tests on a Mac.
+  s.exclude_files = 'ChatGPTCore/Package.swift', 'ChatGPTCore/Tests/**/*', 'ChatGPTCore/.build/**/*'
   s.pod_target_xcconfig = {
     'DEFINES_MODULE' => 'YES',
     'SWIFT_COMPILATION_MODE' => 'wholemodule'

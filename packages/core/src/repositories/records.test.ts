@@ -2,7 +2,13 @@ import { Effect, Exit, Option } from "effect";
 import { describe, expect, it } from "vite-plus/test";
 
 import { contentFingerprint } from "../ids.ts";
-import { ConversationId, EpochMillis, Fingerprint, SourceIdentity } from "../schema.ts";
+import {
+  ConversationId,
+  EpochMillis,
+  Fingerprint,
+  type MeasurementKind,
+  SourceIdentity,
+} from "../schema.ts";
 import { openTestDatabase, T0 } from "../test-database.ts";
 import { MADE_HERE } from "./origin.ts";
 import {
@@ -13,6 +19,9 @@ import {
 } from "./records.ts";
 
 const day = (n: number) => EpochMillis.make(T0 + n * 86_400_000);
+
+const refuses = <A, E>(write: Effect.Effect<A, E>) =>
+  Effect.map(Effect.exit(write), (exit) => Exit.isFailure(exit));
 
 describe("MeasurementRepository", () => {
   it("creates, lists by kind, updates and deletes measurements", async () => {
@@ -49,14 +58,35 @@ describe("MeasurementRepository", () => {
     expect(result).toEqual({ weights: [82.1], count: 2 });
   });
 
-  it("refuses a value of zero", async () => {
+  it("refuses a value outside the kind's range, on create and on update", async () => {
     const { runtime } = openTestDatabase();
-    const exit = await runtime.runPromiseExit(
-      Effect.flatMap(Effect.service(MeasurementRepository), (measurements) =>
-        measurements.create({ kind: "body_fat", measuredAt: day(0), value: 0, origin: MADE_HERE }),
-      ),
+    const attempts = await runtime.runPromise(
+      Effect.gen(function* () {
+        const measurements = yield* MeasurementRepository;
+        const create = (kind: MeasurementKind, value: number) =>
+          refuses(measurements.create({ kind, measuredAt: day(0), value, origin: MADE_HERE }));
+        const saved = yield* measurements.create({
+          kind: "body_fat",
+          measuredAt: day(0),
+          value: 18.5,
+          origin: MADE_HERE,
+        });
+        return {
+          refused: [
+            yield* create("body_fat", 0),
+            yield* create("body_fat", 999.9),
+            yield* create("body_fat", 100),
+            yield* create("body_weight", 999.9),
+            yield* create("waist", -5),
+            yield* create("waist", 880),
+            yield* refuses(measurements.update(saved, { value: 999.9 })),
+          ],
+          stored: (yield* measurements.list()).map((m) => [m.kind, m.value]),
+        };
+      }),
     );
-    expect(Exit.isFailure(exit)).toBe(true);
+    expect(attempts.refused).toEqual([true, true, true, true, true, true, true]);
+    expect(attempts.stored).toEqual([["body_fat", 18.5]]);
   });
 });
 
