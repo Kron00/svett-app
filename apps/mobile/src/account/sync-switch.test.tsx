@@ -14,7 +14,7 @@ import { Effect, Layer, ManagedRuntime } from "effect";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
-import { currentDatabase } from "../data/current";
+import { currentDatabase, signedOut } from "../data/current";
 import { AccountProvider } from "./AccountProvider";
 import { syncNow } from "./sync";
 
@@ -193,7 +193,9 @@ describe("signing out and in as someone else", () => {
     );
     expect(JSON.stringify(server.rows.get(ALICE))).toContain("Alice's squats");
 
+    // Sign out on the Account screen, then sign in as Bob.
     await signIn(null);
+    await act(async () => signedOut());
     expect(currentDatabase().owner).toEqual({ kind: "anonymous" });
     await signIn(BOB);
     expect(currentDatabase().owner).toEqual({ kind: "account", accountId: BOB });
