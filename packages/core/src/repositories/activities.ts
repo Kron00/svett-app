@@ -694,6 +694,18 @@ const makeActivityRepository = Effect.gen(function* () {
   return {
     create,
     startWorkout,
+    /** How many workouts, in progress or finished and not deleted, were started from these routines. */
+    countStartedFrom: (routineIds: ReadonlyArray<RoutineId>) =>
+      run(
+        Effect.map(
+          selectRows(
+            TABLES.activity,
+            `routine_id IN (${routineIds.map(() => "?").join(", ")})`,
+            routineIds,
+          ),
+          (rows) => rows.length,
+        ),
+      ),
     /** The workout in progress, if there is one. */
     inProgress: run(
       Effect.flatMap(inProgressId, (id) =>

@@ -57,3 +57,4 @@ export * from "./warm-up.ts";
 export * from "./superset.ts";
 export * from "./rest-timer.ts";
 export * from "./workout-settings.ts";
+export * from "./proposals.ts";

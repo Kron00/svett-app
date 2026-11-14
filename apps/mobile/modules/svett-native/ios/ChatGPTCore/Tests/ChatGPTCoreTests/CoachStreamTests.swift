@@ -45,7 +45,10 @@ private func send(_ body: String, answers: [(status: Int, body: String)], vault:
 private let question = #"{"model": "gpt-6.1-sol", "instructions": "Coach", "input": [], "stream": true, "store": false}"#
 
 struct CoachStreamTests {
-    @Test(arguments: ["coach-best-squat.json", "coach-plan-limit.json"])
+    @Test(arguments: [
+        "coach-best-squat.json", "coach-plan-limit.json", "coach-propose-routine.json",
+        "coach-propose-program.json", "coach-propose-malformed.json",
+    ])
     func eachRecordedAnswerBecomesTheEventsJavaScriptReplays(name: String) throws {
         let exchanges = try #require(try fixture(name)["exchanges"] as? [[String: Any]])
         #expect(!exchanges.isEmpty)
