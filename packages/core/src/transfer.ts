@@ -1,5 +1,5 @@
 import { contentFingerprint } from "./ids.ts";
-import { EpochMillis, Fingerprint, type MeasurementKind } from "./schema.ts";
+import { EpochMillis, Fingerprint, type ImportSource, type MeasurementKind } from "./schema.ts";
 import { TABLES } from "./table.ts";
 
 export type TableKey = keyof typeof TABLES;
@@ -170,11 +170,13 @@ const MEASUREMENT_TITLE: Readonly<Record<MeasurementKind, string>> = {
   right_calf: "Right calf",
 };
 
-const IMPORT_SOURCE_TITLE: Readonly<Record<string, string>> = {
+const IMPORT_SOURCE_TITLE: Readonly<Record<ImportSource, string>> = {
   hevy: "Hevy import",
   apple_health: "Apple Health import",
   svett_file: "svett file import",
 };
+
+export const importTitle = (source: ImportSource): string => IMPORT_SOURCE_TITLE[source];
 
 const text = (value: unknown) => (typeof value === "string" ? value : "");
 const time = (value: unknown) =>
@@ -223,7 +225,7 @@ export const summarize = (item: Item): ItemSummary => {
     case "importBatch":
       return {
         ...base,
-        title: IMPORT_SOURCE_TITLE[text(top["source"])] ?? fallback,
+        title: IMPORT_SOURCE_TITLE[text(top["source"]) as ImportSource] ?? fallback,
         at: time(top["createdAt"]),
       };
     default:
@@ -290,3 +292,58 @@ export const planImport = (local: TableRows, incoming: TableRows): ImportPlan =>
 
 export const isNothingToImport = (plan: ImportPlan): boolean =>
   plan.added.length === 0 && plan.changed.length === 0;
+
+export const recordsLabel = (count: number): string =>
+  `${count.toLocaleString("en-US")} ${count === 1 ? "record" : "records"}`;
+
+/** What an import did, in one or two sentences. */
+export const importOutcome = ({
+  added,
+  replaced,
+}: {
+  readonly added: number;
+  readonly replaced: number;
+}): string => {
+  const took = `the file's version of ${recordsLabel(replaced)}`;
+  if (added === 0) return replaced === 0 ? "Nothing changed." : `Took ${took}.`;
+  return replaced === 0
+    ? `Added ${recordsLabel(added)}.`
+    : `Added ${recordsLabel(added)} and took ${took}.`;
+};
+
+/** What Undo is about to do, from the changes it will take back. */
+export const undoPlanLabel = ({
+  removing,
+  restoring,
+}: {
+  readonly removing: number;
+  readonly restoring: number;
+}): string => {
+  if (removing === 0 && restoring === 0) {
+    return "Undo leaves every record as it is, because you changed each one after the import.";
+  }
+  if (restoring === 0) return `Undo removes the ${recordsLabel(removing)} this import added.`;
+  if (removing === 0) return `Undo puts back the ${recordsLabel(restoring)} this import replaced.`;
+  return `Undo removes the ${recordsLabel(removing)} this import added and puts back the ${recordsLabel(restoring)} it replaced.`;
+};
+
+/** What Undo did. */
+export const undoOutcome = ({
+  removed,
+  restored,
+  left,
+}: {
+  readonly removed: number;
+  readonly restored: number;
+  readonly left: number;
+}): string => {
+  const done =
+    removed > 0 && restored > 0
+      ? `Removed ${recordsLabel(removed)} and put back ${recordsLabel(restored)}.`
+      : removed > 0
+        ? `Removed ${recordsLabel(removed)}.`
+        : restored > 0
+          ? `Put back ${recordsLabel(restored)}.`
+          : "Nothing was taken back.";
+  return left === 0 ? done : `${done} Left ${recordsLabel(left)} you changed after the import.`;
+};

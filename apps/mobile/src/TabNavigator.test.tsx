@@ -26,6 +26,7 @@ vi.mock("react-native", () => ({ Text: "Text", View: "View" }));
 vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 vi.mock("./progress/ProgressScreen", () => ({ ProgressScreen: () => "progress screen" }));
 vi.mock("./PhoneChecksRow", () => ({ PhoneChecksRow: () => "phone checks row" }));
+vi.mock("./transfer/DataRow", () => ({ DataRow: () => "data row" }));
 vi.mock("./gallery/DesignGalleryRow", () => ({ DesignGalleryRow: () => "design gallery row" }));
 vi.mock("./exercises/ExerciseLibraryRow", () => ({
   ExerciseLibraryRow: () => "exercise library row",

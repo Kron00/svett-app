@@ -1,7 +1,16 @@
 import { describe, expect, it } from "vite-plus/test";
 
 import { EpochMillis } from "./schema.ts";
-import { type AnyRow, countLabel, groupItems, isNothingToImport, planImport } from "./transfer.ts";
+import {
+  type AnyRow,
+  countLabel,
+  groupItems,
+  importOutcome,
+  isNothingToImport,
+  planImport,
+  undoOutcome,
+  undoPlanLabel,
+} from "./transfer.ts";
 
 const row = (id: string, fields: Record<string, unknown> = {}, updatedAt = 1): AnyRow => ({
   id,
@@ -91,5 +100,39 @@ describe("countLabel", () => {
     expect(countLabel("activity", 1)).toBe("1 workout");
     expect(countLabel("activity", 1_200)).toBe("1,200 workouts");
     expect(countLabel("coachMessage", 2)).toBe("2 coach messages");
+  });
+});
+
+describe("outcome text", () => {
+  it("says what an import did", () => {
+    expect(importOutcome({ added: 1, replaced: 0 })).toBe("Added 1 record.");
+    expect(importOutcome({ added: 3, replaced: 1 })).toBe(
+      "Added 3 records and took the file's version of 1 record.",
+    );
+    expect(importOutcome({ added: 0, replaced: 2 })).toBe("Took the file's version of 2 records.");
+  });
+
+  it("says what Undo will do", () => {
+    expect(undoPlanLabel({ removing: 300, restoring: 0 })).toBe(
+      "Undo removes the 300 records this import added.",
+    );
+    expect(undoPlanLabel({ removing: 0, restoring: 1 })).toBe(
+      "Undo puts back the 1 record this import replaced.",
+    );
+    expect(undoPlanLabel({ removing: 2, restoring: 1 })).toBe(
+      "Undo removes the 2 records this import added and puts back the 1 record it replaced.",
+    );
+    expect(undoPlanLabel({ removing: 0, restoring: 0 })).toBe(
+      "Undo leaves every record as it is, because you changed each one after the import.",
+    );
+  });
+
+  it("says what Undo did, and what it left", () => {
+    expect(undoOutcome({ removed: 2, restored: 1, left: 0 })).toBe(
+      "Removed 2 records and put back 1 record.",
+    );
+    expect(undoOutcome({ removed: 1, restored: 0, left: 1 })).toBe(
+      "Removed 1 record. Left 1 record you changed after the import.",
+    );
   });
 });
