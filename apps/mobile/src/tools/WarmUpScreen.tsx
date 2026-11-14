@@ -74,6 +74,8 @@ export function WarmUpScreen({ route, navigation }: Props) {
   const bar = bars[Math.min(barIndex, bars.length - 1)]!;
   const working = Math.round(weightIn(workingKg, unit) * 100) / 100;
   const sets = warmUpSets(working, bar.weight, plates);
+  const replacing = exercise.sets.some((set) => set.setType === "warm_up" && !set.done);
+  const count = sets.length === 1 ? "1 warm-up set" : `${sets.length} warm-up sets`;
 
   const add = () => {
     setAdding(true);
@@ -138,7 +140,7 @@ export function WarmUpScreen({ route, navigation }: Props) {
       )}
       <View className="gap-2 px-gutter">
         <Button
-          label={sets.length === 1 ? "Add 1 warm-up set" : `Add ${sets.length} warm-up sets`}
+          label={replacing ? `Replace with ${count}` : `Add ${count}`}
           disabled={sets.length === 0 || adding}
           onPress={add}
           testID="add-warm-ups"

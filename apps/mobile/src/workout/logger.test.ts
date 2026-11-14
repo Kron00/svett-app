@@ -12,6 +12,7 @@ import {
   type SetColumn,
   type SqlDriver,
   startEmptyWorkout,
+  supersetPlaces,
   type WeightUnit,
 } from "@svett/core";
 import { openNodeDatabase } from "@svett/core/node";
@@ -299,6 +300,30 @@ describe("the workout store", () => {
     expect(retyped.text).toBe("225.97");
     await running.store.reloadWorkout();
     expect(shownSet(running).weightKg).toBe(102.5);
+  });
+});
+
+describe("supersets in the logger", () => {
+  it("brings a third exercise into a superset from its last exercise, and takes one out", async () => {
+    const opened = openApp(":memory:");
+    await opened.runtime.runPromise(
+      Effect.gen(function* () {
+        const id = yield* startEmptyWorkout(9);
+        yield* addExercisesToWorkout(id, [squat, plank, squat]);
+      }),
+    );
+    const running = await launch(opened.runtime);
+    const letters = () =>
+      supersetPlaces(running.store.currentWorkout()!.exercises.map((exercise) => exercise.row))
+        .map((place) => place?.letter ?? "-")
+        .join("");
+
+    await running.actions.supersetWithNextAt(0);
+    expect(letters()).toBe("AA-");
+    await running.actions.supersetWithNextAt(1);
+    expect(letters()).toBe("AAA");
+    await running.actions.leaveSupersetAt(2);
+    expect(letters()).toBe("AA-");
   });
 });
 

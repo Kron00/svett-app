@@ -135,22 +135,13 @@ export const setSetRpe = (set: ActivitySet, rpe: number | null) =>
     withActivities((activities) => activities.updateWorkoutSet(set.id, { rpe })),
   );
 
-/**
- * Joins the exercise at `index` with the next one in a superset, or takes it out of the
- * superset it is in.
- */
-export const toggleSuperset = (index: number) => {
+const groupExercises = async (change: typeof supersetWithNext, index: number) => {
   const log = currentWorkout();
   if (log === null) return;
   const rows = log.exercises.map((exercise) => exercise.row);
-  const inOne =
-    rows[index]?.supersetGroup !== null &&
-    [rows[index - 1], rows[index + 1]].some(
-      (other) => other !== undefined && other.supersetGroup === rows[index]?.supersetGroup,
-    );
-  const changes = inOne ? leaveSuperset(rows, index) : supersetWithNext(rows, index);
+  const changes = change(rows, index);
   if (changes.length === 0) return;
-  void saveWorkout(
+  await saveWorkout(
     withActivities((activities) =>
       activities.groupExercises(
         changes.map(({ index: at, supersetGroup }) => ({ id: rows[at]!.id, supersetGroup })),
@@ -159,9 +150,17 @@ export const toggleSuperset = (index: number) => {
   );
 };
 
-/** Puts warm-up sets before an exercise's first set. */
+/** Joins the exercise at `index`, and any superset it is in, with the next exercise. */
+export const supersetWithNextAt = (index: number): Promise<void> =>
+  groupExercises(supersetWithNext, index);
+
+/** Takes the exercise at `index` out of the superset it is in. */
+export const leaveSupersetAt = (index: number): Promise<void> =>
+  groupExercises(leaveSuperset, index);
+
+/** Puts warm-up sets before an exercise's first set, in place of its warm-ups still to do. */
 export const addWarmUpSets = (row: ActivityExerciseId, sets: ReadonlyArray<PlannedSet>) =>
-  saveWorkout(withActivities((activities) => activities.addSetsFirst(row, sets)));
+  saveWorkout(withActivities((activities) => activities.replaceWarmUpSets(row, sets)));
 
 export const renameWorkout = (title: string) => {
   const id = inProgress();

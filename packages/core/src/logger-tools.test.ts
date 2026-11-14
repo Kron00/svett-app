@@ -67,6 +67,9 @@ const rows = (workout: {
   }>;
 }) => workout.exercises.map(({ row }) => row);
 
+const warmUp = (kg: number, reps: number) =>
+  Object.assign(nextSet([]), { setType: "warm_up" as const, weightKg: kg, reps });
+
 describe("logger tools", () => {
   it("rests as the routine says, else as last time, else 1:30", async () => {
     const database = openTestDatabase();
@@ -115,7 +118,7 @@ describe("logger tools", () => {
           reps: 5,
         });
         const warmUps = warmUpSets(100, 20, DEFAULT_BARS_AND_PLATES.kg.plates);
-        yield* (yield* activities).addSetsFirst(
+        yield* (yield* activities).replaceWarmUpSets(
           exercise.row.id,
           warmUps.map((set) =>
             Object.assign(nextSet([]), {
@@ -140,6 +143,43 @@ describe("logger tools", () => {
       [2, "warm_up", 60, 3, false],
       [3, "warm_up", 80, 2, false],
       [4, "normal", 100, 5, false],
+    ]);
+  });
+
+  it("replaces the warm-ups still to do when warm-ups are added again, and keeps done ones first", async () => {
+    const database = openTestDatabase();
+    const shown = await database.runtime.runPromise(
+      Effect.gen(function* () {
+        const id = yield* startEmptyWorkout(9);
+        yield* addExercisesToWorkout(id, [squat]);
+        const exercise = (yield* log).exercises[0]!;
+        yield* (yield* activities).updateWorkoutSet(exercise.sets[0]!.id, {
+          weightKg: 100,
+          reps: 5,
+        });
+        yield* (yield* activities).replaceWarmUpSets(exercise.row.id, [
+          warmUp(20, 10),
+          warmUp(60, 3),
+        ]);
+        const first = (yield* log).exercises[0]!.sets[0]!;
+        yield* (yield* activities).updateWorkoutSet(first.id, { done: true });
+        yield* (yield* activities).replaceWarmUpSets(exercise.row.id, [
+          warmUp(40, 5),
+          warmUp(80, 2),
+        ]);
+        return (yield* log).exercises[0]!.sets.map((set) => [
+          set.position,
+          set.setType,
+          set.weightKg,
+          set.done,
+        ]);
+      }),
+    );
+    expect(shown).toEqual([
+      [0, "warm_up", 20, true],
+      [1, "warm_up", 40, false],
+      [2, "warm_up", 80, false],
+      [3, "normal", 100, false],
     ]);
   });
 

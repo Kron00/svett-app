@@ -456,24 +456,35 @@ const makeActivityRepository = Effect.gen(function* () {
     );
 
   /**
-   * Puts sets before the first set of an exercise of the workout in progress, such as the
-   * warm-ups a calculator worked out. Returns their IDs.
+   * Puts warm-up sets, such as the ones a calculator worked out, before the working sets of an
+   * exercise of the workout in progress, in place of its warm-ups still to do. Done warm-ups
+   * stay first, so adding warm-ups again never doubles them. Returns the new sets' IDs.
    */
-  const addSetsFirst = (id: ActivityExerciseId, sets: ReadonlyArray<PlannedSet>) =>
+  const replaceWarmUpSets = (id: ActivityExerciseId, sets: ReadonlyArray<PlannedSet>) =>
     run(
       sql.transaction(
         Effect.gen(function* () {
           yield* inProgressExercise(id);
+          const at = yield* currentTime;
           const current = yield* exerciseSets(id);
-          for (const [index, set] of current.entries()) {
-            if (set.position !== sets.length + index) {
-              yield* updateRow(TABLES.activitySet, set.id, { position: sets.length + index });
+          const stale = current.filter((set) => set.setType === "warm_up" && !set.done);
+          for (const set of stale) {
+            yield* softDeleteRows(TABLES.activitySet, "id = ?", [set.id], at);
+          }
+          const done = current.filter((set) => set.setType === "warm_up" && set.done);
+          const working = current.filter((set) => set.setType !== "warm_up");
+          const after = done.length + sets.length;
+          for (const [position, row] of [
+            ...done.map((one, index) => [index, one] as const),
+            ...working.map((one, index) => [after + index, one] as const),
+          ]) {
+            if (row.position !== position) {
+              yield* updateRow(TABLES.activitySet, row.id, { position });
             }
           }
-          const at = yield* currentTime;
           const added: Array<ActivitySetId> = [];
-          for (const [position, set] of sets.entries()) {
-            added.push(yield* insertSet(id, MADE_HERE, "", position, set, false, at));
+          for (const [index, set] of sets.entries()) {
+            added.push(yield* insertSet(id, MADE_HERE, "", done.length + index, set, false, at));
           }
           return added;
         }),
@@ -735,7 +746,7 @@ const makeActivityRepository = Effect.gen(function* () {
         ),
       ),
     addSet,
-    addSetsFirst,
+    replaceWarmUpSets,
     groupExercises,
     removeSet,
     finishWorkout,

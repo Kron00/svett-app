@@ -43,7 +43,7 @@ const doneLabel = (badge: string, set: ActivitySet, unit: WeightUnit) =>
     .join(", ");
 
 /** The tools a workout exercise's options open, which the workout screen handles. */
-export type ExerciseTool = "rest" | "superset" | "warm-up" | "plates";
+export type ExerciseTool = "rest" | "superset" | "leave-superset" | "warm-up" | "plates";
 
 function LoggedSetRow({
   exercise,
@@ -198,10 +198,12 @@ export const ExerciseCard = memo(function ExerciseCard({
   // The tools come first, so their buttons sit clear of the bottom of the screen.
   const choices: ReadonlyArray<{ readonly label: string; readonly run: () => void }> = [
     ...(superset !== null
-      ? [{ label: "Remove from superset", run: () => onTool(exercise, index, "superset") }]
-      : index < count - 1 && !joinsNext
-        ? [{ label: "Superset with next exercise", run: () => onTool(exercise, index, "superset") }]
-        : []),
+      ? [{ label: "Remove from superset", run: () => onTool(exercise, index, "leave-superset") }]
+      : []),
+    // The last exercise of a superset can bring the next one in too, for a tri-set or more.
+    ...(index < count - 1 && !joinsNext
+      ? [{ label: "Superset with next exercise", run: () => onTool(exercise, index, "superset") }]
+      : []),
     {
       label: `Rest timer: ${restText(exercise.row.restS)}`,
       run: () => onTool(exercise, index, "rest"),

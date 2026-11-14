@@ -43,7 +43,8 @@ import {
   setSetType,
   setWorkoutNotes,
   startEmpty,
-  toggleSuperset,
+  leaveSupersetAt,
+  supersetWithNextAt,
   typeValue,
 } from "./actions";
 import { ExerciseCard, type ExerciseTool } from "./ExerciseCard";
@@ -226,7 +227,9 @@ function Logger({
         case "rest":
           return setRestSheet(exercise);
         case "superset":
-          return toggleSuperset(index);
+          return void supersetWithNextAt(index);
+        case "leave-superset":
+          return void leaveSupersetAt(index);
         case "warm-up":
           return navigation.navigate("WarmUp", { exercise: exercise.row.id });
         case "plates": {

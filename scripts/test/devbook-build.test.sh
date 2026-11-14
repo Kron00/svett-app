@@ -2328,10 +2328,12 @@ const doneLabel = (exercise, index) => {
   return [badges(exercise)[index], ...(parts.length ? parts : ["No target"]), one.done ? "Done" : "To do"].join(", ");
 };
 const inSuperset = (e) => state.workout.exercises[e]?.superset != null;
+const joinsNext = (e) => inSuperset(e) && state.workout.exercises[e + 1]?.superset === state.workout.exercises[e].superset;
 const options = (e) => {
   const count = state.workout.exercises.length;
   return [
-    ...(inSuperset(e) ? ["Remove from superset"] : e < count - 1 ? ["Superset with next exercise"] : []),
+    ...(inSuperset(e) ? ["Remove from superset"] : []),
+    ...(e < count - 1 && !joinsNext(e) ? ["Superset with next exercise"] : []),
     `Rest timer: ${state.workout.exercises[e].rest === 30 ? "0:30" : "1:30"}`,
     "Warm-up sets", "Plate calculator", "Replace exercise", "Log by: Weight and reps", "Remove exercise", "Cancel",
   ];
