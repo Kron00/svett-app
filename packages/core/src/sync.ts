@@ -87,7 +87,8 @@ export interface RowCopy extends RowVersion {
  */
 export const deletionMatters = (stored: RowCopy | undefined, incoming: RowCopy): boolean => {
   if (stored === undefined) return false;
-  const [winner, loser] = mergeRow(stored, incoming) === "take" ? [incoming, stored] : [stored, incoming];
+  const [winner, loser] =
+    mergeRow(stored, incoming) === "take" ? [incoming, stored] : [stored, incoming];
   return winner.deletedAt === null && loser.deletedAt !== null;
 };
 

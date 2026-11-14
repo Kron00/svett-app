@@ -433,7 +433,7 @@ describe("SyncRepository", () => {
     expect(await on.run(Effect.flatMap(sync, (repository) => repository.queuedCount))).toBe(0);
     const times = server.pushes
       .at(-1)!
-      .map(({ row }) => (row as { updatedAt: number; deletedAt: number | null }));
+      .map(({ row }) => row as { updatedAt: number; deletedAt: number | null });
     for (const { updatedAt, deletedAt } of times) {
       expect(isTooFarAhead(updatedAt, T0 + 2 * MINUTE)).toBe(false);
       expect(deletedAt).toBe(updatedAt);
