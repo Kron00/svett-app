@@ -4,6 +4,7 @@ import { Result } from "effect";
 
 import { DurationSeconds } from "./duration.ts";
 import type { GpxPoint, GpxTrack } from "./gpx.ts";
+import { seededRandom } from "./ids.ts";
 import { ActivityId, EpochMillis, Fingerprint, ImportBatchId, SourceIdentity } from "./schema.ts";
 import {
   fromGpx,
@@ -277,6 +278,63 @@ describe("fromGpx", () => {
     const points = [northward(T, 59, 3)];
     expect(ride(points, "Ride").fingerprint).toBe(ride(points, "Ride").fingerprint);
     expect(ride(points, "Ride to work").fingerprint).not.toBe(ride(points, "Ride").fingerprint);
+  });
+});
+
+const DEGREE_M = (Math.PI * 6_371_008.8) / 180;
+
+/**
+ * A 600 m run north at 3 m/s with no speeds, a reading a second, and a stop of `seconds`
+ * at 300 m where the readings drift within 10 m, each place held one to six seconds.
+ */
+const runWithStop = (seconds: number, seed: number): Array<GpxPoint> => {
+  const points: Array<GpxPoint> = [];
+  const add = (north: number, east = 0) =>
+    points.push({
+      recordedAt: T + points.length * 1000,
+      latitude: 59 + north / DEGREE_M,
+      longitude: 18 + east / (DEGREE_M * Math.cos((59 * Math.PI) / 180)),
+      altitudeM: null,
+      heartRate: null,
+    });
+  for (let north = 0; north <= 300; north += 3) add(north);
+  const next = seededRandom(seed);
+  for (let held = 0; held < seconds; ) {
+    const angle = next() * 2 * Math.PI;
+    const radius = 10 * Math.sqrt(next());
+    for (let hold = 1 + Math.floor(next() * 6); hold > 0 && held < seconds; hold--, held++) {
+      add(300 + radius * Math.cos(angle), radius * Math.sin(angle));
+    }
+  }
+  for (let north = 303; north <= 600; north += 3) add(north);
+  return points;
+};
+
+const run = (points: ReadonlyArray<GpxPoint>) =>
+  Result.getOrThrow(fromGpx({ name: "Run", type: "running", segments: [points] }, () => 9));
+
+describe("an imported route without speeds", () => {
+  // Sol's K1 round 6 probe saved 759 m for seed 45 when a drifting stop counted as moving.
+  it("saves a 600 m run with a two-minute stop within 3%", () => {
+    for (const seed of [...Array.from({ length: 25 }, (_, index) => index + 1), 36, 45]) {
+      expect(run(runWithStop(120, seed)).distanceM, `seed ${seed}`).toBeGreaterThan(582);
+      expect(run(runWithStop(120, seed)).distanceM, `seed ${seed}`).toBeLessThan(618);
+    }
+  });
+
+  it("saves a run without stops at its length", () => {
+    expect(run(runWithStop(0, 1)).distanceM).toBeCloseTo(600, -1);
+  });
+
+  it("splits a route to add up to the distance its source measured", () => {
+    const measured = { ...run(runWithStop(120, 45)), source: "apple_health" as const, distanceM: 640 };
+    const rows = sourceActivityRows(measured, ImportBatchId.make(UUID(9)), EpochMillis.make(T));
+    const splits = (rows.activitySample ?? []).filter((sample) => sample["kind"] === "split");
+    expect(rows.activityTrack?.[0]?.["distanceM"]).toBe(640);
+    expect(splits.reduce((sum, split) => sum + (split["distanceM"] as number), 0)).toBeCloseTo(
+      640,
+      6,
+    );
   });
 });
 

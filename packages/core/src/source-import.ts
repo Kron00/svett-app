@@ -1,11 +1,11 @@
 import { Result } from "effect";
 
-import { activityTitle, DEFAULT_HIDE_M, elevationGainM, splitsOf } from "./cardio.ts";
+import { activityTitle, DEFAULT_HIDE_M, elevationGainM, SPLIT_M, splitsOf } from "./cardio.ts";
 import { DurationSeconds } from "./duration.ts";
-import { distanceM, pathLengthM } from "./geo.ts";
 import { GpxError, type GpxTrack } from "./gpx.ts";
 import type { HealthWorkout } from "./health-export.ts";
 import { contentFingerprint, importedId } from "./ids.ts";
+import { filterRoute } from "./imported-route.ts";
 import { CardioKind } from "./recording.ts";
 import {
   type Activity,
@@ -130,22 +130,19 @@ const stretchesOf = (route: ReadonlyArray<TimedRoutePoint>): Array<Array<TimedRo
   return stretches;
 };
 
-/** How far along its stretch each point is, point to point, as `pathLengthM` measures it. */
-const alongOf = (stretch: ReadonlyArray<TimedRoutePoint>): Array<number> => {
-  let travelled = 0;
-  return stretch.map((point, index) => {
-    if (index > 0) travelled += distanceM(stretch[index - 1]!, point);
-    return travelled;
-  });
-};
+/** The filter's motion for a route of a kind that is not cardio, such as a GPX file with no type. */
+const cardioKindOf = (kind: ActivityKind): CardioKind =>
+  isCardio(kind) ? (kind as CardioKind) : "run";
 
-/** The length of each segment added up, or null when no segment has two points. */
-const routeDistance = (route: ReadonlyArray<TimedRoutePoint>) => {
-  const stretches = stretchesOf(route).filter((stretch) => stretch.length > 1);
-  return stretches.length === 0
-    ? null
-    : stretches.reduce((total, stretch) => total + pathLengthM(stretch), 0);
-};
+/** The route through K1's filter, one filter per segment, as a recording's stretches. */
+const filteredRoute = (route: ReadonlyArray<TimedRoutePoint>, kind: ActivityKind) =>
+  filterRoute(stretchesOf(route), cardioKindOf(kind));
+
+/** What the filtered segments add up to, or null when no segment has two points. */
+const routeDistance = (route: ReadonlyArray<TimedRoutePoint>, kind: ActivityKind) =>
+  stretchesOf(route).some((stretch) => stretch.length > 1)
+    ? filteredRoute(route, kind).distanceM
+    : null;
 
 /** A Health workout, with its route when the export holds one. */
 export const fromHealthWorkout = (
@@ -163,7 +160,8 @@ export const fromHealthWorkout = (
     startedAt: EpochMillis.make(workout.startedAt),
     endedAt: EpochMillis.make(workout.endedAt),
     durationS: DurationSeconds.make(workout.durationS),
-    distanceM: workout.distanceM ?? routeDistance(points),
+    // Health's own total is what the watch measured, so it wins over the route's.
+    distanceM: workout.distanceM ?? routeDistance(points, kind),
     energyKcal: workout.energyKcal,
     route: points,
     heartRate: workout.heartRate.map((reading) => ({
@@ -234,7 +232,7 @@ export const fromGpx = (
     startedAt: EpochMillis.make(first),
     endedAt: EpochMillis.make(last),
     durationS: DurationSeconds.make(movingMs / 1000),
-    distanceM: routeDistance(route),
+    distanceM: routeDistance(route, kind),
     energyKcal: null,
     route,
     heartRate,
@@ -472,6 +470,28 @@ const heartSamples = (
   }));
 
 /**
+ * A route's splits, from K1's filter. With a total of the source's own, each point's
+ * distance along the route is scaled to it, so the splits add up to the saved distance.
+ */
+const importedSplits = (
+  route: ReadonlyArray<TimedRoutePoint>,
+  kind: CardioKind,
+  totalM: number | null,
+  activityId: ActivityId,
+) => {
+  const filtered = filterRoute(stretchesOf(route), kind);
+  const scale = totalM !== null && filtered.distanceM > 0 ? totalM / filtered.distanceM : 1;
+  return splitsOf(
+    { activityId, kind, startedAt: route[0]!.recordedAt, segments: filtered.segments },
+    route.at(-1)!.recordedAt,
+    SPLIT_M,
+    filtered.tracks.map((track) =>
+      track.map((point) => ({ ...point, alongM: point.alongM * scale })),
+    ),
+  );
+};
+
+/**
  * The rows of a workout saved as its own activity. Each ID is computed from the source
  * and identity, as ActivityRepository.create does for an import, so two phones that
  * import the same file make the same rows.
@@ -523,35 +543,12 @@ export const sourceActivityRows = (
     hideStartM: route.length > 0 ? DEFAULT_HIDE_M : 0,
     hideEndM: route.length > 0 ? DEFAULT_HIDE_M : 0,
   };
-  const first = route[0];
-  const last = route.at(-1);
-  // Each segment is a stretch of K1's recording, so a gap between two is a pause.
+  // Each segment is a stretch of K1's recording, so a gap between two is a pause. The
+  // splits are the filter's, scaled to add up to the saved distance, which is Health's
+  // own when it has one.
   const splits =
-    first !== undefined && last !== undefined && route.length > 1 && isCardio(workout.kind)
-      ? splitsOf(
-          {
-            activityId,
-            kind: workout.kind as CardioKind,
-            startedAt: first.recordedAt,
-            segments: stretches.map((stretch) => ({
-              from: stretch[0]!.recordedAt,
-              to: stretch.at(-1)!.recordedAt,
-              fixes: stretch.map((point) => ({
-                at: point.recordedAt,
-                latitude: point.latitude,
-                longitude: point.longitude,
-                altitudeM: point.altitudeM,
-                altitudeAccuracyM: null,
-                accuracyM: null,
-              })),
-              alongM: alongOf(stretch),
-              distanceM: pathLengthM(stretch),
-              pending: [],
-              stay: null,
-            })),
-          },
-          last.recordedAt,
-        )
+    route.length > 1 && isCardio(workout.kind)
+      ? importedSplits(route, workout.kind as CardioKind, workout.distanceM, activityId)
       : [];
   const sample = (index: number) =>
     ActivitySampleId.make(idIn("activitySample", workout, `/track/sample/${index}`));
