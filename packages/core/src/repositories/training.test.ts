@@ -1,4 +1,4 @@
-import { Effect } from "effect";
+import { Effect, Exit } from "effect";
 import { describe, expect, it } from "vite-plus/test";
 
 import { DurationSeconds } from "../duration.ts";
@@ -97,5 +97,18 @@ describe("TrainingReads", () => {
     ]);
     expect(result.logged.get(SQUAT)).toBe(3);
     expect(result.logged.get(BENCH)).toBe(3);
+  });
+
+  it("refuses a set whose type the schema does not know when it reads it", async () => {
+    const { database, runtime } = openTestDatabase();
+    await runtime.runPromise(workout(0, "Legs A", [["normal", 100, 5]]));
+    database.prepare("UPDATE activity_set SET set_type = 'heavy'").run();
+    const exit = await runtime.runPromiseExit(
+      Effect.flatMap(Effect.service(TrainingReads), (reads) =>
+        reads.setsOfExercise(SQUAT, T0, T0 + DAY),
+      ),
+    );
+    expect(Exit.isFailure(exit)).toBe(true);
+    expect(String(exit)).toContain(`at [0]["setType"]`);
   });
 });

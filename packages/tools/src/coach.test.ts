@@ -6,16 +6,12 @@ import {
   type CoachEvent,
   CoachMessageRepository,
   ConversationId,
-  ExerciseId,
   instructionsOffset,
   localDay,
   MANAGE_USAGE_URL,
   PLAN_LIMIT_CODE,
   PLAN_LIMIT_MESSAGE,
-  rankBestSets,
   type ResponsesRequest,
-  TrainingReads,
-  dayStart,
   DurationSeconds,
   EpochMillis,
   MADE_HERE,
@@ -127,34 +123,21 @@ describe("the recorded best squat run", () => {
   });
 
   it("answers with the best squat set the database holds for the days the model asked about", async () => {
-    const { transport } = replay(bestSquat);
+    const { transport, requests } = replay(bestSquat);
     const outcome = await ask(transport);
-    const call = bestSquat.exchanges
-      .flatMap((exchange) => exchange.events)
-      .find((event) => event.type === "toolCall" && event.name === "best_sets");
-    expect(call).toBeDefined();
-    const asked = JSON.parse((call as Extract<CoachEvent, { type: "toolCall" }>).arguments) as {
-      exerciseId: string;
-      from: string;
-      to: string;
+    const output = requests
+      .at(-1)!
+      .input.find(
+        (item) => item.type === "function_call_output" && item.call_id === "call_stand_in_2",
+      );
+    expect(output).toBeDefined();
+    const { best } = JSON.parse((output as { output: string }).output) as {
+      best: ReadonlyArray<{ day: string; weightKg: number; reps: number }>;
     };
-    const [best] = await run(
-      Effect.map(
-        Effect.flatMap(Effect.service(TrainingReads), (reads) =>
-          reads.setsOfExercise(
-            ExerciseId.make(asked.exerciseId),
-            dayStart(asked.from, OFFSET)!,
-            dayStart(asked.to, OFFSET)! + 86_400_000,
-          ),
-        ),
-        (sets) => rankBestSets(sets, 1),
-      ),
-    );
-    expect(best).toBeDefined();
+    expect(best[0]).toMatchObject({ day: "2026-10-14", weightKg: 117.5, reps: 8 });
     expect(outcome.type).toBe("answered");
     if (outcome.type !== "answered") return;
-    expect(outcome.answer).toContain(`${best!.weightKg} kg`);
-    expect(outcome.answer).toContain(String(best!.reps));
+    expect(outcome.answer).toContain("117.5 kg for 8 reps");
     expect(outcome.sources.some((source) => source.startsWith("Best sets of Barbell Squat"))).toBe(
       true,
     );

@@ -1,16 +1,18 @@
+import { isLiftedSet, isWorkingSet } from "./performed-set.ts";
 import type { LoggedSet } from "./repositories/training.ts";
 
 /**
- * The best working sets, best first. Warm-ups never count. A heavier set beats a lighter one,
- * then more reps win, then the earlier set. When no set has a weight, as for pull-ups, the
- * most reps win, then the longest time.
+ * The best working sets, best first. Warm-ups never count. Among sets of at least one rep with a
+ * weight, the rule the heaviest weight record keeps, a heavier set beats a lighter one, then more
+ * reps win, then the earlier set. When no set is like that, as for pull-ups, the most reps win,
+ * then the longest time.
  */
 export function rankBestSets(
   sets: ReadonlyArray<LoggedSet>,
   limit: number,
 ): ReadonlyArray<LoggedSet> {
-  const working = sets.filter((set) => set.setType !== "warm_up");
-  const weighted = working.filter((set) => set.weightKg !== null && set.weightKg > 0);
+  const working = sets.filter(isWorkingSet);
+  const weighted = working.filter(isLiftedSet);
   const pool = weighted.length > 0 ? weighted : working;
   const ranked = [...pool].sort(
     (a, b) =>

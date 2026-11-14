@@ -10,6 +10,7 @@ const set = (
   setType: SetType,
   weightKg: number | null,
   reps: number | null,
+  durationS: number | null = null,
 ): LoggedSet => ({
   activityId: `00000000-0000-7000-8000-00000000000${workout}` as ActivityId,
   title: `Workout ${workout}`,
@@ -18,7 +19,7 @@ const set = (
   setType,
   weightKg,
   reps,
-  durationS: null,
+  durationS,
   distanceM: null,
   rpe: null,
 });
@@ -33,6 +34,15 @@ describe("rankBestSets", () => {
       set(3, 1, "normal", 100, 6),
     ];
     expect(rankBestSets(sets, 3)).toEqual([sets[3], sets[2], sets[4]]);
+  });
+
+  it("counts a weight only from a set of at least one rep, as the heaviest weight record does", () => {
+    const sets = [
+      set(1, 0, "failure", 150, 0),
+      set(1, 1, "normal", 160, null, 30),
+      set(1, 2, "normal", 140, 5),
+    ];
+    expect(rankBestSets(sets, 3)).toEqual([sets[2]]);
   });
 
   it("ranks sets with no weight by reps", () => {

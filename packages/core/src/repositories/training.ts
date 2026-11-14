@@ -1,43 +1,45 @@
-import { Context, Effect, Layer } from "effect";
+import { Context, Effect, Layer, Schema } from "effect";
 
-import {
-  type ActivityId,
-  type ActivityKind,
-  EpochMillis,
-  type ExerciseId,
-  type SetType,
-} from "../schema.ts";
-import { Sql, type SqlRow } from "../sql.ts";
+import { DurationSeconds } from "../duration.ts";
+import { ActivityId, ActivityKind, EpochMillis, ExerciseId, SetType } from "../schema.ts";
+import { Sql } from "../sql.ts";
+
+const Count = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
 
 /** A workout as a list shows it, with how much it held. */
-export interface WorkoutTally {
-  readonly id: ActivityId;
-  readonly kind: ActivityKind;
-  readonly title: string;
-  readonly startedAt: EpochMillis;
-  readonly durationS: number;
-  readonly exercises: number;
+export const WorkoutTally = Schema.Struct({
+  id: ActivityId,
+  kind: ActivityKind,
+  title: Schema.String,
+  startedAt: EpochMillis,
+  durationS: DurationSeconds,
+  exercises: Count,
   /** Sets other than warm-ups. */
-  readonly workingSets: number;
-}
+  workingSets: Count,
+});
+export type WorkoutTally = typeof WorkoutTally.Type;
 
 /** One logged set of an exercise, with the workout it belongs to. */
-export interface LoggedSet {
-  readonly activityId: ActivityId;
-  readonly title: string;
-  readonly startedAt: EpochMillis;
-  readonly position: number;
-  readonly setType: SetType;
-  readonly weightKg: number | null;
-  readonly reps: number | null;
-  readonly durationS: number | null;
-  readonly distanceM: number | null;
-  readonly rpe: number | null;
-}
+export const LoggedSet = Schema.Struct({
+  activityId: ActivityId,
+  title: Schema.String,
+  startedAt: EpochMillis,
+  position: Count,
+  setType: SetType,
+  weightKg: Schema.NullOr(Schema.Finite),
+  reps: Schema.NullOr(Schema.Int),
+  durationS: Schema.NullOr(Schema.Finite),
+  distanceM: Schema.NullOr(Schema.Finite),
+  rpe: Schema.NullOr(Schema.Finite),
+});
+export type LoggedSet = typeof LoggedSet.Type;
 
-const number = (row: SqlRow, column: string) => Number(row[column]);
-const nullableNumber = (row: SqlRow, column: string) =>
-  row[column] === null || row[column] === undefined ? null : Number(row[column]);
+const ExerciseLogged = Schema.Struct({ exerciseId: ExerciseId, workouts: Count });
+
+const decodeTallies = Schema.decodeUnknownSync(Schema.Array(WorkoutTally));
+const decodeSets = Schema.decodeUnknownSync(Schema.Array(LoggedSet));
+const decodeLogged = Schema.decodeUnknownSync(Schema.Array(ExerciseLogged));
+const decodeCount = Schema.decodeUnknownSync(Schema.Tuple([Schema.Struct({ n: Count })]));
 
 const makeTrainingReads = Effect.gen(function* () {
   const sql = yield* Sql;
@@ -46,25 +48,16 @@ const makeTrainingReads = Effect.gen(function* () {
   const workoutsBetween = (from: number, to: number, limit: number) =>
     Effect.map(
       sql.all(
-        `SELECT a.id, a.kind, a.title, a.started_at, a.duration_s,
+        `SELECT a.id, a.kind, a.title, a.started_at AS startedAt, a.duration_s AS durationS,
            (SELECT count(*) FROM activity_exercise e WHERE e.activity_id = a.id AND e.deleted_at IS NULL) AS exercises,
            (SELECT count(*) FROM activity_set s JOIN activity_exercise e ON s.activity_exercise_id = e.id
-              WHERE e.activity_id = a.id AND e.deleted_at IS NULL AND s.deleted_at IS NULL AND s.set_type <> 'warm_up') AS working_sets
+              WHERE e.activity_id = a.id AND e.deleted_at IS NULL AND s.deleted_at IS NULL AND s.set_type <> 'warm_up') AS workingSets
          FROM activity a
          WHERE a.deleted_at IS NULL AND a.started_at >= ? AND a.started_at < ?
          ORDER BY a.started_at DESC, a.id DESC LIMIT ?`,
         [from, to, limit],
       ),
-      (rows) =>
-        rows.map((row): WorkoutTally => ({
-          id: String(row["id"]) as ActivityId,
-          kind: String(row["kind"]) as ActivityKind,
-          title: String(row["title"]),
-          startedAt: EpochMillis.make(number(row, "started_at")),
-          durationS: number(row, "duration_s"),
-          exercises: number(row, "exercises"),
-          workingSets: number(row, "working_sets"),
-        })),
+      decodeTallies,
     );
 
   /** How many workouts started in [from, to). */
@@ -74,15 +67,16 @@ const makeTrainingReads = Effect.gen(function* () {
         "SELECT count(*) AS n FROM activity WHERE deleted_at IS NULL AND started_at >= ? AND started_at < ?",
         [from, to],
       ),
-      (rows) => Number(rows[0]?.["n"] ?? 0),
+      (rows) => decodeCount(rows)[0].n,
     );
 
   /** Every live set of `exerciseId` in workouts that started in [from, to), oldest first. */
   const setsOfExercise = (exerciseId: ExerciseId, from: number, to: number) =>
     Effect.map(
       sql.all(
-        `SELECT a.id AS activity_id, a.title, a.started_at, s.position, s.set_type, s.weight_kg,
-           s.reps, s.duration_s, s.distance_m, s.rpe
+        `SELECT a.id AS activityId, a.title, a.started_at AS startedAt, s.position,
+           s.set_type AS setType, s.weight_kg AS weightKg, s.reps, s.duration_s AS durationS,
+           s.distance_m AS distanceM, s.rpe
          FROM activity_set s
          JOIN activity_exercise e ON s.activity_exercise_id = e.id
          JOIN activity a ON e.activity_id = a.id
@@ -91,33 +85,19 @@ const makeTrainingReads = Effect.gen(function* () {
          ORDER BY a.started_at, a.id, e.position, s.position`,
         [exerciseId, from, to],
       ),
-      (rows) =>
-        rows.map((row): LoggedSet => ({
-          activityId: String(row["activity_id"]) as ActivityId,
-          title: String(row["title"]),
-          startedAt: EpochMillis.make(number(row, "started_at")),
-          position: number(row, "position"),
-          setType: String(row["set_type"]) as SetType,
-          weightKg: nullableNumber(row, "weight_kg"),
-          reps: nullableNumber(row, "reps"),
-          durationS: nullableNumber(row, "duration_s"),
-          distanceM: nullableNumber(row, "distance_m"),
-          rpe: nullableNumber(row, "rpe"),
-        })),
+      decodeSets,
     );
 
   /** How many workouts each exercise appears in, for the exercises that appear at all. */
   const timesLogged = Effect.map(
     sql.all(
-      `SELECT e.exercise_id, count(DISTINCT e.activity_id) AS n
+      `SELECT e.exercise_id AS exerciseId, count(DISTINCT e.activity_id) AS workouts
        FROM activity_exercise e JOIN activity a ON e.activity_id = a.id
        WHERE e.deleted_at IS NULL AND a.deleted_at IS NULL
        GROUP BY e.exercise_id`,
     ),
     (rows) =>
-      new Map<ExerciseId, number>(
-        rows.map((row) => [String(row["exercise_id"]) as ExerciseId, number(row, "n")]),
-      ),
+      new Map<ExerciseId, number>(decodeLogged(rows).map((row) => [row.exerciseId, row.workouts])),
   );
 
   return { workoutsBetween, countWorkoutsBetween, setsOfExercise, timesLogged };
