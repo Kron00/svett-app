@@ -9,7 +9,8 @@ import { decodeHevyFile, type HevyFile, type ToInstant, wallTimeAsUtc } from "..
 import { hevyExerciseId, hevyImport } from "../hevy-import.ts";
 import { importedId } from "../ids.ts";
 import { ActivityId, EpochMillis, type ImportBatchId } from "../schema.ts";
-import { openTestDatabase } from "../test-database.ts";
+import { openTestDatabase, pointersToDeleted } from "../test-database.ts";
+import { decodeSvettFile } from "../svett-file.ts";
 import { isNothingToImport } from "../transfer.ts";
 import { ActivityRepository } from "./activities.ts";
 import { ExerciseAliasRepository } from "./exercises.ts";
@@ -354,6 +355,38 @@ describe("Hevy import", () => {
         hevyExerciseId("Landmine Press"),
       ),
     ).toEqual([{ deleted_at: null }]);
+  });
+
+  it("brings back the import a restored exercise came from when Push Day alone is imported again", async () => {
+    // Import the sample and the changed Hevy files.
+    const { database } = await importSample();
+    const plan = await preview(database, CHANGED);
+    await apply(
+      database,
+      CHANGED,
+      plan.changed.map(({ key }) => key),
+    );
+
+    // Export to a svett file, and import that export into an empty database.
+    const { text } = await transfers(database, (repository) => repository.exportFile);
+    const file = Result.getOrThrow(decodeSvettFile(text));
+    const phone = openTestDatabase(2);
+    const first = await transfers(phone, (repository) => repository.applyImport(file, []));
+
+    // Undo that import.
+    await undo(phone, Option.getOrThrow(first).importBatchId);
+    expect(count(phone, "activity")).toBe(0);
+
+    // Re-import only Push Day.
+    const again = await transfers(phone, (repository) => repository.previewImport(file));
+    const push = again.changed.find(({ title }) => title === "Push Day");
+    await transfers(phone, (repository) => repository.applyImport(file, [push!.key]));
+    expect(workouts(phone).map(({ title }) => title)).toEqual(["Push Day"]);
+    expect(setsWithoutExercise(phone)).toEqual([]);
+    expect(
+      query(phone, "SELECT deleted_at FROM exercise WHERE id = ?", hevyExerciseId("Landmine Press")),
+    ).toEqual([{ deleted_at: null }]);
+    expect(pointersToDeleted(phone)).toEqual([]);
   });
 
   it("keeps a workout's saved start when its new version is read in another zone", async () => {

@@ -41,6 +41,7 @@ import {
   tableKeyOf,
   type UndoEntry,
   undoSelection,
+  withRequired,
   writtenOf,
 } from "../transfer.ts";
 import { MADE_HERE, rowId } from "./origin.ts";
@@ -382,15 +383,7 @@ const makeTransferRepository = Effect.gen(function* () {
               (item.status === "changed" && take.includes(item.summary.key)),
           );
           if (picked.length === 0) return Option.none<ImportResult>();
-          const required = new Set(
-            picked.flatMap((item) => (item.status === "unchanged" ? [] : item.requires)),
-          );
-          const chosen = [
-            ...plan.items.filter(
-              (item) => item.status === "restore" && required.has(item.summary.key),
-            ),
-            ...picked,
-          ];
+          const chosen = withRequired(plan.items, picked);
           const importBatchId = yield* imports.create(input.source);
           yield* imports.setStatus(importBatchId, "applied");
           const at = yield* currentTime;

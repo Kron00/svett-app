@@ -526,6 +526,31 @@ export const importOutcome = ({
     : `Added ${recordsLabel(added)} and took ${took}.`;
 };
 
+/**
+ * The records an import writes for the ones you picked: each picked record, and the `restore`
+ * records it names, with the ones those name in turn, such as the import an exercise came from.
+ */
+export const withRequired = (
+  items: ReadonlyArray<PlannedItem>,
+  picked: ReadonlyArray<PlannedItem>,
+): ReadonlyArray<PlannedItem> => {
+  const restores = new Map(
+    items.flatMap((item) => (item.status === "restore" ? [[item.summary.key, item] as const] : [])),
+  );
+  const required = new Set<string>();
+  const pending = picked.flatMap((item) => (item.status === "unchanged" ? [] : item.requires));
+  for (let key = pending.pop(); key !== undefined; key = pending.pop()) {
+    const item = restores.get(key);
+    if (item === undefined || required.has(key)) continue;
+    required.add(key);
+    pending.push(...item.requires);
+  }
+  return [
+    ...items.filter((item) => item.status === "restore" && required.has(item.summary.key)),
+    ...picked,
+  ];
+};
+
 /** One change of an import as Undo sees it. */
 export interface UndoEntry {
   readonly change: ImportChange;

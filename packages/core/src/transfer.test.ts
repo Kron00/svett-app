@@ -8,10 +8,12 @@ import {
   importOutcome,
   isNothingToImport,
   planImport,
+  type PlannedItem,
   type UndoEntry,
   undoOutcome,
   undoPlanLabel,
   undoSelection,
+  withRequired,
 } from "./transfer.ts";
 
 const row = (id: string, fields: Record<string, unknown> = {}, updatedAt = 1): AnyRow => ({
@@ -257,5 +259,42 @@ describe("undoSelection", () => {
       keeping: 0,
       leaving: 1,
     });
+  });
+});
+
+const planned = (
+  key: string,
+  status: "new" | "changed" | "restore",
+  requires: ReadonlyArray<string> = [],
+): PlannedItem => ({
+  status,
+  incoming: { key, table: "exercise", id: key, rows: {} },
+  writes: {},
+  replaced: {},
+  summary: { key, table: "exercise", id: key, title: key, at: null },
+  requires,
+});
+const written = (items: ReadonlyArray<PlannedItem>, picked: ReadonlyArray<PlannedItem>) =>
+  withRequired(items, picked).map((item) => item.summary.key);
+
+describe("withRequired", () => {
+  it("brings back what a restored record names in turn", () => {
+    // A workout names a deleted exercise, which names the deleted import it came from.
+    const batch = planned("batch", "restore");
+    const exercise = planned("exercise", "restore", ["batch"]);
+    const workout = planned("workout", "changed", ["exercise"]);
+    const other = planned("other", "restore");
+    expect(written([batch, exercise, workout, other], [workout])).toEqual([
+      "batch",
+      "exercise",
+      "workout",
+    ]);
+  });
+
+  it("stops at a record it already brings back when two name each other", () => {
+    const a = planned("a", "restore", ["b"]);
+    const b = planned("b", "restore", ["a"]);
+    const workout = planned("workout", "new", ["a"]);
+    expect(written([a, b, workout], [workout])).toEqual(["a", "b", "workout"]);
   });
 });
