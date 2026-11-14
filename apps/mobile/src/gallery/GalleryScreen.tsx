@@ -14,7 +14,7 @@ import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import { type ReactNode, useState } from "react";
 import { ScrollView, View } from "react-native";
 
-import { useColor } from "../design/hooks";
+import { useColor, useIsAccessibilityTextSize } from "../design/hooks";
 import {
   COLOR_TOKENS,
   type ColorToken,
@@ -64,8 +64,9 @@ function Card({ children }: { readonly children: ReactNode }) {
 
 function Swatch({ token }: { readonly token: ColorToken }) {
   const separator = useColor("separator");
+  const width = useIsAccessibilityTextSize() ? "w-full" : "min-w-36 grow basis-36";
   return (
-    <View className="min-w-36 grow basis-36 flex-row items-center gap-2">
+    <View className={`${width} flex-row items-center gap-2`}>
       <View
         className="size-7 rounded-lg"
         style={{ backgroundColor: useColor(token), borderColor: separator, borderWidth: 1 }}
