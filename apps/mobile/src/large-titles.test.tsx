@@ -51,10 +51,13 @@ vi.mock("react-native", async () => {
       element(type, props);
   return {
     AccessibilityInfo: { announceForAccessibility: () => {} },
+    ActionSheetIOS: { showActionSheetWithOptions: () => {} },
+    Alert: { alert: () => {} },
     AppState: { addEventListener: () => ({ remove: () => {} }) },
     Platform: { OS: "ios", select: (choices: { readonly ios?: unknown }) => choices.ios },
     Pressable: "Pressable",
     ScrollView: childless("ScrollView"),
+    Settings: { get: () => undefined },
     StyleSheet: { hairlineWidth: 0.5, create: (styles: object) => styles },
     Text: "Text",
     TextInput: "TextInput",
@@ -75,6 +78,7 @@ vi.mock("@legendapp/list/react-native", async () => {
   };
 });
 vi.mock("../global.css", () => ({}));
+vi.mock("../modules/svett-native", () => ({ default: { launchedAt: 0 } }));
 vi.mock("expo-status-bar", () => ({ StatusBar: "StatusBar" }));
 vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 vi.mock("uniwind", () => ({ useCSSVariable: () => "#000000" }));
@@ -138,7 +142,7 @@ const largeTitleScreens = () => {
   return [...screens.values()].filter((screen) => {
     const options =
       typeof screen.options === "function"
-        ? screen.options({ navigation, route: { name: screen.name } })
+        ? screen.options({ navigation, route: { name: screen.name, params: {} } })
         : screen.options;
     return (options as { readonly headerLargeTitle?: boolean } | undefined)?.headerLargeTitle;
   });
@@ -154,9 +158,12 @@ describe("screens under a native large title", () => {
     const found = largeTitleScreens();
     expect(found.map((screen) => screen.name).sort()).toEqual(
       [
+        "AddWorkoutExercise",
         "Data",
         "Exercises",
         "Gallery",
+        "PickExercise",
+        "ReplaceWorkoutExercise",
         "HomeRoot",
         "TrainRoot",
         "ProgressRoot",

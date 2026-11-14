@@ -99,6 +99,8 @@ export type ListRowProps = {
   readonly value?: string;
   readonly icon?: { readonly symbol: SymbolName; readonly color: TintColor };
   readonly trailing?: RowTrailing;
+  /** What VoiceOver reads, when the title, subtitle and value read badly, such as "×". */
+  readonly accessibilityLabel?: string;
   readonly testID?: string;
 };
 
@@ -120,10 +122,11 @@ export function ListRow({
   value,
   icon,
   trailing = NO_TRAILING,
+  accessibilityLabel,
   testID,
 }: ListRowProps) {
   const stacked = useIsAccessibilityTextSize();
-  const label = [title, subtitle, value].filter(Boolean).join(", ");
+  const label = accessibilityLabel ?? [title, subtitle, value].filter(Boolean).join(", ");
   const content = (
     <View className="min-h-target flex-row items-center gap-3 px-gutter py-3">
       {icon ? <RowIcon {...icon} /> : null}

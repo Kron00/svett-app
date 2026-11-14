@@ -2,7 +2,12 @@ import { Result } from "effect";
 import { describe, expect, it } from "vite-plus/test";
 
 import { EpochMillis } from "./schema.ts";
-import { decodeSvettFile, encodeSvettFile, exportFileName } from "./svett-file.ts";
+import {
+  decodeSvettFile,
+  encodeSvettFile,
+  exportFileName,
+  SVETT_FILE_VERSION,
+} from "./svett-file.ts";
 import { TABLE_KEYS, type Snapshot } from "./transfer.ts";
 
 const folder = {
@@ -25,13 +30,68 @@ const failure = (text: string) => {
   return result.failure;
 };
 
+const activity = {
+  id: "01900000-0000-7000-8000-0000000000a1",
+  updatedAt: 5,
+  deletedAt: null,
+  kind: "strength",
+  startedAt: 1_000,
+  durationS: 3_600,
+  title: "Legs",
+  notes: "",
+  energyKcal: null,
+  audience: "only_you",
+  hiddenFields: [],
+  source: "svett",
+  sourceId: null,
+  fingerprint: null,
+  importBatchId: null,
+};
+const exercise = (n: number) => ({
+  id: `01900000-0000-7000-8000-0000000000e${n}`,
+  updatedAt: 5,
+  deletedAt: null,
+  activityId: activity.id,
+  exerciseId: "01900000-0000-7000-8000-0000000000f1",
+  position: n,
+  supersetGroup: null,
+  notes: "",
+});
+const set = (n: number, of: number, values: Record<string, unknown>) => ({
+  id: `01900000-0000-7000-8000-0000000000d${n}`,
+  updatedAt: 5,
+  deletedAt: null,
+  activityExerciseId: `01900000-0000-7000-8000-0000000000e${of}`,
+  position: n,
+  setType: "normal",
+  weightKg: null,
+  reps: null,
+  durationS: null,
+  distanceM: null,
+  rpe: null,
+  ...values,
+});
+const tablesOf = (text: string) => {
+  const result = decodeSvettFile(text);
+  if (Result.isFailure(result)) throw new Error(result.failure.message);
+  return result.success.tables;
+};
+
+/** A set row as a version 2 file holds it. */
+const v2 = (row: Record<string, unknown>) => ({
+  ...row,
+  done: true,
+  targetRepsMin: null,
+  targetRepsMax: null,
+});
+
 describe("svett file", () => {
   it("reads back what it wrote", () => {
     const text = encodeSvettFile(snapshot({ folder: [folder] as never }), EpochMillis.make(1_000));
     const decoded = decodeSvettFile(text);
     expect(decoded).toEqual(
       Result.succeed({
-        version: 1,
+        version: SVETT_FILE_VERSION,
         exportedAt: 1_000,
         rows: 1,
         tables: { ...Object.fromEntries(TABLE_KEYS.map((key) => [key, []])), folder: [folder] },
@@ -67,6 +127,73 @@ describe("svett file", () => {
     expect(JSON.parse(text).tables.folder).toEqual([folder, deleted]);
   });
 
+  it("reads a version 1 file's workouts as finished, every set done, and each exercise by its sets", () => {
+    const squat = set(1, 1, { weightKg: 100, reps: 5 });
+    const plank = set(2, 2, { durationS: 60 });
+    const tables = tablesOf(
+      file(
+        {
+          activity: [activity],
+          activity_exercise: [exercise(1), exercise(2)],
+          activity_set: [squat, plank],
+        },
+        1,
+      ),
+    );
+    expect(tables.activity).toEqual([{ ...activity, status: "finished", routineId: null }]);
+    expect(tables.activityExercise).toEqual([
+      { ...exercise(1), setFields: "weight_reps" },
+      { ...exercise(2), setFields: "time" },
+    ]);
+    expect(tables.activitySet).toEqual([
+      { ...squat, done: true, targetRepsMin: null, targetRepsMax: null },
+      { ...plank, done: true, targetRepsMin: null, targetRepsMax: null },
+    ]);
+  });
+
+  it("reads a version 2 file's exercises with the set fields their sets give, as migration 5 did", () => {
+    const tables = tablesOf(
+      file(
+        {
+          activity: [{ ...activity, status: "finished", routineId: null }],
+          activity_exercise: [1, 2, 3, 4, 5, 6].map(exercise),
+          activity_set: [
+            v2(set(1, 1, { distanceM: 5_000, durationS: 1_500 })),
+            v2(set(2, 2, { reps: 12 })),
+            v2(set(3, 3, { weightKg: 20, durationS: 45 })),
+            v2(set(4, 4, { weightKg: 30, distanceM: 40 })),
+            // A deleted set still counts, as it did in the database.
+            v2(set(5, 5, { weightKg: 10, reps: 8, deletedAt: 9 })),
+            v2(set(6, 5, { durationS: 30 })),
+          ],
+        },
+        2,
+      ),
+    );
+    expect(tables.activityExercise?.map((row) => row["setFields"])).toEqual([
+      "distance_time",
+      "reps",
+      "weight_time",
+      "weight_distance",
+      "weight_time",
+      "weight_reps",
+    ]);
+  });
+
+  it("keeps the set fields a file names, whatever its sets hold", () => {
+    const tables = tablesOf(
+      file(
+        {
+          activity: [{ ...activity, status: "in_progress", routineId: null }],
+          activity_exercise: [{ ...exercise(1), setFields: "distance_time" }],
+          activity_set: [{ ...set(1, 1, { reps: 5 }), done: false }],
+        },
+        SVETT_FILE_VERSION,
+      ),
+    );
+    expect(tables.activityExercise?.map((row) => row["setFields"])).toEqual(["distance_time"]);
+  });
+
   it.each([
     ["text that is not JSON", "not json"],
     ["JSON that is not a svett file", JSON.stringify({ workouts: [] })],
@@ -78,7 +205,7 @@ describe("svett file", () => {
   });
 
   it("asks for an update when a newer svett made the file", () => {
-    expect(failure(file({}, 2))).toMatchObject({
+    expect(failure(file({}, SVETT_FILE_VERSION + 1))).toMatchObject({
       reason: "too_new",
       message: "A newer svett made this file. Update svett, then import it again.",
     });
@@ -125,6 +252,16 @@ describe("svett file", () => {
 
     it("reads an import change whose kept rows pass their tables' rules", () => {
       expect(Result.isSuccess(decodeSvettFile(file({ import_change: [change({})] })))).toBe(true);
+    });
+
+    it("reads an import change that keeps an exercise written before set fields", () => {
+      const kept = change({
+        itemTable: "activity",
+        itemId: activity.id,
+        rowIds: { activity_exercise: [exercise(1).id] },
+        replaced: { activity_exercise: [exercise(1)] },
+      });
+      expect(Result.isSuccess(decodeSvettFile(file({ import_change: [kept] }, 2)))).toBe(true);
     });
 
     it.each([

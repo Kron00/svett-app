@@ -4,30 +4,25 @@ import { SymbolView } from "expo-symbols";
 import { View } from "react-native";
 
 import { ChatGPTRow } from "./chatgpt/ChatGPTRow";
-import { ExerciseLibraryRow } from "./exercises/ExerciseLibraryRow";
 import { DesignGalleryRow } from "./gallery/DesignGalleryRow";
 import type { TabParamList } from "./navigation";
 import { PhoneChecksRow } from "./PhoneChecksRow";
 import { PlaceholderScreen } from "./PlaceholderScreen";
 import { ProgressScreen } from "./progress/ProgressScreen";
+import { TrainScreen } from "./routines/TrainScreen";
 import { type Tab, TABS } from "./tabs";
 import { DataRow } from "./transfer/DataRow";
 import { ListSection } from "./ui/List";
+import { WorkoutTabBar } from "./workout/WorkoutTabBar";
 
 const Tabs = createBottomTabNavigator<TabParamList>();
 const TabStack = createNativeStackNavigator();
 
 function TabContent({ tab }: { readonly tab: Tab }) {
   if (tab.name === "Progress") return <ProgressScreen />;
+  if (tab.name === "Train") return <TrainScreen />;
   return (
     <PlaceholderScreen tab={tab}>
-      {tab.name === "Train" ? (
-        <View className="mt-6 self-stretch">
-          <ListSection>
-            <ExerciseLibraryRow />
-          </ListSection>
-        </View>
-      ) : null}
       {tab.name === "You" ? (
         <View className="mt-6 self-stretch">
           <ListSection>
@@ -62,7 +57,10 @@ function TabRoot({ tab }: { readonly tab: Tab }) {
 
 export function TabNavigator() {
   return (
-    <Tabs.Navigator screenOptions={{ headerShown: false }}>
+    <Tabs.Navigator
+      screenOptions={{ headerShown: false }}
+      tabBar={(props) => <WorkoutTabBar {...props} />}
+    >
       {TABS.map((tab) => (
         <Tabs.Screen
           key={tab.name}
