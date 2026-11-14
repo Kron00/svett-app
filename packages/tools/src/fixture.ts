@@ -27,6 +27,14 @@ export const decodeCoachFixture = Schema.decodeUnknownSync(Schema.fromJsonString
 
 export const FIXTURE_CONVERSATION = ConversationId.make("019a0000-0000-7000-8000-000000000001");
 
+const openOn = (driver: ReturnType<typeof openNodeDatabase>["driver"], now: number) => {
+  const clock = manualClock(now);
+  const runtime = ManagedRuntime.make(
+    Layer.provideMerge(databaseLayer(driver, Ids.layerSeeded(7)), clock.layer),
+  );
+  return { runtime, clock };
+};
+
 /**
  * The generated 300-workout database in memory, with every repository, a clock at `now`, and the
  * same seeded IDs each time.
@@ -34,9 +42,8 @@ export const FIXTURE_CONVERSATION = ConversationId.make("019a0000-0000-7000-8000
 export const openFixtureDatabase = async (now: number) => {
   const { driver } = openNodeDatabase();
   await buildFixture(driver);
-  const clock = manualClock(now);
-  const runtime = ManagedRuntime.make(
-    Layer.provideMerge(databaseLayer(driver, Ids.layerSeeded(7)), clock.layer),
-  );
-  return { runtime, clock };
+  return openOn(driver, now);
 };
+
+/** A database in memory with only the exercise library, for tests that add their own rows. */
+export const openEmptyDatabase = (now: number) => openOn(openNodeDatabase().driver, now);

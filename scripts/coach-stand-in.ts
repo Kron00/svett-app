@@ -181,12 +181,17 @@ const scriptedTurn = (request: ResponsesRequest, number: number): Turn => {
   }
   const read = lastOutput(request) as {
     exercise: string;
-    best: Array<{ day: string; workout: string; weightKg: number; reps: number }>;
+    best: Array<{
+      day: string;
+      workout: { userWritten: string };
+      weightKg: number;
+      reps: number;
+    }>;
   };
   const best = read.best[0]!;
   return {
     kind: "text",
-    text: `Your best squat set last month was ${best.weightKg} kg for ${best.reps} reps, on ${best.day} in your ${best.workout} workout. That was your ${read.exercise}.`,
+    text: `Your best squat set last month was ${best.weightKg} kg for ${best.reps} reps, on ${best.day} in your ${best.workout.userWritten} workout. That was your ${read.exercise}.`,
   };
 };
 

@@ -38,7 +38,7 @@ export const trainingSummary = (context: ToolContext) => {
       const [best] = rankBestSets(sets, 1);
       if (Option.isNone(exercise) || best === undefined) continue;
       lifts.push(
-        `- ${exercise.value.name}: best ${best.weightKg ?? 0} kg x ${best.reps ?? 0} on ${day(best.startedAt)}`,
+        `- ${JSON.stringify(exercise.value.name)}: best ${best.weightKg ?? 0} kg x ${best.reps ?? 0} on ${day(best.startedAt)}`,
       );
     }
     const measurements = yield* (yield* MeasurementRepository).list();
@@ -49,7 +49,7 @@ export const trainingSummary = (context: ToolContext) => {
       `Workouts in the last ${RECENT_DAYS} days (${workouts.length}):`,
       ...workouts.map(
         (workout) =>
-          `- ${day(workout.startedAt)} ${workout.title}: ${workout.exercises} exercises, ${workout.workingSets} working sets, ${Math.round(workout.durationS / 60)} min`,
+          `- ${day(workout.startedAt)} ${JSON.stringify(workout.title)}: ${workout.exercises} exercises, ${workout.workingSets} working sets, ${Math.round(workout.durationS / 60)} min`,
       ),
       `Best set of the most logged lifts in the last ${LIFT_DAYS} days:`,
       ...lifts,

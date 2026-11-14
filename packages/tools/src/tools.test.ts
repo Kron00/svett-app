@@ -1,8 +1,16 @@
-import { libraryExerciseId } from "@svett/core";
+import {
+  ActivityRepository,
+  DurationSeconds,
+  EpochMillis,
+  ExerciseRepository,
+  libraryExerciseId,
+  MADE_HERE,
+} from "@svett/core";
+import { Effect } from "effect";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 
-import { openFixtureDatabase } from "./fixture.ts";
-import { MAX_TOOL_OUTPUT, READ_TOOLS } from "./tools.ts";
+import { openEmptyDatabase, openFixtureDatabase } from "./fixture.ts";
+import { MAX_SOURCE, MAX_TOOL_OUTPUT, READ_TOOLS, runToolCall, type ToolResult } from "./tools.ts";
 
 const NOW = Date.UTC(2026, 10, 13, 17);
 const context = { offsetMinutes: -420 };
@@ -14,12 +22,44 @@ beforeAll(async () => {
 }, 120_000);
 afterAll(() => database.runtime.dispose());
 
-const call = async (name: string, input: unknown) => {
-  const tool = READ_TOOLS.find((each) => each.name === name)!;
-  const result = await database.runtime.runPromise(
-    tool.execute(typeof input === "string" ? input : JSON.stringify(input), context),
+type Runtime = Awaited<ReturnType<typeof openFixtureDatabase>>["runtime"];
+
+const parsed = (result: ToolResult) => ({
+  ...result,
+  json: JSON.parse(result.output) as Record<string, any>,
+});
+
+const callOn = async (runtime: Runtime, name: string, input: unknown) =>
+  parsed(
+    await runtime.runPromise(
+      runToolCall(name, typeof input === "string" ? input : JSON.stringify(input), context),
+    ),
   );
-  return { ...result, json: JSON.parse(result.output) as Record<string, any> };
+
+const call = (name: string, input: unknown) => callOn(database.runtime, name, input);
+
+const properties = (name: string) =>
+  (READ_TOOLS.find((tool) => tool.name === name)!.definition.parameters as any).properties;
+
+const setOf = (weightKg: number) => ({
+  setType: "normal" as const,
+  weightKg,
+  reps: 5,
+  durationS: null,
+  distanceM: null,
+  rpe: null,
+});
+
+/** Reads page after page, from `start` until a page names no next one. */
+const allPages = async <T>(
+  start: number | null,
+  page: (
+    start: number,
+  ) => Promise<{ readonly items: ReadonlyArray<T>; readonly next: number | null }>,
+): Promise<ReadonlyArray<T>> => {
+  if (start === null) return [];
+  const { items, next } = await page(start);
+  return [...items, ...(await allPages(next, page))];
 };
 
 describe("the read tools", () => {
@@ -70,9 +110,15 @@ describe("the read tools", () => {
     const listed = await call("list_workouts", { from: "2026-10-01", to: "2026-10-31", limit: 1 });
     const [first] = listed.json["workouts"];
     const { json, source } = await call("get_workout", { workoutId: first.id });
-    expect(json).toMatchObject({ day: first.day, title: first.title });
+    expect(json).toMatchObject({
+      day: first.day,
+      title: first.title,
+      totalExercises: first.exercises,
+      truncated: false,
+      nextExerciseStart: null,
+    });
     expect(json["exercises"].length).toBe(first.exercises);
-    expect(source).toBe(`Workout "${first.title}" on ${first.day}`);
+    expect(source).toBe(`Workout "${first.title.userWritten}" on ${first.day}`);
   });
 
   it("gives the best squat sets of a month, heaviest first, with no warm-up", async () => {
@@ -117,12 +163,10 @@ describe("the read tools", () => {
 
   it("lists the saved routines with their folder", async () => {
     const { json } = await call("list_routines", {});
-    expect(json["routines"].map((routine: { title: string }) => routine.title)).toEqual([
-      "Push",
-      "Pull",
-      "Legs",
-    ]);
-    expect(json["routines"][2]).toMatchObject({ folder: "Push pull legs" });
+    expect(
+      json["routines"].map((routine: { title: { userWritten: string } }) => routine.title),
+    ).toEqual([{ userWritten: "Push" }, { userWritten: "Pull" }, { userWritten: "Legs" }]);
+    expect(json["routines"][2]).toMatchObject({ folder: { userWritten: "Push pull legs" } });
     expect(json["routines"][2].exercises[0]).toEqual({ name: "Barbell Squat", sets: 3 });
   });
 
@@ -149,11 +193,19 @@ describe("the read tools", () => {
     expect((await call("list_workouts", { from: "2026-02-30", to: "2026-03-01" })).json).toEqual({
       error: "from and to must be real days as YYYY-MM-DD",
     });
+    const missing = "019a0000-0000-7000-8000-000000000000";
     expect(
-      (await call("best_sets", { exerciseId: "squat", from: "2026-10-01", to: "2026-10-31" })).json,
-    ).toEqual({
-      error: "no exercise has the id squat",
+      (await call("best_sets", { exerciseId: missing, from: "2026-10-01", to: "2026-10-31" })).json,
+    ).toEqual({ error: `no exercise has the id ${missing}` });
+    const notAnId = await call("best_sets", {
+      exerciseId: "squat",
+      from: "2026-10-01",
+      to: "2026-10-31",
     });
+    expect(notAnId.json["error"]).toEqual(expect.any(String));
+    expect(
+      (await call("list_workouts", { from: "2000-01-01", to: "2026-10-31" })).json["error"],
+    ).toBe("a range covers at most ten years");
     expect((await call("get_workout", { workoutId: SQUAT })).json).toEqual({
       error: `no workout has the id ${SQUAT}`,
     });
@@ -188,5 +240,129 @@ describe("the read tools", () => {
     for (const workout of shifted) {
       expect(localDays.get(workout.id)! < workout.day).toBe(true);
     }
+  });
+});
+
+describe("input and output bounds", () => {
+  const long = "x".repeat(900);
+  const huge = "x".repeat(100_000);
+
+  it("keeps every refusal and source short, however long the input", async () => {
+    const results = [
+      await call("get_workout", { workoutId: long }),
+      await call("get_workout", { workoutId: huge }),
+      await call("get_workout", `{"workoutId": "${huge}"`),
+      await call("search_exercises", { query: long }),
+      await call("best_sets", { exerciseId: long, from: "2026-10-01", to: "2026-10-31" }),
+      await call("list_workouts", { from: long, to: "2026-10-31" }),
+      await call(huge, {}),
+      await call(long, {}),
+    ];
+    for (const result of results) {
+      expect(result.json["error"]).toEqual(expect.any(String));
+      expect(result.output.length).toBeLessThan(400);
+      expect(result.source.length).toBeLessThanOrEqual(MAX_SOURCE);
+      expect(result.output).not.toContain("x".repeat(400));
+    }
+    expect((await call("get_workout", { workoutId: huge })).json).toEqual({
+      error: "the arguments are too long",
+    });
+    expect((await call(long, {})).source).toMatch(/^x+… \(not read: /);
+  });
+
+  it("describes every id argument as a UUID and every text argument with a length limit", () => {
+    expect(properties("get_workout").workoutId.format).toBe("uuid");
+    expect(properties("best_sets").exerciseId.format).toBe("uuid");
+    expect(properties("exercise_history").exerciseId.format).toBe("uuid");
+    expect(properties("search_exercises").query.maxLength).toBe(60);
+    expect(properties("list_workouts").from.pattern).toEqual(expect.any(String));
+  });
+});
+
+describe("a workout longer than one answer", () => {
+  let small: ReturnType<typeof openEmptyDatabase>;
+  let workoutId: string;
+  const EXERCISES = 25;
+  const FIRST_SETS = 30;
+
+  beforeAll(async () => {
+    small = openEmptyDatabase(NOW);
+    workoutId = await small.runtime.runPromise(
+      Effect.gen(function* () {
+        const library = (yield* (yield* ExerciseRepository).list).slice(0, EXERCISES);
+        return yield* (yield* ActivityRepository).create({
+          kind: "strength",
+          startedAt: EpochMillis.make(NOW - 7_200_000),
+          durationS: DurationSeconds.make(7_000),
+          title: "Everything",
+          notes: "n".repeat(600),
+          energyKcal: null,
+          audience: "only_you",
+          hiddenFields: [],
+          origin: MADE_HERE,
+          exercises: library.map((exercise, index) => ({
+            exerciseId: exercise.id,
+            supersetGroup: null,
+            notes: "",
+            sets: Array.from({ length: index === 0 ? FIRST_SETS : 2 }, (_, at) => setOf(at + 1)),
+          })),
+          track: null,
+        });
+      }),
+    );
+  });
+  afterAll(() => small.runtime.dispose());
+
+  const read = (input: Record<string, number>) =>
+    callOn(small.runtime, "get_workout", { workoutId, ...input });
+
+  it("says what it left out instead of looking complete", async () => {
+    const { json, output } = await read({});
+    expect(output.length).toBeLessThan(MAX_TOOL_OUTPUT / 2);
+    expect(json).toMatchObject({
+      totalExercises: EXERCISES,
+      truncated: true,
+      nextExerciseStart: 8,
+      notesTruncated: true,
+    });
+    expect(json["exercises"]).toHaveLength(8);
+    expect(json["exercises"][0]).toMatchObject({
+      index: 0,
+      totalSets: FIRST_SETS,
+      nextSetStart: 12,
+    });
+    expect(json["exercises"][0].sets).toHaveLength(12);
+    expect(json["exercises"][1]).toMatchObject({ index: 1, totalSets: 2, nextSetStart: null });
+  });
+
+  it("reads every exercise and every set through its paging arguments", async () => {
+    const indexes = await allPages(0, async (start) => {
+      const { json } = await read({ exerciseStart: start });
+      return {
+        items: json["exercises"].map((exercise: { index: number }) => exercise.index) as number[],
+        next: json["nextExerciseStart"],
+      };
+    });
+    expect(indexes).toEqual(Array.from({ length: EXERCISES }, (_, index) => index));
+
+    const weights = await allPages(0, async (setStart) => {
+      const { json } = await read(setStart === 0 ? {} : { exerciseStart: 0, setStart });
+      if (setStart > 0) expect(json["exercises"]).toHaveLength(1);
+      const [first] = json["exercises"];
+      return {
+        items: first.sets.map((each: { weightKg: number }) => each.weightKg) as number[],
+        next: first.nextSetStart,
+      };
+    });
+    expect(weights).toEqual(Array.from({ length: FIRST_SETS }, (_, index) => index + 1));
+  });
+
+  it("refuses a start past the end", async () => {
+    expect((await read({ exerciseStart: EXERCISES })).json["error"]).toBe(
+      `the workout has ${EXERCISES} exercises, so exerciseStart is at most ${EXERCISES - 1}`,
+    );
+    expect((await read({ exerciseStart: 0, setStart: FIRST_SETS })).json["error"]).toBe(
+      `exercise 0 has ${FIRST_SETS} sets, so setStart is at most ${FIRST_SETS - 1}`,
+    );
   });
 });
