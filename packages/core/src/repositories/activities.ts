@@ -403,17 +403,17 @@ const makeActivityRepository = Effect.gen(function* () {
       ),
     );
 
+  /** Removes a set of the workout in progress. */
   const removeSet = (id: ActivitySetId) =>
     run(
-      Effect.gen(function* () {
-        const removed = yield* softDeleteRows(
-          TABLES.activitySet,
-          "id = ?",
-          [id],
-          yield* currentTime,
-        );
-        if (removed === 0) return yield* new RowNotFoundError({ table: "activity_set", id });
-      }),
+      sql.transaction(
+        Effect.gen(function* () {
+          const set = yield* selectById(TABLES.activitySet, id);
+          if (Option.isNone(set)) return yield* new RowNotFoundError({ table: "activity_set", id });
+          yield* inProgressExercise(set.value.activityExerciseId);
+          yield* softDeleteRows(TABLES.activitySet, "id = ?", [id], yield* currentTime);
+        }),
+      ),
     );
 
   /**
@@ -438,12 +438,11 @@ const makeActivityRepository = Effect.gen(function* () {
           );
           if (!plan.ok) return yield* new NothingDoneError({ problem: plan.problem });
           const at = yield* currentTime;
-          const left = [...plan.dropSets];
-          if (left.length > 0) {
+          if (plan.dropSets.length > 0) {
             yield* softDeleteRows(
               TABLES.activitySet,
               "id IN (SELECT value FROM json_each(?))",
-              [JSON.stringify(left)],
+              [JSON.stringify(plan.dropSets)],
               at,
             );
           }

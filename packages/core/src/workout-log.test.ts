@@ -1,4 +1,4 @@
-import { Effect, Layer, ManagedRuntime, Option } from "effect";
+import { Effect, Exit, Layer, ManagedRuntime, Option } from "effect";
 import { describe, expect, it } from "vite-plus/test";
 
 import { databaseLayer } from "./database.ts";
@@ -234,13 +234,29 @@ describe("logging a workout", () => {
         const activities = yield* ActivityRepository;
         const id = yield* lastWeek;
         const detail = Option.getOrThrow(yield* activities.get(id));
-        yield* activities.addSet(detail.exercises[0]!.exercise.id, nextSet([]));
+        const exercise = detail.exercises[0]!;
+        return yield* Effect.all(
+          [
+            Effect.exit(activities.addSet(exercise.exercise.id, nextSet([]))),
+            Effect.exit(activities.removeSet(exercise.sets[0]!.id)),
+            Effect.exit(activities.removeExercise(exercise.exercise.id)),
+          ],
+          { concurrency: 1 },
+        );
       }),
     );
-    expect(exit).toMatchObject({
-      _tag: "Failure",
-      cause: { reasons: [{ error: { _tag: "RowNotFoundError", table: "activity" } }] },
-    });
+    expect(Exit.isSuccess(exit)).toBe(true);
+    for (const refused of Exit.isSuccess(exit) ? exit.value : []) {
+      expect(refused).toMatchObject({
+        _tag: "Failure",
+        cause: { reasons: [{ error: { _tag: "RowNotFoundError", table: "activity" } }] },
+      });
+    }
+    expect(
+      await database.runtime.runPromise(
+        Effect.flatMap(Effect.service(ActivityRepository), (activities) => activities.counts),
+      ),
+    ).toEqual({ activities: 1, sets: 3 });
   });
 
   it("logs an exercise the next time by the fields it was changed to", async () => {
