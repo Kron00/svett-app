@@ -422,19 +422,24 @@ export const planImport = (
     }
     return [...keys];
   };
-  const withRequires = planned.map((item) => {
+  const requires = new Map(
+    planned.flatMap((item) =>
+      item.status === "unchanged" ? [] : [[item.summary.key, requiresOf(item.incoming)] as const],
+    ),
+  );
+  const required = new Set([...requires.values()].flat());
+  const items = planned.map((item): PlannedItem => {
     if (item.status === "unchanged") return item;
-    const { restorable: _, ...rest } = item;
-    return { ...rest, requires: requiresOf(item.incoming) };
+    const key = item.summary.key;
+    return {
+      status: required.has(key) ? "restore" : item.status,
+      incoming: item.incoming,
+      writes: item.writes,
+      replaced: item.replaced,
+      summary: item.summary,
+      requires: requires.get(key) ?? [],
+    };
   });
-  const required = new Set(
-    withRequires.flatMap((item) => (item.status === "unchanged" ? [] : item.requires)),
-  );
-  const items: ReadonlyArray<PlannedItem> = withRequires.map((item) =>
-    item.status !== "unchanged" && required.has(item.summary.key)
-      ? { ...item, status: "restore" }
-      : item,
-  );
   const added = TABLE_KEYS.map((table) => ({
     table,
     count: items.filter(
