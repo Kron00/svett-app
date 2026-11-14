@@ -6,7 +6,7 @@ import {
   type RateLimitGroup,
   takeToken,
 } from "@svett/core";
-import { Clock, Context, Data, Effect, Layer } from "effect";
+import { Clock, Context, Data, Effect, Layer, Option } from "effect";
 import type { SqlError } from "effect/sql/SqlError";
 
 /** The account was deleted. Nothing it sends is stored again. */
@@ -18,18 +18,70 @@ export class RateLimited extends Data.TaggedError("RateLimited")<{
   readonly retryAfterSeconds: number;
 }> {}
 
+/** Another account a write names is gone, or is being deleted right now. */
+export class AccountGone extends Data.TaggedError("AccountGone")<{}> {}
+
 /**
  * The first key of every account lock. PostgreSQL keeps two-key advisory locks apart from the
  * one-key locks the backups take, so the two never meet.
  */
 const ACCOUNT_LOCK_SPACE = 5_150;
 
+/** The accounts whose locks the running request's transaction holds. */
+class HeldAccounts extends Context.Service<HeldAccounts, Set<string>>()(
+  "svett/server/HeldAccounts",
+) {}
+
+/**
+ * Takes the lock of `account` alone, inside the running transaction, as deleting it does.
+ * It waits for every request that holds the lock shared.
+ */
+export const lockAlone = (sql: PgClient.PgClient, account: string) =>
+  sql`select pg_advisory_xact_lock(${ACCOUNT_LOCK_SPACE}, hashtext(${account}))`;
+
+/**
+ * Holds the lock of `other`, an account the running write names, until its transaction ends,
+ * then checks that the account still exists and was not deleted. A deletion of `other` then
+ * either finished before, and this fails with AccountGone, or waits for the write to commit
+ * and deletes what it wrote. Call it before the write takes any row lock.
+ *
+ * A request waits for account locks only in ascending order of account ID. One it would have
+ * to wait for out of order, below a lock it already holds, is tried instead, and only a
+ * deletion of that account in progress holds it, so the write fails with AccountGone. No two
+ * transactions can then wait for each other's account locks.
+ */
+export const lockOther = (sql: PgClient.PgClient, other: string) =>
+  Effect.gen(function* () {
+    const held = Option.getOrElse(
+      yield* Effect.serviceOption(HeldAccounts),
+      () => new Set<string>(),
+    );
+    if (!held.has(other)) {
+      if ([...held].every((account) => account < other)) {
+        yield* sql`select pg_advisory_xact_lock_shared(${ACCOUNT_LOCK_SPACE}, hashtext(${other}))`;
+      } else {
+        const [tried] = yield* sql<{ readonly locked: boolean }>`
+          select pg_try_advisory_xact_lock_shared(${ACCOUNT_LOCK_SPACE}, hashtext(${other}))
+            as locked
+        `;
+        if (tried?.locked !== true) return yield* new AccountGone();
+      }
+      held.add(other);
+    }
+    const [present] = yield* sql`
+      select 1 from account a
+      where a.id = ${other} and not exists (select 1 from deleted_account d where d.id = a.id)
+    `;
+    if (present === undefined) return yield* new AccountGone();
+  });
+
 export interface SafetyShape {
   /**
    * Runs `effect` for `account` in one transaction that holds the account's lock shared, after
    * checking that the account was not deleted and taking a token of `group` when it names one.
    * Deleting the account takes the same lock alone, so a request either finishes before the
-   * deletion starts or sees the account gone, and nothing it writes outlives the deletion. The
+   * deletion starts or sees the account gone, and nothing it writes outlives the deletion. A
+   * write that names another account takes that account's lock too, through `lockOther`. The
    * token counts whether or not the request succeeds.
    */
   readonly asAccount: <A, E, R>(
@@ -100,17 +152,14 @@ export class Safety extends Context.Service<Safety, SafetyShape>()("svett/server
                   if (group !== undefined) yield* take(account, group);
                   // A refused request still spent its token, so the transaction commits whatever
                   // the request answers. Each write that spans several rows has its own savepoint.
-                  return yield* Effect.exit(effect);
+                  return yield* Effect.exit(
+                    Effect.provideService(effect, HeldAccounts, new Set([account])),
+                  );
                 }),
               )
               .pipe(Effect.flatMap((exit) => exit)),
           exclusively: (account, effect) =>
-            sql.withTransaction(
-              Effect.andThen(
-                sql`select pg_advisory_xact_lock(${ACCOUNT_LOCK_SPACE}, hashtext(${account}))`,
-                effect,
-              ),
-            ),
+            sql.withTransaction(Effect.andThen(lockAlone(sql, account), effect)),
         });
       }),
     );

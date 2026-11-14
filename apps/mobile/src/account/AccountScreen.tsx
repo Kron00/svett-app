@@ -28,7 +28,7 @@ import { EmptyState } from "../ui/EmptyState";
 import { TextField } from "../ui/TextField";
 import { chatGPTEmail } from "./chatgpt-email";
 import { CLERK_PUBLISHABLE_KEY } from "./config";
-import { deleteAccount } from "./delete";
+import { deleteAccount, deletionPending, PENDING_DELETION } from "./delete";
 import { useEmailCode } from "./email-code";
 import { declineMove, moveIntoAccount, pendingMoveOffer, resumeMove } from "./move";
 import { syncNow, useSyncStatus } from "./sync";
@@ -282,12 +282,21 @@ const ERASE_MESSAGE =
  */
 function DeleteAccount({ accountId }: { readonly accountId: string }) {
   const { getToken, signOut } = useAuth();
-  const [state, setState] = useState<Deletion>({ step: "idle" });
   const owner = ownerOf(accountId);
+  const [state, setState] = useState<Deletion>(() =>
+    owner.kind === "account" && deletionPending(owner.accountId)
+      ? { step: "failed", problem: PENDING_DELETION }
+      : { step: "idle" },
+  );
   const run = (keep: boolean) => {
     if (owner.kind !== "account") return;
     setState({ step: "deleting" });
-    void deleteAccount(owner.accountId, keep, () => getToken(), signOut).then(
+    void deleteAccount(
+      owner.accountId,
+      keep,
+      () => getToken(),
+      () => signOut(),
+    ).then(
       (problem) => {
         if (problem !== undefined) setState({ step: "failed", problem });
       },

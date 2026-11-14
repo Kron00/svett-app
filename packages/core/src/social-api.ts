@@ -97,6 +97,16 @@ export type BlockList = typeof BlockList.Type;
 export const AccountDeleted = Schema.Struct({ deleted: Schema.Literal(true) });
 export type AccountDeleted = typeof AccountDeleted.Type;
 
+/**
+ * A secret the phone makes for one deletion and sends with it. The deletion ends the session,
+ * so the phone asks with the receipt alone whether the deletion happened.
+ */
+export const DeletionReceipt = Schema.String.check(Schema.isPattern(/^[A-Za-z0-9_-]{43,128}$/));
+
+/** Whether the server deleted an account with the receipt the phone asked about. */
+export const DeletionAnswer = Schema.Struct({ deleted: Schema.Boolean });
+export type DeletionAnswer = typeof DeletionAnswer.Type;
+
 const Done = Schema.Struct({});
 
 /** The error codes the server answers social requests with, beside sign-in's. */
@@ -199,12 +209,15 @@ export const httpSocialApi = (options: HttpSocialOptions) => {
     method: "GET" | "PUT" | "POST" | "DELETE",
     path: string,
     body?: unknown,
+    signedIn = true,
   ) =>
     Effect.gen(function* () {
-      const token = yield* Effect.tryPromise({
-        try: options.token,
-        catch: () => failed("offline", "Could not read the session."),
-      });
+      const token = signedIn
+        ? yield* Effect.tryPromise({
+            try: options.token,
+            catch: () => failed("offline", "Could not read the session."),
+          })
+        : undefined;
       if (token === null) return yield* failed("signed_out", "Nobody is signed in.");
       const response = yield* Effect.tryPromise({
         try: (interrupted) => {
@@ -217,7 +230,7 @@ export const httpSocialApi = (options: HttpSocialOptions) => {
               body: body === undefined ? null : JSON.stringify(body),
               signal: deadline.signal,
               headers: {
-                authorization: `Bearer ${token}`,
+                ...(token === undefined ? {} : { authorization: `Bearer ${token}` }),
                 ...(body === undefined ? {} : { "content-type": "application/json" }),
               },
             })
@@ -346,8 +359,14 @@ export const httpSocialApi = (options: HttpSocialOptions) => {
     /** Ends this account's follow of the signed-in account, without blocking it. */
     removeFollower: (username: string) =>
       call(Done, "DELETE", `/v1/followers/${encodeURIComponent(username)}`),
-    /** Deletes the signed-in account, every row it has on the server, and every session. */
-    deleteAccount: () => call(AccountDeleted, "DELETE", "/v1/me"),
+    /**
+     * Deletes the signed-in account, every row it has on the server, and every session.
+     * `receipt` is the deletion's `DeletionReceipt`, which `deletionHappened` asks about later.
+     */
+    deleteAccount: (receipt: string) => call(AccountDeleted, "DELETE", "/v1/me", { receipt }),
+    /** Whether the server deleted an account with this receipt. It needs no session. */
+    deletionHappened: (receipt: string) =>
+      call(DeletionAnswer, "GET", `/v1/deletions/${encodeURIComponent(receipt)}`, undefined, false),
   };
 };
 

@@ -17,6 +17,8 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite
 
 import { currentDatabase, switchOwner } from "../data/current";
 import { AccountScreen } from "./AccountScreen";
+import { finishPendingDeletion } from "./delete";
+import { resumeMove } from "./move";
 
 type Runtime = ManagedRuntime.ManagedRuntime<ActivityRepository, unknown>;
 type AlertButton = {
@@ -36,6 +38,17 @@ const app = vi.hoisted(() => ({
   }>,
   sent: [] as Array<string>,
   answer: { status: 200, body: { deleted: true } as unknown },
+  /** The receipts of the deletions the stand-in server carried out. */
+  receipts: new Set<string>(),
+  /** What the phone's journal held each time it sent a deletion. */
+  journalAtSend: [] as Array<string | undefined>,
+  /**
+   * A deletion the network loses before the server gets it, or one whose answer is lost with
+   * the phone offline from then on, as when svett stops before the answer arrives.
+   */
+  lose: undefined as "request" | "answer" | undefined,
+  /** Makes the next file deletion fail, as a crash part way through leaving would. */
+  crashOnDelete: false,
   signedOut: 0,
   clerk: {
     isLoaded: true,
@@ -61,6 +74,9 @@ vi.mock("react-native", () => ({
   useWindowDimensions: () => ({ width: 440, height: 956, scale: 3, fontScale: 1 }),
 }));
 vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
+vi.mock("expo-crypto", () => ({
+  getRandomValues: (bytes: Uint8Array<ArrayBuffer>) => globalThis.crypto.getRandomValues(bytes),
+}));
 vi.mock("expo-glass-effect", () => ({
   GlassView: "GlassView",
   isLiquidGlassAvailable: () => false,
@@ -70,6 +86,10 @@ vi.mock("uniwind", () => ({ useCSSVariable: () => "#000000" }));
 vi.mock("expo-sqlite", () => ({
   openDatabaseAsync: async () => ({ closeAsync: async () => {} }),
   deleteDatabaseAsync: async (name: string) => {
+    if (app.crashOnDelete) {
+      app.crashOnDelete = false;
+      throw new Error("The app stopped");
+    }
     app.deletedFiles.push(name);
   },
 }));
@@ -160,6 +180,11 @@ beforeEach(async () => {
   app.sent = [];
   app.signedOut = 0;
   app.answer = { status: 200, body: { deleted: true } };
+  app.receipts = new Set();
+  app.journalAtSend = [];
+  app.lose = undefined;
+  app.crashOnDelete = false;
+  app.clerk.getToken = async () => "session-token";
   // The phone's own data was kept apart on the first sign-in.
   app.storage.set("svett.moveJournal", encodeMoveJournal({ state: "declined" }));
   app.clerk.userId = FIRST;
@@ -167,8 +192,23 @@ beforeEach(async () => {
     app.signedOut++;
     app.clerk.userId = null;
   };
-  vi.stubGlobal("fetch", async (url: string, init: { method: string }) => {
-    app.sent.push(`${init.method} ${new URL(url).pathname}`);
+  vi.stubGlobal("fetch", async (url: string, init: { method: string; body: string | null }) => {
+    const path = new URL(url).pathname;
+    const asked = path.match(/^\/v1\/deletions\/(.+)$/)?.[1];
+    if (asked !== undefined) {
+      app.sent.push("GET /v1/deletions/<receipt>");
+      if (app.lose === "answer") throw new TypeError("Network request failed");
+      return new Response(JSON.stringify({ deleted: app.receipts.has(asked) }), { status: 200 });
+    }
+    app.sent.push(`${init.method} ${path}`);
+    if (init.method === "DELETE" && path === "/v1/me") {
+      app.journalAtSend.push(app.storage.get("svett.moveJournal"));
+      if (app.lose === "request") throw new TypeError("Network request failed");
+      if (app.answer.status === 200) {
+        app.receipts.add((JSON.parse(init.body ?? "{}") as { receipt: string }).receipt);
+      }
+      if (app.lose === "answer") throw new TypeError("Network request failed");
+    }
     return new Response(JSON.stringify(app.answer.body), { status: app.answer.status });
   });
   switchOwner({ kind: "account", accountId: FIRST });
@@ -228,6 +268,14 @@ const answerAlert = (label: string) =>
   });
 
 const accountFile = `svett-account-${FIRST}.db`;
+
+/** The next launch, which finishes what the journal says is left, as AccountProvider does. */
+const launch = async () => {
+  await resumeMove();
+  return finishPendingDeletion(app.clerk.getToken, async (account) => {
+    if (app.clerk.userId === account) await app.clerk.signOut();
+  });
+};
 
 describe("deleting the account on the phone", () => {
   it("asks whether to keep a copy or erase it, and asks once more before deleting", async () => {
@@ -312,5 +360,80 @@ describe("deleting the account on the phone", () => {
 
     expect(await titles(phone)).toEqual(["First's run", "Phone run"]);
     expect(app.deletedFiles).toEqual([accountFile]);
+  });
+
+  describe.each([
+    { keep: true, button: "delete-keep-copy", titles: ["First's run", "Phone run"] },
+    { keep: false, button: "delete-erase-copy", titles: ["Phone run"] },
+  ])("ends as the person chose, keep a copy: $keep,", ({ keep, button, titles: kept }) => {
+    /** Presses Delete account with the choice, and waits until the phone says how it went. */
+    const choose = async () => {
+      const root = await renderAccount();
+      await press(root, "delete-account");
+      await press(root, button);
+      await answerAlert("Delete account");
+      await until(() => has(root, "sign-in-problem") || app.signedOut === 1, "an answer");
+      return root;
+    };
+
+    const endedAsChosen = async () => {
+      expect(app.signedOut).toBe(1);
+      expect(currentDatabase().owner).toEqual(ANONYMOUS);
+      expect(await titles(phone)).toEqual(kept);
+      expect(app.deletedFiles).toEqual([accountFile]);
+      expect(app.storage.get("svett.moveJournal")).toBeUndefined();
+    };
+
+    it("when the request never reached the server, as after a crash before the send", async () => {
+      app.lose = "request";
+      const root = await choose();
+
+      // The choice was saved before anything was sent.
+      expect(JSON.parse(app.journalAtSend[0] ?? "null")).toMatchObject({
+        state: "deleting",
+        account: FIRST,
+        keep,
+      });
+      expect(app.receipts.size).toBe(0);
+      expect(texts(root)).toContain("finishes deleting your account the next time it opens");
+      expect(app.deletedFiles).toEqual([]);
+
+      app.lose = undefined;
+      expect(await launch()).toBeUndefined();
+
+      expect(app.sent.filter((each) => each === "DELETE /v1/me")).toHaveLength(2);
+      await endedAsChosen();
+    });
+
+    it("when the server deleted the account and its answer was lost", async () => {
+      app.lose = "answer";
+      await choose();
+      expect(app.receipts.size).toBe(1);
+      expect(app.deletedFiles).toEqual([]);
+      expect(currentDatabase().owner).toEqual({ kind: "account", accountId: FIRST });
+
+      // The deletion ended the session, so the phone asks with the receipt alone.
+      app.lose = undefined;
+      app.clerk.getToken = async () => null;
+      expect(await launch()).toBeUndefined();
+
+      expect(app.sent.at(-1)).toBe("GET /v1/deletions/<receipt>");
+      await endedAsChosen();
+    });
+
+    it("after a crash part way through taking the data off the phone", async () => {
+      app.crashOnDelete = true;
+      const root = await choose();
+      expect(texts(root)).toContain("The deletion did not finish");
+      expect(JSON.parse(app.storage.get("svett.moveJournal") ?? "null")).toEqual({
+        state: "erasing",
+        account: FIRST,
+      });
+
+      expect(await launch()).toBeUndefined();
+
+      expect(app.sent).toEqual(["DELETE /v1/me"]);
+      await endedAsChosen();
+    });
   });
 });

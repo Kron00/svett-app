@@ -157,20 +157,33 @@ export const moveIntoAccount = (account: AccountId) =>
     }
   });
 
-/**
- * Finishes a move a crash cut short, into the account it named, whoever is signed in now, or
- * the keeping or erasing of a deleted account's data.
- */
+/** Finishes a move a crash cut short, into the account it named, whoever is signed in now. */
 export const resumeMove = () =>
   inTurn(async () => {
     const journal = storedMoveJournal();
-    const leaving = leavingAccount(journal) !== undefined;
-    if (!leaving && !anonymousDataLocked(journal)) return;
+    if (leavingAccount(journal) !== undefined || !anonymousDataLocked(journal)) return;
     try {
-      await Effect.runPromise(leaving ? finishLeave(leaveSteps) : finishMove(steps));
+      await Effect.runPromise(finishMove(steps));
     } finally {
       dataChanged();
     }
+  });
+
+/**
+ * Finishes taking a deleted account's data off the phone, as the person chose, after a crash
+ * part way. Gives back that account, or undefined when nothing was left to do.
+ */
+export const finishLeavingAccount = () =>
+  inTurn(async () => {
+    const account = leavingAccount(storedMoveJournal());
+    if (account === undefined) return undefined;
+    try {
+      switchOwner(ANONYMOUS);
+      await Effect.runPromise(finishLeave(leaveSteps));
+    } finally {
+      dataChanged();
+    }
+    return account;
   });
 
 /** The account starts empty, and the phone's own data stays for when nobody is signed in. */

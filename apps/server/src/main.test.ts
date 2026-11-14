@@ -5,11 +5,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { Redacted } from "effect";
+import { Effect, Layer, Redacted } from "effect";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
 
+import { DeletionLedger } from "./deletion-ledger.ts";
+import { PgTools } from "./pg-tools.ts";
+import { restoreBackup, restoreForUse } from "./restore.ts";
 import { type StandInIssuer, startStandInIssuer } from "./test-issuer.ts";
-import { startTestPostgres, type TestPostgres } from "./test-postgres.ts";
+import { rowsNaming, startTestPostgres, type TestPostgres } from "./test-postgres.ts";
 
 let postgres: TestPostgres;
 let issuer: StandInIssuer;
@@ -72,21 +75,22 @@ const startServer = async (env: Record<string, string>) => {
   };
   await waitUntilUp();
 
-  const call = async (method: string, path: string, token?: string) => {
+  const call = async (method: string, path: string, token?: string, body?: unknown) => {
+    const sent = body ?? (method === "PUT" ? { rows: [] } : undefined);
     const response = await fetch(`${base}${path}`, {
       method,
       headers: {
         "content-type": "application/json",
         ...(token === undefined ? {} : { authorization: `Bearer ${token}` }),
       },
-      ...(method === "PUT" ? { body: JSON.stringify({ rows: [] }) } : {}),
+      ...(sent === undefined ? {} : { body: JSON.stringify(sent) }),
       signal: AbortSignal.timeout(15_000),
     }).catch((error: unknown) => {
       throw new Error(`${method} ${path} got no answer: ${String(error)}\n${output}`);
     });
     return { status: response.status, body: (await response.json()) as unknown };
   };
-  return { call, output: () => output };
+  return { call, output: () => output, stop: () => server.kill("SIGKILL") };
 };
 
 const SIGN_IN_UNAVAILABLE = {
@@ -147,5 +151,103 @@ describe("the production server", { timeout: 90_000 }, () => {
       status: 200,
       body: { accountId: "user_alice" },
     });
+  });
+});
+
+const nothingLeft = (rows: Record<string, number>) =>
+  Object.values(rows).every((count) => count === 0);
+
+describe("the deletion ledger", { timeout: 120_000 }, () => {
+  it("deletes an account again after a restore from a backup taken before its deletion", async () => {
+    const n = ++databases;
+    const live = await postgres.createDatabase(`main_${n}`);
+    const backupDir = await mkdtemp(join(tmpdir(), "svett-main-"));
+    const env = {
+      NODE_ENV: "development",
+      CLERK_ISSUER: issuer.issuer,
+      CLERK_JWKS_URL: issuer.jwksUrl,
+      CLERK_SECRET_KEY: issuer.secretKey,
+      CLERK_API_URL: issuer.apiUrl,
+      DATABASE_URL: Redacted.value(live),
+      BACKUP_DIR: backupDir,
+    };
+    const [anna, ben] = [`user_ledger_anna_${n}`, `user_ledger_ben_${n}`];
+    const [held, bens] = await Promise.all([issuer.sessionToken(anna), issuer.sessionToken(ben)]);
+    const first = await startServer(env);
+    await first.call("PUT", "/v1/profile", held, { username: `anna${n}`, private: false });
+    await first.call("PUT", "/v1/profile", bens, { username: `ben${n}`, private: false });
+    await first.call("PUT", "/v1/rows", held, {
+      rows: [
+        {
+          table: "activity",
+          row: {
+            id: "0190a0b2-0000-7000-8000-000000000001",
+            updatedAt: 1,
+            deletedAt: null,
+            kind: "run",
+            startedAt: 1_790_000_000_000,
+            durationS: 1800,
+            title: "Anna's run",
+            notes: "",
+            energyKcal: null,
+            audience: "everyone",
+            hiddenFields: "[]",
+            source: "svett",
+            sourceId: null,
+            fingerprint: null,
+            importBatchId: null,
+          },
+        },
+      ],
+    });
+    await first.call("PUT", `/v1/profiles/anna${n}/follow`, bens, {});
+    await first.call("PUT", `/v1/profiles/ben${n}/follow`, held, {});
+    const before = await rowsNaming(live, anna);
+    expect(before).toMatchObject({ account: 1, account_row: 1, profile: 1, follow: 2 });
+
+    const backup = join(backupDir, "before-the-deletion.dump");
+    const tools = PgTools.layer(postgres.tools);
+    await Effect.runPromise(
+      Effect.flatMap(Effect.service(PgTools), (pg) => pg.dump(live, backup)).pipe(
+        Effect.provide(tools),
+      ),
+    );
+    const receipt = "c".repeat(64);
+    expect(await first.call("DELETE", "/v1/me", held, { receipt })).toEqual({
+      status: 200,
+      body: { deleted: true },
+    });
+    first.stop();
+
+    // `cli.ts restore` deletes the account again as it restores.
+    const restored = await postgres.createDatabase(`main_${++databases}`);
+    const again = await Effect.runPromise(
+      restoreForUse(backup, restored).pipe(
+        Effect.provide(Layer.merge(tools, DeletionLedger.layer(backupDir))),
+      ),
+    );
+    expect(again).toBe(1);
+    expect(nothingLeft(await rowsNaming(restored, anna))).toBe(true);
+
+    // A restore by hand brings the account back, until the server starts on it.
+    const byHand = await postgres.createDatabase(`main_${++databases}`);
+    await Effect.runPromise(restoreBackup(backup, byHand).pipe(Effect.provide(tools)));
+    expect(await rowsNaming(byHand, anna)).toEqual(before);
+    const restarted = await startServer({ ...env, DATABASE_URL: Redacted.value(byHand) });
+
+    expect(nothingLeft(await rowsNaming(byHand, anna))).toBe(true);
+    expect(await restarted.call("GET", "/v1/me", held)).toEqual({
+      status: 410,
+      body: { error: "account_deleted", message: expect.any(String) },
+    });
+    expect(await restarted.call("GET", `/v1/deletions/${receipt}`)).toEqual({
+      status: 200,
+      body: { deleted: true },
+    });
+    expect((await restarted.call("GET", `/v1/profiles/ben${n}`, bens)).body).toMatchObject({
+      followers: 0,
+      following: 0,
+    });
+    expect(restarted.output()).toContain("Deleted 1 accounts again from the deletion ledger");
   });
 });

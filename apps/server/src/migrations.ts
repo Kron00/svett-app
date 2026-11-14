@@ -167,7 +167,9 @@ export const MIGRATIONS: Record<string, Effect.Effect<void, unknown, SqlClient>>
   }),
   // A block works both ways, so each pair is read in both directions. A rate limit is a token
   // bucket per account and route group, kept here so it survives a restart and holds across
-  // servers. A deleted account's ID stays, so no later request or upload recreates it.
+  // servers. A deleted account's ID stays, so no later request or upload recreates it. A
+  // deletion's receipt is kept as a hash alone, so a phone whose session ended with the
+  // deletion can still ask whether it happened, and nobody else can.
   "6_safety": Effect.gen(function* () {
     const sql = yield* SqlClient;
     yield* sql`
@@ -193,6 +195,12 @@ export const MIGRATIONS: Record<string, Effect.Effect<void, unknown, SqlClient>>
     yield* sql`
       create table deleted_account (
         id text primary key,
+        deleted_at timestamptz not null default now()
+      )
+    `;
+    yield* sql`
+      create table deletion_receipt (
+        receipt_hash text primary key,
         deleted_at timestamptz not null default now()
       )
     `;

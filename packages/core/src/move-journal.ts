@@ -10,10 +10,26 @@ import { AccountId } from "./database.ts";
  * server whose data is leaving the phone's account file, copied to the phone's own database
  * first when the person kept a copy.
  */
-export const MoveJournal = Schema.Union([
+const SettledJournal = Schema.Union([
   Schema.Struct({ state: Schema.Literal("declined") }),
   Schema.Struct({ state: Schema.Literals(["copying", "cleaning", "moved"]), account: AccountId }),
   Schema.Struct({ state: Schema.Literals(["keeping", "erasing"]), account: AccountId }),
+]);
+
+/**
+ * `deleting` is saved before the phone asks the server to delete `account`, with the choice to
+ * keep a copy and the receipt sent with the request, so a crash or a lost answer still ends as
+ * the person chose. `before` is the journal it replaced, put back if the server refuses.
+ */
+export const MoveJournal = Schema.Union([
+  ...SettledJournal.members,
+  Schema.Struct({
+    state: Schema.Literal("deleting"),
+    account: AccountId,
+    keep: Schema.Boolean,
+    receipt: Schema.String,
+    before: Schema.NullOr(SettledJournal),
+  }),
 ]);
 export type MoveJournal = typeof MoveJournal.Type;
 
@@ -37,8 +53,10 @@ export const encodeMoveJournal = Schema.encodeSync(MoveJournalJson);
  * until the anonymous file is gone, its rows already belong to that account, so nobody else
  * may see them, not even someone signed out.
  */
-export const anonymousDataLocked = (journal: MoveJournal | undefined) =>
-  journal?.state === "copying" || journal?.state === "cleaning" || journal?.state === "keeping";
+export const anonymousDataLocked = (journal: MoveJournal | undefined): boolean =>
+  journal?.state === "deleting"
+    ? anonymousDataLocked(journal.before ?? undefined)
+    : journal?.state === "copying" || journal?.state === "cleaning" || journal?.state === "keeping";
 
 /** The deleted account whose data is still leaving the phone, if any. Its file stays closed. */
 export const leavingAccount = (journal: MoveJournal | undefined): AccountId | undefined =>
@@ -134,4 +152,99 @@ export const leaveAccount = <E>(steps: LeaveSteps<E>, account: AccountId, keep: 
   Effect.gen(function* () {
     yield* steps.record({ state: keep ? "keeping" : "erasing", account });
     return yield* finishLeave(steps);
+  });
+
+/** What the server answered a request to delete the account. */
+export type DeletionSent =
+  | { readonly kind: "deleted" }
+  /** The server answered, and did not delete the account. */
+  | { readonly kind: "refused"; readonly problem: string }
+  /** No answer says whether the server deleted it. */
+  | { readonly kind: "unknown"; readonly problem: string }
+  /** The server may have deleted the rows, but the sessions did not end, so send it again. */
+  | { readonly kind: "unfinished"; readonly problem: string };
+
+/** What a deletion's receipt says when the phone asks the server about it. */
+export type DeletionAsked = "deleted" | "not_deleted" | "unknown";
+
+/** What deleting the account does, beside the journal. Each step must be safe to run again. */
+export interface DeletionSteps<E> {
+  readonly read: Effect.Effect<MoveJournal | undefined, E>;
+  readonly record: (journal: MoveJournal) => Effect.Effect<void, E>;
+  readonly forget: Effect.Effect<void, E>;
+  /** Asks the server to delete the signed-in account, with the deletion's receipt. */
+  readonly send: (receipt: string) => Effect.Effect<DeletionSent, E>;
+  /** Asks the server whether it deleted an account with this receipt, with no session. */
+  readonly ask: (receipt: string) => Effect.Effect<DeletionAsked, E>;
+}
+
+export type DeletionOutcome =
+  | { readonly kind: "none" }
+  /** The server deleted the account. Its data now leaves the phone as `keep` says. */
+  | { readonly kind: "deleted"; readonly account: AccountId; readonly keep: boolean }
+  | { readonly kind: "refused"; readonly problem: string }
+  /** The deletion stays saved, and the next launch tries to finish it. */
+  | { readonly kind: "pending"; readonly problem: string };
+
+/**
+ * Finishes the deletion the journal holds. Run at every launch, it finishes one that a crash or
+ * a lost answer cut short. It sends the deletion again, which also finishes one whose sessions
+ * did not end, and when that does not say the account is gone it asks the server with the
+ * receipt, as the deletion ends the session the request needs. A refusal puts the journal back
+ * as it was only when the server says it deleted nothing. With nothing to finish it changes
+ * nothing.
+ */
+export const finishDeletion = <E>(steps: DeletionSteps<E>) =>
+  Effect.gen(function* () {
+    const journal = yield* steps.read;
+    if (journal?.state !== "deleting") return { kind: "none" } satisfies DeletionOutcome;
+    const deleted = {
+      kind: "deleted",
+      account: journal.account,
+      keep: journal.keep,
+    } satisfies DeletionOutcome;
+    const sent = yield* steps.send(journal.receipt);
+    if (sent.kind === "deleted") return deleted;
+    const asked = yield* steps.ask(journal.receipt);
+    // Sessions that did not end need the deletion sent again, so it stays saved.
+    if (asked === "deleted" && sent.kind !== "unfinished") return deleted;
+    if (asked === "not_deleted" && sent.kind === "refused") {
+      yield* journal.before === null ? steps.forget : steps.record(journal.before);
+      return { kind: "refused", problem: sent.problem } satisfies DeletionOutcome;
+    }
+    return { kind: "pending", problem: sent.problem } satisfies DeletionOutcome;
+  });
+
+/**
+ * Deletes `account` on the server. The journal saves the deletion, the choice to keep a copy
+ * and `receipt` before anything is sent. A deletion of the same account already saved keeps
+ * its receipt and takes the new choice. Refused while a move, another deletion or the leaving
+ * of a deleted account is unfinished.
+ */
+export const startDeletion = <E>(
+  steps: DeletionSteps<E>,
+  account: AccountId,
+  keep: boolean,
+  receipt: string,
+) =>
+  Effect.gen(function* () {
+    const journal = yield* steps.read;
+    const again = journal?.state === "deleting" && journal.account === account;
+    if (
+      !again &&
+      (anonymousDataLocked(journal) ||
+        leavingAccount(journal) !== undefined ||
+        journal?.state === "deleting")
+    ) {
+      return {
+        kind: "refused",
+        problem: "svett is still moving the data on this phone. Try again in a moment.",
+      } satisfies DeletionOutcome;
+    }
+    yield* steps.record(
+      journal?.state === "deleting"
+        ? { ...journal, keep }
+        : { state: "deleting", account, keep, receipt, before: journal ?? null },
+    );
+    return yield* finishDeletion(steps);
   });

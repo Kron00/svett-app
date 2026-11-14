@@ -230,13 +230,33 @@ describe("httpSocialApi", () => {
     expect(await Effect.runPromise(server(200, list).api.blocks())).toEqual(list);
   });
 
-  it("deletes the account and reads that it is gone", async () => {
+  it("deletes the account with its receipt and reads that it is gone", async () => {
     const { api, sent } = server(200, { deleted: true });
-    expect(await Effect.runPromise(api.deleteAccount())).toEqual({ deleted: true });
-    expect(sent[0]).toMatchObject({ method: "DELETE", url: "https://svett.test/v1/me" });
+    const receipt = "a".repeat(64);
+    expect(await Effect.runPromise(api.deleteAccount(receipt))).toEqual({ deleted: true });
+    expect(sent[0]).toMatchObject({
+      method: "DELETE",
+      url: "https://svett.test/v1/me",
+      body: JSON.stringify({ receipt }),
+    });
     const gone = await failure(server(410, { error: "account_deleted" }).api.feed());
     expect(gone.problem).toBe("account_deleted");
     expect(socialProblemMessage(gone)).toBe("This svett account was deleted.");
+  });
+
+  it("asks whether a deletion happened with its receipt alone, with no session", async () => {
+    const { api, sent } = server(200, { deleted: true }, null);
+    expect(await Effect.runPromise(api.deletionHappened("b".repeat(64)))).toEqual({
+      deleted: true,
+    });
+    expect(sent).toEqual([
+      {
+        method: "GET",
+        url: `https://svett.test/v1/deletions/${"b".repeat(64)}`,
+        body: null,
+        authorization: undefined,
+      },
+    ]);
   });
 
   it("says how long to wait when the server limits the account", async () => {

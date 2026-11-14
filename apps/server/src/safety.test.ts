@@ -1,4 +1,7 @@
 import { createServer } from "node:http";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import { NodeHttpServer } from "@effect/platform-node";
 import { PgClient } from "@effect/sql-pg";
@@ -10,6 +13,7 @@ import {
   MADE_HERE,
   type RateLimit,
   type RateLimitGroup,
+  SocialActivityId,
   SyncFailed,
   syncOnce,
   SyncRepository,
@@ -27,6 +31,7 @@ import {
   Option,
   Redacted,
   Result,
+  Schedule,
 } from "effect";
 import { HttpRouter, HttpServer } from "effect/http";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
@@ -38,6 +43,7 @@ import { Sessions } from "./auth.ts";
 import { ClerkConfig } from "./clerk-config.ts";
 import { ClerkUsers } from "./clerk-users.ts";
 import { databaseLayer, migrate } from "./database.ts";
+import { DeletionLedger } from "./deletion-ledger.ts";
 import { FeedRoutes } from "./feed-routes.ts";
 import { FeedRows } from "./feed-rows.ts";
 import { Safety } from "./safety.ts";
@@ -45,7 +51,7 @@ import { safetyProof } from "./safety-proof.ts";
 import { SocialRoutes } from "./social-routes.ts";
 import { SocialRows } from "./social-rows.ts";
 import { type StandInIssuer, startStandInIssuer } from "./test-issuer.ts";
-import { startTestPostgres, type TestPostgres } from "./test-postgres.ts";
+import { query, rowsNaming, startTestPostgres, type TestPostgres } from "./test-postgres.ts";
 
 let postgres: TestPostgres;
 let issuer: StandInIssuer;
@@ -75,7 +81,11 @@ interface ServerOptions {
   readonly limits?: Partial<Record<RateLimitGroup, RateLimit>>;
   /** Null starts the server without a Clerk secret key. */
   readonly secretKey?: string | null;
+  /** Where the deletion ledger lives, a new directory by default. */
+  readonly ledgerDir?: string;
 }
+
+const newLedgerDir = () => mkdtempSync(join(tmpdir(), "svett-ledger-"));
 
 const servicesOf = (url: Redacted.Redacted, options: ServerOptions = {}) => {
   const clerk = Layer.succeed(
@@ -101,6 +111,7 @@ const servicesOf = (url: Redacted.Redacted, options: ServerOptions = {}) => {
     AccountDeletion.layer,
   ).pipe(
     Layer.provideMerge(Safety.layer(options.limits)),
+    Layer.provideMerge(DeletionLedger.layer(options.ledgerDir ?? newLedgerDir())),
     Layer.provideMerge(databaseLayer(url)),
     Layer.provide(users),
     Layer.provide(clerk),
@@ -214,39 +225,6 @@ const activity = (title: string, audience = "everyone") => ({
   importBatchId: null,
 });
 
-const query = <A extends object = Record<string, unknown>>(url: Redacted.Redacted, text: string) =>
-  Effect.runPromise(
-    Effect.flatMap(Effect.service(PgClient.PgClient), (sql) => sql.unsafe<A>(text)).pipe(
-      Effect.provide(databaseLayer(url)),
-    ),
-  );
-
-/** How many rows of each table name `id` in any of their text columns. */
-const rowsNaming = async (url: Redacted.Redacted, id: string) => {
-  const columns = await query<{ table_name: string; column_name: string }>(
-    url,
-    `select table_name, column_name from information_schema.columns
-     where table_schema = 'public' and data_type = 'text' order by table_name, column_name`,
-  );
-  const tables = new Map<string, Array<string>>();
-  for (const { table_name, column_name } of columns) {
-    tables.set(table_name, [...(tables.get(table_name) ?? []), column_name]);
-  }
-  const counted = await Promise.all(
-    [...tables]
-      .filter(([table]) => !(table in KEPT_TABLES))
-      .map(async ([table, names]) => {
-        const where = names.map((column) => `"${column}" = '${id}'`).join(" or ");
-        const [row] = await query<{ n: number }>(
-          url,
-          `select count(*)::int as n from "${table}" where ${where}`,
-        );
-        return [table, row?.n ?? 0] as const;
-      }),
-  );
-  return Object.fromEntries(counted) as Record<string, number>;
-};
-
 const schemaTables = async (url: Redacted.Redacted) =>
   (
     await query<{ table_name: string }>(
@@ -356,6 +334,100 @@ describe("blocking", { timeout: 60_000 }, () => {
     });
     expect((await api.call(anna, "PUT", "/v1/profiles/nobody/block")).body).toEqual({
       error: "not_found",
+    });
+  });
+});
+
+/** The likes and comments `viewer` sees on a post, in its thread and on its feed card. */
+const seenCounts = async (api: ReturnType<typeof client>, viewer: string, post: string) => {
+  const thread = await api.ok(viewer, "GET", `/v1/posts/${post}`);
+  const card = (await api.ok(viewer, "GET", "/v1/feed")).posts.find(
+    (each: any) => each.activity.id === post,
+  );
+  return {
+    likes: thread.post.likes,
+    comments: thread.post.comments,
+    shownComments: thread.comments.length,
+    card: card === undefined ? undefined : { likes: card.likes, comments: card.comments },
+  };
+};
+
+describe("counts", { timeout: 60_000 }, () => {
+  it("never move for a viewer when an account in a block with them likes or comments", async () => {
+    const { base } = await start(await freshDatabase());
+    const api = client(base);
+    const [anna, ben, cara] = [account("anna"), account("ben"), account("cara")];
+    await api.name(anna, "anna");
+    await api.name(ben, "ben");
+    await api.name(cara, "cara");
+    const run = activity("Anna's run");
+    await api.write(anna, [run]);
+    await api.ok(cara, "PUT", "/v1/profiles/anna/follow");
+    await api.ok(ben, "PUT", "/v1/profiles/anna/follow");
+    const post = await api.postId(cara, "anna", run.title);
+    await api.ok(anna, "PUT", `/v1/posts/${post}/like`);
+    await api.ok(anna, "POST", `/v1/posts/${post}/comments`, { body: "Mine" });
+    await api.ok(cara, "PUT", "/v1/profiles/ben/block");
+    const before = await seenCounts(api, cara, post);
+    expect(before).toEqual({
+      likes: 1,
+      comments: 1,
+      shownComments: 1,
+      card: { likes: 1, comments: 1 },
+    });
+
+    await api.ok(ben, "PUT", `/v1/posts/${post}/like`);
+    await api.ok(ben, "POST", `/v1/posts/${post}/comments`, { body: "Hidden" });
+
+    expect(await seenCounts(api, cara, post)).toEqual(before);
+    // The block works both ways, so Ben's counts leave out what Cara does.
+    const bensBefore = await seenCounts(api, ben, post);
+    await api.ok(cara, "PUT", `/v1/posts/${post}/like`);
+    await api.ok(cara, "POST", `/v1/posts/${post}/comments`, { body: "Not for Ben" });
+    expect(await seenCounts(api, ben, post)).toEqual(bensBefore);
+    // Anna is in no block, and sees every like and comment.
+    expect(await seenCounts(api, anna, post)).toMatchObject({ likes: 3, comments: 3 });
+    expect((await api.ok(ben, "DELETE", `/v1/posts/${post}/like`)).likes).toBe(1);
+  });
+
+  it("show each viewer as many followers and followings as the lists they can open", async () => {
+    const { base } = await start(await freshDatabase());
+    const api = client(base);
+    const names = ["anna", "ben", "cara", "dan", "eve"] as const;
+    const who = Object.fromEntries(names.map((name) => [name, account(name)])) as Record<
+      (typeof names)[number],
+      string
+    >;
+    await Promise.all(names.map((name) => api.name(who[name], name)));
+    await Promise.all([
+      ...(["anna", "ben", "cara"] as const).map((follower) =>
+        api.ok(who[follower], "PUT", "/v1/profiles/dan/follow"),
+      ),
+      ...(["ben", "cara", "eve"] as const).map((followee) =>
+        api.ok(who.dan, "PUT", `/v1/profiles/${followee}/follow`),
+      ),
+    ]);
+    await api.ok(who.cara, "PUT", "/v1/profiles/eve/block");
+    await api.ok(who.ben, "PUT", "/v1/profiles/cara/block");
+
+    const seen = async (viewer: (typeof names)[number]) => {
+      const profile = await api.ok(who[viewer], "GET", "/v1/profiles/dan");
+      const followers = await api.ok(who[viewer], "GET", "/v1/profiles/dan/followers");
+      const following = await api.ok(who[viewer], "GET", "/v1/profiles/dan/following");
+      return {
+        followers: [profile.followers, followers.profiles.length],
+        following: [profile.following, following.profiles.length],
+      };
+    };
+    // Each pair is the count beside the length of the list it counts.
+    expect(await seen("anna")).toEqual({ followers: [3, 3], following: [3, 3] });
+    expect(await seen("ben")).toEqual({ followers: [2, 2], following: [2, 2] });
+    expect(await seen("cara")).toEqual({ followers: [2, 2], following: [1, 1] });
+    expect(await seen("eve")).toEqual({ followers: [2, 2], following: [2, 2] });
+    expect(await seen("dan")).toEqual({ followers: [3, 3], following: [3, 3] });
+    expect(await api.ok(who.dan, "GET", "/v1/profile")).toMatchObject({
+      followers: 3,
+      following: 3,
     });
   });
 });
@@ -718,6 +790,207 @@ describe("deleting an account", { timeout: 60_000 }, () => {
     expect(await rowsNaming(url, anna)).toMatchObject({ account: 0 });
   });
 });
+
+/** A write of `writer` that names `other`, ready to race `other`'s deletion. */
+interface NamingWrite {
+  readonly name: string;
+  readonly group: RateLimitGroup;
+  /** What the write answers when `other` is gone first. */
+  readonly refused: string;
+  readonly run: (
+    writer: AccountId,
+    post: SocialActivityId,
+  ) => Effect.Effect<unknown, unknown, SocialRows | FeedRows>;
+}
+
+const NAMING_WRITES: ReadonlyArray<NamingWrite> = [
+  {
+    name: "block",
+    group: "follows",
+    refused: "NotFound",
+    run: (writer) =>
+      Effect.flatMap(Effect.service(SocialRows), (rows) => rows.block(writer, "other")),
+  },
+  {
+    name: "follow",
+    group: "follows",
+    refused: "NotFound",
+    run: (writer) =>
+      Effect.flatMap(Effect.service(SocialRows), (rows) => rows.follow(writer, "other")),
+  },
+  {
+    name: "like",
+    group: "likes",
+    refused: "PostNotFound",
+    run: (writer, post) =>
+      Effect.flatMap(Effect.service(FeedRows), (feed) => feed.like(writer, post)),
+  },
+  {
+    name: "comment",
+    group: "comments",
+    refused: "PostNotFound",
+    run: (writer, post) =>
+      Effect.flatMap(Effect.service(FeedRows), (feed) => feed.comment(writer, post, "Strong")),
+  },
+];
+
+/**
+ * A writer and the account `other` its write names, each with a profile, and a post of
+ * `other` the writer sees. `otherFirst` gives `other` the lower account ID, which the writer
+ * must lock out of order.
+ */
+const namingPair = async (otherFirst: boolean) => {
+  const url = await freshDatabase();
+  const { base } = await start(url);
+  const api = client(base);
+  const n = ++accounts;
+  const [low, high] = [`user_a${n}`, `user_z${n}`];
+  const [writer, other] = otherFirst ? [high, low] : [low, high];
+  await api.name(writer, "writer");
+  await api.name(other, "other");
+  const run = activity("Other's run");
+  await api.write(other, [run]);
+  const post = SocialActivityId.make(await api.postId(writer, "other", run.title));
+  return { url, writer: AccountId.make(writer), other: AccountId.make(other), post };
+};
+
+/** "written", or the name of the error the write failed with. */
+const outcomeOf = (exit: Exit.Exit<unknown, unknown>) =>
+  Exit.isSuccess(exit)
+    ? "written"
+    : String(
+        (Option.getOrUndefined(Cause.findErrorOption(exit.cause)) as object | undefined)
+          ?.constructor.name,
+      );
+
+/** Waits until the deletion holds the account's lock and waits for the held table. */
+const untilDeletionWaits = Effect.gen(function* () {
+  const sql = yield* PgClient.PgClient;
+  const [waiting] = yield* sql<{ readonly n: number }>`
+    select count(*)::int as n from pg_stat_activity
+    where wait_event_type = 'Lock' and query like '%"inbox_read"%'
+  `;
+  if ((waiting?.n ?? 0) === 0) return yield* Effect.fail("not yet");
+}).pipe(Effect.retry({ schedule: Schedule.spaced("10 millis"), times: 1000 }));
+
+describe(
+  "a write that names an account racing that account's deletion",
+  { timeout: 60_000 },
+  () => {
+    describe.each(NAMING_WRITES)("$name", (write) => {
+      it.each([false, true])(
+        "commits first and the deletion then deletes what it wrote, other account first: %s",
+        async (otherFirst) => {
+          const { url, writer, other, post } = await namingPair(otherFirst);
+          const result = await Effect.runPromise(
+            Effect.gen(function* () {
+              const safety = yield* Safety;
+              const deletion = yield* AccountDeletion;
+              const wrote = yield* Deferred.make<void>();
+              const release = yield* Deferred.make<void>();
+              const request = yield* Effect.forkChild(
+                safety.asAccount(
+                  writer,
+                  write.group,
+                  Effect.gen(function* () {
+                    yield* write.run(writer, post);
+                    yield* Deferred.succeed(wrote, undefined);
+                    yield* Deferred.await(release);
+                  }).pipe(Effect.onError(() => Deferred.succeed(wrote, undefined))),
+                ),
+              );
+              yield* Deferred.await(wrote);
+              const deleting = yield* Effect.forkChild(deletion.remove(other));
+              yield* Effect.sleep("300 millis");
+              const waited = deleting.pollUnsafe() === undefined;
+              yield* Deferred.succeed(release, undefined);
+              const written = outcomeOf(yield* Effect.exit(Fiber.join(request)));
+              yield* Fiber.join(deleting);
+              return { waited, written };
+            }).pipe(Effect.provide(servicesOf(url))),
+          );
+          expect(result).toEqual({ waited: true, written: "written" });
+          expect(Object.values(await rowsNaming(url, other)).every((count) => count === 0)).toBe(
+            true,
+          );
+        },
+      );
+
+      it.each([false, true])(
+        "is refused when the deletion started first, and leaves nothing, other account first: %s",
+        async (otherFirst) => {
+          const { url, writer, other, post } = await namingPair(otherFirst);
+          const result = await Effect.runPromise(
+            Effect.gen(function* () {
+              const sql = yield* PgClient.PgClient;
+              const safety = yield* Safety;
+              const deletion = yield* AccountDeletion;
+              // A transaction on a table the deletion reaches late holds the deletion open,
+              // with the account's lock taken.
+              const locked = yield* Deferred.make<void>();
+              const unlock = yield* Deferred.make<void>();
+              const holder = yield* Effect.forkChild(
+                sql.withTransaction(
+                  Effect.gen(function* () {
+                    yield* sql`lock table inbox_read in access exclusive mode`;
+                    yield* Deferred.succeed(locked, undefined);
+                    yield* Deferred.await(unlock);
+                  }),
+                ),
+              );
+              yield* Deferred.await(locked);
+              const deleting = yield* Effect.forkChild(deletion.remove(other));
+              yield* untilDeletionWaits;
+              const request = yield* Effect.forkChild(
+                Effect.exit(safety.asAccount(writer, write.group, write.run(writer, post))),
+              );
+              yield* Effect.sleep("300 millis");
+              // In order, the write waits for the deletion. Out of order it never waits.
+              const waited = request.pollUnsafe() === undefined;
+              yield* Deferred.succeed(unlock, undefined);
+              yield* Fiber.join(holder);
+              yield* Fiber.join(deleting);
+              return { waited, written: outcomeOf(yield* Fiber.join(request)) };
+            }).pipe(Effect.provide(servicesOf(url))),
+          );
+          expect(result).toEqual({ waited: !otherFirst, written: write.refused });
+          expect(Object.values(await rowsNaming(url, other)).every((count) => count === 0)).toBe(
+            true,
+          );
+        },
+      );
+    });
+
+    it("lets two accounts block each other at once, many times over", async () => {
+      const { base } = await start(await freshDatabase());
+      const api = client(base);
+      const [anna, ben] = [account("anna"), account("ben")];
+      await api.name(anna, "anna");
+      await api.name(ben, "ben");
+      const rounds = async (left: number): Promise<void> => {
+        await Promise.all([
+          api.ok(anna, "PUT", "/v1/profiles/ben/follow"),
+          api.ok(ben, "PUT", "/v1/profiles/anna/follow"),
+        ]);
+        const answers = await Promise.all([
+          api.call(anna, "PUT", "/v1/profiles/ben/block"),
+          api.call(ben, "PUT", "/v1/profiles/anna/block"),
+        ]);
+        expect(answers.map((answer) => answer.status)).toEqual([200, 200]);
+        const blocks = await Promise.all([
+          api.ok(anna, "GET", "/v1/blocks"),
+          api.ok(ben, "GET", "/v1/blocks"),
+        ]);
+        await Promise.all([
+          api.ok(anna, "DELETE", `/v1/blocks/${blocks[0].blocks[0].id}`),
+          api.ok(ben, "DELETE", `/v1/blocks/${blocks[1].blocks[0].id}`),
+        ]);
+        if (left > 1) return rounds(left - 1);
+      };
+      await rounds(10);
+    });
+  },
+);
 
 describe("the safety proof script", { timeout: 60_000 }, () => {
   it("passes against a running server with the stand-in issuer, twice", async () => {

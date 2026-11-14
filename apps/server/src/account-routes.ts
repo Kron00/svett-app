@@ -1,4 +1,4 @@
-import { exportFileName, EpochMillis, SyncPush } from "@svett/core";
+import { DeletionReceipt, exportFileName, EpochMillis, SyncPush } from "@svett/core";
 import { Clock, Effect, Layer, Schema } from "effect";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 
@@ -59,15 +59,37 @@ const exportRows = answerRefusals(
   }),
 );
 
+const DeleteBody = Schema.fromJsonString(
+  Schema.Struct({ receipt: Schema.optional(DeletionReceipt) }),
+);
+const decodeDeleteBody = Schema.decodeUnknownEffect(DeleteBody);
+
 /**
  * Deletes the signed-in account. It skips the deleted-account check, so a deletion that
- * Clerk failed can be sent again to finish.
+ * Clerk failed can be sent again to finish. The body may carry the deletion's receipt.
  */
 const deleteAccount = answerRefusals(
   Effect.gen(function* () {
     const account = yield* signedInAccount;
-    yield* (yield* AccountDeletion).remove(account);
+    const text = yield* (yield* HttpServerRequest.HttpServerRequest).text;
+    const { receipt } = text.trim() === "" ? {} : yield* decodeDeleteBody(text);
+    yield* (yield* AccountDeletion).remove(account, receipt);
     return HttpServerResponse.jsonUnsafe({ deleted: true });
+  }),
+);
+
+const ReceiptPath = Schema.Struct({ receipt: DeletionReceipt });
+
+/**
+ * Whether an account was deleted with this receipt. It needs no session, as the deletion ended
+ * every one, and only the phone that made the receipt knows it.
+ */
+const deletionHappened = answerRefusals(
+  Effect.gen(function* () {
+    const { receipt } = yield* HttpRouter.schemaPathParams(ReceiptPath);
+    return HttpServerResponse.jsonUnsafe({
+      deleted: yield* (yield* AccountDeletion).deleted(receipt),
+    });
   }),
 );
 
@@ -79,5 +101,11 @@ export const AccountRoutes = Layer.mergeAll(
   HttpRouter.add("GET", "/v1/export", exportRows),
 );
 
-/** Deleting the signed-in account, which needs Clerk's Backend API to end its sessions. */
-export const DeletionRoutes = HttpRouter.add("DELETE", "/v1/me", deleteAccount);
+/**
+ * Deleting the signed-in account, which needs Clerk's Backend API to end its sessions, and
+ * asking with a receipt whether a deletion happened.
+ */
+export const DeletionRoutes = Layer.mergeAll(
+  HttpRouter.add("DELETE", "/v1/me", deleteAccount),
+  HttpRouter.add("GET", "/v1/deletions/:receipt", deletionHappened),
+);

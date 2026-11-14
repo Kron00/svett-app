@@ -48,6 +48,7 @@ import {
   SCAN,
   type ListAnchor,
 } from "./paging.ts";
+import { lockOther } from "./safety.ts";
 import { blockedWith, UsernameRequired } from "./social-rows.ts";
 
 /** The post is not there, or the privacy rule does not let the account see it. */
@@ -321,16 +322,24 @@ export class FeedRows extends Context.Service<FeedRows, FeedRowsShape>()("svett/
           return rows;
         });
 
+      /**
+       * The post's likes and comments as `viewer` may see them. An account in a block with the
+       * viewer is left out of each count, as its comments are left out of the thread, so its
+       * likes and comments never move a number the viewer sees.
+       */
       const likesOf = (viewer: string, owner: string, activityId: string) =>
         sql<{ readonly likes: number; readonly liked: boolean; readonly comments: number }>`
           select
-            (select count(*)::int from activity_like
-              where owner_id = ${owner} and activity_id = ${activityId}) as likes,
+            (select count(*)::int from activity_like l
+              where l.owner_id = ${owner} and l.activity_id = ${activityId}
+                and not ${blockedWith(sql, viewer, "l.liker_id")}) as likes,
             exists (select 1 from activity_like
               where owner_id = ${owner} and activity_id = ${activityId}
                 and liker_id = ${viewer}) as liked,
-            (select count(*)::int from activity_comment
-              where owner_id = ${owner} and activity_id = ${activityId}) as comments
+            (select count(*)::int from activity_comment c
+              join profile p on p.account_id = c.author_id
+              where c.owner_id = ${owner} and c.activity_id = ${activityId}
+                and not ${blockedWith(sql, viewer, "c.author_id")}) as comments
         `.pipe(Effect.map(([row]) => row ?? { likes: 0, liked: false, comments: 0 }));
 
       /**
@@ -406,6 +415,12 @@ export class FeedRows extends Context.Service<FeedRows, FeedRowsShape>()("svett/
         });
 
       type VisiblePost = Effect.Success<ReturnType<typeof visiblePost>>;
+
+      /** Locks the post's owner, which a like or comment names, as one gone hides the post. */
+      const named = (owner: string) =>
+        lockOther(sql, owner).pipe(
+          Effect.catchTag("AccountGone", () => Effect.fail(new PostNotFound())),
+        );
 
       const needUsername = (viewer: AccountId) =>
         Effect.flatMap(usernameOf(viewer), (username) =>
@@ -663,6 +678,7 @@ export class FeedRows extends Context.Service<FeedRows, FeedRowsShape>()("svett/
           Effect.gen(function* () {
             const { owner, activityId } = yield* visiblePost(viewer, id);
             yield* needUsername(viewer);
+            yield* named(owner);
             yield* sql`
               insert into activity_like (owner_id, activity_id, liker_id, created_ms)
               values (${owner}, ${activityId}, ${viewer}, ${yield* Clock.currentTimeMillis})
@@ -670,7 +686,7 @@ export class FeedRows extends Context.Service<FeedRows, FeedRowsShape>()("svett/
             `;
             const { likes, liked } = yield* likesOf(viewer, owner, activityId);
             return { likes, liked };
-          }),
+          }).pipe(sql.withTransaction),
         unlike: (viewer, id) =>
           Effect.gen(function* () {
             const { owner, activityId } = yield* visiblePost(viewer, id);
@@ -688,13 +704,14 @@ export class FeedRows extends Context.Service<FeedRows, FeedRowsShape>()("svett/
             const body = cleanComment(text);
             const problem = commentProblem(body);
             if (problem !== undefined) return yield* new InvalidComment({ message: problem });
+            yield* named(owner);
             const comment = { id: randomUUID(), at: yield* Clock.currentTimeMillis };
             yield* sql`
               insert into activity_comment (id, owner_id, activity_id, author_id, body, created_ms)
               values (${comment.id}, ${owner}, ${activityId}, ${viewer}, ${body}, ${comment.at})
             `;
             return { ...comment, username: author, body, canDelete: true };
-          }),
+          }).pipe(sql.withTransaction),
         deleteComment: (viewer, id, commentId) =>
           Effect.gen(function* () {
             const { owner, activityId } = yield* visiblePost(viewer, id);

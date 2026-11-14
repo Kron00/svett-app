@@ -7,11 +7,17 @@ import { DurationSeconds } from "./duration.ts";
 import {
   anonymousDataLocked,
   decodeMoveJournal,
+  type DeletionAsked,
+  type DeletionSent,
+  type DeletionSteps,
   encodeMoveJournal,
+  finishDeletion,
   finishLeave,
   type LeaveSteps,
   leaveAccount,
   leavingAccount,
+  type MoveJournal,
+  startDeletion,
 } from "./move-journal.ts";
 import { ActivityRepository } from "./repositories/activities.ts";
 import { EpochMillis } from "./schema.ts";
@@ -181,5 +187,149 @@ describe("leaving a deleted account", () => {
     expect(await device.launch()).toEqual({ done: { state: "declined" } });
     expect(device.alice()).toBeDefined();
     expect(leavingAccount(device.journal())).toBeUndefined();
+  });
+});
+
+/** A phone whose journal starts as `start`, and a server that answers as told. */
+const deletingPhone = (start: MoveJournal | undefined) => {
+  let stored = start === undefined ? null : encodeMoveJournal(start);
+  const server = {
+    sent: [] as Array<{ receipt: string; journal: MoveJournal | undefined }>,
+    asked: [] as Array<string>,
+    answer: { kind: "deleted" } as DeletionSent,
+    says: "unknown" as DeletionAsked,
+  };
+  const steps: DeletionSteps<never> = {
+    read: Effect.sync(() => decodeMoveJournal(stored)),
+    record: (journal) =>
+      Effect.sync(() => {
+        stored = encodeMoveJournal(journal);
+      }),
+    forget: Effect.sync(() => {
+      stored = null;
+    }),
+    send: (receipt) =>
+      Effect.sync(() => {
+        server.sent.push({ receipt, journal: decodeMoveJournal(stored) });
+        return server.answer;
+      }),
+    ask: (receipt) =>
+      Effect.sync(() => {
+        server.asked.push(receipt);
+        return server.says;
+      }),
+  };
+  return {
+    server,
+    journal: () => decodeMoveJournal(stored),
+    start: (keep: boolean, receipt = "r1") =>
+      Effect.runPromise(startDeletion(steps, ALICE, keep, receipt)),
+    launch: () => Effect.runPromise(finishDeletion(steps)),
+  };
+};
+
+/** A deletion of Alice's account, saved over `before`. */
+const deleting = (before: Exclude<MoveJournal, { state: "deleting" }> | null): MoveJournal => ({
+  state: "deleting",
+  account: ALICE,
+  keep: true,
+  receipt: "r1",
+  before,
+});
+
+describe("deleting the account", () => {
+  it("saves the deletion and the choice before anything is sent", async () => {
+    const device = deletingPhone({ state: "moved", account: ALICE });
+
+    expect(await device.start(true)).toEqual({ kind: "deleted", account: ALICE, keep: true });
+    expect(device.server.sent).toEqual([
+      {
+        receipt: "r1",
+        journal: {
+          state: "deleting",
+          account: ALICE,
+          keep: true,
+          receipt: "r1",
+          before: { state: "moved", account: ALICE },
+        },
+      },
+    ]);
+    // The receipt is asked about only when the answer does not say.
+    expect(device.server.asked).toEqual([]);
+  });
+
+  it("finishes at launch after a crash before the send, as the person chose", async () => {
+    const device = deletingPhone({ state: "declined" });
+    device.server.answer = { kind: "unknown", problem: "offline" };
+    device.server.says = "unknown";
+    expect(await device.start(false)).toEqual({ kind: "pending", problem: "offline" });
+    expect(device.journal()).toMatchObject({ state: "deleting", keep: false });
+
+    device.server.answer = { kind: "deleted" };
+    expect(await device.launch()).toEqual({ kind: "deleted", account: ALICE, keep: false });
+    expect(device.server.sent.map(({ receipt }) => receipt)).toEqual(["r1", "r1"]);
+  });
+
+  it("asks with the receipt when the session ended with the deletion", async () => {
+    const device = deletingPhone({ state: "declined" });
+    device.server.answer = { kind: "unknown", problem: "signed out" };
+    device.server.says = "deleted";
+
+    expect(await device.start(true)).toEqual({ kind: "deleted", account: ALICE, keep: true });
+    expect(device.server.asked).toEqual(["r1"]);
+  });
+
+  it("keeps the deletion saved while sessions are left, so it is sent again", async () => {
+    const device = deletingPhone({ state: "declined" });
+    device.server.answer = { kind: "unfinished", problem: "sessions" };
+    device.server.says = "deleted";
+
+    expect(await device.start(true)).toEqual({ kind: "pending", problem: "sessions" });
+    expect(device.journal()).toMatchObject({ state: "deleting" });
+  });
+
+  it("puts the journal back only when the server refused and says it deleted nothing", async () => {
+    const device = deletingPhone({ state: "moved", account: ALICE });
+    device.server.answer = { kind: "refused", problem: "no" };
+    device.server.says = "unknown";
+    expect(await device.start(true)).toEqual({ kind: "pending", problem: "no" });
+    expect(device.journal()).toMatchObject({ state: "deleting" });
+
+    device.server.says = "not_deleted";
+    expect(await device.launch()).toEqual({ kind: "refused", problem: "no" });
+    expect(device.journal()).toEqual({ state: "moved", account: ALICE });
+
+    const fresh = deletingPhone(undefined);
+    fresh.server.answer = { kind: "refused", problem: "no" };
+    fresh.server.says = "not_deleted";
+    expect(await fresh.start(false)).toEqual({ kind: "refused", problem: "no" });
+    expect(fresh.journal()).toBeUndefined();
+  });
+
+  it("keeps the receipt and takes the new choice when the deletion is asked for again", async () => {
+    const device = deletingPhone({ state: "declined" });
+    device.server.answer = { kind: "unknown", problem: "offline" };
+    await device.start(true, "r1");
+    await device.start(false, "r2");
+
+    expect(device.journal()).toMatchObject({ keep: false, receipt: "r1" });
+    expect(device.server.sent.map(({ receipt }) => receipt)).toEqual(["r1", "r1"]);
+  });
+
+  it("is refused while a move is unfinished, and changes nothing at launch without a deletion", async () => {
+    const moving = deletingPhone({ state: "copying", account: ALICE });
+    expect((await moving.start(true)).kind).toBe("refused");
+    expect(moving.server.sent).toEqual([]);
+    expect(moving.journal()).toEqual({ state: "copying", account: ALICE });
+
+    const idle = deletingPhone({ state: "declined" });
+    expect(await idle.launch()).toEqual({ kind: "none" });
+    expect(idle.server.sent).toEqual([]);
+  });
+
+  it("keeps the phone's own data locked as the journal it replaced did", () => {
+    expect(anonymousDataLocked(deleting({ state: "declined" }))).toBe(false);
+    expect(anonymousDataLocked(deleting(null))).toBe(false);
+    expect(leavingAccount(deleting(null))).toBeUndefined();
   });
 });
