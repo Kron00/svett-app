@@ -10,7 +10,8 @@
   },
   "dependencies": {
     "@expo/metro-runtime": "~58.0.17",
-    "@expo/ui": "58.0.27",
+    "@expo/ui": "58.0.28",
+    "@legendapp/list": "3.7.2",
     "@react-navigation/bottom-tabs": "7.21.0",
     "@react-navigation/elements": "2.9.45",
     "@react-navigation/native": "7.5.1",
@@ -35,7 +36,7 @@
     "react-native": "0.88.1",
     "react-native-safe-area-context": "~5.11.1",
     "react-native-screens": "~4.30.1",
-    "react-native-svg": "15.16.1",
+    "react-native-svg": "15.16.0",
     "tailwindcss": "catalog:",
     "uniwind": "1.13.2"
   },
@@ -48,5 +49,12 @@
     "babel-preset-expo": "~58.0.24",
     "react-test-renderer": "19.3.0",
     "vite-plus": "catalog:"
+  },
+  "expo": {
+    "install": {
+      "exclude": [
+        "expo"
+      ]
+    }
   }
 }

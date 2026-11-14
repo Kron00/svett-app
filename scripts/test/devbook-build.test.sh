@@ -643,4 +643,124 @@ check "checks.sh still saves the report when a check did not pass" \
 check "checks.sh still screenshots the report when a check did not pass" \
   bound_got "$bound_prefix screenshot $root/checks-unpassed/08-report.png"
 
+# Stands in for the bound command on the exercise library. It tracks the screen in
+# front and the saved custom exercises, which a relaunch keeps unless FAKE_FORGETS
+# is set. The bundled library holds FAKE_LIBRARY, by default "Barbell Squat".
+# A search link lists the exercises whose name starts with its text, ignoring case.
+# A press on the library opens the first result. A press on the form saves it.
+# The detail's "From" row starts below the fold, so only a scroll finds it.
+cat >"$fake/exercises-device" <<EOF
+#!/usr/bin/env bash
+echo "\$*" >>"$root/bound-calls"
+screen=\$(cat "$root/screen" 2>/dev/null || echo home)
+state() { cat "$root/\$1" 2>/dev/null || true; }
+names() {
+  echo "\${FAKE_LIBRARY:-Barbell Squat}"
+  state custom
+}
+first_result() {
+  local query
+  query=\$(state query)
+  names | awk -v q="\$query" 'index(tolower(\$0), tolower(q)) == 1 { print; exit }'
+}
+decode() { node -e 'process.stdout.write(decodeURIComponent(process.argv[1]))' "\$1"; }
+args=" \$* "
+case "\$args" in
+  *" open com.kron00.svett --relaunch "*)
+    echo tabs >"$root/screen"
+    [[ -z "\${FAKE_FORGETS:-}" ]] || rm -f "$root/custom" ;;
+  *" open com.kron00.svett svett://exercises?q="*)
+    echo library >"$root/screen"
+    decode "\${args#* svett://exercises?q=}" | sed 's/ \$//' >"$root/query" ;;
+  *" open com.kron00.svett svett://exercises/new?name="*)
+    echo form >"$root/screen"
+    query=\${args#* svett://exercises/new?name=}
+    decode "\${query%%&*}" >"$root/pending" ;;
+  *' get attrs id="exercise-result-0" '*)
+    [[ "\$screen" == library && -n "\$(first_result)" ]] || exit 1
+    printf '{"label": "%s, Chest · Cable", "rect": {"x": 0, "y": 200, "width": 440, "height": 80}}\n' "\$(first_result)" ;;
+  *" get attrs "*) echo '{"label": "Save exercise", "rect": {"x": 16, "y": 700, "width": 408, "height": 50}}' ;;
+  *' wait label="Train, tab, 2 of 5" '*) [[ "\$screen" != home ]] ;;
+  *' wait id="exercise-library" '*) [[ "\$screen" == library ]] ;;
+  *' wait id="exercise-form" '*) [[ "\$screen" == form ]] ;;
+  *' wait id="exercise-detail" '*) [[ "\$screen" == detail ]] ;;
+  *' wait id="exercise-name" label='*) [[ "\$screen" == detail && "\$args" == *"label=\"\$(state detail)\" "* ]] ;;
+  *' is visible id="exercise-source" '* | *' wait id="exercise-source" '*) exit 1 ;;
+  *' --until id="exercise-source" label="From, Custom" '*) grep -qxF -- "\$(state detail)" "$root/custom" 2>/dev/null ;;
+  *' --until id="exercise-source" label="From, svett library" '*) names | grep -qxF -- "\$(state detail)" ;;
+  *" is visible "*) [[ "\$screen" == form ]] ;;
+  *" press "[0-9]*)
+    case \$screen in
+      library) first_result >"$root/detail" ;;
+      form)
+        state pending >>"$root/custom"
+        state pending >"$root/detail" ;;
+      *) exit 1 ;;
+    esac
+    echo detail >"$root/screen" ;;
+esac
+EOF
+chmod +x "$fake/exercises-device"
+
+# run_exercises [VAR=value...] [exercises.sh args...] leaves the exit status in exercises_status.
+run_exercises() {
+  local -a vars=()
+  while [[ "${1:-}" == *=* ]]; do
+    vars+=("$1")
+    shift
+  done
+  rm -f "$root/simctl-calls" "$root/bound-calls" "$root/screen" "$root/query" "$root/pending" \
+    "$root/detail" "$root/custom"
+  exercises_status=0
+  env PATH="$fake:$PATH" SVETT_DEVICE_CMD="exercises-device --session 't3-test session' --device FAKE-UDID" \
+    SVETT_EXERCISE_NAME="Proof press 1" "${vars[@]}" "$repo/scripts/sim/exercises.sh" "$@" \
+    >"$output" 2>&1 || exercises_status=$?
+}
+
+exercise_links=("com.kron00.svett svett://exercises?q=barbell%20squat"
+  "com.kron00.svett svett://exercises/new?name=Proof%20press%201&muscle=chest&equipment=cable")
+custom_search="com.kron00.svett svett://exercises?q=Proof%20press%201"
+
+case_name="exercises.sh Debug with SVETT_DEVICE_CMD"
+run_exercises "$root/exercises"
+[[ "$exercises_status" == 0 ]] || fail "exercises.sh failed"
+check "exercises.sh searches the library, creates an exercise, relaunches into the dev client and searches for it" \
+  only_open "$debug_open" "${exercise_links[@]}" "$debug_open" "$custom_search"
+check "exercises.sh shoots at the largest text size, then restores the default" \
+  only_calls "settings text-size|settings appearance" \
+  "settings text-size accessibility-extra-extra-extra-large" "settings text-size large"
+check "exercises.sh opens the first result, saves the form and opens the saved exercise, each by its centre" \
+  only_calls "press|get attrs" \
+  'get attrs id="exercise-result-0"' "press 220 240" 'get attrs id="save-exercise"' "press 220 725" \
+  'get attrs id="exercise-result-0"' "press 220 240"
+check "exercises.sh checks the custom exercise's name and source after the relaunch" \
+  bound_got "$bound_prefix wait id=\"exercise-name\" label=\"Proof press 1\" 10000"
+check "exercises.sh screenshots each step" \
+  only_calls "screenshot" \
+  "screenshot $root/exercises/01-library-search.png" "screenshot $root/exercises/02-library-detail.png" \
+  "screenshot $root/exercises/03-new-exercise.png" "screenshot $root/exercises/04-custom-detail.png" \
+  "screenshot $root/exercises/05-custom-search-after-relaunch.png" \
+  "screenshot $root/exercises/06-custom-detail-after-relaunch.png"
+check "exercises.sh with SVETT_DEVICE_CMD never calls simctl" test ! -e "$root/simctl-calls"
+
+case_name="exercises.sh Release with SVETT_DEVICE_CMD"
+run_exercises --release "$root/exercises-release"
+[[ "$exercises_status" == 0 ]] || fail "exercises.sh --release failed"
+check "exercises.sh Release relaunches the installed app without Metro" \
+  only_open "com.kron00.svett --relaunch" "${exercise_links[@]}" "com.kron00.svett --relaunch" "$custom_search"
+
+case_name="exercises.sh when the custom exercise does not survive the relaunch"
+run_exercises FAKE_FORGETS=1 "$root/exercises-forgets"
+check "exercises.sh fails when the custom exercise is gone after the relaunch" test "$exercises_status" -ne 0
+check "exercises.sh says the search found nothing" \
+  grep -qxF 'The search for "Proof press 1" showed no result' "$output"
+check "exercises.sh restores the default text size after a failure" \
+  only_calls "settings" "settings text-size accessibility-extra-extra-extra-large" "settings text-size large"
+
+case_name="exercises.sh when the library search shows another exercise first"
+run_exercises FAKE_LIBRARY="Barbell Squat Jump" "$root/exercises-other"
+check "exercises.sh fails when the first result is not the library exercise" test "$exercises_status" -ne 0
+check "exercises.sh names the result it found instead" \
+  grep -qxF 'The first result was not "Barbell Squat". Its label is "Barbell Squat Jump, Chest · Cable".' "$output"
+
 echo "$passed passed"
