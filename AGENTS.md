@@ -110,6 +110,8 @@ The data layer lives in `packages/core`. Follow these patterns so every table st
 
 **IDs and time.** A new row's ID comes from its `Origin`. Rows made in svett get a UUIDv7 from the `Ids` service. Imported rows get a UUIDv5 of their source and source identity through `importedId`, and their children add a path such as `/exercise/0/set/2`. Library exercises use `libraryExerciseId`. Read time from Effect's `Clock`, never `Date.now()`, and never use `Math.random()` for IDs.
 
+**Routes.** A recorded route is one line per stretch between pauses, kept in each location sample's `segment`. Distance, splits, climb, the map and the elevation chart never join two stretches. Anyone but the owner, such as the feed or an export for someone else, reads a track only through `sharedTrack` in `packages/core/src/cardio.ts`, which leaves out the hidden start and end. Only the owner's own screens read the samples.
+
 **Databases.** `databaseLayer(driver, ids)` migrates, seeds the exercise library and provides every repository. Each owner has its own file, named by `databaseFileName`. The app opens it with expo-sqlite in `apps/mobile/src/data/database.ts`.
 
 **Tests.** Tests run on `node:sqlite` in memory. `openTestDatabase()` in `packages/core/src/test-database.ts` returns a migrated, seeded database with a manual clock and seeded IDs. Test through the repositories and assert what a caller sees. Read the SQLite file directly only to check what a repository cannot show, such as deleted rows.

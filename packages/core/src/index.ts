@@ -21,4 +21,5 @@ export * from "./phone-checks.ts";
 export * from "./geo.ts";
 export * from "./recording.ts";
 export * from "./cardio.ts";
+export * from "./recorder.ts";
 export * from "./cardio-format.ts";

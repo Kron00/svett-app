@@ -24,63 +24,89 @@ export const pathLengthM = (points: ReadonlyArray<LatLng>): number => {
   return total;
 };
 
-const between = (a: LatLng, b: LatLng, fraction: number): LatLng => ({
-  latitude: a.latitude + (b.latitude - a.latitude) * fraction,
-  longitude: a.longitude + (b.longitude - a.longitude) * fraction,
-});
+/** A reading on a route. `altitudeM` is null when it was not measured. */
+export interface RoutePoint extends LatLng {
+  readonly altitudeM: number | null;
+}
 
 /**
- * The route cut into the stretch others may see and the stretches hidden at each
- * end, measured along the route. Neighbouring parts share their cut point, so the
- * three lines meet. When the hidden stretches cover the whole route, all of it is
- * in `start` and nothing is visible.
+ * A route as recorded: one line of readings for each stretch between start or
+ * resume and the next pause. Nothing joins two stretches, since where you went
+ * while paused was not recorded.
  */
-export interface RouteParts {
-  readonly start: ReadonlyArray<LatLng>;
-  readonly visible: ReadonlyArray<LatLng>;
-  readonly end: ReadonlyArray<LatLng>;
-}
+export type RouteLines = ReadonlyArray<ReadonlyArray<RoutePoint>>;
+
+export const routeLengthM = (lines: RouteLines): number =>
+  lines.reduce((total, line) => total + pathLengthM(line), 0);
+
+const between = (a: RoutePoint, b: RoutePoint, fraction: number): RoutePoint => ({
+  latitude: a.latitude + (b.latitude - a.latitude) * fraction,
+  longitude: a.longitude + (b.longitude - a.longitude) * fraction,
+  altitudeM:
+    a.altitudeM === null || b.altitudeM === null
+      ? null
+      : a.altitudeM + (b.altitudeM - a.altitudeM) * fraction,
+});
 
 // A cut this close to a reading falls on the reading, so rounding in the sums does
 // not add a second point a hair away from it.
 const ON_POINT_M = 1e-6;
 
+/**
+ * The part of the route from `fromM` to `toM` along it, cut between readings where
+ * needed. Distance along the route adds up inside each line only.
+ */
+export const sliceRoute = (lines: RouteLines, fromM: number, toM: number): RouteLines => {
+  const slices: RoutePoint[][] = [];
+  let travelled = 0;
+  for (const line of lines) {
+    const slice: RoutePoint[] = [];
+    for (const [index, point] of line.entries()) {
+      if (index > 0) {
+        const previous = line[index - 1]!;
+        const step = distanceM(previous, point);
+        for (const cut of [fromM, toM]) {
+          if (cut > travelled + ON_POINT_M && cut < travelled + step - ON_POINT_M) {
+            slice.push(between(previous, point, (cut - travelled) / step));
+          }
+        }
+        travelled += step;
+      }
+      if (travelled >= fromM - ON_POINT_M && travelled <= toM + ON_POINT_M) slice.push(point);
+    }
+    if (slice.length > 1) slices.push(slice);
+  }
+  return slices;
+};
+
+/**
+ * The route cut into the stretch others may see and the stretches hidden at each
+ * end, measured along the route. Neighbouring parts share their cut point, so the
+ * lines meet. When the hidden stretches cover the whole route, all of it is in
+ * `start` and nothing is visible.
+ */
+export interface RouteParts {
+  readonly start: RouteLines;
+  readonly visible: RouteLines;
+  readonly end: RouteLines;
+}
+
 export const hideRouteEnds = (
-  points: ReadonlyArray<LatLng>,
+  lines: RouteLines,
   hideStartM: number,
   hideEndM: number,
 ): RouteParts => {
-  const total = pathLengthM(points);
-  if (points.length < 2 || hideStartM + hideEndM >= total) {
-    return { start: points, visible: [], end: [] };
-  }
+  const total = routeLengthM(lines);
   const startCut = Math.max(0, hideStartM);
   const endCut = total - Math.max(0, hideEndM);
-  const start: LatLng[] = [];
-  const visible: LatLng[] = [];
-  const end: LatLng[] = [];
-  let travelled = 0;
-  for (let index = 0; index < points.length; index++) {
-    const point = points[index]!;
-    if (index > 0) {
-      const previous = points[index - 1]!;
-      const step = distanceM(previous, point);
-      for (const cut of [startCut, endCut]) {
-        if (cut > travelled + ON_POINT_M && cut < travelled + step - ON_POINT_M) {
-          const at = between(previous, point, (cut - travelled) / step);
-          (cut === startCut ? start : visible).push(at);
-          (cut === startCut ? visible : end).push(at);
-        }
-      }
-      travelled += step;
-    }
-    if (travelled <= startCut + ON_POINT_M) start.push(point);
-    if (travelled >= startCut - ON_POINT_M && travelled <= endCut + ON_POINT_M) {
-      visible.push(point);
-    }
-    if (travelled >= endCut - ON_POINT_M) end.push(point);
+  if (total === 0 || startCut >= endCut) {
+    return { start: lines.filter((line) => line.length > 1), visible: [], end: [] };
   }
-  return { start: start.length > 1 ? start : [], visible, end: end.length > 1 ? end : [] };
+  return {
+    start: startCut > 0 ? sliceRoute(lines, 0, startCut) : [],
+    visible: sliceRoute(lines, startCut, endCut),
+    end: endCut < total ? sliceRoute(lines, endCut, total) : [],
+  };
 };
 
 /** A map camera that fits every point, with a margin, as expo-maps reads a zoom level. */

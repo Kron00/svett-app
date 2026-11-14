@@ -2,18 +2,23 @@ import { Effect, Option } from "effect";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  type AltitudeReading,
   cardioDraft,
+  type CardioSummary,
   cardioTitle,
   DEFAULT_HIDE_M,
   elevationGainM,
   elevationProfile,
+  sharedTrack,
   splitsOf,
   summarize,
   trackParts,
 } from "./cardio.ts";
-import { pathLengthM } from "./geo.ts";
+import { hideRouteEnds, pathLengthM, routeLengthM } from "./geo.ts";
+import { seededRandom } from "./ids.ts";
 import { type Fix, type RecordingEvent, replay } from "./recording.ts";
 import { ActivityRepository } from "./repositories/activities.ts";
+import { ActivityId } from "./schema.ts";
 import { openTestDatabase } from "./test-database.ts";
 
 const DEGREE_M = (Math.PI * 6_371_008.8) / 180;
@@ -26,7 +31,8 @@ const fix = (seconds: number, metres: number, altitudeM: number | null = null): 
     latitude: metres / DEGREE_M,
     longitude: 0,
     altitudeM,
-    accuracyM: 5,
+    altitudeAccuracyM: altitudeM === null ? null : 3,
+    accuracyM: 2,
   },
 });
 
@@ -34,7 +40,8 @@ const fix = (seconds: number, metres: number, altitudeM: number | null = null): 
 const moving = (from: number, to: number, speed: number): RecordingEvent[] =>
   Array.from({ length: to - from + 1 }, (_, index) => fix(from + index, (from + index) * speed));
 
-const start: RecordingEvent = { type: "start", at: T, kind: "run" };
+const ACTIVITY = ActivityId.make("0190a000-0000-7000-8000-000000000001");
+const start: RecordingEvent = { type: "start", at: T, kind: "run", activityId: ACTIVITY };
 const at = (seconds: number) => T + seconds * 1000;
 
 const sum = (values: ReadonlyArray<number>) => values.reduce((total, value) => total + value, 0);
@@ -100,22 +107,62 @@ describe("splitsOf", () => {
   });
 });
 
-describe("elevationGainM", () => {
-  it("adds every climb and ignores descents", () => {
-    expect(elevationGainM([10, 20, 15, 30, 25])).toBe(25);
-  });
+/** Altitudes `secondsApart` apart, each `accuracyM` sure. */
+const altitudes = (
+  values: ReadonlyArray<number | null>,
+  secondsApart = 1,
+  accuracyM = 5,
+): AltitudeReading[] =>
+  values.map((altitudeM, index) => ({
+    at: T + index * secondsApart * 1000,
+    altitudeM,
+    altitudeAccuracyM: altitudeM === null ? null : accuracyM,
+  }));
 
-  it("ignores wobble smaller than the climb threshold", () => {
-    expect(elevationGainM([50, 51, 49, 51, 50, 51.5, 49.5, 50])).toBe(0);
+/** Up to `noiseM` either way, the same every run. */
+const noise = (count: number, noiseM: number) => {
+  const random = seededRandom(7);
+  return Array.from({ length: count }, () => (random() * 2 - 1) * noiseM);
+};
+
+describe("elevationGainM", () => {
+  // A minute apart, so smoothing leaves each reading as it is.
+  it("adds every climb and ignores descents", () => {
+    expect(elevationGainM([altitudes([10, 20, 15, 30, 25], 60)])).toBeCloseTo(25, 6);
   });
 
   it("counts a slow climb made of small steps", () => {
-    expect(elevationGainM([0, 1, 2, 3, 4, 5, 6])).toBe(6);
+    expect(elevationGainM([altitudes([0, 1, 2, 3, 4, 5, 6], 60)])).toBeCloseTo(6, 6);
+  });
+
+  it("adds about nothing for ten minutes on the flat with GPS altitude noise", () => {
+    const flat = noise(600, 5).map((wobble) => 100 + wobble);
+    expect(elevationGainM([altitudes(flat)])).toBeLessThan(1);
+  });
+
+  it("keeps a real hill's climb under the same noise", () => {
+    const hill = noise(900, 5).map((wobble, second) => Math.min(second, 600) / 10 + wobble);
+    expect(elevationGainM([altitudes(hill)])).toBeCloseTo(60, -1);
+    expect(Math.abs(elevationGainM([altitudes(hill)])! - 60)).toBeLessThan(3);
+  });
+
+  it("trusts an unsure altitude less than the sure ones around it", () => {
+    const sure = altitudes(
+      Array.from({ length: 31 }, () => 100),
+      1,
+      2,
+    );
+    const spike = { at: sure[15]!.at + 500, altitudeM: 120, altitudeAccuracyM: 14 };
+    expect(elevationGainM([[...sure.slice(0, 16), spike, ...sure.slice(16)]])).toBe(0);
+  });
+
+  it("does not count the change in altitude between two stretches as a climb", () => {
+    expect(elevationGainM([altitudes([0, 0, 0]), altitudes([100, 100, 100])])).toBe(0);
   });
 
   it("skips readings without an altitude and is unknown when none has one", () => {
-    expect(elevationGainM([null, 100, null, 110])).toBe(10);
-    expect(elevationGainM([null, null])).toBeNull();
+    expect(elevationGainM([altitudes([null, 100, null, 110], 60)])).toBeCloseTo(10, 6);
+    expect(elevationGainM([altitudes([null, null])])).toBeNull();
   });
 });
 
@@ -127,7 +174,7 @@ describe("elevationProfile", () => {
   }));
 
   it("averages the altitude over equal stretches of the route", () => {
-    const profile = elevationProfile(route, 4);
+    const profile = elevationProfile([route], 4);
     expect(profile.map((point) => point.distanceM)).toEqual([
       expect.closeTo(250, 6),
       expect.closeTo(500, 6),
@@ -140,7 +187,7 @@ describe("elevationProfile", () => {
 
   it("is empty when the route has no altitude", () => {
     const flat = route.map(({ latitude, longitude }) => ({ latitude, longitude, altitudeM: null }));
-    expect(elevationProfile(flat)).toEqual([]);
+    expect(elevationProfile([flat])).toEqual([]);
   });
 });
 
@@ -175,7 +222,7 @@ describe("a finished recording saved as an activity", () => {
         return { ...saved, samples: yield* activities.samples(saved.track!.id) };
       }),
     );
-    const { route, splits } = trackParts(detail.samples);
+    const { route, lines, splits } = trackParts(detail.samples);
     expect(detail.activity).toMatchObject({ kind: "run", title: "Morning run", durationS: 300 });
     expect(detail.track).toMatchObject({
       distanceM: expect.closeTo(1200, 6),
@@ -184,7 +231,9 @@ describe("a finished recording saved as an activity", () => {
     });
     expect(detail.track!.elevationGainM).toBeGreaterThan(0);
     expect(route).toHaveLength(301);
+    expect(lines).toHaveLength(1);
     expect(pathLengthM(route)).toBeCloseTo(1200, 6);
+    expect(detail.activity.id).toBe(ACTIVITY);
     expect(splits.map((split) => split.distanceM)).toEqual([1000, expect.closeTo(200, 6)]);
     expect(sum(splits.map((split) => split.durationS))).toBeCloseTo(300, 6);
   });
@@ -204,12 +253,107 @@ describe("a finished recording saved as an activity", () => {
   });
 });
 
+const save = async (summary: CardioSummary, hideM = DEFAULT_HIDE_M) => {
+  const database = openTestDatabase();
+  return database.runtime.runPromise(
+    Effect.gen(function* () {
+      const activities = yield* ActivityRepository;
+      const id = yield* activities.create(cardioDraft(summary, "Morning run"));
+      const saved = Option.getOrThrow(yield* activities.get(id));
+      yield* activities.updateTrack(saved.track!.id, { hideStartM: hideM, hideEndM: hideM });
+      const track = Option.getOrThrow(yield* activities.get(id)).track!;
+      return { track, samples: yield* activities.samples(track.id) };
+    }),
+  );
+};
+
+describe("a recording moved while paused", () => {
+  // 100 m on the flat, a pause, 900 m and 100 m up by car, then another 100 m up there.
+  const recording = replay([
+    start,
+    ...Array.from({ length: 26 }, (_, index) => fix(index, index * 4, 0)),
+    { type: "pause", at: at(25) },
+    { type: "resume", at: at(600) },
+    ...Array.from({ length: 26 }, (_, index) => fix(600 + index, 1000 + index * 4, 100)),
+    { type: "pause", at: at(625) },
+  ])!;
+  const summary = summarize(recording, at(625));
+
+  it("counts 200 m and no climb", () => {
+    expect(summary.distanceM).toBeCloseTo(200, 6);
+    expect(summary.elevationGainM).toBe(0);
+    expect(summary.splits.map((split) => split.distanceM)).toEqual([expect.closeTo(200, 6)]);
+  });
+
+  it("saves a route of two lines that span 200 m on the map and the elevation chart", async () => {
+    const { samples } = await save(summary, 0);
+    const { lines } = trackParts(samples);
+    expect(lines.map((line) => line.length)).toEqual([26, 26]);
+    expect(routeLengthM(lines)).toBeCloseTo(200, 6);
+    expect(routeLengthM(hideRouteEnds(lines, 0, 0).visible)).toBeCloseTo(200, 6);
+    expect(elevationProfile(lines).at(-1)!.distanceM).toBeCloseTo(200, 6);
+  });
+});
+
+describe("sharedTrack", () => {
+  const recording = replay([
+    start,
+    ...Array.from({ length: 301 }, (_, index) => fix(index, index * 4, 20 + index / 10)),
+    { type: "pause", at: at(300) },
+  ])!;
+  const summary = summarize(recording, at(300));
+
+  it("leaves out every position in the hidden start and end", async () => {
+    const { track, samples } = await save(summary, 200);
+    const shared = sharedTrack(track, samples);
+    const text = JSON.stringify(shared);
+    // The reading on the equator is left out: "0" is in any text with a number in it.
+    const hidden = trackParts(samples).route.filter((sample) => {
+      const north = sample.latitude * DEGREE_M;
+      return sample.latitude !== 0 && (north < 200 - 1e-6 || north > 1000 + 1e-6);
+    });
+    expect(hidden.length).toBeGreaterThan(90);
+    for (const sample of hidden) {
+      expect(text).not.toContain(String(sample.latitude));
+    }
+    expect(
+      routeLengthM(shared.route.map((line) => line.map((p) => ({ ...p, altitudeM: null })))),
+    ).toBeCloseTo(800, 6);
+    expect(shared.route.flat().every((point) => Object.keys(point).length === 2)).toBe(true);
+  });
+
+  it("charts the elevation of the visible stretch only", async () => {
+    const { track, samples } = await save(summary, 200);
+    const shared = sharedTrack(track, samples);
+    expect(shared.profile.at(-1)!.distanceM).toBeCloseTo(800, 6);
+    expect(shared.profile[0]!.altitudeM).toBeGreaterThan(25);
+    expect(shared.splits.map((split) => split.distanceM)).toEqual([1000, expect.closeTo(200, 6)]);
+  });
+
+  it("shows no route when the hidden ends cover all of it", async () => {
+    const { track, samples } = await save(summary, 1000);
+    expect(sharedTrack(track, samples)).toMatchObject({ route: [], profile: [] });
+  });
+});
+
 const fixes = (events: ReadonlyArray<RecordingEvent>): Fix[] =>
   events.flatMap((event) => (event.type === "fix" ? [event.fix] : []));
 
 describe("summarize", () => {
-  it("keeps every reading the recording kept, in order", () => {
-    const events = moving(0, 20, 4);
-    expect(summarize(replay([start, ...events])!, at(20)).fixes).toEqual(fixes(events));
+  it("keeps every reading the recording kept, in order, one list for each stretch", () => {
+    const first = moving(0, 20, 4);
+    const second = moving(30, 50, 4);
+    const summary = summarize(
+      replay([
+        start,
+        ...first,
+        { type: "pause", at: at(20) },
+        { type: "resume", at: at(30) },
+        ...second,
+      ])!,
+      at(50),
+    );
+    expect(summary.segments).toEqual([fixes(first), fixes(second)]);
+    expect(summary.activityId).toBe(ACTIVITY);
   });
 });

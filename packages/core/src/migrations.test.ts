@@ -7,8 +7,10 @@ import { openNodeDatabase } from "./node-sqlite.ts";
 import { Sql } from "./sql.ts";
 import { columnOf, TABLES } from "./table.ts";
 
-const SECOND: Migration = {
-  version: 2,
+const LATEST = MIGRATIONS.length;
+
+const NEXT: Migration = {
+  version: LATEST + 1,
   name: "test only: activity place",
   sql: "ALTER TABLE activity ADD COLUMN place TEXT; CREATE TABLE gym (id TEXT PRIMARY KEY NOT NULL) STRICT;",
 };
@@ -30,7 +32,7 @@ const tableNames = (database: ReturnType<typeof open>["database"]) =>
 describe("migrate", () => {
   it("builds every table from an empty database", async () => {
     const { database, run } = open();
-    expect(await run(migrate())).toEqual(Exit.succeed({ from: 0, to: 1 }));
+    expect(await run(migrate())).toEqual(Exit.succeed({ from: 0, to: LATEST }));
     expect(tableNames(database)).toEqual(
       [...Object.values(TABLES).map((table) => table.name), "schema_version"].toSorted(),
     );
@@ -54,35 +56,55 @@ describe("migrate", () => {
     database.exec(
       "INSERT INTO folder (id, updated_at, deleted_at, name, position) VALUES ('f', 1, NULL, 'Push', 0)",
     );
-    expect(await run(migrate([...MIGRATIONS, SECOND]))).toEqual(Exit.succeed({ from: 1, to: 2 }));
-    expect(await run(currentVersion)).toEqual(Exit.succeed(2));
+    expect(await run(migrate([...MIGRATIONS, NEXT]))).toEqual(
+      Exit.succeed({ from: LATEST, to: LATEST + 1 }),
+    );
+    expect(await run(currentVersion)).toEqual(Exit.succeed(LATEST + 1));
     expect(tableNames(database)).toContain("gym");
     expect(database.prepare("SELECT name FROM folder").all()).toEqual([{ name: "Push" }]);
   });
 
   it("does nothing when the database is already current", async () => {
     const { database, run } = open();
-    await run(migrate([...MIGRATIONS, SECOND]));
+    await run(migrate([...MIGRATIONS, NEXT]));
     const versions = database.prepare("SELECT * FROM schema_version").all();
-    expect(await run(migrate([...MIGRATIONS, SECOND]))).toEqual(Exit.succeed({ from: 2, to: 2 }));
+    expect(await run(migrate([...MIGRATIONS, NEXT]))).toEqual(
+      Exit.succeed({ from: LATEST + 1, to: LATEST + 1 }),
+    );
     expect(database.prepare("SELECT * FROM schema_version").all()).toEqual(versions);
   });
 
   it("leaves the version unchanged when a migration fails", async () => {
     const { run } = open();
     await run(migrate());
-    const broken: Migration = { version: 2, name: "broken", sql: "CREATE TABLE gym (; " };
+    const broken: Migration = { version: LATEST + 1, name: "broken", sql: "CREATE TABLE gym (; " };
     expect(Exit.isFailure(await run(migrate([...MIGRATIONS, broken])))).toBe(true);
-    expect(await run(currentVersion)).toEqual(Exit.succeed(1));
+    expect(await run(currentVersion)).toEqual(Exit.succeed(LATEST));
   });
 
   it("refuses a database from a newer app", async () => {
     const { run } = open();
-    await run(migrate([...MIGRATIONS, SECOND]));
+    await run(migrate([...MIGRATIONS, NEXT]));
     const exit = await run(migrate(MIGRATIONS));
     expect(exit).toMatchObject({
       _tag: "Failure",
-      cause: { reasons: [{ error: { _tag: "DatabaseTooNewError", databaseVersion: 2 } }] },
+      cause: {
+        reasons: [{ error: { _tag: "DatabaseTooNewError", databaseVersion: LATEST + 1 } }],
+      },
     });
+  });
+
+  it("puts every location sample saved before routes had stretches into the first one", async () => {
+    const { database, run } = open();
+    await run(migrate(MIGRATIONS.slice(0, 1)));
+    database.exec(
+      `INSERT INTO activity_sample (id, updated_at, deleted_at, activity_track_id, recorded_at, kind, latitude, longitude)
+       VALUES ('l', 1, NULL, 't', 1, 'location', 59.3, 18.0), ('s', 1, NULL, 't', 2, 'split', NULL, NULL)`,
+    );
+    await run(migrate());
+    expect(database.prepare("SELECT id, segment FROM activity_sample ORDER BY id").all()).toEqual([
+      { id: "l", segment: 0 },
+      { id: "s", segment: null },
+    ]);
   });
 });

@@ -46,6 +46,12 @@ export interface ActivityDraft extends Omit<
   Draft<Activity>,
   "source" | "sourceId" | "fingerprint" | "importBatchId"
 > {
+  /**
+   * The ID to save the activity under, chosen before it is saved, such as when a
+   * recording starts. Creating a draft whose ID is already saved returns that ID and
+   * writes nothing, so a save repeated after a crash saves once.
+   */
+  readonly id?: ActivityId;
   readonly origin: Origin;
   readonly exercises: ReadonlyArray<
     Draft<ActivityExercise, "activityId"> & { readonly sets: ReadonlyArray<SetDraft> }
@@ -84,8 +90,12 @@ const makeActivityRepository = Effect.gen(function* () {
       sql.transaction(
         Effect.gen(function* () {
           const updatedAt = yield* currentTime;
-          const { origin, exercises, track, ...fields } = draft;
-          const id = ActivityId.make(yield* rowId(TABLES.activity, origin));
+          const { id: chosen, origin, exercises, track, ...fields } = draft;
+          if (chosen !== undefined) {
+            const saved = yield* sql.all("SELECT id FROM activity WHERE id = ?", [chosen]);
+            if (saved.length > 0) return chosen;
+          }
+          const id = chosen ?? ActivityId.make(yield* rowId(TABLES.activity, origin));
           yield* insertRows(TABLES.activity, [
             { ...fields, ...provenance(origin), id, updatedAt, deletedAt: null },
           ]);

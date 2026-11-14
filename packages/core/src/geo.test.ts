@@ -1,15 +1,23 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { distanceM, hideRouteEnds, type LatLng, pathLengthM, regionFitting } from "./geo.ts";
+import {
+  distanceM,
+  hideRouteEnds,
+  pathLengthM,
+  regionFitting,
+  routeLengthM,
+  type RoutePoint,
+} from "./geo.ts";
 
 /** Metres in one degree of latitude on svett's Earth. */
 const DEGREE_M = (Math.PI * 6_371_008.8) / 180;
 
-/** A straight line north from the equator, one point every `stepM` metres. */
-const north = (lengthM: number, stepM: number): LatLng[] =>
+/** A straight line north, one point every `stepM` metres, from `fromM` north of the equator. */
+const north = (lengthM: number, stepM: number, fromM = 0): RoutePoint[] =>
   Array.from({ length: Math.round(lengthM / stepM) + 1 }, (_, index) => ({
-    latitude: (index * stepM) / DEGREE_M,
+    latitude: (fromM + index * stepM) / DEGREE_M,
     longitude: 0,
+    altitudeM: index,
   }));
 
 describe("distanceM", () => {
@@ -46,36 +54,53 @@ describe("pathLengthM", () => {
 
 describe("hideRouteEnds", () => {
   const route = north(1000, 100);
+  const lines = [route];
 
   it("hides the first and last stretch, cutting between readings, and the parts meet", () => {
-    const parts = hideRouteEnds(route, 150, 250);
-    expect(pathLengthM(parts.start)).toBeCloseTo(150, 6);
-    expect(pathLengthM(parts.visible)).toBeCloseTo(600, 6);
-    expect(pathLengthM(parts.end)).toBeCloseTo(250, 6);
-    expect(parts.start.at(-1)).toEqual(parts.visible[0]);
-    expect(parts.visible.at(-1)).toEqual(parts.end[0]);
+    const parts = hideRouteEnds(lines, 150, 250);
+    expect(routeLengthM(parts.start)).toBeCloseTo(150, 6);
+    expect(routeLengthM(parts.visible)).toBeCloseTo(600, 6);
+    expect(routeLengthM(parts.end)).toBeCloseTo(250, 6);
+    expect(parts.start[0]!.at(-1)).toEqual(parts.visible[0]![0]);
+    expect(parts.visible[0]!.at(-1)).toEqual(parts.end[0]![0]);
+  });
+
+  it("gives a cut between readings the altitude between them", () => {
+    expect(hideRouteEnds(lines, 150, 250).visible[0]![0]!.altitudeM).toBeCloseTo(1.5, 6);
   });
 
   it("cuts exactly on a reading when the distance lands on one", () => {
-    const parts = hideRouteEnds(route, 200, 300);
-    expect(parts.start).toEqual(route.slice(0, 3));
-    expect(parts.visible).toEqual(route.slice(2, 8));
-    expect(parts.end).toEqual(route.slice(7));
+    const parts = hideRouteEnds(lines, 200, 300);
+    expect(parts.start).toEqual([route.slice(0, 3)]);
+    expect(parts.visible).toEqual([route.slice(2, 8)]);
+    expect(parts.end).toEqual([route.slice(7)]);
   });
 
   it("shows the whole route when nothing is hidden", () => {
-    expect(hideRouteEnds(route, 0, 0)).toEqual({ start: [], visible: route, end: [] });
+    expect(hideRouteEnds(lines, 0, 0)).toEqual({ start: [], visible: lines, end: [] });
   });
 
   it("shows nothing when the hidden ends cover the route", () => {
-    expect(hideRouteEnds(route, 600, 500)).toEqual({ start: route, visible: [], end: [] });
-    expect(hideRouteEnds(route, 2000, 0).visible).toEqual([]);
+    expect(hideRouteEnds(lines, 600, 500)).toEqual({ start: lines, visible: [], end: [] });
+    expect(hideRouteEnds(lines, 2000, 0).visible).toEqual([]);
   });
 
   it("cuts both ends inside one long step", () => {
-    const parts = hideRouteEnds(north(1000, 1000), 100, 100);
+    const parts = hideRouteEnds([north(1000, 1000)], 100, 100);
+    expect(parts.visible).toHaveLength(1);
+    expect(parts.visible[0]).toHaveLength(2);
+    expect(routeLengthM(parts.visible)).toBeCloseTo(800, 6);
+  });
+
+  it("measures along each stretch and never joins two across a pause", () => {
+    // 100 m, then a pause and a 900 m move, then another 100 m.
+    const paused = [north(100, 10), north(100, 10, 1000)];
+    expect(routeLengthM(paused)).toBeCloseTo(200, 6);
+    const parts = hideRouteEnds(paused, 50, 50);
+    expect(routeLengthM(parts.start)).toBeCloseTo(50, 6);
+    expect(routeLengthM(parts.end)).toBeCloseTo(50, 6);
     expect(parts.visible).toHaveLength(2);
-    expect(pathLengthM(parts.visible)).toBeCloseTo(800, 6);
+    expect(routeLengthM(parts.visible)).toBeCloseTo(100, 6);
   });
 });
 

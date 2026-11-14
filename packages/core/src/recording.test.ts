@@ -6,13 +6,15 @@ import {
   fixOf,
   isPaused,
   MAX_ACCURACY_M,
-  MIN_STEP_M,
+  MAX_ALTITUDE_ACCURACY_M,
   movingMs,
   parseJournal,
   recordedDistanceM,
   type RecordingEvent,
   replay,
+  segmentFixes,
 } from "./recording.ts";
+import { ActivityId } from "./schema.ts";
 
 const DEGREE_M = (Math.PI * 6_371_008.8) / 180;
 const T = 1_800_000_000_000;
@@ -25,12 +27,14 @@ const fix = (seconds: number, metres: number, extra: Partial<Fix> = {}): Recordi
     latitude: metres / DEGREE_M,
     longitude: 0,
     altitudeM: null,
+    altitudeAccuracyM: null,
     accuracyM: 5,
     ...extra,
   },
 });
 
-const start: RecordingEvent = { type: "start", at: T, kind: "run" };
+const ACTIVITY = ActivityId.make("0190a000-0000-7000-8000-000000000001");
+const start: RecordingEvent = { type: "start", at: T, kind: "run", activityId: ACTIVITY };
 const pause = (seconds: number): RecordingEvent => ({ type: "pause", at: T + seconds * 1000 });
 const resume = (seconds: number): RecordingEvent => ({ type: "resume", at: T + seconds * 1000 });
 
@@ -43,7 +47,8 @@ const moving = (from: number, to: number, speed: number, offsetM = 0): Recording
 describe("a recording", () => {
   it("counts the distance and time of every reading after start", () => {
     const recording = replay([start, ...moving(0, 100, 4)])!;
-    expect(recordedDistanceM(recording)).toBeCloseTo(400, 6);
+    expect(recordedDistanceM(recording, true)).toBeCloseTo(400, 6);
+    expect(recording.activityId).toBe(ACTIVITY);
     expect(movingMs(recording, T + 100_000)).toBe(100_000);
     expect(isPaused(recording)).toBe(false);
   });
@@ -64,7 +69,7 @@ describe("a recording", () => {
     ])!;
     expect(isPaused(recording)).toBe(false);
     expect(movingMs(recording, T + 180_000)).toBe(120_000);
-    expect(recordedDistanceM(recording)).toBeCloseTo(480, 6);
+    expect(recordedDistanceM(recording, true)).toBeCloseTo(480, 6);
   });
 
   it("keeps the clock still while it is paused", () => {
@@ -80,24 +85,48 @@ describe("a recording", () => {
     expect(recordedDistanceM(late)).toBeCloseTo(recordedDistanceM(onTime), 6);
   });
 
-  it("counts slow movement once it adds up past GPS drift", () => {
-    const recording = replay([start, ...moving(0, 100, 1)])!;
-    expect(recordedDistanceM(recording)).toBeGreaterThan(100 - MIN_STEP_M - 1);
+  it("adds nothing for drift between two points 10 m apart while standing still", () => {
+    const drift = Array.from({ length: 60 }, (_, second) => fix(second, second % 2 === 0 ? 0 : 10));
+    const recording = replay([start, ...drift, pause(60)])!;
+    expect(recordedDistanceM(recording)).toBeLessThanOrEqual(10);
+    expect(recordedDistanceM(replay([start, ...drift, fix(60, 0), pause(61)])!)).toBe(0);
+  });
+
+  it("counts a slow walk whose every step is shorter than the readings' accuracy", () => {
+    const recording = replay([start, ...moving(0, 100, 1.2), pause(100)])!;
+    // Only the last few metres, too short to tell from drift, are left out.
+    expect(recordedDistanceM(recording)).toBeGreaterThan(120 - Math.hypot(5, 5));
+    expect(recordedDistanceM(recording)).toBeLessThanOrEqual(120 + 1e-6);
+  });
+
+  it("counts movement once a second reading shows it went on, or once the stretch ends", () => {
+    const recording = replay([start, fix(0, 0), fix(1, 10)])!;
+    expect(recordedDistanceM(recording)).toBe(0);
+    expect(recordedDistanceM(recording, true)).toBeCloseTo(10, 6);
+    expect(recordedDistanceM(replay([start, fix(0, 0), fix(1, 10), fix(2, 20)])!)).toBeCloseTo(
+      10,
+      6,
+    );
   });
 
   it("leaves out readings that are too unsure, too close, or a jump no one could make", () => {
+    const sure = { accuracyM: null };
     const recording = replay([
       start,
-      fix(0, 0),
+      fix(0, 0, sure),
       fix(1, 500, { accuracyM: MAX_ACCURACY_M + 1 }),
-      fix(2, 1),
-      fix(3, 4),
-      fix(4, 2_000),
-      fix(5, 8),
-      fix(5, 50),
+      fix(2, 1, sure),
+      fix(3, 4, sure),
+      fix(4, 2_000, sure),
+      fix(5, 8, sure),
+      fix(5, 50, sure),
     ])!;
-    expect(recording.segments[0]!.fixes.map((f) => f.at)).toEqual([T, T + 3000, T + 5000]);
-    expect(recordedDistanceM(recording)).toBeCloseTo(8, 6);
+    expect(segmentFixes(recording.segments[0]!, true).map((f) => f.at)).toEqual([
+      T,
+      T + 3000,
+      T + 5000,
+    ]);
+    expect(recordedDistanceM(recording, true)).toBeCloseTo(8, 6);
   });
 
   it("ignores a second start, a pause while paused and a resume while recording", () => {
@@ -105,7 +134,7 @@ describe("a recording", () => {
     expect(
       replay([
         start,
-        { type: "start", at: T + 5000, kind: "ride" },
+        { type: "start", at: T + 5000, kind: "ride", activityId: ACTIVITY },
         ...moving(0, 10, 3),
         pause(10),
         pause(15),
@@ -123,19 +152,33 @@ describe("fixOf", () => {
     coords: { latitude: 59.3, longitude: 18.1, altitude: 21, accuracy: 4, altitudeAccuracy: 3 },
   };
 
-  it("keeps the position, its accuracy and the altitude, to the whole millisecond", () => {
+  it("keeps the position, the altitude and how sure each is, to the whole millisecond", () => {
     expect(fixOf(reading)).toEqual({
       at: T + 1,
       latitude: 59.3,
       longitude: 18.1,
       altitudeM: 21,
+      altitudeAccuracyM: 3,
       accuracyM: 4,
     });
   });
 
   it("drops an altitude iOS could not measure", () => {
     const unmeasured = { ...reading, coords: { ...reading.coords, altitudeAccuracy: -1 } };
-    expect(fixOf(unmeasured).altitudeM).toBeNull();
+    expect(fixOf(unmeasured)).toMatchObject({ altitudeM: null, altitudeAccuracyM: null });
+  });
+
+  it("drops an altitude too unsure to tell a climb from noise", () => {
+    const vague = {
+      ...reading,
+      coords: { ...reading.coords, altitudeAccuracy: MAX_ALTITUDE_ACCURACY_M + 1 },
+    };
+    expect(fixOf(vague)).toMatchObject({ altitudeM: null, altitudeAccuracyM: null });
+    const sure = {
+      ...reading,
+      coords: { ...reading.coords, altitudeAccuracy: MAX_ALTITUDE_ACCURACY_M },
+    };
+    expect(fixOf(sure).altitudeM).toBe(21);
   });
 });
 

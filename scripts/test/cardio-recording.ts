@@ -6,6 +6,7 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 
 import {
+  ActivityId,
   ActivityRepository,
   cardioDraft,
   databaseLayer,
@@ -22,10 +23,24 @@ import { readRoute, type Route } from "../cardio-proof.ts";
 
 /** Readings every second along the route at its speed, as the simulator plays it. */
 export const recordAlong = (route: Route, startedAt: number, shortM = 0): RecordingEvent[] => {
-  const events: RecordingEvent[] = [{ type: "start", at: startedAt, kind: "run" }];
+  const events: RecordingEvent[] = [
+    {
+      type: "start",
+      at: startedAt,
+      kind: "run",
+      activityId: ActivityId.make("0190a000-0000-7000-8000-00000000c0de"),
+    },
+  ];
   const reading = (second: number, latitude: number, longitude: number): RecordingEvent => ({
     type: "fix",
-    fix: { at: startedAt + second * 1000, latitude, longitude, altitudeM: null, accuracyM: 5 },
+    fix: {
+      at: startedAt + second * 1000,
+      latitude,
+      longitude,
+      altitudeM: null,
+      altitudeAccuracyM: null,
+      accuracyM: 5,
+    },
   });
   const legs = route.waypoints.slice(1).map((to, index) => ({ from: route.waypoints[index]!, to }));
   const total = legs.reduce((sum, { from, to }) => sum + distanceM(from, to), 0);

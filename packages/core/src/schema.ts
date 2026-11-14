@@ -181,6 +181,8 @@ export const ActivitySample = Schema.Union([
   Schema.Struct({
     ...sampleFields,
     kind: Schema.Literal("location"),
+    /** Which stretch between start or resume and pause the reading belongs to, from 0. */
+    segment: NonNegativeInt,
     latitude: Schema.Finite.check(Schema.isBetween({ minimum: -90, maximum: 90 })),
     longitude: Schema.Finite.check(Schema.isBetween({ minimum: -180, maximum: 180 })),
     altitudeM: Schema.NullOr(Schema.Finite),
