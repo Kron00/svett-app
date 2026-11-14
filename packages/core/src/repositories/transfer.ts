@@ -41,6 +41,7 @@ import {
   tableKeyOf,
   type UndoEntry,
   undoSelection,
+  withAddedFields,
   withRequired,
   writtenOf,
 } from "../transfer.ts";
@@ -95,7 +96,7 @@ const decodeRows = (rows: RowsByTable) =>
       if (key === undefined) return yield* Effect.die(new Error(`Unknown table ${name}`));
       const decode = Schema.decodeUnknownEffect(Schema.toType(TABLES[key].schema));
       decoded[key] = (yield* Effect.orDie(
-        Effect.forEach(list, (row) => decode(row)),
+        Effect.forEach(list, (row) => decode(withAddedFields(key, row))),
       )) as ReadonlyArray<AnyRow>;
     }
     return decoded as TableRows;

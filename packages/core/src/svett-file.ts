@@ -8,10 +8,14 @@ import {
   type Snapshot,
   TABLE_KEYS,
   type TableRows,
+  withAddedFields,
 } from "./transfer.ts";
 
-/** Raised by every change to the file's shape. An older svett refuses a newer file. */
-export const SVETT_FILE_VERSION = 1;
+/**
+ * Raised by every change to the file's shape. An older svett refuses a newer file. Version 2
+ * added a location sample's segment, which a version 1 file reads as 0, its only stretch.
+ */
+export const SVETT_FILE_VERSION = 2;
 
 export interface SvettFile {
   readonly version: number;
@@ -97,7 +101,7 @@ export const decodeSvettFile = (text: string): Result.Result<SvettFile, SvettFil
     const seen = new Set<string>();
     const kept: Array<AnyRow> = [];
     for (const [index, raw] of (tables[name] ?? []).entries()) {
-      const row = decode(raw);
+      const row = decode(withAddedFields(key, raw));
       if (Exit.isFailure(row)) {
         return Result.fail(
           new SvettFileError({

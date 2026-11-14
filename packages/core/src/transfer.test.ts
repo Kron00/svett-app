@@ -14,6 +14,7 @@ import {
   undoPlanLabel,
   undoSelection,
   withRequired,
+  writtenOf,
 } from "./transfer.ts";
 
 const row = (id: string, fields: Record<string, unknown> = {}, updatedAt = 1): AnyRow => ({
@@ -132,6 +133,19 @@ describe("planImport", () => {
       { activity: [at("a", "Old!", 1), at("b", "New!", 9)] },
     );
     expect(plan.changed.map((item) => item.title)).toEqual(["New!", "Old!"]);
+  });
+});
+
+describe("writtenOf", () => {
+  const sample = (fields: Record<string, unknown>) => ({
+    activitySample: [
+      row("p", { activityTrackId: "t", kind: "location", latitude: 59.33, longitude: 18.06, ...fields }),
+    ],
+  });
+
+  it("fingerprints a location sample in the first stretch as it did before samples had a stretch", () => {
+    expect(writtenOf(sample({ segment: 0 }))).toBe(writtenOf(sample({})));
+    expect(writtenOf(sample({ segment: 1 }))).not.toBe(writtenOf(sample({})));
   });
 });
 

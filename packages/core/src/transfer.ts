@@ -82,6 +82,32 @@ export const CHILDREN: Readonly<Record<TableKey, ReadonlyArray<TableKey>>> = Obj
 export const tableKeyOf = (name: string): TableKey | undefined =>
   TABLE_KEYS.find((key) => TABLES[key].name === name);
 
+/**
+ * Fields added after svett files and import journals were first written, with the value the
+ * migration gave each row that had none. A row written before a field existed reads with it,
+ * and a row whose field still has that value fingerprints as it did before.
+ */
+const addedFields = (
+  table: TableKey,
+  row: Readonly<Record<string, unknown>>,
+): Readonly<Record<string, unknown>> | undefined =>
+  table === "activitySample" && row["kind"] === "location" ? { segment: 0 } : undefined;
+
+/** A raw row with each field added since it was written filled in, ready for its schema. */
+export const withAddedFields = (table: TableKey, raw: unknown): unknown => {
+  if (typeof raw !== "object" || raw === null) return raw;
+  const added = addedFields(table, raw as Record<string, unknown>);
+  return added === undefined ? raw : { ...added, ...raw };
+};
+
+const withoutAddedFields = (table: TableKey, row: AnyRow): AnyRow => {
+  const added = addedFields(table, row);
+  if (added === undefined) return row;
+  return Object.fromEntries(
+    Object.entries(row).filter(([field, value]) => !(field in added) || added[field] !== value),
+  ) as AnyRow;
+};
+
 /** What one record is called in a preview. */
 const NOUN: Readonly<Record<TableKey, readonly [one: string, other: string]>> = {
   importBatch: ["import", "imports"],
@@ -170,7 +196,7 @@ export const writtenOf = (rows: TableRows): Fingerprint =>
       TABLE_KEYS.flatMap((table) =>
         [...(rows[table] ?? [])]
           .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
-          .map((row) => [TABLES[table].name, row]),
+          .map((row) => [TABLES[table].name, withoutAddedFields(table, row)]),
       ),
     ),
   );
@@ -487,7 +513,7 @@ export const journalProblem = (change: ImportChange): string | undefined => {
     if (key === undefined) return `it names a table svett does not know, ${name}`;
     const decode = Schema.decodeUnknownExit(Schema.toType(TABLES[key].schema));
     for (const raw of rows) {
-      const row = decode(raw);
+      const row = decode(withAddedFields(key, raw));
       if (Exit.isFailure(row)) return `it keeps a ${name} row that is not valid`;
       const value = row.value as AnyRow;
       if (!written.get(name)?.has(value.id)) {
