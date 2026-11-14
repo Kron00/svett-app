@@ -157,7 +157,7 @@ CREATE TABLE sync_state (id INTEGER PRIMARY KEY NOT NULL, quiet INTEGER NOT NULL
   mark INTEGER NOT NULL, cursor INTEGER NOT NULL, clock INTEGER NOT NULL,
   newest_seen INTEGER NOT NULL) STRICT;
 INSERT INTO sync_state (id, quiet, mark, cursor, clock, newest_seen) VALUES (1, 0, 0, 0, max(0, ${[
-  ...syncedAtVersion4,
+  ...syncedAtVersion8,
   "proposal",
   "coach_message",
 ]
