@@ -161,6 +161,10 @@ const activity = (overrides: Record<string, unknown> = {}) => ({
 
 type Shown = { readonly id: string; readonly title: string };
 
+/** The feed after a cursor naming the post with social ID `id`. */
+const feedAfterPost = (id: string) =>
+  `/v1/feed?cursor=${Buffer.from(JSON.stringify({ id })).toString("base64url")}`;
+
 const feedPage = (account: string, cursor?: string) =>
   Effect.map(
     ok(account, "GET", cursor === undefined ? "/v1/feed" : `/v1/feed?cursor=${cursor}`),
@@ -357,7 +361,7 @@ describe("the feed", { timeout: 60_000 }, () => {
         // before, and the posts within one write share their time, so only the tie-break
         // orders them.
         const writes = Array.from({ length: 5 }, (_, batch) =>
-          Array.from({ length: 5 }, (_, index) =>
+          [0, 1, 2, 3, 4].map((index) =>
             activity({
               startedAt: 1_790_000_000_000 - batch * 86_400_000 + index * 1000,
               title: `Write ${batch}`,
@@ -455,12 +459,14 @@ describe("the feed", { timeout: 60_000 }, () => {
         const stranger = activity({ title: "Cara, everyone" });
         yield* write(CARA, [stranger]);
         const cursor = (yield* ok(ANNA, "GET", "/v1/feed")).body.next as string;
-        const at = (id: string) =>
-          `/v1/feed?cursor=${Buffer.from(JSON.stringify({ id })).toString("base64url")}`;
         const following = yield* as(ANNA, "GET", `/v1/feed?cursor=${cursor}`);
         // Cara's post is Anna's to see on Cara's profile, but it is not in Anna's feed.
-        const notInFeed = yield* as(ANNA, "GET", at(yield* idOf(CARA, "cara", stranger.row.title)));
-        const nothing = yield* as(ANNA, "GET", at(nextId()));
+        const notInFeed = yield* as(
+          ANNA,
+          "GET",
+          feedAfterPost(yield* idOf(CARA, "cara", stranger.row.title)),
+        );
+        const nothing = yield* as(ANNA, "GET", feedAfterPost(nextId()));
         yield* ok(ANNA, "DELETE", "/v1/profiles/ben/follow");
         const unfollowed = yield* as(ANNA, "GET", `/v1/feed?cursor=${cursor}`);
         return { following, refused: [notInFeed, nothing, unfollowed] };

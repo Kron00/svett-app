@@ -151,6 +151,9 @@ const relation = (viewer: AccountId, owner: string, follow: FollowState): Relati
   blocked: false,
 });
 
+/** Where an inbox row sits in the inbox's order. */
+const position = (row: InboxRow) => ({ at: Number(row.at), key: row.key });
+
 type FeedAnchor = { readonly sharedMs: string; readonly socialId: string };
 
 type FeedRow = FeedAnchor & {
@@ -613,8 +616,7 @@ export class FeedRows extends Context.Service<FeedRows, FeedRowsShape>()("svett/
               select read_until as "readUntil" from inbox_read where account_id = ${viewer}
             `;
             const readUntil = Number(read?.readUntil ?? 0);
-            const position = (row: InboxRow) => ({ at: Number(row.at), key: row.key });
-            const item = (row: InboxRow) => inboxItem(viewer, readUntil, row);
+            const itemOf = (row: InboxRow) => inboxItem(viewer, readUntil, row);
             // Items about a post the viewer may no longer see are skipped before paging and
             // counting, so they neither shorten a page nor place a cursor.
             const page = yield* firstVisible(
@@ -625,7 +627,7 @@ export class FeedRows extends Context.Service<FeedRows, FeedRowsShape>()("svett/
                   limit: SCAN,
                 });
               },
-              item,
+              itemOf,
               INBOX_PAGE + 1,
             );
             const unread = yield* firstVisible(
@@ -635,7 +637,7 @@ export class FeedRows extends Context.Service<FeedRows, FeedRowsShape>()("svett/
                   after: readUntil,
                   limit: SCAN,
                 }),
-              item,
+              itemOf,
               INBOX_PAGE,
             );
             const last = page[INBOX_PAGE - 1];
