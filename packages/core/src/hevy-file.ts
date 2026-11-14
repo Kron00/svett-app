@@ -1,4 +1,4 @@
-import { Data, Result, Schema } from "effect";
+import { Data, Option, Result, Schema, SchemaTransformation } from "effect";
 
 import { contentFingerprint } from "./ids.ts";
 import { Rpe, type SetType } from "./schema.ts";
@@ -224,17 +224,35 @@ const SET_TYPES: Readonly<Record<string, SetType>> = {
   drop: "drop",
 };
 
-const number = (raw: string | undefined): number | null => {
-  const value = raw?.trim() ?? "";
-  if (value === "") return null;
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed : null;
-};
+const NonNegative = Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0));
+const NonNegativeInt = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
 
-const nonNegative = (value: number | null) => (value !== null && value >= 0 ? value : null);
+/** A plain decimal, so text such as "12kg", "1e3" or "0x10" is refused rather than guessed at. */
+const decimal = (to: typeof NonNegative) =>
+  Schema.decodeUnknownOption(
+    Schema.String.check(Schema.isPattern(/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$/)).pipe(
+      Schema.decodeTo(to, SchemaTransformation.numberFromString),
+    ),
+  );
+
+/** The numeric columns, each with the values svett can store for it. */
+const NUMBER_COLUMNS = {
+  set_index: decimal(NonNegativeInt),
+  superset_id: decimal(NonNegativeInt),
+  weight_kg: decimal(NonNegative),
+  weight_lbs: decimal(NonNegative),
+  reps: decimal(NonNegativeInt),
+  distance_km: decimal(NonNegative),
+  distance_miles: decimal(NonNegative),
+  duration_seconds: decimal(NonNegative),
+  rpe: decimal(Rpe),
+} satisfies Partial<Record<Column, unknown>>;
+
+type NumberColumn = keyof typeof NUMBER_COLUMNS;
+const NUMBER_COLUMN_NAMES = Object.keys(NUMBER_COLUMNS) as ReadonlyArray<NumberColumn>;
+
 const rounded = (value: number | null, places: number) =>
   value === null ? null : Math.round(value * 10 ** places) / 10 ** places;
-const isRpe = Schema.is(Rpe);
 
 /**
  * Reads a Hevy workout export. A row is one set. Rows with the same title, start and end make
@@ -310,7 +328,17 @@ export const decodeHevyFile = (
 
     const name = get(row, "exercise_title")?.trim() ?? "";
     if (name === "") return invalid(`Row ${line} has no exercise.`);
-    const setIndex = number(get(row, "set_index"));
+    const numbers: Partial<Record<NumberColumn, number | null>> = {};
+    for (const column of NUMBER_COLUMN_NAMES) {
+      const raw = get(row, column)?.trim() ?? "";
+      const value = raw === "" ? Option.some(null) : NUMBER_COLUMNS[column](raw);
+      if (Option.isNone(value)) {
+        return invalid(`Row ${line} has a ${column} svett cannot read, "${raw}".`);
+      }
+      numbers[column] = value.value;
+    }
+    const number = (column: NumberColumn) => numbers[column] ?? null;
+    const setIndex = number("set_index");
     const last = workout.exercises.at(-1);
     const exercise =
       last !== undefined &&
@@ -319,7 +347,7 @@ export const decodeHevyFile = (
         ? last
         : {
             name,
-            supersetGroup: nonNegative(number(get(row, "superset_id"))),
+            supersetGroup: number("superset_id"),
             notes: get(row, "exercise_notes") ?? "",
             sets: [],
             lastIndex: null,
@@ -327,21 +355,20 @@ export const decodeHevyFile = (
     if (exercise !== last) workout.exercises.push(exercise);
     exercise.lastIndex = setIndex;
 
-    const kg = number(get(row, "weight_kg"));
-    const lbs = number(get(row, "weight_lbs"));
-    const km = number(get(row, "distance_km"));
-    const miles = number(get(row, "distance_miles"));
-    const reps = number(get(row, "reps"));
-    const rpe = number(get(row, "rpe"));
+    const kg = number("weight_kg");
+    const lbs = number("weight_lbs");
+    const km = number("distance_km");
+    const miles = number("distance_miles");
     const set: HevySet = {
       setType: SET_TYPES[(get(row, "set_type") ?? "").trim().toLowerCase()] ?? "normal",
-      weightKg: nonNegative(rounded(kg ?? (lbs === null ? null : lbs * KG_PER_LB), 3)),
-      reps: reps !== null && Number.isInteger(reps) && reps >= 0 ? reps : null,
-      durationS: nonNegative(number(get(row, "duration_seconds"))),
-      distanceM: nonNegative(
-        rounded(km === null ? (miles === null ? null : miles * METRES_PER_MILE) : km * 1_000, 1),
+      weightKg: rounded(kg ?? (lbs === null ? null : lbs * KG_PER_LB), 3),
+      reps: number("reps"),
+      durationS: number("duration_seconds"),
+      distanceM: rounded(
+        km === null ? (miles === null ? null : miles * METRES_PER_MILE) : km * 1_000,
+        1,
       ),
-      rpe: rpe !== null && isRpe(rpe) ? rpe : null,
+      rpe: number("rpe"),
     };
     if (set.reps === null && set.durationS === null && set.distanceM === null) emptySets++;
     else {

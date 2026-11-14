@@ -182,13 +182,11 @@ describe("decodeHevyFile", () => {
     const text = [
       HEADER,
       '"Legs","1 Feb 2025, 10:00","1 Feb 2025, 11:00","","Squat (Barbell)",,"",0,"normal",100,,,,',
-      '"Legs","1 Feb 2025, 10:00","1 Feb 2025, 11:00","","Squat (Barbell)",,"",1,"normal",100,5,,,11',
+      '"Legs","1 Feb 2025, 10:00","1 Feb 2025, 11:00","","Squat (Barbell)",,"",1,"normal",100,5,,,',
     ].join("\n");
     const file = Result.getOrThrow(decode(text));
     expect(file.sets).toBe(1);
     expect(file.emptySets).toBe(1);
-    // RPE 11 is outside Hevy's scale and svett's, so the set keeps everything else.
-    expect(file.workouts[0]?.exercises[0]?.sets[0]?.rpe).toBeNull();
   });
 
   it("tells two workouts with one start apart by title or end", () => {
@@ -222,6 +220,29 @@ describe("decodeHevyFile", () => {
       message: "Row 2 has no exercise.",
     });
     expect(failureOf(`${HEADER}\n"Legs,"1 Feb`)).toMatchObject({ reason: "invalid" });
+  });
+
+  it("refuses a number it cannot read, naming the row and the column", () => {
+    const legs = (fields: string) =>
+      `${HEADER}\n${row("Squat (Barbell)", 0)}\n"Legs","1 Feb 2025, 10:00","1 Feb 2025, 11:00","","Squat (Barbell)",${fields}`;
+    const cases: ReadonlyArray<readonly [fields: string, message: string]> = [
+      [',"",1,"normal",10O,5,,,', 'Row 3 has a weight_kg svett cannot read, "10O".'],
+      [',"",1,"normal",100,five,,,', 'Row 3 has a reps svett cannot read, "five".'],
+      [',"",1,"normal",100,5.5,,,', 'Row 3 has a reps svett cannot read, "5.5".'],
+      [',"",1,"normal",-20,5,,,', 'Row 3 has a weight_kg svett cannot read, "-20".'],
+      [',"",1,"normal",1e3,5,,,', 'Row 3 has a weight_kg svett cannot read, "1e3".'],
+      [',"",1,"normal",100,5,,,11', 'Row 3 has a rpe svett cannot read, "11".'],
+      [',"",1,"normal",100,5,,60s,', 'Row 3 has a duration_seconds svett cannot read, "60s".'],
+      [',"",x,"normal",100,5,,,', 'Row 3 has a set_index svett cannot read, "x".'],
+      ['A,"",1,"normal",100,5,,,', 'Row 3 has a superset_id svett cannot read, "A".'],
+      [',"",1,"normal",100,5,"1,5",,', 'Row 3 has a distance_km svett cannot read, "1,5".'],
+    ];
+    for (const [fields, message] of cases) {
+      expect(failureOf(legs(fields))).toMatchObject({ reason: "invalid", message });
+    }
+    // Spaces around a number and an empty field are fine.
+    const file = Result.getOrThrow(decode(legs(',"",1,"normal", 102.5 ,5,,,')));
+    expect(file.workouts.at(-1)?.exercises[0]?.sets[0]).toMatchObject({ weightKg: 102.5, reps: 5 });
   });
 });
 
