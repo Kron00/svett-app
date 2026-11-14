@@ -71,10 +71,19 @@ export function PlatesScreen({ route, navigation }: Props) {
   const { unit } = useWorkoutSettings();
   const gear = useBarsAndPlates();
   // The weight keeps the unit it was typed in, so changing units under it converts it.
-  const [entry, setEntry] = useState(() => weightEntry(linkedKg(route.params?.kg), unit));
-  const { text } = weightEntryIn(entry, unit);
+  const linked = route.params?.kg;
+  const [entry, setEntry] = useState(() => weightEntry(linkedKg(linked), unit));
   // The first key replaces a weight the screen opened with, as the logger's keypad does.
   const [fresh, setFresh] = useState(true);
+  // A link opened on this screen keeps the screen and only changes its params, so the new
+  // weight replaces what is on it here.
+  const [shownLink, setShownLink] = useState(linked);
+  if (linked !== shownLink) {
+    setShownLink(linked);
+    setEntry(weightEntry(linkedKg(linked), unit));
+    setFresh(true);
+  }
+  const { text } = weightEntryIn(entry, unit);
   const [barIndex, setBarIndex] = useState(0);
   if (gear.status !== "ready") return <GearNotReady query={gear} />;
   const { bars, plates } = gear.value[unit];
