@@ -2366,4 +2366,215 @@ check "feed.sh refuses to run without post IDs or a key to make them" test "$fee
 check "feed.sh says what to set" grep -qF "Set SVETT_FEED_POSTS to the two post IDs" "$output"
 check "feed.sh touches no simulator without post IDs" test ! -s "$root/simctl-calls"
 
+# Stands in for the bound command on the safety screens. It tracks the screen, the
+# sign-in step, the block and the deletion. Each control under a screen's top shows
+# only after a scroll since the screen last changed, so the test proves the script
+# scrolls to it. svett's own confirmations show as buttons by label. FAKE_NO_CLERK
+# makes Account say the build has no Clerk key, FAKE_NOT_BLOCKED leaves the profile
+# as it was, FAKE_DELETE_FAILS keeps the account signed in with a problem, and
+# FAKE_NOT_KEPT finds no exercise after the deletion.
+cat >"$fake/safety-device" <<EOF
+#!/usr/bin/env bash
+echo "\$*" >>"$root/bound-calls"
+state="$root/safety-state"
+get() { cat "\$state/\$1" 2>/dev/null || echo "\$2"; }
+put() { echo "\$2" >"\$state/\$1"; }
+mkdir -p "\$state"
+screen=\$(get screen tabs)
+step=\$(get step choose)
+scrolled=\$(get scrolled no)
+show() { put screen "\$1"; put scrolled no; }
+id_of() { sed -nE 's/.*id="([^"]+)".*/\1/p' <<<"\$1"; }
+label_of() { sed -nE 's/.*label="([^"]+)".*/\1/p' <<<"\$1"; }
+# key_of <args> names the element an id selector names, or label:<label> for a label alone.
+key_of() {
+  local id
+  id=\$(id_of "\$1")
+  if [[ -n "\$id" ]]; then echo "\$id"; elif [[ -n "\$(label_of "\$1")" ]]; then echo "label:\$(label_of "\$1")"; fi
+}
+under() { [[ "\$scrolled" == yes ]]; }
+# on_screen <key> is true when the element is on screen now.
+on_screen() {
+  case "\$screen:\$1" in
+    tabs:label:*) true ;;
+    account:account) true ;;
+    account:accounts-off) [[ -n "\${FAKE_NO_CLERK:-}" ]] ;;
+    account:*) [[ -z "\${FAKE_NO_CLERK:-}" ]] || return 1
+      case "\$step:\$1" in
+        choose:sign-in-choose | email:sign-in-email | email:email-field | code:sign-in-code | \
+          code:code-field | signedin:signed-in | choice:delete-keep-copy | \
+          confirm:label:Delete\ account | signedout:sign-in-choose | failed:sign-in-problem | \
+          choice:signed-in | confirm:signed-in | failed:signed-in) true ;;
+        choose:continue-with-email | email:send-code | code:check-code | signedin:delete-account | \
+          choice:delete-erase-copy) under ;;
+        *) false ;;
+      esac ;;
+    edit:username-field) true ;;
+    edit:save-profile | form:save-exercise) under ;;
+    form:exercise-form | detail:exercise-name) true ;;
+    profile:profile-username) [[ "\$(get block none)" != blocked ]] ;;
+    profile:label:Block\ safety_proof_a) [[ "\$(get block none)" == none ]] ;;
+    profile:label:Block) [[ "\$(get block none)" == asking ]] ;;
+    profile:profile-blocked) [[ "\$(get block none)" == blocked ]] ;;
+    profile:block-problem) [[ "\$(get block none)" == refused ]] ;;
+    blocks:blocks) true ;;
+    blocks:blocked-safety_proof_a) [[ "\$(get block none)" == blocked ]] ;;
+    blocks:unblock-safety_proof_a) [[ "\$(get block none)" == blocked ]] && under ;;
+    blocks:blocks-empty) [[ "\$(get block none)" == unblocked ]] ;;
+    library:exercise-library) true ;;
+    library:exercise-result-0) [[ -z "\${FAKE_NOT_KEPT:-}" ]] ;;
+    *) false ;;
+  esac
+}
+label() {
+  case "\$1" in
+    profile-username) echo safety_proof_a ;;
+    exercise-name) get exercise "" ;;
+    sign-in-problem) echo "Your data is gone from svett, but signing you out everywhere did not finish. Try again." ;;
+    block-problem) echo "That was a lot at once. Try again in 30 seconds." ;;
+    *) echo "" ;;
+  esac
+}
+exists() { on_screen "\$1" || { scrolled=yes; on_screen "\$1"; }; }
+args=" \$* "
+target=\$(key_of "\$args")
+case "\$args" in
+  *" open com.kron00.svett svett://account "*) show account ;;
+  *" open com.kron00.svett svett://profile/edit?username="*) show edit ;;
+  *" open com.kron00.svett svett://exercises/new?name="*)
+    put exercise "\$(node -e 'console.log(decodeURIComponent(process.argv[1]))' "\$(sed -nE 's/.*name=([^&]+)&.*/\1/p' <<<"\$args")")"
+    show form ;;
+  *" open com.kron00.svett svett://profile/blocked "*) show blocks ;;
+  *" open com.kron00.svett svett://people/safety_proof_a "*) show profile ;;
+  *" open com.kron00.svett svett://exercises?q="*) show library ;;
+  *" open com.kron00.svett "*) show tabs ;;
+  *" scroll "*" --until "*) exists "\$target" && put scrolled yes ;;
+  *" scroll "*) put scrolled yes ;;
+  *" get attrs "*)
+    on_screen "\$target" || exit 1
+    put last "\$target"
+    if [[ "\$target" == exercise-result-0 ]]; then
+      echo "{\"label\": \"\$(get exercise ""), Chest, Cable\", \"rect\": {\"x\": 20, \"y\": 300, \"width\": 120, \"height\": 40}}"
+    else
+      echo '{"label": "Field", "rect": {"x": 20, "y": 300, "width": 120, "height": 40}}'
+    fi ;;
+  *" fill 80 320 "*)
+    [[ "\$(get last)" == email-field || "\$(get last)" == code-field ]] || exit 1 ;;
+  *" press 80 320 "*)
+    case "\$screen:\$step:\$(get last)" in
+      account:choose:continue-with-email) put step email ;;
+      account:email:send-code) put step code ;;
+      account:code:check-code) put step signedin ;;
+      account:signedin:delete-account) put step choice; put scrolled no ;;
+      account:choice:delete-keep-copy) put step confirm ;;
+      account:confirm:label:Delete\ account)
+        if [[ -n "\${FAKE_DELETE_FAILS:-}" ]]; then put step failed; else put step signedout; fi ;;
+      edit:*:save-profile) show tabs ;;
+      form:*:save-exercise) show detail ;;
+      profile:*:label:Block\ safety_proof_a) put block asking ;;
+      profile:*:label:Block)
+        if [[ -n "\${FAKE_NOT_BLOCKED:-}" ]]; then put block refused; else put block blocked; fi ;;
+      blocks:*:unblock-safety_proof_a) put block unblocked ;;
+      *) echo "fake device: press on \$(get last) on \$screen" >&2; exit 1 ;;
+    esac ;;
+  *" get text "*) label "\$target" ;;
+  *" wait absent "*) ! on_screen "\$target" ;;
+  *" is visible "* | *" wait "*)
+    [[ -z "\$target" ]] && exit 0
+    if [[ "\$target" == label:* ]]; then on_screen "\$target"; exit; fi
+    on_screen "\$target" || exit 1
+    wanted=\$(label_of "\$args")
+    [[ -z "\$wanted" || "\$(label "\$target")" == "\$wanted" ]] ;;
+esac
+EOF
+chmod +x "$fake/safety-device"
+
+# run_safety [VAR=value...] [safety.sh args...] leaves the exit status in safety_status.
+run_safety() {
+  local -a vars=()
+  while [[ "${1:-}" == *=* ]]; do
+    vars+=("$1")
+    shift
+  done
+  rm -rf "$root/simctl-calls" "$root/bound-calls" "$root/safety-state"
+  safety_status=0
+  env PATH="$fake:$PATH" SVETT_DEVICE_CMD="safety-device --session 't3-test session' --device FAKE-UDID" \
+    "${vars[@]}" "$repo/scripts/sim/safety.sh" "$@" >"$output" 2>&1 || safety_status=$?
+}
+
+safety_links=("com.kron00.svett svett://account" "com.kron00.svett svett://profile/edit?username=safety_proof_d"
+  "com.kron00.svett svett://exercises/new?name=Safety%20proof%20press&muscle=chest&equipment=cable"
+  "com.kron00.svett svett://people/safety_proof_a" "com.kron00.svett svett://profile/blocked"
+  "com.kron00.svett svett://account" "com.kron00.svett svett://exercises?q=Safety%20proof%20press")
+
+case_name="safety.sh Debug with SVETT_DEVICE_CMD"
+for stale in svett-anonymous.db svett-account-user_old.db-wal ExpoSQLiteStorage; do
+  echo stale >"$container_sqlite/$stale"
+done
+run_safety "$root/safety"
+[[ "$safety_status" == 0 ]] || fail "safety.sh failed"
+check "safety.sh removes svett's databases and its stored answers" test -z "$(ls "$container_sqlite")"
+check "safety.sh stops svett and drops every Clerk session before it changes the files" \
+  only_simctl "simctl list devices available" "simctl terminate FAKE-UDID com.kron00.svett" "simctl keychain FAKE-UDID reset" \
+  "simctl get_app_container FAKE-UDID com.kron00.svett data"
+check "safety.sh relaunches into the dev client, then opens each screen by its link" \
+  only_open "$debug_open" "${safety_links[@]}"
+check "safety.sh signs in a Clerk test account with the test code, at the field centres" \
+  only_calls "fill" "fill 80 320 svett-safety-d+clerk_test@example.com" "fill 80 320 $test_code"
+check "safety.sh presses Block and svett's own confirmations by their labels, never alert accept" \
+  only_calls "get attrs label|alert" \
+  'get attrs label="Block safety_proof_a"' 'get attrs label="Block safety_proof_a"' \
+  'get attrs label="Block"' 'get attrs label="Block"' \
+  'get attrs label="Delete account"' 'get attrs label="Delete account"'
+check "safety.sh scrolls to Delete account before it presses it" \
+  bound_got '--session t3-test session --device FAKE-UDID scroll down --until id="delete-account"'
+check "safety.sh scrolls to the erase choice to check it is offered" \
+  bound_got '--session t3-test session --device FAKE-UDID scroll down --until id="delete-erase-copy"'
+check "safety.sh scrolls to Unblock before it presses it" \
+  bound_got '--session t3-test session --device FAKE-UDID scroll down --until id="unblock-safety_proof_a"'
+check "safety.sh shoots each screen at the largest text size, then restores the default" \
+  only_calls "settings text-size" \
+  "settings text-size accessibility-extra-extra-extra-large" "settings text-size large"
+check "safety.sh screenshots the profile, the block, the blocked accounts, the choice, the sign-out and the kept copy" \
+  only_calls "screenshot" \
+  "screenshot $root/safety/01-profile.png" "screenshot $root/safety/02-blocked.png" \
+  "screenshot $root/safety/03-blocked-accounts.png" "screenshot $root/safety/04-delete-choice.png" \
+  "screenshot $root/safety/05-signed-out.png" "screenshot $root/safety/06-kept-copy.png"
+check "safety.sh says the kept copy holds the exercise with no account" \
+  grep -qF 'The kept copy holds "Safety proof press" with no account.' "$output"
+check "safety.sh with SVETT_DEVICE_CMD calls neither simctl launch nor openurl" no_simctl_launch_or_openurl
+
+case_name="safety.sh Release with SVETT_DEVICE_CMD"
+run_safety --release "$root/safety-release"
+[[ "$safety_status" == 0 ]] || fail "safety.sh --release failed"
+check "safety.sh Release relaunches the installed app without Metro" \
+  only_open "com.kron00.svett --relaunch" "${safety_links[@]}"
+
+case_name="safety.sh when the block does not take"
+run_safety FAKE_NOT_BLOCKED=1 "$root/safety-not-blocked"
+check "safety.sh fails when the profile does not say it is blocked" test "$safety_status" -ne 0
+check "safety.sh says why the block did not finish" \
+  grep -qF "Blocking safety_proof_a did not finish: That was a lot at once." "$output"
+check "safety.sh restores the default text size after a failure" \
+  only_calls "settings text-size" \
+  "settings text-size accessibility-extra-extra-extra-large" "settings text-size large"
+
+case_name="safety.sh when the deletion fails"
+run_safety FAKE_DELETE_FAILS=1 "$root/safety-delete-fails"
+check "safety.sh fails when deleting the account does not sign out" test "$safety_status" -ne 0
+check "safety.sh says what Account said" \
+  grep -qF "Deleting the account did not sign out: Your data is gone from svett, but signing you out everywhere did not finish." "$output"
+
+case_name="safety.sh when the kept copy is missing"
+run_safety FAKE_NOT_KEPT=1 "$root/safety-not-kept"
+check "safety.sh fails when the exercise is gone after keeping a copy" test "$safety_status" -ne 0
+check "safety.sh says the kept copy is missing" \
+  grep -qF '"Safety proof press" is not on the phone after the deletion kept a copy' "$output"
+
+case_name="safety.sh on a build without a Clerk key"
+run_safety FAKE_NO_CLERK=1 "$root/safety-no-clerk"
+check "safety.sh fails on a build without a Clerk key" test "$safety_status" -ne 0
+check "safety.sh says to build with the publishable key" \
+  grep -qF "Build it with EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY set" "$output"
+
 echo "$passed passed"
