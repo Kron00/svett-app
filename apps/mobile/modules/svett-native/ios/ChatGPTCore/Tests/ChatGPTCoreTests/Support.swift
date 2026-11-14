@@ -39,13 +39,15 @@ final class Gate: @unchecked Sendable {
     }
 }
 
-struct HeldRefreshes: OpenAITransport {
+/// Holds every answer from `endpoint` until the gate opens.
+struct Held: OpenAITransport {
     let stub: StubOpenAI
     let gate: Gate
+    let endpoint: StubOpenAI.Endpoint
 
     func send(_ request: URLRequest) async throws -> (status: Int, body: Data) {
         let answer = try await stub.send(request)
-        if fields(request)["grant_type"] == "refresh_token" { await gate.wait() }
+        if endpointOf(request) == endpoint { await gate.wait() }
         return answer
     }
 }
@@ -109,11 +111,13 @@ final class Harness: @unchecked Sendable {
     let store: FlakyStore
     let account: ChatGPTAccount
 
-    init(vault: Vault? = nil, grantedScope: String = OpenAI.scope, gate: Gate? = nil) {
+    /// With a gate, the answers from `holding` wait until it opens.
+    init(vault: Vault? = nil, grantedScope: String = OpenAI.scope, gate: Gate? = nil,
+         holding: StubOpenAI.Endpoint = .refresh) {
         let clock = TestClock()
         let stub = StubOpenAI(grantedScope: grantedScope, now: { clock.now })
         let store = FlakyStore(vault)
-        let transport: any OpenAITransport = gate.map { HeldRefreshes(stub: stub, gate: $0) } ?? stub
+        let transport: any OpenAITransport = gate.map { Held(stub: stub, gate: $0, endpoint: holding) } ?? stub
         self.clock = clock
         self.stub = stub
         self.store = store
@@ -136,20 +140,24 @@ final class Harness: @unchecked Sendable {
     }
 
     func requests(to endpoint: StubOpenAI.Endpoint) -> [URLRequest] {
-        stub.requests.filter { request in
-            switch endpoint {
-            case .exchange: request.url == OpenAI.token && fields(request)["grant_type"] == "authorization_code"
-            case .refresh: request.url == OpenAI.token && fields(request)["grant_type"] == "refresh_token"
-            case .revoke: request.url == OpenAI.revoke
-            case .keys: request.url == OpenAI.keys
-            }
-        }
+        stub.requests.filter { endpointOf($0) == endpoint }
     }
 
     /// The query of the page the next sign-in would open.
     func signInPage(_ choice: SignInChoice, account saved: String? = nil) async throws -> [String: String] {
         let page = try await account.beginSignIn(port: 1455, choice: choice, account: saved).get().page
         return query(URLComponents(url: page, resolvingAgainstBaseURL: false)?.queryItems)
+    }
+}
+
+func endpointOf(_ request: URLRequest) -> StubOpenAI.Endpoint? {
+    if request.url == OpenAI.revoke { return .revoke }
+    if request.url == OpenAI.keys { return .keys }
+    guard request.url == OpenAI.token else { return nil }
+    switch fields(request)["grant_type"] {
+    case "authorization_code": return .exchange
+    case "refresh_token": return .refresh
+    default: return nil
     }
 }
 

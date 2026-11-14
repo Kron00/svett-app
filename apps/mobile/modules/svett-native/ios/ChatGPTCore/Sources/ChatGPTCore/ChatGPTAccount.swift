@@ -201,11 +201,16 @@ actor ChatGPTAccount {
         registration.email = identity.email
         registration.idToken = idToken
         vault.keep(registration)
+        let replaced = vault.session
         vault.session = Vault.Session(
             clientID: grant.clientID, accessToken: tokens.accessToken, refreshToken: tokens.refreshToken,
             scope: tokens.scope ?? "", expiresAt: now().addingTimeInterval(tokens.expiresIn ?? Self.documentedLifetime))
         vault.ended = nil
         persist()
+        // Allowing plan usage, or a sign-in while signed in, replaces a session whose refresh token
+        // still works at OpenAI. It is revoked as a sign-out revokes it, without holding up the new
+        // sign-in on OpenAI's answer.
+        if let replaced { Task { _ = await self.revoke(replaced) } }
         return nil
     }
 
