@@ -100,21 +100,25 @@ const inIds = "id IN (SELECT value FROM json_each(?))";
 
 /**
  * The rows an import wrote, deleted or not, and every live row now below them, such as a set
- * added to an imported workout later. Undo and its preview read the record through this.
+ * added to an imported workout later. With `root`, also the record's top row, deleted or not,
+ * and every live row below it, so the rows cover the whole record.
  */
-const journalRows = (rowIds: RowIdsByTable) =>
+const journalRows = (
+  rowIds: RowIdsByTable,
+  root?: { readonly table: string; readonly id: string },
+) =>
   Effect.gen(function* () {
     const rows: Partial<Record<TableKey, Map<string, AnyRow>>> = {};
     const add = (key: TableKey, found: ReadonlyArray<AnyRow>) => {
       const byId = (rows[key] ??= new Map());
       const fresh = found.filter((row) => !byId.has(row.id));
       for (const row of fresh) byId.set(row.id, row);
-      return fresh;
+      return fresh.map((row) => row.id);
     };
-    const below = (key: TableKey, parents: ReadonlyArray<AnyRow>) =>
+    const below = (key: TableKey, parents: ReadonlyArray<string>) =>
       Effect.gen(function* (): Effect.fn.Return<void, never, Sql> {
         if (parents.length === 0) return;
-        const parentIds = JSON.stringify(parents.map((row) => row.id));
+        const parentIds = JSON.stringify(parents);
         for (const child of CHILDREN[key]) {
           const parentKey = columnOf(PARENT[child]?.key ?? "id");
           const found = yield* Effect.orDie(
@@ -132,6 +136,16 @@ const journalRows = (rowIds: RowIdsByTable) =>
         selectRowsWithDeleted(anyTable(key), inIds, [JSON.stringify(ids)]),
       );
       yield* below(key, add(key, found));
+    }
+    const rootKey = root === undefined ? undefined : tableKeyOf(root.table);
+    if (root !== undefined && rootKey !== undefined) {
+      const found = yield* Effect.orDie(
+        selectRowsWithDeleted(anyTable(rootKey), inIds, [JSON.stringify([root.id])]),
+      );
+      add(rootKey, found);
+      // The top row may be missing, as for a set imported without its workout, so the rows
+      // below it are found by its ID.
+      yield* below(rootKey, [root.id]);
     }
     return Object.fromEntries(
       TABLE_KEYS.flatMap((key) => (rows[key] ? [[key, [...rows[key].values()]]] : [])),
@@ -205,7 +219,9 @@ const recordChange = (
         itemAt: summary.at,
         rowIds,
         replaced: change === "added" && rowCount(replaced) === 0 ? null : byTableName(replaced),
-        written: writtenOf(yield* journalRows(rowIds)),
+        written: writtenOf(
+          yield* journalRows(rowIds, { table: TABLES[item.table].name, id: item.id }),
+        ),
       },
     ]);
   });
@@ -218,8 +234,12 @@ const changesOf = (importBatchId: ImportBatchId) =>
     "item_at DESC, title, id",
   );
 
+/** True when any row of the record changed after the import, not only a row it wrote. */
 const isEdited = (change: ImportChange) =>
-  Effect.map(journalRows(change.rowIds), (rows) => writtenOf(rows) !== change.written);
+  Effect.map(
+    journalRows(change.rowIds, { table: change.itemTable, id: change.itemId }),
+    (rows) => writtenOf(rows) !== change.written,
+  );
 
 const makeTransferRepository = Effect.gen(function* () {
   const sql = yield* Sql;
@@ -318,11 +338,11 @@ const makeTransferRepository = Effect.gen(function* () {
           let restored = 0;
           let left = 0;
           for (const change of yield* changesOf(importBatchId)) {
-            const current = yield* journalRows(change.rowIds);
-            if (writtenOf(current) !== change.written && !alsoEdited.includes(change.id)) {
+            if ((yield* isEdited(change)) && !alsoEdited.includes(change.id)) {
               left++;
               continue;
             }
+            const current = yield* journalRows(change.rowIds);
             const before = yield* decodeRows(change.replaced ?? {});
             const kept = new Set(
               TABLE_KEYS.flatMap((key) => (before[key] ?? []).map((row) => `${key}/${row.id}`)),

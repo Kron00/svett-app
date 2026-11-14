@@ -115,6 +115,18 @@ const liveTitles = (database: Database) =>
     .all()
     .map((row) => row["title"]);
 
+/** The live workouts' notes and their sets' reps. */
+const workoutNow = (database: Database) => {
+  const reps = liveRows(database)["activity_set"]?.map((row) => row["reps"]);
+  return {
+    notes: database.database
+      .prepare("SELECT notes FROM activity WHERE deleted_at IS NULL")
+      .all()
+      .map((row) => row["notes"]),
+    reps: reps?.toSorted(),
+  };
+};
+
 /** Puts at least one row in every table, the way the app makes them. */
 const fillEveryTable = async (database: Database) => {
   const source = openTestDatabase(9);
@@ -576,6 +588,59 @@ describe("TransferRepository", () => {
       .map(({ change }) => change.id);
     await transfer(both, (transfers) => transfers.undoImport(bothBatch, edited));
     expect(liveTitles(both)).toEqual([]);
+  });
+
+  it("lists a workout whose notes changed after an import that took one of its sets", async () => {
+    const takeOneSet = async (database: Database) => {
+      const id = await database.runtime.runPromise(
+        Effect.flatMap(Effect.service(ActivityRepository), (activities) =>
+          activities.create(workout("Legs")),
+        ),
+      );
+      const own = await exportFile(database);
+      const sets = own.tables.activitySet ?? [];
+      const heavy = sets.find((row) => row["reps"] === 5)!;
+      const file: SvettFile = {
+        ...own,
+        tables: {
+          ...own.tables,
+          activitySet: [...sets.filter((row) => row !== heavy), { ...heavy, reps: 6 }],
+        },
+      };
+      const taken = await transfer(database, (transfers) =>
+        transfers.applyImport(file, [`activity/${id}`]),
+      );
+      await database.runtime.runPromise(
+        Effect.flatMap(Effect.service(ActivityRepository), (activities) =>
+          activities.update(id, { notes: "Felt strong" }),
+        ),
+      );
+      return Option.getOrThrow(taken).importBatchId;
+    };
+    const leave = openTestDatabase(1);
+    const leftBatch = await takeOneSet(leave);
+    const preview = await transfer(leave, (transfers) => transfers.previewUndo(leftBatch));
+    expect(
+      preview.changes.map(({ change, edited }) => [change.title, change.change, edited]),
+    ).toEqual([["Legs", "replaced", true]]);
+    expect(await transfer(leave, (transfers) => transfers.undoImport(leftBatch, []))).toEqual({
+      removed: 0,
+      restored: 0,
+      left: 1,
+    });
+    expect(workoutNow(leave)).toEqual({ notes: ["Felt strong"], reps: [6, 8] });
+
+    const both = openTestDatabase(1);
+    const bothBatch = await takeOneSet(both);
+    const edited = (await transfer(both, (transfers) => transfers.previewUndo(bothBatch))).changes
+      .filter((change) => change.edited)
+      .map(({ change }) => change.id);
+    expect(await transfer(both, (transfers) => transfers.undoImport(bothBatch, edited))).toEqual({
+      removed: 0,
+      restored: 1,
+      left: 0,
+    });
+    expect(workoutNow(both)).toEqual({ notes: ["Felt strong"], reps: [5, 8] });
   });
 
   it("refuses to undo an import twice", async () => {
