@@ -85,7 +85,7 @@ export function SetRowHeader({
 /**
  * One set as the logger shows it. It holds no state: the caller passes the
  * values and handles each press. At accessibility text sizes the fields move
- * to a second line.
+ * below the set's badge, and a weight, time or distance takes a line of its own.
  */
 export function SetRow({ columns = WEIGHT_AND_REPS, ...props }: SetRowProps) {
   const stacked = useIsAccessibilityTextSize();
@@ -118,61 +118,82 @@ export function SetRow({ columns = WEIGHT_AND_REPS, ...props }: SetRowProps) {
     </AppText>
   );
 
-  const fields = (
-    <>
-      {props.fields.map((field, index) => (
-        <View
-          key={field.name}
-          className={stacked ? "flex-1" : columns[index]?.wide ? COLUMN.wide : COLUMN.narrow}
-        >
-          <EntryField
-            label={`${badge.label}, ${field.name}`}
-            value={field.value}
-            placeholder={field.placeholder}
-            unit={stacked ? field.unit : undefined}
-            focused={props.focusedField === index}
-            onPress={() => props.onPressField(index)}
-            testID={field.testID}
-          />
-        </View>
-      ))}
-      <Pressable
-        accessibilityRole="checkbox"
-        accessibilityLabel={props.doneLabel ?? `${badge.label} done`}
-        accessibilityState={{ checked: props.done }}
-        onPress={props.onToggleDone}
-        testID={props.testID}
-        className={`min-h-target items-center justify-center ${COLUMN.done}`}
+  const field = (index: number) => {
+    const entry = props.fields[index]!;
+    return (
+      <View
+        key={entry.name}
+        className={stacked ? "flex-1" : columns[index]?.wide ? COLUMN.wide : COLUMN.narrow}
       >
-        <View className={`rounded-lg p-1.5 ${props.done ? "bg-success" : "bg-control"}`}>
-          <Icon
-            name="checkmark"
-            color={props.done ? "surface" : "secondary-label"}
-            size={16}
-            weight="bold"
-          />
-        </View>
-      </Pressable>
-    </>
+        <EntryField
+          label={`${badge.label}, ${entry.name}`}
+          value={entry.value}
+          placeholder={entry.placeholder}
+          unit={stacked ? entry.unit : undefined}
+          focused={props.focusedField === index}
+          onPress={() => props.onPressField(index)}
+          testID={entry.testID}
+        />
+      </View>
+    );
+  };
+
+  const doneBox = (
+    <Pressable
+      key="done"
+      accessibilityRole="checkbox"
+      accessibilityLabel={props.doneLabel ?? `${badge.label} done`}
+      accessibilityState={{ checked: props.done }}
+      onPress={props.onToggleDone}
+      testID={props.testID}
+      className={`min-h-target items-center justify-center ${COLUMN.done}`}
+    >
+      <View className={`rounded-lg p-1.5 ${props.done ? "bg-success" : "bg-control"}`}>
+        <Icon
+          name="checkmark"
+          color={props.done ? "surface" : "secondary-label"}
+          size={16}
+          weight="bold"
+        />
+      </View>
+    </Pressable>
   );
 
-  return (
-    <View className={`rounded-field px-3 py-1 ${props.done ? "bg-success-fill" : ""}`}>
-      {stacked ? (
-        <View className="gap-2 py-1">
-          <View className="flex-row items-center gap-2">
-            {setButton}
-            {previous}
-          </View>
-          <View className="flex-row items-center gap-2">{fields}</View>
-        </View>
-      ) : (
+  const indices = props.fields.map((_, index) => index);
+  if (!stacked) {
+    return (
+      <View className={`rounded-field px-3 py-1 ${props.done ? "bg-success-fill" : ""}`}>
         <View className="flex-row items-center gap-2">
           {setButton}
           {previous}
-          {fields}
+          {indices.map(field)}
+          {doneBox}
         </View>
-      )}
+      </View>
+    );
+  }
+
+  // A weight, time or distance with its unit, such as "132.28 lb", wraps beside another field at
+  // these sizes, so each gets the full width. Reps, RPE and the done box share the last line.
+  const lines = indices.filter((index) => columns[index]?.wide).map((index) => [field(index)]);
+  const narrow = indices.filter((index) => !columns[index]?.wide).map(field);
+  const last = lines.at(-1);
+  if (narrow.length === 0 && last !== undefined) last.push(doneBox);
+  else lines.push([...narrow, doneBox]);
+
+  return (
+    <View className={`rounded-field px-3 py-1 ${props.done ? "bg-success-fill" : ""}`}>
+      <View className="gap-2 py-1">
+        <View className="flex-row items-center gap-2">
+          {setButton}
+          {previous}
+        </View>
+        {lines.map((line, index) => (
+          <View key={index} testID="set-row-line" className="flex-row items-center gap-2">
+            {line}
+          </View>
+        ))}
+      </View>
     </View>
   );
 }
