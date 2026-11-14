@@ -1,5 +1,10 @@
 import { DurationSeconds, formatDuration } from "./duration.ts";
-import { groupByWorkout, isWorkingSet, type PerformedSet } from "./performed-set.ts";
+import {
+  groupByWorkout,
+  isWorkingSet,
+  loadsBodyWeight,
+  type PerformedSet,
+} from "./performed-set.ts";
 import type { ActivityId, ActivitySetId, EpochMillis, ExerciseId } from "./schema.ts";
 import { formatWeightKg } from "./set-format.ts";
 
@@ -15,7 +20,7 @@ export type RecordKind = (typeof RECORD_KINDS)[number];
 
 export type RecordUnit = "kg" | "reps" | "duration" | "metres";
 
-type SetValues = Pick<PerformedSet, "weightKg" | "reps" | "durationS" | "distanceM">;
+type SetValues = Pick<PerformedSet, "equipment" | "weightKg" | "reps" | "durationS" | "distanceM">;
 
 export interface RecordRule {
   readonly label: string;
@@ -34,6 +39,8 @@ const lifted = (set: SetValues) =>
 
 const ONE_REP_MAX_MAX_REPS = 12;
 
+const ADDED_WEIGHT = "On a bodyweight exercise it counts only the added weight.";
+
 /**
  * Epley's estimate of the most weight lifted once: weight × (1 + reps ÷ 30).
  * A single counts as its weight. Past 12 reps the estimate drifts too far to
@@ -48,19 +55,22 @@ export const RECORD_RULES: Readonly<Record<RecordKind, RecordRule>> = {
   best_one_rep_max: {
     label: "Estimated 1RM",
     unit: "kg",
-    rule: "Weight × (1 + reps ÷ 30), Epley's formula, from sets of 1 to 12 reps. A single counts as its weight.",
-    valueOf: (set) => (lifted(set) ? estimatedOneRepMax(set.weightKg ?? 0, set.reps ?? 0) : null),
+    rule: "Weight × (1 + reps ÷ 30), Epley's formula, from sets of 1 to 12 reps. A single counts as its weight. Bodyweight exercises have none, because svett does not know your body weight at each set.",
+    valueOf: (set) =>
+      lifted(set) && !loadsBodyWeight(set)
+        ? estimatedOneRepMax(set.weightKg ?? 0, set.reps ?? 0)
+        : null,
   },
   heaviest_weight: {
     label: "Heaviest weight",
     unit: "kg",
-    rule: "The most weight in one set of at least one rep.",
+    rule: `The most weight in one set of at least one rep. ${ADDED_WEIGHT}`,
     valueOf: (set) => (lifted(set) ? set.weightKg : null),
   },
   best_set_volume: {
     label: "Best set volume",
     unit: "kg",
-    rule: "Weight × reps in one set.",
+    rule: `Weight × reps in one set. ${ADDED_WEIGHT}`,
     valueOf: (set) => (lifted(set) ? hundredths((set.weightKg ?? 0) * (set.reps ?? 0)) : null),
   },
   most_reps: {

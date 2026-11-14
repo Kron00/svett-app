@@ -59,7 +59,6 @@ describe("exerciseMetrics", () => {
       "session_volume",
     ]);
     expect(exerciseMetrics(pullups)).toEqual([
-      "best_one_rep_max",
       "heaviest_weight",
       "session_volume",
       "most_reps",

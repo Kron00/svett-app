@@ -50,7 +50,7 @@ export const EXERCISE_METRIC_RULES: Readonly<Record<ExerciseMetric, ExerciseMetr
   session_volume: {
     label: "Volume",
     unit: "kg",
-    rule: "Weight × reps, added up over the workout's sets.",
+    rule: "Weight × reps, added up over the workout's sets. On a bodyweight exercise it counts only the added weight.",
     summarize: total("best_set_volume"),
   },
   most_reps: fromRecord("most_reps"),

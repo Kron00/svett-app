@@ -5,7 +5,7 @@ import { DurationSeconds } from "../duration.ts";
 import { personalRecords } from "../records.ts";
 import { EpochMillis, type ExerciseId } from "../schema.ts";
 import { openTestDatabase, T0 } from "../test-database.ts";
-import { BENCH, SQUAT } from "../test-sets.ts";
+import { BENCH, PULLUPS, SQUAT } from "../test-sets.ts";
 import { ActivityRepository, type SetDraft } from "./activities.ts";
 import { MADE_HERE } from "./origin.ts";
 import { ProgressRepository } from "./progress.ts";
@@ -98,6 +98,21 @@ describe("ProgressRepository", () => {
     ).toEqual([
       ["best_one_rep_max", 93.5],
       ["heaviest_weight", 85],
+    ]);
+  });
+
+  it("reads pull-ups as a bodyweight exercise, so their added weight gives no 1RM", async () => {
+    const { runtime } = openTestDatabase();
+    const sets = await runtime.runPromise(
+      Effect.gen(function* () {
+        yield* logWorkout(0, [[PULLUPS, [set(10, 12)]]]);
+        yield* logWorkout(3, [[PULLUPS, [set(12, 6)]]]);
+        return yield* (yield* ProgressRepository).performedSets();
+      }),
+    );
+    expect(sets.map((s) => s.equipment)).toEqual(["none", "none"]);
+    expect(personalRecords(sets).records.map((record) => [record.kind, record.value])).toEqual([
+      ["heaviest_weight", 12],
     ]);
   });
 });

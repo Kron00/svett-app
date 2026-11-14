@@ -26,10 +26,11 @@ const ExerciseUse = Schema.Struct({
   lastPerformedAt: EpochMillis,
 });
 
-const LIVE_SETS = `
+const SETS = `
   FROM activity_set s
   JOIN activity_exercise e ON e.id = s.activity_exercise_id
-  JOIN activity a ON a.id = e.activity_id
+  JOIN activity a ON a.id = e.activity_id`;
+const LIVE = `
   WHERE s.deleted_at IS NULL AND e.deleted_at IS NULL AND a.deleted_at IS NULL`;
 
 const makeProgressRepository = Effect.gen(function* () {
@@ -41,9 +42,13 @@ const makeProgressRepository = Effect.gen(function* () {
     Effect.map(
       sql.all(
         `SELECT s.id AS setId, a.id AS activityId, e.exercise_id AS exerciseId,
+           coalesce(x.equipment, 'other') AS equipment,
            a.started_at AS startedAt, s.set_type AS setType, s.weight_kg AS weightKg,
            s.reps AS reps, s.duration_s AS durationS, s.distance_m AS distanceM
-         ${LIVE_SETS}
+         ${SETS}
+         -- Sync may deliver a set before its exercise.
+         LEFT JOIN exercise x ON x.id = e.exercise_id
+         ${LIVE}
            AND (? IS NULL OR e.exercise_id = ?)
            AND a.started_at >= ? AND a.started_at < ?
          ORDER BY a.started_at, a.id, e.position, s.position`,
@@ -63,7 +68,7 @@ const makeProgressRepository = Effect.gen(function* () {
       yield* sql.all(
         `SELECT e.exercise_id AS exerciseId, count(DISTINCT a.id) AS workouts,
            max(a.started_at) AS lastPerformedAt
-         ${LIVE_SETS}
+         ${SETS} ${LIVE}
          GROUP BY e.exercise_id
          ORDER BY lastPerformedAt DESC, e.exercise_id`,
       ),

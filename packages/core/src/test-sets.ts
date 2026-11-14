@@ -1,6 +1,13 @@
 import { libraryExerciseId } from "./exercise-library.ts";
 import type { PerformedSet } from "./performed-set.ts";
-import { ActivityId, ActivitySetId, EpochMillis, type ExerciseId, type SetType } from "./schema.ts";
+import {
+  ActivityId,
+  ActivitySetId,
+  EpochMillis,
+  type Equipment,
+  type ExerciseId,
+  type SetType,
+} from "./schema.ts";
 
 export const BENCH = libraryExerciseId("Barbell_Bench_Press_-_Medium_Grip");
 export const SQUAT = libraryExerciseId("Barbell_Squat");
@@ -10,6 +17,14 @@ export const PLANK = libraryExerciseId("Plank");
 
 const uuid = (prefix: string, n: number) =>
   `${prefix}-0000-4000-8000-${String(n).padStart(12, "0")}`;
+
+const EQUIPMENT: ReadonlyMap<ExerciseId, Equipment> = new Map([
+  [BENCH, "barbell"],
+  [SQUAT, "barbell"],
+  [DIPS, "none"],
+  [PULLUPS, "none"],
+  [PLANK, "none"],
+]);
 
 let nextSet = 0;
 
@@ -30,6 +45,7 @@ export const workoutSets = (
     setId: ActivitySetId.make(uuid("00000000", ++nextSet)),
     activityId: ActivityId.make(uuid("11111111", workout)),
     exerciseId: set.exercise,
+    equipment: EQUIPMENT.get(set.exercise) ?? "other",
     startedAt: EpochMillis.make(startedAt.getTime()),
     setType: set.type ?? "normal",
     weightKg: set.kg ?? null,

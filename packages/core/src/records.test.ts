@@ -60,7 +60,7 @@ describe("personalRecords", () => {
     //   Pull-ups start at 10 reps.
     // Workout 3: 90 × 1 is the heaviest at 90. 70 × 15 gives volume 1050 but no 1RM past 12 reps.
     //   The failure set 72.5 × 12 gives 1RM 101.5. Pull-ups tie at 10 reps. The weighted
-    //   pull-up has no most-reps value and starts the 1RM, heaviest and volume at 14, 10 and 120.
+    //   pull-up has no most-reps value or 1RM and starts the heaviest and volume at 10 and 120.
     //   The plank goes from 60 to 75 seconds.
     const { records } = personalRecords(history);
     expect(summary(records)).toEqual([
@@ -85,7 +85,6 @@ describe("personalRecords", () => {
       { kind: "best_set_volume", value: 1050, setId: third[1]!.setId },
     ]);
     expect(of(PULLUPS)).toEqual([
-      { kind: "best_one_rep_max", value: 14, setId: third[4]!.setId },
       { kind: "heaviest_weight", value: 10, setId: third[4]!.setId },
       { kind: "best_set_volume", value: 120, setId: third[4]!.setId },
       { kind: "most_reps", value: 10, setId: second[5]!.setId },
@@ -100,6 +99,25 @@ describe("personalRecords", () => {
   it("counts a first workout as the starting point, not a record", () => {
     expect(personalRecords(first).records).toEqual([]);
     expect(personalRecords(first).bests).toHaveLength(4);
+  });
+
+  it("gives bodyweight exercises no estimated 1RM, only added-weight records", () => {
+    // Epley on the added weight alone would rate +10 kg × 12 at 14 kg and +12 kg × 6 at 14.4 kg,
+    // a false record, since the body weight both sets also lifted is left out.
+    const plus10 = workoutSets(41, new Date(2026, 1, 2, 18), [
+      { exercise: PULLUPS, kg: 10, reps: 12 },
+    ]);
+    const plus12 = workoutSets(42, new Date(2026, 1, 5, 18), [
+      { exercise: PULLUPS, kg: 12, reps: 6 },
+    ]);
+    const { bests, records } = personalRecords([...plus10, ...plus12]);
+    expect(summary(records)).toEqual([
+      { kind: "heaviest_weight", setId: plus12[0]!.setId, value: 12, previous: 10 },
+    ]);
+    expect(bests.map(({ kind, value }) => [kind, value])).toEqual([
+      ["heaviest_weight", 12],
+      ["best_set_volume", 120],
+    ]);
   });
 
   it("gives warm-ups no record or best", () => {
