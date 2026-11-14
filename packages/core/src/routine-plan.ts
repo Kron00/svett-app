@@ -19,12 +19,16 @@ import { formatWeightKg } from "./set-format.ts";
 export const endPosition = (rows: ReadonlyArray<{ readonly position: number }>): number =>
   rows.reduce((end, row) => Math.max(end, row.position + 1), 0);
 
-/** The title for a copy of a routine, such as "Push copy", that no other routine has. */
+/**
+ * The title for a copy of a routine, such as "Push copy", that no other routine has. A long
+ * title is shortened so the copy's title still fits `ROUTINE_TITLE_MAX_LENGTH`.
+ */
 export const copyTitle = (title: string, taken: Iterable<string>): string => {
   const names = new Set(taken);
-  const base = `${title} copy`;
-  let candidate = base;
-  for (let number = 2; names.has(candidate); number += 1) candidate = `${base} ${number}`;
+  const named = (suffix: string) =>
+    `${title.slice(0, ROUTINE_TITLE_MAX_LENGTH - suffix.length).trimEnd()}${suffix}`;
+  let candidate = named(" copy");
+  for (let number = 2; names.has(candidate); number += 1) candidate = named(` copy ${number}`);
   return candidate;
 };
 

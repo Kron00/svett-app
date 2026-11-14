@@ -17,6 +17,7 @@ import {
   removeExercise,
   removeSet,
   replaceSet,
+  ROUTINE_TITLE_MAX_LENGTH,
   routineForm,
   routineFormFromParams,
   routineFromForm,
@@ -96,6 +97,15 @@ describe("routine order", () => {
   it("names a copy after the routine and skips names already taken", () => {
     expect(copyTitle("Push", ["Push"])).toBe("Push copy");
     expect(copyTitle("Push", ["Push", "Push copy", "Push copy 2"])).toBe("Push copy 3");
+  });
+
+  it("shortens a long title so its copy still fits the longest title a routine takes", () => {
+    const long = "x".repeat(ROUTINE_TITLE_MAX_LENGTH);
+    const copy = copyTitle(long, [long]);
+    expect(copy).toBe(`${"x".repeat(ROUTINE_TITLE_MAX_LENGTH - 5)} copy`);
+    const second = copyTitle(long, [long, copy]);
+    expect(second).toBe(`${"x".repeat(ROUTINE_TITLE_MAX_LENGTH - 7)} copy 2`);
+    expect(second).toHaveLength(ROUTINE_TITLE_MAX_LENGTH);
   });
 });
 

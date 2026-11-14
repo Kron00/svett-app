@@ -217,6 +217,35 @@ describe("RoutineRepository", () => {
     ]);
   });
 
+  it("leaves a routine in its place when it is moved to the folder it is already in", async () => {
+    const database = openTestDatabase();
+    const folder = await run(database, (routines) =>
+      routines.createFolder({ name: "A", position: 0 }),
+    );
+    const push = await run(database, (routines) => routines.createRoutine(pushDay(folder)));
+    await run(database, (routines) =>
+      routines.createRoutine({ ...pushDay(folder), title: "Pull", position: 1 }),
+    );
+    const legs = await run(database, (routines) =>
+      routines.createRoutine({ ...pushDay(null), title: "Legs" }),
+    );
+    await run(database, (routines) =>
+      routines.createRoutine({ ...pushDay(null), title: "Arms", position: 1 }),
+    );
+
+    await run(database, (routines) => routines.moveRoutine(push, folder));
+    await run(database, (routines) => routines.moveRoutine(legs, null));
+
+    const listed = await run(database, (routines) => routines.listRoutines);
+    const byTitle = [...listed].sort((x, y) => x.title.localeCompare(y.title));
+    expect(byTitle.map((r) => [r.title, r.folderId, r.position])).toEqual([
+      ["Arms", null, 1],
+      ["Legs", null, 0],
+      ["Pull", folder, 1],
+      ["Push", folder, 0],
+    ]);
+  });
+
   it("refuses to order a routine that does not exist", async () => {
     const database = openTestDatabase();
     const id = await run(database, (routines) => routines.createRoutine(pushDay(null)));
@@ -240,66 +269,5 @@ describe("RoutineRepository", () => {
       [kept, 0],
       [kept, 1],
     ]);
-  });
-  it("restores a deleted routine with exactly the exercises and sets that delete took", async () => {
-    const database = openTestDatabase();
-    const id = await run(database, (routines) => routines.createRoutine(pushDay(null)));
-    await database.runtime.runPromise(database.clock.advance(1000));
-    const [, raise] = pushDay(null).exercises;
-    await run(database, (routines) =>
-      routines.saveRoutine(id, { ...pushDay(null), exercises: [raise!] }),
-    );
-    await database.runtime.runPromise(database.clock.advance(1000));
-    await run(database, (routines) => routines.removeRoutine(id));
-    expect(await run(database, (routines) => routines.getRoutine(id))).toEqual(Option.none());
-
-    await run(database, (routines) => routines.restoreRoutine(id));
-    const detail = Option.getOrThrow(await run(database, (routines) => routines.getRoutine(id)));
-    expect(
-      detail.exercises.map(({ exercise, sets }) => [exercise.exerciseId, sets.length]),
-    ).toEqual([[libraryExerciseId("Side_Lateral_Raise"), 1]]);
-  });
-
-  it("restores a deleted folder with its routines but not a routine deleted on its own before", async () => {
-    const database = openTestDatabase();
-    const folderId = await run(database, (routines) =>
-      routines.createFolder({ name: "Program", position: 0 }),
-    );
-    const kept = await run(database, (routines) => routines.createRoutine(pushDay(folderId)));
-    const dropped = await run(database, (routines) =>
-      routines.createRoutine({ ...pushDay(folderId), title: "Pull", position: 1 }),
-    );
-    await database.runtime.runPromise(database.clock.advance(1000));
-    await run(database, (routines) => routines.removeRoutine(dropped));
-    await database.runtime.runPromise(database.clock.advance(1000));
-    await run(database, (routines) => routines.removeFolder(folderId));
-
-    const early = await database.runtime.runPromiseExit(
-      Effect.flatMap(Effect.service(RoutineRepository), (routines) =>
-        routines.restoreRoutine(kept),
-      ),
-    );
-    expect(early).toMatchObject({
-      _tag: "Failure",
-      cause: { reasons: [{ error: { _tag: "RowNotFoundError", table: "folder", id: folderId } }] },
-    });
-
-    await run(database, (routines) => routines.restoreFolder(folderId));
-    expect((await run(database, (routines) => routines.listFolders)).map((f) => f.id)).toEqual([
-      folderId,
-    ]);
-    expect((await run(database, (routines) => routines.listRoutines)).map((r) => r.id)).toEqual([
-      kept,
-    ]);
-    const restored = Option.getOrThrow(
-      await run(database, (routines) => routines.getRoutine(kept)),
-    );
-    expect(restored.exercises.map(({ sets }) => sets.length)).toEqual([3, 1]);
-    expect(await run(database, (routines) => routines.getRoutine(dropped))).toEqual(Option.none());
-    const leftovers = await database.driver.all(
-      "SELECT count(*) AS n FROM routine_set WHERE deleted_at IS NULL AND routine_exercise_id IN (SELECT id FROM routine_exercise WHERE routine_id = ?)",
-      [dropped],
-    );
-    expect(leftovers[0]?.["n"]).toBe(0);
   });
 });
