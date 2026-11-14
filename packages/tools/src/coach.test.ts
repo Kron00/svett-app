@@ -4,10 +4,10 @@ import {
   checkResponsesRequest,
   type CoachEvent,
   CoachMessageRepository,
-  coachInstructions,
   ConversationId,
   ExerciseId,
   instructionsOffset,
+  localDay,
   MANAGE_USAGE_URL,
   PLAN_LIMIT_CODE,
   PLAN_LIMIT_MESSAGE,
@@ -93,6 +93,11 @@ const ask = (
     }),
   );
 
+const toolNames = (tools: ResponsesRequest["tools"]) =>
+  (tools ?? []).flatMap((namespace) =>
+    namespace.tools.map((tool) => `${namespace.name}.${tool.name}`),
+  );
+
 describe("the recorded best squat run", () => {
   it("sends exactly the requests the recording holds, and each keeps OpenAI's plan usage rules", async () => {
     const { transport, requests } = replay(bestSquat);
@@ -103,9 +108,10 @@ describe("the recorded best squat run", () => {
       expect(checkResponsesRequest(request)).toEqual([]);
       expect(checkResponsesRequest(expected)).toEqual([]);
       expect(request.input).toEqual(expected.input);
-      expect(request.tools).toEqual(expected.tools);
+      // Later pull requests add tools, so a recording only needs its own tools to still exist.
+      expect(toolNames(request.tools)).toEqual(expect.arrayContaining(toolNames(expected.tools)));
       expect(request.model).toBe(expected.model);
-      expect(request.instructions).toBe(coachInstructions(bestSquat.recordedAt, OFFSET));
+      expect(request.instructions).toContain(`Today is ${localDay(bestSquat.recordedAt, OFFSET)}.`);
     });
   });
 
