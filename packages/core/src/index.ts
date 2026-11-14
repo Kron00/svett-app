@@ -39,4 +39,5 @@ export * from "./muscle-volume.ts";
 export * from "./body-measurements.ts";
 export * from "./backup-files.ts";
 export * from "./routine-plan.ts";
+export * from "./logger.ts";
 export * from "./start-workout.ts";
