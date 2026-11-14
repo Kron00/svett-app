@@ -162,7 +162,9 @@ export type DeletionSent =
   /** No answer says whether the server deleted it. */
   | { readonly kind: "unknown"; readonly problem: string }
   /** The server may have deleted the rows, but the sessions did not end, so send it again. */
-  | { readonly kind: "unfinished"; readonly problem: string };
+  | { readonly kind: "unfinished"; readonly problem: string }
+  /** The phone holds no session of the account, so the deletion was not sent. */
+  | { readonly kind: "not_signed_in" };
 
 /** What a deletion's receipt says when the phone asks the server about it. */
 export type DeletionAsked = "deleted" | "not_deleted" | "unknown";
@@ -172,8 +174,13 @@ export interface DeletionSteps<E> {
   readonly read: Effect.Effect<MoveJournal | undefined, E>;
   readonly record: (journal: MoveJournal) => Effect.Effect<void, E>;
   readonly forget: Effect.Effect<void, E>;
-  /** Asks the server to delete the signed-in account, with the deletion's receipt. */
-  readonly send: (receipt: string) => Effect.Effect<DeletionSent, E>;
+  /** The account the phone holds a session of now, if any. */
+  readonly signedIn: Effect.Effect<AccountId | undefined, E>;
+  /**
+   * Asks the server to delete `account` with the deletion's receipt and the signed-in session,
+   * which the server refuses when the session is another account's.
+   */
+  readonly send: (account: AccountId, receipt: string) => Effect.Effect<DeletionSent, E>;
   /** Asks the server whether it deleted an account with this receipt, with no session. */
   readonly ask: (receipt: string) => Effect.Effect<DeletionAsked, E>;
 }
@@ -186,10 +193,15 @@ export type DeletionOutcome =
   /** The deletion stays saved, and the next launch tries to finish it. */
   | { readonly kind: "pending"; readonly problem: string };
 
+/** Why a deletion stays saved while the phone holds no session of its account. */
+export const DELETION_NEEDS_SIGN_IN =
+  "Sign in to the account you asked to delete, and svett finishes deleting it.";
+
 /**
  * Finishes the deletion the journal holds. Run at every launch, it finishes one that a crash or
- * a lost answer cut short. It sends the deletion again, which also finishes one whose sessions
- * did not end, and when that does not say the account is gone it asks the server with the
+ * a lost answer cut short. It sends the deletion again, only with a session of the account the
+ * journal names, which also finishes one whose sessions did not end. When that does not say
+ * the account is gone, or the phone holds no session of it, it asks the server with the
  * receipt, as the deletion ends the session the request needs. A refusal puts the journal back
  * as it was only when the server says it deleted nothing. With nothing to finish it changes
  * nothing.
@@ -203,7 +215,10 @@ export const finishDeletion = <E>(steps: DeletionSteps<E>) =>
       account: journal.account,
       keep: journal.keep,
     } satisfies DeletionOutcome;
-    const sent = yield* steps.send(journal.receipt);
+    const sent: DeletionSent =
+      (yield* steps.signedIn) === journal.account
+        ? yield* steps.send(journal.account, journal.receipt)
+        : { kind: "not_signed_in" };
     if (sent.kind === "deleted") return deleted;
     const asked = yield* steps.ask(journal.receipt);
     // Sessions that did not end need the deletion sent again, so it stays saved.
@@ -212,7 +227,10 @@ export const finishDeletion = <E>(steps: DeletionSteps<E>) =>
       yield* journal.before === null ? steps.forget : steps.record(journal.before);
       return { kind: "refused", problem: sent.problem } satisfies DeletionOutcome;
     }
-    return { kind: "pending", problem: sent.problem } satisfies DeletionOutcome;
+    return {
+      kind: "pending",
+      problem: sent.kind === "not_signed_in" ? DELETION_NEEDS_SIGN_IN : sent.problem,
+    } satisfies DeletionOutcome;
   });
 
 /**
@@ -229,12 +247,15 @@ export const startDeletion = <E>(
 ) =>
   Effect.gen(function* () {
     const journal = yield* steps.read;
-    const again = journal?.state === "deleting" && journal.account === account;
+    if (journal?.state === "deleting" && journal.account !== account) {
+      return {
+        kind: "refused",
+        problem: `svett is still deleting another account on this phone. ${DELETION_NEEDS_SIGN_IN}`,
+      } satisfies DeletionOutcome;
+    }
     if (
-      !again &&
-      (anonymousDataLocked(journal) ||
-        leavingAccount(journal) !== undefined ||
-        journal?.state === "deleting")
+      journal?.state !== "deleting" &&
+      (anonymousDataLocked(journal) || leavingAccount(journal) !== undefined)
     ) {
       return {
         kind: "refused",

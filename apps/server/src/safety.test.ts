@@ -720,6 +720,23 @@ describe("deleting an account", { timeout: 60_000 }, () => {
     ).toBeGreaterThan(0);
   });
 
+  it("refuses a deletion that names another account than the session's, and deletes nothing", async () => {
+    const url = await freshDatabase();
+    const { base } = await start(url);
+    const api = client(base);
+    const anna = account("anna");
+    const ben = account("ben");
+    await api.write(ben, [activity("Kept")]);
+
+    const refused = await api.call(ben, "DELETE", "/v1/me", { account: anna });
+
+    expect(refused.status).toBe(409);
+    expect(refused.body.error).toBe("wrong_account");
+    expect((await api.ok(ben, "GET", "/v1/rows")).rows).toHaveLength(1);
+    expect(issuer.deletedUsers()).not.toContain(ben);
+    expect(await api.ok(ben, "DELETE", "/v1/me", { account: ben })).toEqual({ deleted: true });
+  });
+
   it("deletes nothing when the server cannot end sessions", async () => {
     const url = await freshDatabase();
     const { base } = await start(url, { secretKey: null });

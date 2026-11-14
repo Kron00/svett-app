@@ -1,6 +1,7 @@
 import { Cause, Effect, Exit, Option } from "effect";
 import { describe, expect, it } from "vite-plus/test";
 
+import { AccountId } from "./database.ts";
 import { SocialActivityId } from "./privacy.ts";
 import { httpSocialApi, SocialFailed, socialProblemMessage } from "./social-api.ts";
 
@@ -230,15 +231,22 @@ describe("httpSocialApi", () => {
     expect(await Effect.runPromise(server(200, list).api.blocks())).toEqual(list);
   });
 
-  it("deletes the account with its receipt and reads that it is gone", async () => {
+  it("deletes the account it names with its receipt and reads that it is gone", async () => {
     const { api, sent } = server(200, { deleted: true });
     const receipt = "a".repeat(64);
-    expect(await Effect.runPromise(api.deleteAccount(receipt))).toEqual({ deleted: true });
+    const account = AccountId.make("user_anna");
+    expect(await Effect.runPromise(api.deleteAccount(account, receipt))).toEqual({
+      deleted: true,
+    });
     expect(sent[0]).toMatchObject({
       method: "DELETE",
       url: "https://svett.test/v1/me",
-      body: JSON.stringify({ receipt }),
+      body: JSON.stringify({ account, receipt }),
     });
+    const other = await failure(
+      server(409, { error: "wrong_account" }).api.deleteAccount(account, receipt),
+    );
+    expect(other.problem).toBe("wrong_account");
     const gone = await failure(server(410, { error: "account_deleted" }).api.feed());
     expect(gone.problem).toBe("account_deleted");
     expect(socialProblemMessage(gone)).toBe("This svett account was deleted.");

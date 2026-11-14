@@ -106,14 +106,24 @@ const leaveSteps: LeaveSteps<unknown> = {
 };
 
 /**
- * Takes a deleted account's data off the phone, once the server deleted the account. The
- * phone's own database opens first, so the account's file is closed. With `keep` the
- * account's rows join the phone's own data, with no account. Without it they are erased.
+ * Opens the phone's own database in place of a deleted account's, so its file is closed. The
+ * database of another account signed in now stays open.
+ */
+const closeDeleted = (account: AccountId) => {
+  if (sameOwner(currentDatabase().owner, { kind: "account", accountId: account })) {
+    switchOwner(ANONYMOUS);
+  }
+};
+
+/**
+ * Takes a deleted account's data off the phone, once the server deleted the account. With
+ * `keep` the account's rows join the phone's own data, with no account. Without it they are
+ * erased.
  */
 export const leaveDeletedAccount = (account: AccountId, keep: boolean) =>
   inTurn(async () => {
     try {
-      switchOwner(ANONYMOUS);
+      closeDeleted(account);
       await Effect.runPromise(leaveAccount(leaveSteps, account, keep));
     } finally {
       dataChanged();
@@ -178,7 +188,7 @@ export const finishLeavingAccount = () =>
     const account = leavingAccount(storedMoveJournal());
     if (account === undefined) return undefined;
     try {
-      switchOwner(ANONYMOUS);
+      closeDeleted(account);
       await Effect.runPromise(finishLeave(leaveSteps));
     } finally {
       dataChanged();

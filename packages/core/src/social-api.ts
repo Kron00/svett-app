@@ -1,5 +1,6 @@
 import { Data, Effect, Option, Schema } from "effect";
 
+import type { AccountId } from "./database.ts";
 import { CommentPage, FeedPage, InboxPage, Likes, PostComment, PostThread } from "./feed.ts";
 import { ActivityView, FollowState, type SocialActivityId } from "./privacy.ts";
 import { rateLimitedMessage, retryAfterSeconds } from "./rate-limit.ts";
@@ -125,6 +126,7 @@ const SERVER_PROBLEMS = [
   "rate_limited",
   "account_deleted",
   "session_end_failed",
+  "wrong_account",
 ] as const;
 
 export type SocialProblem =
@@ -175,6 +177,8 @@ export const socialProblemMessage = (failed: SocialFailed): string => {
       return "This svett account was deleted.";
     case "session_end_failed":
       return "Your data is gone from svett, but signing you out everywhere did not finish. Try again.";
+    case "wrong_account":
+      return "This phone is signed in to another account now.";
     case "server":
       return "The svett server had a problem. Try again soon.";
   }
@@ -360,10 +364,12 @@ export const httpSocialApi = (options: HttpSocialOptions) => {
     removeFollower: (username: string) =>
       call(Done, "DELETE", `/v1/followers/${encodeURIComponent(username)}`),
     /**
-     * Deletes the signed-in account, every row it has on the server, and every session.
-     * `receipt` is the deletion's `DeletionReceipt`, which `deletionHappened` asks about later.
+     * Deletes the signed-in account, every row it has on the server, and every session. The
+     * server refuses with `wrong_account` when the session is not `account`'s. `receipt` is the
+     * deletion's `DeletionReceipt`, which `deletionHappened` asks about later.
      */
-    deleteAccount: (receipt: string) => call(AccountDeleted, "DELETE", "/v1/me", { receipt }),
+    deleteAccount: (account: AccountId, receipt: string) =>
+      call(AccountDeleted, "DELETE", "/v1/me", { account, receipt }),
     /** Whether the server deleted an account with this receipt. It needs no session. */
     deletionHappened: (receipt: string) =>
       call(DeletionAnswer, "GET", `/v1/deletions/${encodeURIComponent(receipt)}`, undefined, false),

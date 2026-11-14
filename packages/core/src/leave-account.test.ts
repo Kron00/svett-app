@@ -7,6 +7,7 @@ import { DurationSeconds } from "./duration.ts";
 import {
   anonymousDataLocked,
   decodeMoveJournal,
+  DELETION_NEEDS_SIGN_IN,
   type DeletionAsked,
   type DeletionSent,
   type DeletionSteps,
@@ -26,6 +27,7 @@ import { Sql } from "./sql.ts";
 import { openTestDatabase, T0 } from "./test-database.ts";
 
 const ALICE = AccountId.make("user_alice");
+const BOB = AccountId.make("user_bob");
 
 type Database = ReturnType<typeof openTestDatabase>;
 
@@ -194,8 +196,9 @@ describe("leaving a deleted account", () => {
 const deletingPhone = (start: MoveJournal | undefined) => {
   let stored = start === undefined ? null : encodeMoveJournal(start);
   const server = {
-    sent: [] as Array<{ receipt: string; journal: MoveJournal | undefined }>,
+    sent: [] as Array<{ account: AccountId; receipt: string; journal: MoveJournal | undefined }>,
     asked: [] as Array<string>,
+    signedIn: ALICE as AccountId | undefined,
     answer: { kind: "deleted" } as DeletionSent,
     says: "unknown" as DeletionAsked,
   };
@@ -208,9 +211,10 @@ const deletingPhone = (start: MoveJournal | undefined) => {
     forget: Effect.sync(() => {
       stored = null;
     }),
-    send: (receipt) =>
+    signedIn: Effect.sync(() => server.signedIn),
+    send: (account, receipt) =>
       Effect.sync(() => {
-        server.sent.push({ receipt, journal: decodeMoveJournal(stored) });
+        server.sent.push({ account, receipt, journal: decodeMoveJournal(stored) });
         return server.answer;
       }),
     ask: (receipt) =>
@@ -222,8 +226,8 @@ const deletingPhone = (start: MoveJournal | undefined) => {
   return {
     server,
     journal: () => decodeMoveJournal(stored),
-    start: (keep: boolean, receipt = "r1") =>
-      Effect.runPromise(startDeletion(steps, ALICE, keep, receipt)),
+    start: (keep: boolean, receipt = "r1", account = ALICE) =>
+      Effect.runPromise(startDeletion(steps, account, keep, receipt)),
     launch: () => Effect.runPromise(finishDeletion(steps)),
   };
 };
@@ -244,6 +248,7 @@ describe("deleting the account", () => {
     expect(await device.start(true)).toEqual({ kind: "deleted", account: ALICE, keep: true });
     expect(device.server.sent).toEqual([
       {
+        account: ALICE,
         receipt: "r1",
         journal: {
           state: "deleting",
@@ -304,6 +309,41 @@ describe("deleting the account", () => {
     fresh.server.says = "not_deleted";
     expect(await fresh.start(false)).toEqual({ kind: "refused", problem: "no" });
     expect(fresh.journal()).toBeUndefined();
+  });
+
+  it("sends a saved deletion only with a session of its account", async () => {
+    const device = deletingPhone({ state: "declined" });
+    device.server.answer = { kind: "unknown", problem: "offline" };
+    await device.start(true);
+    expect(device.server.sent).toHaveLength(1);
+
+    for (const someone of [BOB, undefined]) {
+      device.server.signedIn = someone;
+      device.server.says = "not_deleted";
+      expect(await device.launch()).toEqual({ kind: "pending", problem: DELETION_NEEDS_SIGN_IN });
+      expect(device.journal()).toMatchObject({ state: "deleting", account: ALICE, keep: true });
+    }
+    expect(device.server.sent).toHaveLength(1);
+    expect(device.server.asked).toEqual(["r1", "r1", "r1"]);
+
+    // Another phone, or a request the lost answer hid, deleted it, so it ends as Alice chose.
+    device.server.signedIn = BOB;
+    device.server.says = "deleted";
+    expect(await device.launch()).toEqual({ kind: "deleted", account: ALICE, keep: true });
+    expect(device.server.sent).toHaveLength(1);
+  });
+
+  it("is refused while another account's deletion is saved", async () => {
+    const device = deletingPhone(deleting({ state: "declined" }));
+    device.server.signedIn = BOB;
+    const refused = await device.start(false, "r2", BOB);
+    expect(refused).toEqual({
+      kind: "refused",
+      problem: `svett is still deleting another account on this phone. ${DELETION_NEEDS_SIGN_IN}`,
+    });
+    expect(device.journal()).toMatchObject({ account: ALICE, receipt: "r1" });
+    expect(device.server.sent).toEqual([]);
+    expect(device.server.asked).toEqual([]);
   });
 
   it("keeps the receipt and takes the new choice when the deletion is asked for again", async () => {

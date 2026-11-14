@@ -27,18 +27,22 @@ function OwnerFromSession() {
 }
 
 /**
- * Finishes a deletion of the account that a crash or a lost answer cut short, as the person
- * chose when they asked for it. One that fails again stays saved for the next launch.
+ * Finishes a deletion of an account that a crash or a lost answer cut short, as the person
+ * chose when they asked for it, at launch and whenever someone signs in. Only a session of
+ * that account sends it again. One that fails again stays saved for the next try.
  */
 function FinishDeletion() {
   const { isLoaded, userId, getToken, signOut } = useAuth();
+  const signedIn = useEffectEvent(() => userId);
   const token = useEffectEvent(() => getToken());
   const forget = useEffectEvent(async (account: string) => {
     if (userId === account) await signOut();
   });
   useEffect(() => {
-    if (isLoaded) finishPendingDeletion(token, forget).catch(() => undefined);
-  }, [isLoaded]);
+    if (isLoaded) {
+      finishPendingDeletion({ signedIn, token, signOut: forget }).catch(() => undefined);
+    }
+  }, [isLoaded, userId]);
   return null;
 }
 

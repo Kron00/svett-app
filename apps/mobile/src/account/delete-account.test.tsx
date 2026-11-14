@@ -4,6 +4,7 @@ import {
   ANONYMOUS,
   type ActivityDraft,
   databaseLayer,
+  DELETION_NEEDS_SIGN_IN,
   DurationSeconds,
   encodeMoveJournal,
   EpochMillis,
@@ -120,6 +121,7 @@ vi.mock("../data/database", () => ({
 }));
 
 const FIRST = AccountId.make("user_svett_first");
+const SECOND = AccountId.make("user_svett_second");
 const T0 = Date.UTC(2026, 10, 1, 9);
 
 const openDatabase = (seed: number): Runtime => {
@@ -159,6 +161,7 @@ const titles = (runtime: Runtime) =>
 
 let phone: Runtime;
 let first: Runtime;
+let second: Runtime;
 let empty: Runtime;
 
 beforeAll(() => {
@@ -168,9 +171,11 @@ beforeAll(() => {
 beforeEach(async () => {
   phone = openDatabase(1);
   first = openDatabase(2);
+  second = openDatabase(3);
   empty = openDatabase(4);
   app.databases.set("anonymous", phone);
   app.databases.set(FIRST, first);
+  app.databases.set(SECOND, second);
   app.databases.set("empty", empty);
   app.storage.clear();
   app.deletedFiles = [];
@@ -222,7 +227,7 @@ afterEach(async () => {
   });
   vi.unstubAllGlobals();
   switchOwner(ANONYMOUS);
-  await Promise.all([phone.dispose(), first.dispose(), empty.dispose()]);
+  await Promise.all([phone.dispose(), first.dispose(), second.dispose(), empty.dispose()]);
 });
 
 const settle = () => act(() => new Promise<void>((resolve) => setTimeout(resolve, 0)));
@@ -270,9 +275,19 @@ const accountFile = `svett-account-${FIRST}.db`;
 /** The next launch, which finishes what the journal says is left, as AccountProvider does. */
 const launch = async () => {
   await resumeMove();
-  return finishPendingDeletion(app.clerk.getToken, async (account) => {
-    if (app.clerk.userId === account) await app.clerk.signOut();
+  return finishPendingDeletion({
+    signedIn: () => app.clerk.userId,
+    token: app.clerk.getToken,
+    signOut: async (account) => {
+      if (app.clerk.userId === account) await app.clerk.signOut();
+    },
   });
+};
+
+/** Signs `account` in on the phone, which opens its database, as AccountProvider does. */
+const signIn = (account: AccountId) => {
+  app.clerk.userId = account;
+  switchOwner({ kind: "account", accountId: account });
 };
 
 describe("deleting the account on the phone", () => {
@@ -416,6 +431,54 @@ describe("deleting the account on the phone", () => {
       expect(await launch()).toBeUndefined();
 
       expect(app.sent.at(-1)).toBe("GET /v1/deletions/<receipt>");
+      await endedAsChosen();
+    });
+
+    it("with another account signed in since, which it never sends and leaves untouched", async () => {
+      app.lose = "answer";
+      await choose();
+      expect(app.receipts.size).toBe(1);
+
+      app.lose = undefined;
+      signIn(SECOND);
+      await log(second, "Second's run");
+      const before = app.sent.length;
+      expect(await launch()).toBeUndefined();
+
+      expect(app.sent.slice(before)).toEqual(["GET /v1/deletions/<receipt>"]);
+      expect(app.signedOut).toBe(0);
+      expect(app.clerk.userId).toBe(SECOND);
+      expect(currentDatabase().owner).toEqual({ kind: "account", accountId: SECOND });
+      expect(await titles(second)).toEqual(["Second's run"]);
+      expect(await titles(phone)).toEqual(kept);
+      expect(app.deletedFiles).toEqual([accountFile]);
+      expect(app.storage.get("svett.moveJournal")).toBeUndefined();
+    });
+
+    it("waits for its own account's session when the request never reached the server", async () => {
+      app.lose = "request";
+      await choose();
+      expect(app.receipts.size).toBe(0);
+
+      app.lose = undefined;
+      signIn(SECOND);
+      const before = app.sent.length;
+      expect(await launch()).toBe(DELETION_NEEDS_SIGN_IN);
+
+      expect(app.sent.slice(before)).toEqual(["GET /v1/deletions/<receipt>"]);
+      expect(app.receipts.size).toBe(0);
+      expect(currentDatabase().owner).toEqual({ kind: "account", accountId: SECOND });
+      expect(await titles(first)).toEqual(["First's run"]);
+      expect(app.deletedFiles).toEqual([]);
+      expect(JSON.parse(app.storage.get("svett.moveJournal") ?? "null")).toMatchObject({
+        state: "deleting",
+        account: FIRST,
+        keep,
+      });
+
+      signIn(FIRST);
+      expect(await launch()).toBeUndefined();
+      expect(app.sent.at(-1)).toBe("DELETE /v1/me");
       await endedAsChosen();
     });
 

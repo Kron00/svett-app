@@ -281,7 +281,7 @@ const ERASE_MESSAGE =
  * before anything is deleted.
  */
 function DeleteAccount({ accountId }: { readonly accountId: string }) {
-  const { getToken, signOut } = useAuth();
+  const { userId, getToken, signOut } = useAuth();
   const owner = ownerOf(accountId);
   const [state, setState] = useState<Deletion>(() =>
     owner.kind === "account" && deletionPending(owner.accountId)
@@ -291,12 +291,11 @@ function DeleteAccount({ accountId }: { readonly accountId: string }) {
   const run = (keep: boolean) => {
     if (owner.kind !== "account") return;
     setState({ step: "deleting" });
-    void deleteAccount(
-      owner.accountId,
-      keep,
-      () => getToken(),
-      () => signOut(),
-    ).then(
+    void deleteAccount(owner.accountId, keep, {
+      signedIn: () => userId,
+      token: () => getToken(),
+      signOut: () => signOut(),
+    }).then(
       (problem) => {
         if (problem !== undefined) setState({ step: "failed", problem });
       },

@@ -60,20 +60,33 @@ const exportRows = answerRefusals(
 );
 
 const DeleteBody = Schema.fromJsonString(
-  Schema.Struct({ receipt: Schema.optional(DeletionReceipt) }),
+  Schema.Struct({
+    account: Schema.optional(Schema.String),
+    receipt: Schema.optional(DeletionReceipt),
+  }),
 );
 const decodeDeleteBody = Schema.decodeUnknownEffect(DeleteBody);
 
 /**
  * Deletes the signed-in account. It skips the deleted-account check, so a deletion that
- * Clerk failed can be sent again to finish. The body may carry the deletion's receipt.
+ * Clerk failed can be sent again to finish. The body may carry the deletion's receipt, and the
+ * account the phone means to delete, which must be the session's.
  */
 const deleteAccount = answerRefusals(
   Effect.gen(function* () {
     const account = yield* signedInAccount;
     const text = yield* (yield* HttpServerRequest.HttpServerRequest).text;
-    const { receipt } = text.trim() === "" ? {} : yield* decodeDeleteBody(text);
-    yield* (yield* AccountDeletion).remove(account, receipt);
+    const body = text.trim() === "" ? {} : yield* decodeDeleteBody(text);
+    if (body.account !== undefined && body.account !== account) {
+      return HttpServerResponse.jsonUnsafe(
+        {
+          error: "wrong_account",
+          message: "The session belongs to another account than the one to delete.",
+        },
+        { status: 409 },
+      );
+    }
+    yield* (yield* AccountDeletion).remove(account, body.receipt);
     return HttpServerResponse.jsonUnsafe({ deleted: true });
   }),
 );
