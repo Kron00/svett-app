@@ -97,14 +97,25 @@ exit 1
 EOF
 
 # Stands in for the command that T3 Code's device_open returns. The gallery's end
-# marker counts as on screen after FAKE_GALLERY_SCROLLS scrolls since the last open.
+# marker counts as on screen after FAKE_GALLERY_SCROLLS drags since the last open.
+# Each element fills a 440 by 956 point screen. A drag moves the gallery only when
+# it starts in the left gutter, and with FAKE_GALLERY_STALL only that many times,
+# and a screenshot shows how far it moved.
 cat >"$fake/bound-device" <<EOF
 #!/usr/bin/env bash
 echo "\$*" >>"$root/bound-calls"
-if [[ "\$*" == *" is visible "* ]]; then
-  scrolls=\$(awk '/ open / { n = 0 } / scroll down 0[.]6$/ { n++ } END { print n + 0 }' "$root/bound-calls")
-  ((scrolls >= \${FAKE_GALLERY_SCROLLS:-0}))
-fi
+moved() {
+  awk -v stall="\${FAKE_GALLERY_STALL:-1000}" '
+    / open / { n = 0 }
+    / gesture pan 8 765 0 -574 400$/ && n < stall { n++ }
+    END { print n + 0 }' "$root/bound-calls"
+}
+args=" \$* "
+case "\$args" in
+  *" is visible "*) (("\$(moved)" >= \${FAKE_GALLERY_SCROLLS:-0})) ;;
+  *" get attrs "*) echo '{"rect": {"x": 0, "y": 0, "width": 440, "height": 956}}' ;;
+  *" screenshot "*) echo "gallery moved \$(moved) times" >"\${@: -1}" ;;
+esac
 EOF
 
 printf '#!/usr/bin/env bash\n' >"$fake/fnm"
@@ -439,6 +450,17 @@ check "gallery.sh stops after 40 pages when the end marker never shows" \
   grep -qF "The gallery's end marker was not on screen after 40 pages" "$output"
 check "gallery.sh restores the default text size after a failure" \
   only_calls "settings" "settings text-size large" "settings text-size large"
+
+case_name="gallery.sh when the gallery stops moving"
+rm -f "$root/bound-calls"
+! env PATH="$fake:$PATH" SVETT_DEVICE_CMD="$bound_cmd" FAKE_GALLERY_SCROLLS=1000 FAKE_GALLERY_STALL=4 \
+  "$repo/scripts/sim/gallery.sh" "$root/gallery-stalled" >"$output" 2>&1 || fail "gallery.sh succeeded"
+check "gallery.sh stops at the first page that matches the one before it" \
+  grep -qxF "dark-06.png matches dark-05.png, so the drag at 8,765 did not move the gallery" "$output"
+check "gallery.sh shoots no page after the stalled one" \
+  only_calls "screenshot" "$(printf "screenshot $root/gallery-stalled/dark-%02d.png\n" 1 2 3 4 5 6)"
+check "gallery.sh drags in the gallery's left gutter, not down the middle where a control can keep the touch" \
+  only_calls "scroll|gesture" "$(printf 'gesture pan 8 765 0 -574 400\n%.0s' 1 2 3 4 5)"
 
 # Stands in for the bound command on Phone checks. It tracks what is in front:
 # the Home Screen, or svett on its tab root, the You tab or Phone checks. Like the
