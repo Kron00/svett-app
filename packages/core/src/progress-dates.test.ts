@@ -71,6 +71,26 @@ describe("monthLabels", () => {
 });
 
 describe("monthTicks", () => {
+  it("starts each month at its own midnight after a clock change at midnight", () => {
+    // Asunción's clocks went forward at midnight on 1 October 2023, so that day began at
+    // 01:00. November began at 00:00 again.
+    const zone = process.env["TZ"];
+    process.env["TZ"] = "America/Asuncion";
+    try {
+      const ticks = monthTicks(
+        new Date(2023, 8, 30, 0, 30).getTime(),
+        new Date(2023, 10, 1, 0, 30).getTime(),
+      );
+      expect(ticks.map((tick) => [tick.label, new Date(tick.at).getHours()])).toEqual([
+        ["Oct", 1],
+        ["Nov", 0],
+      ]);
+    } finally {
+      if (zone === undefined) delete process.env["TZ"];
+      else process.env["TZ"] = zone;
+    }
+  });
+
   it("puts a tick at the start of each month in the range, with the year in January", () => {
     const ticks = monthTicks(local(2025, 10, 14, 18), local(2026, 2, 1, 0));
     expect(ticks.map((tick) => tick.label)).toEqual(["Dec", "2026", "Feb", "Mar"]);

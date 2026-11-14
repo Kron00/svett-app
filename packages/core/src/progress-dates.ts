@@ -115,10 +115,14 @@ const monthTick = (date: Date): MonthTick => ({
  */
 export const monthTicks = (first: number, last: number): ReadonlyArray<MonthTick> => {
   const start = new Date(first);
-  const date = new Date(start.getFullYear(), start.getMonth(), 1);
-  if (date.getTime() < first) date.setMonth(date.getMonth() + 1);
+  // Each month's start is built on its own. Stepping one Date with setMonth would carry
+  // the hour a midnight clock change added, such as 01:00, into the months after it.
+  let month = start.getFullYear() * 12 + start.getMonth();
+  if (new Date(Math.floor(month / 12), month % 12, 1).getTime() < first) month += 1;
   const ticks: Array<MonthTick> = [];
-  for (; date.getTime() <= last; date.setMonth(date.getMonth() + 1)) {
+  for (; ; month += 1) {
+    const date = new Date(Math.floor(month / 12), month % 12, 1);
+    if (date.getTime() > last) break;
     ticks.push(monthTick(date));
   }
   return ticks.length > 0 ? ticks : [monthTick(start)];
