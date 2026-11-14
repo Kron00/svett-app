@@ -216,7 +216,7 @@ const shortened = (value: string, length = 60) =>
   value.length <= length ? value : `${value.slice(0, length - 1).trimEnd()}…`;
 
 /** The title and time a preview shows for a record. */
-export const summarizeItem = (item: Item): ItemSummary => {
+export const summarize = (item: Item): ItemSummary => {
   const top = item.rows[item.table]?.find((row) => row.id === item.id);
   const base = { key: item.key, table: item.table, id: item.id };
   const fallback = capitalized(NOUN[item.table][0]);
@@ -380,7 +380,7 @@ export const planImport = (
       >)
   > = [];
   for (const item of groupItems(incoming, lookup).values()) {
-    const summary = summarizeItem(item);
+    const summary = summarize(item);
     const writes: Partial<Record<TableKey, Array<AnyRow>>> = {};
     const replaced: Partial<Record<TableKey, Array<AnyRow>>> = {};
     let yours = !isRootSeedOrMissing(item, here);

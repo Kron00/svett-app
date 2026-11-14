@@ -1,7 +1,10 @@
+import { readFileSync } from "node:fs";
+
 import { Effect, Option, Result } from "effect";
 import { describe, expect, it } from "vite-plus/test";
 
 import { DurationSeconds } from "../duration.ts";
+import { libraryExerciseId } from "../exercise-library.ts";
 import {
   SAMPLE_GPX_START,
   sampleExportXml,
@@ -10,6 +13,9 @@ import {
   sampleHevyDraft,
   SAMPLE_STRENGTH_START,
 } from "../health-sample.ts";
+import { decodeHevyFile, wallTimeAsUtc } from "../hevy-file.ts";
+import { hevyImport } from "../hevy-import.ts";
+import { importedId } from "../ids.ts";
 import { EpochMillis, Fingerprint, type ImportBatchId, SourceIdentity } from "../schema.ts";
 import { readSourceFile, type SourceFile } from "../source-file.ts";
 import {
@@ -20,8 +26,10 @@ import {
   type SourceWorkout,
 } from "../source-import.ts";
 import { openTestDatabase } from "../test-database.ts";
+import { isNothingToImport } from "../transfer.ts";
 import { bytesSource } from "../zip.ts";
 import { ActivityRepository } from "./activities.ts";
+import { ExerciseAliasRepository } from "./exercises.ts";
 import { ImportRepository } from "./records.ts";
 import { TransferRepository } from "./transfer.ts";
 
@@ -600,5 +608,84 @@ describe("importing from Apple Health and GPX", () => {
     );
     expect(after.exercises[0]!.sets[0]!.reps).toBe(10);
     expect(after.exercises.flatMap((exercise) => exercise.sets)).toHaveLength(9);
+  });
+});
+
+describe("Apple Health and Hevy's own import", () => {
+  // Hevy writes clock times with no zone. Read them in the sample export's +01:00 zone,
+  // so Hevy's Push Day, 18:30 to 19:35, overlaps Health's strength workout, 18:05 to 19:00.
+  const hevyFile = Result.getOrThrow(
+    decodeHevyFile(
+      readFileSync(new URL("../../test-data/hevy-sample.csv", import.meta.url), "utf8"),
+      (time) => wallTimeAsUtc(time) - 3_600_000,
+    ),
+  );
+  const pushId = importedId("activity", "hevy", "2026-11-03T18:30:00");
+
+  const importHevy = async (database: Database) => {
+    await database.runtime.runPromise(
+      Effect.flatMap(Effect.service(ExerciseAliasRepository), (repository) =>
+        repository.remember("hevy", [
+          {
+            name: "Chest Supported Machine Row",
+            exerciseId: libraryExerciseId("Leverage_Iso_Row"),
+          },
+        ]),
+      ),
+    );
+    return transfers(database, (repository) => repository.applyImport(hevyImport(hevyFile), []));
+  };
+
+  it("links the Health copy of a workout Hevy's import saved, keeping its sets and the Health heart rate", async () => {
+    const database = openTestDatabase();
+    Option.getOrThrow(await importHevy(database));
+    expect(await counts(database)).toEqual({ activities: 3, sets: 25 });
+    const file = await health();
+
+    const plan = await planOf(database, file);
+    expect(plan.duplicates).toHaveLength(1);
+    expect(plan.duplicates[0]).toMatchObject({
+      workout: { source: "apple_health", kind: "strength", startedAt: SAMPLE_STRENGTH_START },
+      match: { id: pushId, title: "Push Day", source: "hevy" },
+    });
+    expect(sourceActivityId(plan.duplicates[0]!.workout)).not.toBe(pushId);
+
+    expect(Option.getOrThrow(await importAll(database, file))).toMatchObject({
+      added: 3,
+      linked: 1,
+    });
+    expect(await counts(database)).toEqual({ activities: 6, sets: 25 });
+    const push = Option.getOrThrow(
+      await activities(database, (repository) => repository.get(pushId as never)),
+    );
+    expect(push.activity).toMatchObject({ title: "Push Day", source: "hevy" });
+    expect(push.exercises.flatMap((exercise) => exercise.sets)).toHaveLength(8);
+    expect(await heartOf(database, pushId)).toEqual({ averageBpm: 112, maxBpm: 124 });
+
+    // Importing the Hevy file again finds nothing new and leaves the link and heart rate.
+    const again = await transfers(database, (repository) =>
+      repository.previewImport(hevyImport(hevyFile)),
+    );
+    expect(isNothingToImport(again)).toBe(true);
+    expect(await importHevy(database)).toEqual(Option.none());
+    expect(liveRows(database, "activity_source")).toBe(1);
+    expect(await heartOf(database, pushId)).toEqual({ averageBpm: 112, maxBpm: 124 });
+  });
+
+  it("holds Hevy's copy of a workout Health already brought back as a possible duplicate", async () => {
+    const database = openTestDatabase();
+    Option.getOrThrow(await importAll(database, await health()));
+
+    const plan = await transfers(database, (repository) =>
+      repository.previewImport(hevyImport(hevyFile)),
+    );
+    expect(plan.duplicates).toEqual([
+      expect.objectContaining({
+        key: "hevy/2026-11-03T18:30:00",
+        reason: "overlap",
+        summary: expect.objectContaining({ title: "Push Day" }),
+        other: expect.objectContaining({ at: SAMPLE_STRENGTH_START }),
+      }),
+    ]);
   });
 });
