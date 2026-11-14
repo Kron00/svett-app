@@ -61,7 +61,13 @@ const deliver = (seconds: number) =>
       locations: [
         {
           timestamp: T + seconds * 1000,
-          coords: { latitude: 0, longitude: 0, altitude: null, accuracy: 5, altitudeAccuracy: null },
+          coords: {
+            latitude: 0,
+            longitude: 0,
+            altitude: null,
+            accuracy: 5,
+            altitudeAccuracy: null,
+          },
         },
       ],
     },
