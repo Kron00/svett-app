@@ -231,7 +231,9 @@ again=$(counts_of "$wiped")
   fail "Importing the same file again recorded another import: $again"
 note "Same file again: nothing new, one import on record, still equal row for row."
 
-open_link svett://data 'id="import-batch-0"'
+# Past imports are listed below export and import, under the fold at the largest
+# text size, so wait for the screen and let tap scroll to the row.
+open_link svett://data 'id="data"'
 screenshot data-with-import
 tap 'id="import-batch-0"'
 agent_device wait 'id="undo-import"' 60000
