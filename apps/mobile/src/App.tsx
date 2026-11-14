@@ -7,6 +7,7 @@ import { StatusBar } from "expo-status-bar";
 import { AccountProvider } from "./account/AccountProvider";
 import { AccountScreen } from "./account/AccountScreen";
 import { ChatGPTScreen } from "./chatgpt/ChatGPTScreen";
+import { ProposalScreen } from "./coach/ProposalScreen";
 import { PhoneChecksScreen } from "./checks/PhoneChecksScreen";
 import { markLaunchOnNextFrame } from "./data/launch-timing";
 import { useNavigationTheme } from "./design/hooks";
@@ -70,6 +71,11 @@ export default function App() {
             name="ChatGPT"
             component={ChatGPTScreen}
             options={{ headerShown: true, title: "ChatGPT" }}
+          />
+          <Stack.Screen
+            name="Proposal"
+            component={ProposalScreen}
+            options={{ headerShown: true, title: "Coach proposal" }}
           />
           <Stack.Screen
             name="Account"
