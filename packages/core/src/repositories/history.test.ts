@@ -170,6 +170,29 @@ describe("HistoryRepository.workout", () => {
     expect((await view(middle)).recordCount).toBe(3);
   });
 
+  it("badges a workout as the charts do when another started at the same time", async () => {
+    const { log, view, run } = open();
+    await log(1, "A", [{ exerciseId: DEADLIFT, sets: [set(100, 5)] }]);
+    const b = await log(1, "B", [
+      { exerciseId: SQUAT, sets: [set(60, 5)] },
+      { exerciseId: DEADLIFT, sets: [set(110, 5)] },
+    ]);
+    const charted = await run(() =>
+      Effect.gen(function* () {
+        const progress = yield* ProgressRepository;
+        return personalRecords(yield* progress.performedSets()).records;
+      }),
+    );
+    const expected = charted
+      .filter((record) => record.activityId === b)
+      .map((record) => `${record.setId} ${record.kind}`);
+    const badged = (await view(b)).exercises.flatMap(({ sets }) =>
+      sets.flatMap((row) => row.records.map((kind) => `${row.id} ${kind}`)),
+    );
+    expect(expected.length).toBeGreaterThan(0);
+    expect([...badged].sort()).toEqual([...expected].sort());
+  });
+
   it("splits the working sets by main muscle", async () => {
     const { log, view } = open();
     const id = await log(0, "Legs", [

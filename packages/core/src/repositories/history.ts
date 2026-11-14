@@ -96,7 +96,22 @@ const makeHistoryRepository = Effect.gen(function* () {
           const sets = yield* Effect.forEach(exerciseIds, (exerciseId) =>
             progress.performedSets({ exerciseId, until: activity.value.startedAt + 1 }),
           );
-          const records = workoutRecords(sets.flat(), activity.value.id);
+          // Each exercise's sets come back in workout order. Merged, they keep that order so
+          // workouts that started at the same time are judged as the charts judge them.
+          const merged = sets
+            .flat()
+            .map((performed, index) => ({ performed, index }))
+            .sort(
+              (a, b) =>
+                a.performed.startedAt - b.performed.startedAt ||
+                (a.performed.activityId < b.performed.activityId
+                  ? -1
+                  : a.performed.activityId > b.performed.activityId
+                    ? 1
+                    : a.index - b.index),
+            )
+            .map(({ performed }) => performed);
+          const records = workoutRecords(merged, activity.value.id);
           return Option.some(describeWorkout(detail, library, records));
         }),
       ),
