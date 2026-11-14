@@ -59,9 +59,11 @@ const notifyFor = (rest: RestTimer | null): Promise<void> => {
   const change = async () => {
     if (ticket !== latest) return;
     await cancelNotice();
-    if (rest === null) return;
+    if (rest === null || !(await allowed()) || ticket !== latest) return;
+    // Worked out only once permission is in, which can take as long as the person takes to
+    // answer. A rest that ended meanwhile gets no notification.
     const seconds = restNoticeSeconds(rest, Date.now());
-    if (seconds === null || !(await allowed()) || ticket !== latest) return;
+    if (seconds === null) return;
     await Notifications.scheduleNotificationAsync({
       identifier: NOTIFICATION_ID,
       content: { ...restNotice(rest), sound: "default" },

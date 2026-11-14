@@ -33,6 +33,9 @@ const ios = vi.hoisted(() => ({
   pending: new Map<string, number>(),
   held: null as Array<() => void> | null,
   reached: null as (() => void) | null,
+  /** When set, the permission prompt waits for `answer`, as a person reading it would. */
+  askLater: false,
+  answer: null as ((granted: boolean) => void) | null,
   /** Holds the next schedules. Resolves once one is waiting. */
   hold() {
     this.held = [];
@@ -46,7 +49,12 @@ const ios = vi.hoisted(() => ({
 }));
 vi.mock("expo-notifications", () => ({
   SchedulableTriggerInputTypes: { TIME_INTERVAL: "timeInterval" },
-  requestPermissionsAsync: async () => ({ granted: true }),
+  requestPermissionsAsync: () =>
+    ios.askLater
+      ? new Promise<{ granted: boolean }>((resolve) => {
+          ios.answer = (granted) => resolve({ granted });
+        })
+      : Promise.resolve({ granted: true }),
   cancelScheduledNotificationAsync: async (id: string) => {
     ios.pending.delete(id);
   },
@@ -114,6 +122,8 @@ beforeEach(() => {
   defaults.clear();
   ios.pending.clear();
   ios.held = null;
+  ios.askLater = false;
+  ios.answer = null;
 });
 
 afterEach(() => {
@@ -177,6 +187,40 @@ describe("the rest notification", () => {
     await Promise.all([first, second]);
 
     expect([...ios.pending]).toEqual([["svett-rest-timer", 30]]);
+  });
+
+  it("is due when the rest ends, not a whole rest later, when permission comes mid-rest", async () => {
+    vi.useFakeTimers({ toFake: ["Date"], now: 1_000_000 });
+    const runtime = openApp();
+    await startSquats(runtime);
+    const running = await launch(runtime);
+    ios.askLater = true;
+
+    const scheduling = restBeforeSquat(running, 30);
+    await vi.waitFor(() => expect(ios.answer).not.toBeNull());
+    vi.setSystemTime(1_010_000);
+    ios.answer!(true);
+    await scheduling;
+
+    expect(ios.pending.get("svett-rest-timer")).toBe(20);
+  });
+
+  it("is never scheduled when permission comes after the rest ended", async () => {
+    vi.useFakeTimers({ toFake: ["Date"], now: 1_000_000 });
+    const runtime = openApp();
+    await startSquats(runtime);
+    const running = await launch(runtime);
+    ios.askLater = true;
+
+    const scheduling = restBeforeSquat(running, 30);
+    await vi.waitFor(() => expect(ios.answer).not.toBeNull());
+    vi.setSystemTime(1_031_000);
+    running.rest.restEnded(running.rest.currentRestTimer()!);
+    ios.answer!(true);
+    await scheduling;
+
+    expect(running.rest.currentRestTimer()).toBeNull();
+    expect(ios.pending.size).toBe(0);
   });
 
   it("is cancelled, not moved a second on, when the rest is cut to nothing", async () => {
