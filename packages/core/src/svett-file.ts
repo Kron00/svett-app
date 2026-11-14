@@ -1,4 +1,4 @@
-import { Data, Exit, Schema } from "effect";
+import { Data, Exit, Result, Schema } from "effect";
 
 import { EpochMillis } from "./schema.ts";
 import { TABLES } from "./table.ts";
@@ -54,18 +54,18 @@ const notSvett = new SvettFileError({
  * Reads a svett file. Every row passes its table's schema, so a damaged or edited file is
  * refused whole rather than half imported. Rows marked deleted are left out.
  */
-export const decodeSvettFile = (text: string): Exit.Exit<SvettFile, SvettFileError> => {
+export const decodeSvettFile = (text: string): Result.Result<SvettFile, SvettFileError> => {
   let json: unknown;
   try {
     json = JSON.parse(text);
   } catch {
-    return Exit.fail(notSvett);
+    return Result.fail(notSvett);
   }
   const envelope = Schema.decodeUnknownExit(Envelope)(json);
-  if (Exit.isFailure(envelope)) return Exit.fail(notSvett);
+  if (Exit.isFailure(envelope)) return Result.fail(notSvett);
   const { version, exportedAt, tables } = envelope.value;
   if (version > SVETT_FILE_VERSION) {
-    return Exit.fail(
+    return Result.fail(
       new SvettFileError({
         reason: "too_new",
         message: "A newer svett made this file. Update svett, then import it again.",
@@ -75,7 +75,7 @@ export const decodeSvettFile = (text: string): Exit.Exit<SvettFile, SvettFileErr
   const known = new Set(TABLE_KEYS.map((key) => TABLES[key].name));
   const unknown = Object.keys(tables).find((name) => !known.has(name));
   if (unknown !== undefined) {
-    return Exit.fail(
+    return Result.fail(
       new SvettFileError({
         reason: "invalid",
         message: `The file has a table svett does not know, ${unknown}.`,
@@ -93,7 +93,7 @@ export const decodeSvettFile = (text: string): Exit.Exit<SvettFile, SvettFileErr
     for (const [index, raw] of (tables[name] ?? []).entries()) {
       const row = decode(raw);
       if (Exit.isFailure(row)) {
-        return Exit.fail(
+        return Result.fail(
           new SvettFileError({
             reason: "invalid",
             message: `Row ${index + 1} of ${name} is not valid.`,
@@ -102,7 +102,7 @@ export const decodeSvettFile = (text: string): Exit.Exit<SvettFile, SvettFileErr
       }
       const value = row.value as AnyRow;
       if (seen.has(value.id)) {
-        return Exit.fail(
+        return Result.fail(
           new SvettFileError({
             reason: "invalid",
             message: `The file holds ${name} row ${value.id} twice.`,
@@ -115,5 +115,5 @@ export const decodeSvettFile = (text: string): Exit.Exit<SvettFile, SvettFileErr
     parsed[key] = live;
     rows += live.length;
   }
-  return Exit.succeed({ version, exportedAt, tables: parsed, rows });
+  return Result.succeed({ version, exportedAt, tables: parsed, rows });
 };

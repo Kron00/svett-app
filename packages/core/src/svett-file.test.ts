@@ -1,4 +1,4 @@
-import { Exit } from "effect";
+import { Result } from "effect";
 import { describe, expect, it } from "vite-plus/test";
 
 import { EpochMillis } from "./schema.ts";
@@ -20,9 +20,9 @@ const file = (tables: Record<string, ReadonlyArray<unknown>>, version = 1) =>
   JSON.stringify({ format: "svett", version, exportedAt: 1_000, tables });
 
 const failure = (text: string) => {
-  const exit = decodeSvettFile(text);
-  if (Exit.isSuccess(exit)) throw new Error("decoded");
-  return exit.cause;
+  const result = decodeSvettFile(text);
+  if (Result.isSuccess(result)) throw new Error("decoded");
+  return result.failure;
 };
 
 describe("svett file", () => {
@@ -30,7 +30,7 @@ describe("svett file", () => {
     const text = encodeSvettFile(snapshot({ folder: [folder] as never }), EpochMillis.make(1_000));
     const decoded = decodeSvettFile(text);
     expect(decoded).toEqual(
-      Exit.succeed({
+      Result.succeed({
         version: 1,
         exportedAt: 1_000,
         rows: 1,
@@ -56,8 +56,8 @@ describe("svett file", () => {
         folder: [folder, { ...folder, id: "01900000-0000-7000-8000-000000000002", deletedAt: 9 }],
       }),
     );
-    expect(Exit.isSuccess(decoded) && decoded.value.tables.folder).toEqual([folder]);
-    expect(Exit.isSuccess(decoded) && decoded.value.tables.activity).toEqual([]);
+    expect(Result.isSuccess(decoded) && decoded.success.tables.folder).toEqual([folder]);
+    expect(Result.isSuccess(decoded) && decoded.success.tables.activity).toEqual([]);
   });
 
   it.each([
@@ -65,53 +65,37 @@ describe("svett file", () => {
     ["JSON that is not a svett file", JSON.stringify({ workouts: [] })],
   ])("refuses %s", (_, text) => {
     expect(failure(text)).toMatchObject({
-      reasons: [{ error: { reason: "not_svett", message: "This is not a svett export file." } }],
+      reason: "not_svett",
+      message: "This is not a svett export file.",
     });
   });
 
   it("asks for an update when a newer svett made the file", () => {
     expect(failure(file({}, 2))).toMatchObject({
-      reasons: [
-        {
-          error: {
-            reason: "too_new",
-            message: "A newer svett made this file. Update svett, then import it again.",
-          },
-        },
-      ],
+      reason: "too_new",
+      message: "A newer svett made this file. Update svett, then import it again.",
     });
   });
 
   it("refuses the whole file when one row breaks its table's rules", () => {
-    expect(
-      failure(
-        file({
-          folder: [folder, { ...folder, id: "01900000-0000-7000-8000-000000000003", name: "" }],
-        }),
-      ),
-    ).toMatchObject({
-      reasons: [{ error: { reason: "invalid", message: "Row 2 of folder is not valid." } }],
+    const empty = { ...folder, id: "01900000-0000-7000-8000-000000000003", name: "" };
+    expect(failure(file({ folder: [folder, empty] }))).toMatchObject({
+      reason: "invalid",
+      message: "Row 2 of folder is not valid.",
     });
   });
 
   it("refuses a file that holds one row twice", () => {
     expect(failure(file({ folder: [folder, folder] }))).toMatchObject({
-      reasons: [
-        {
-          error: {
-            reason: "invalid",
-            message: "The file holds folder row 01900000-0000-7000-8000-000000000001 twice.",
-          },
-        },
-      ],
+      reason: "invalid",
+      message: "The file holds folder row 01900000-0000-7000-8000-000000000001 twice.",
     });
   });
 
   it("refuses a table svett does not know", () => {
     expect(failure(file({ gym: [] }))).toMatchObject({
-      reasons: [
-        { error: { reason: "invalid", message: "The file has a table svett does not know, gym." } },
-      ],
+      reason: "invalid",
+      message: "The file has a table svett does not know, gym.",
     });
   });
 });

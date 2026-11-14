@@ -1,4 +1,4 @@
-import { Effect, Exit, Layer, ManagedRuntime, Option } from "effect";
+import { Effect, Layer, ManagedRuntime, Option, Result } from "effect";
 import { describe, expect, it } from "vite-plus/test";
 
 import { databaseLayer } from "../database.ts";
@@ -71,9 +71,7 @@ const transfer = <A, E>(
 
 const exportFile = async (database: Database): Promise<SvettFile> => {
   const { text } = await transfer(database, (repository) => repository.exportFile);
-  const file = decodeSvettFile(text);
-  if (Exit.isFailure(file)) throw new Error(String(file.cause));
-  return file.value;
+  return Result.getOrThrow(decodeSvettFile(text));
 };
 
 /** Every row of every table, deleted or not, straight from SQLite. */
