@@ -886,7 +886,8 @@ check "exercises.sh names the result it found instead" \
 # fixture to the wiped database with one import batch, and Undo deletes every
 # workout and marks the batch undone. FAKE_IMPORT_DIFFERS changes a workout on
 # import, FAKE_IMPORT_TWICE records a second batch when the same file opens
-# again, and FAKE_NO_EXPORT writes no export.
+# again, and FAKE_NO_EXPORT writes no export. The Import and Undo buttons start below
+# the fold, as they do at the largest text size, so only a scroll finds them.
 data_fake="$root/data-bin"
 mkdir -p "$data_fake"
 cat >"$data_fake/pnpm" <<'EOF'
@@ -916,6 +917,8 @@ case "\$args" in
     if [[ -n "\${FAKE_IMPORT_TWICE:-}" && -e "\$documents/svett-wiped.db" ]]; then
       sql "\$documents/svett-wiped.db" "INSERT INTO import_batch VALUES ('b2', 2, NULL, 'svett_file', 2, 'applied')"
     fi ;;
+  *' wait id="import-apply"'* | *' wait id="undo-apply"'* | *' is visible id="import-apply"'* | *' is visible id="undo-apply"'*)
+    exit 1 ;;
   *" get attrs "*)
     echo "\$*" >"$root/last-attrs"
     echo '{"rect": {"x": 20, "y": 300, "width": 120, "height": 40}}' ;;

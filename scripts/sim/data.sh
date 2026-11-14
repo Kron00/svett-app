@@ -201,7 +201,9 @@ show_counts wiped
 is_count "$shown" 0 0 || fail "The wiped database is not empty: $shown"
 note "Wiped: $shown."
 
-open_link "svett://import?file=$import_name" 'id="import-apply"'
+# The preview lists every new workout, so at the largest text size its Import button
+# starts far below the fold: wait for the summary at the top, and tap scrolls to it.
+open_link "svett://import?file=$import_name" 'id="import-new"'
 screenshot import-preview
 started=$(date +%s)
 tap 'id="import-apply"'
@@ -232,7 +234,7 @@ note "Same file again: nothing new, one import on record, still equal row for ro
 open_link svett://data 'id="import-batch-0"'
 screenshot data-with-import
 tap 'id="import-batch-0"'
-agent_device wait 'id="undo-apply"' 60000
+agent_device wait 'id="undo-import"' 60000
 screenshot undo-preview
 tap 'id="undo-apply"'
 agent_device wait 'id="undo-done"' 300000
