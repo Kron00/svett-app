@@ -76,7 +76,7 @@ describe("notification check", () => {
 
   it("asks for another run when it arrived while svett was open", () => {
     expect(judge({ inSvett: s(10) }, s(10))).toEqual({
-      status: "waiting",
+      status: "inconclusive",
       detail:
         "Arrived at 15:00:10 UTC while svett was open. Run it again and leave svett before it is due.",
     });
@@ -107,10 +107,16 @@ describe("notification check", () => {
     const restored = decodePendingNotification(stored);
     if (restored === undefined) throw new Error("the pending notification did not read back");
     expect(notificationOutcome(findNotification(restored, {}, s(60)), s(30))).toEqual({
-      status: "waiting",
+      status: "inconclusive",
       detail:
         "Arrived at 15:00:10 UTC while svett was open. Run it again and leave svett before it is due.",
     });
+  });
+
+  it("keeps the arrived-while-open result after a restart once the screen judged it", () => {
+    const outcome = judge({ inSvett: s(10) }, s(10));
+    const stored = decodeStoredOutcome(encodeStoredOutcome({ outcome, launchedAt }));
+    expect(mergeOutcome(NOT_RUN, stored, s(90))).toEqual(outcome);
   });
 
   it("does not count a notification handed to svett outside the front as arrived while open", () => {

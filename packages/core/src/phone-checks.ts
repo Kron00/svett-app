@@ -185,7 +185,7 @@ export function notificationOutcome(
       );
     case "arrived":
       if (observation.whileOpen) {
-        return waiting(
+        return inconclusive(
           `Arrived at ${clock(observation.at)} while svett was open. Run it again and leave svett before it is due.`,
         );
       }
