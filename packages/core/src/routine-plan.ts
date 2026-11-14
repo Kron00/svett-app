@@ -14,7 +14,7 @@ import {
   type SetType,
 } from "./schema.ts";
 import { formatWeightKg } from "./set-format.ts";
-import { formatWeightWithUnit, type WeightUnit } from "./weight-unit.ts";
+import { formatWeight, formatWeightWithUnit, kgFromText, type WeightUnit } from "./weight-unit.ts";
 
 /** The position after the last of `rows`, so a new row goes to the end. */
 export const endPosition = (rows: ReadonlyArray<{ readonly position: number }>): number =>
@@ -367,9 +367,10 @@ export interface SetTargetEntry {
   readonly repsTo: string;
 }
 
-export const setTargetEntry = (set: RoutineSetDraft): SetTargetEntry => ({
+/** The fields a set's target opens with, its weight in `unit`. */
+export const setTargetEntry = (set: RoutineSetDraft, unit: WeightUnit = "kg"): SetTargetEntry => ({
   setType: set.setType,
-  weight: set.weightKg === null ? "" : formatWeightKg(set.weightKg),
+  weight: set.weightKg === null ? "" : formatWeight(set.weightKg, unit),
   repsFrom: set.repsMin === null ? "" : String(set.repsMin),
   repsTo: set.repsMax === null || set.repsMax === set.repsMin ? "" : String(set.repsMax),
 });
@@ -382,10 +383,12 @@ const entryNumber = (text: string): number | null => {
 /**
  * The target the set sheet's fields describe. One rep count is an exact target, two are a
  * range, and a range typed high to low is turned round. Time and distance stay as they were.
+ * The weight is typed in `unit`, and one that still reads as the stored weight keeps it.
  */
 export const setTargetFromEntry = (
   entry: SetTargetEntry,
   base: RoutineSetDraft,
+  unit: WeightUnit = "kg",
 ): RoutineSetDraft => {
   const from = entryNumber(entry.repsFrom);
   const to = entryNumber(entry.repsTo);
@@ -394,7 +397,7 @@ export const setTargetFromEntry = (
   return {
     ...base,
     setType: entry.setType,
-    weightKg: entryNumber(entry.weight),
+    weightKg: kgFromText(entry.weight, base.weightKg, unit),
     repsMin: low === null ? null : Math.round(low),
     repsMax: high === null ? null : Math.round(high),
   };
