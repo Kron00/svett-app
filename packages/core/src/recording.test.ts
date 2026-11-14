@@ -25,7 +25,7 @@ import {
   segmentTrack,
 } from "./recording.ts";
 import { ActivityId } from "./schema.ts";
-import { addReading, emptyTrack, STOP_MS, type Track } from "./track-filter.ts";
+import { addReading, chainItems, emptyTrack, type Track } from "./track-filter.ts";
 
 /** Every case with random readings runs once for each of these seeds. */
 const SEEDS = [...Array.from({ length: 60 }, (_, index) => index + 1), 1234];
@@ -268,16 +268,16 @@ const loop = (error: () => { readonly east: number; readonly north: number }) =>
     );
   });
 
-/** Error that wanders 2 m a second each way and stays 3 m to 8 m from the truth. */
-const wandering = (seed: number) => {
+/** Error that wanders `step` metres a second each way and stays `least` to `most` metres from the truth. */
+const wandering = (seed: number, step = 2, least = 3, most = 8) => {
   const next = seededRandom(seed);
-  let east = 5;
+  let east = (least + most) / 2;
   let north = 0;
   return () => {
-    east += (next() * 2 - 1) * 2;
-    north += (next() * 2 - 1) * 2;
+    east += (next() * 2 - 1) * step;
+    north += (next() * 2 - 1) * step;
     const size = Math.hypot(east, north);
-    const kept = Math.max(3, Math.min(8, size));
+    const kept = Math.max(least, Math.min(most, size));
     east *= kept / size;
     north *= kept / size;
     return { east, north };
@@ -295,7 +295,10 @@ const jitter = (seed: number) => {
 };
 
 const ride = along([point(0, 0), point(0, 6000)], 12);
-const zigzag = Array.from({ length: 31 }, (_, index) => point(index % 2 === 0 ? 0 : 20, index * 3));
+/** Traverses `width` metres wide and 3 m apart. */
+const zigzagOf = (width: number) =>
+  Array.from({ length: 31 }, (_, index) => point(index % 2 === 0 ? 0 : width, index * 3));
+const zigzag = zigzagOf(20);
 
 /** `seconds` round a circle of `radius` at `speed`, reading every second. */
 const circling = (radius: number, speed: number, seconds: number, speedMps: Reported) =>
@@ -315,6 +318,63 @@ const tunnelRun = along([point(0, 0), point(0, 900)], 3).filter((event) => {
   const second = secondsOf(event);
   return second <= 150 || second >= 180;
 });
+
+/** The events with each reading's speed as `speed` gives it from its index and its speed. */
+const withSpeeds = (
+  events: ReadonlyArray<RecordingEvent>,
+  speed: (index: number, speedMps: number | null | undefined) => number | null,
+): RecordingEvent[] =>
+  events.map((event, index) =>
+    event.type === "fix"
+      ? { ...event, fix: { ...event.fix, speedMps: speed(index, event.fix.speedMps) } }
+      : event,
+  );
+
+/**
+ * Ten walks of `seconds` at `speed` up a straight line, each followed by two minutes
+ * standing still, every reading reporting its speed exactly.
+ */
+const pausedWalks = (speed: number, seconds: number, walks = 10) => {
+  const events: RecordingEvent[] = [];
+  let second = 0;
+  let metres = 0;
+  for (let walk = 0; walk < walks; walk++) {
+    for (let step = 0; step < seconds; step++) {
+      events.push(fixAt(second++, point(0, metres), 5, speed));
+      metres += speed;
+    }
+    for (let step = 0; step < 120; step++) events.push(fixAt(second++, point(0, metres), 5, 0));
+  }
+  return { events, metres };
+};
+
+/** A walk round a city block, about 900 m, with no speeds, as a GPX file has it. */
+const BLOCK = [point(0, 0), point(250, 0), point(250, 180), point(120, 260), point(0, 180), point(0, 0)];
+const gpxWalk = (seed: number, every: number) => {
+  // A phone's error drifts slowly, half a metre a second, and stays 1 m to 5 m off.
+  const error = wandering(seed, 0.5, 1, 5);
+  return along(BLOCK, 1.4, { every }).map((event): RecordingEvent => {
+    if (event.type !== "fix") return event;
+    const { east, north } = error();
+    const { latitude, longitude } = event.fix;
+    return {
+      ...event,
+      fix: { ...event.fix, latitude: latitude + north / DEGREE_M, longitude: longitude + east / DEGREE_M },
+    };
+  });
+};
+
+/** A 10 m out-and-back at 1 m/s, every reading reporting 1 m/s, then `seconds` standing still. */
+const outAndBackThenStop = (seconds: number) => [
+  ...withSpeeds(along([point(0, 0), point(0, 10), point(0, 0)], 1), () => 1),
+  ...Array.from({ length: seconds }, (_, second) => fixAt(21 + second, point(0, 0), 5, 0)),
+];
+
+const circleNoSpeeds = (radius: number) =>
+  Array.from({ length: 601 }, (_, second) => {
+    const angle = (second * 0.5) / radius;
+    return fixAt(second, point(radius * Math.sin(angle), radius * (1 - Math.cos(angle))));
+  });
 
 interface MovementCase {
   readonly name: string;
@@ -372,10 +432,11 @@ const MOVEMENT: ReadonlyArray<MovementCase> = [
     expect: { near: pathLengthM(ROUTE.waypoints), within: 0.01 },
   },
   {
-    name: "a 200 m out-and-back at 3 m/s comes within 3% of 200 m",
+    // The distance shown leaves out the latest reading, 1.5% of this one, until a later one confirms it.
+    name: "a 200 m out-and-back at 3 m/s comes within 3% of 200 m saved and shown",
     kind: "run",
     events: along([point(0, 0), point(0, 100), point(0, 0)], 3),
-    expect: { near: 200, within: 0.03 },
+    expect: { near: 200, within: 0.03, live: 0.03 },
   },
   {
     name: "a walk around a quarter circle of 100 m radius comes within 3% of its length",
@@ -391,12 +452,14 @@ const MOVEMENT: ReadonlyArray<MovementCase> = [
       events,
       expect: { near: 600, within: 0.03 },
       also: ({ shown }) => {
-        // The first reading of the stop confirms the last one of the run.
+        // The first reading of the stop confirms the last one of the run. A minute in,
+        // the stop has paused the recording and the moving readings before it have
+        // settled, so nothing grows.
         const arrived = shown[before.length + 1]!;
-        const stopped = shown[before.length + STOP_MS / 1000]!;
+        const aMinuteIn = shown[before.length + 60]!;
         const leaving = shown[before.length + stop.length]!;
         expect(leaving - arrived).toBeLessThanOrEqual(8);
-        expect(leaving).toBe(stopped);
+        expect(leaving).toBe(aMinuteIn);
       },
     };
   }),
@@ -507,10 +570,186 @@ const MOVEMENT: ReadonlyArray<MovementCase> = [
     expect: { near: 6000, within: 0.01 },
     also: ({ recording }) => {
       // Every reading but the last, which nothing came after to confirm until the end.
-      expect(recording.segments[0]!.fixes).toHaveLength(ride.length - 1);
+      expect(recording.segments[0]!.points).toHaveLength(ride.length - 1);
       expect(segmentFixes(recording.segments[0]!)).toHaveLength(ride.length);
     },
   },
+  ...[1, 5].flatMap((every) =>
+    SEEDS.map((seed): MovementCase => ({
+      name: `a walk round a block with no speeds, read every ${every} s, comes within 3% (seed ${seed})`,
+      kind: "walk",
+      events: gpxWalk(seed, every),
+      expect: { near: pathLengthM(BLOCK), within: 0.03, live: 0.03 },
+    })),
+  ),
+  ...SEEDS.flatMap((seed): MovementCase[] => {
+    const events = along(zigzag, 0.5, { accuracyM: () => 10, speedMps: reported(seed) });
+    const near = pathLengthM(zigzag);
+    return [
+      {
+        name: `the zigzag with one reading of unknown speed comes within 3% (seed ${seed})`,
+        kind: "hike",
+        events: withSpeeds(events, (index, speed) => (index === 1 ? null : speed!)),
+        expect: { near, within: 0.03, live: 0.03 },
+      },
+      {
+        name: `the zigzag with every 20th speed unknown comes within 3% (seed ${seed})`,
+        kind: "hike",
+        events: withSpeeds(events, (index, speed) => (index % 20 === 0 ? null : speed!)),
+        expect: { near, within: 0.03, live: 0.03 },
+      },
+      {
+        // A phone that says still while moving: the stops it makes up cut corners.
+        name: `the zigzag reporting 0 for 5 s a minute comes within 6% (seed ${seed})`,
+        kind: "hike",
+        events: withSpeeds(events, (index, speed) => (index % 60 < 5 ? 0 : speed!)),
+        expect: { near, within: 0.06, live: 0.06 },
+      },
+      {
+        name: `the zigzag reporting 0 half of the time keeps at least half (seed ${seed})`,
+        kind: "hike",
+        events: withSpeeds(events, (index, speed) => (index % 10 < 5 ? 0 : speed!)),
+        expect: { near, within: 0.5, live: 0.5 },
+      },
+      {
+        name: `20 m out and back at 1 m/s, reporting its speed, comes within 2 m (seed ${seed})`,
+        kind: "walk",
+        events: along([point(0, 0), point(0, 10), point(0, 0)], 1, { speedMps: reported(seed) }),
+        expect: { near: 20, within: 2 / 20, live: 2 / 20 },
+      },
+      {
+        name: `ten minutes of drift reporting no speed adds nothing (seed ${seed})`,
+        kind: "walk",
+        events: withSpeeds(lingering(point(0, 0), 600, 0, seed), () => null),
+        expect: { atMost: 0 },
+      },
+      {
+        name: `ten minutes of drift with a lone 2 m/s speed every 20 s adds nothing (seed ${seed})`,
+        kind: "walk",
+        events: withSpeeds(lingering(point(0, 0), 600, 0, seed), (index) =>
+          index % 20 === 0 ? 2 : 0,
+        ),
+        expect: { atMost: 0 },
+      },
+      {
+        // Five readings in a row at 1 m/s are movement, as the phone reports it. Each
+        // burst adds what its speeds allow, within the accuracy of the readings either side.
+        name: `ten minutes of drift with 5 s at 1 m/s each minute adds at most 100 m (seed ${seed})`,
+        kind: "walk",
+        events: withSpeeds(lingering(point(0, 0), 600, 0, seed), (index) =>
+          index % 60 < 5 ? 1 : 0,
+        ),
+        expect: { atMost: 100 },
+      },
+    ];
+  }),
+  // Without speeds, a slow walk round a small circle stays within the gate around where
+  // it began, as drift does, so positions alone cannot tell it from standing still.
+  ...[5, 10].map((radius): MovementCase => ({
+    name: `a 0.5 m/s walk round a ${radius} m radius circle with no speeds adds nothing`,
+    kind: "walk",
+    events: circleNoSpeeds(radius),
+    expect: { atMost: 0 },
+  })),
+  ...[15, 20, 30].map((radius): MovementCase => ({
+    name: `a 0.5 m/s walk round a ${radius} m radius circle with no speeds comes within 16%`,
+    kind: "walk",
+    events: circleNoSpeeds(radius),
+    expect: { near: 300, within: 0.16, live: 0.16 },
+  })),
+  ...[
+    { width: 5, within: 0.6 },
+    { width: 10, within: 0.8 },
+    { width: 20, within: 0.85 },
+    { width: 30, within: 0.2 },
+  ].map(({ width, within }): MovementCase => ({
+    name: `a 0.5 m/s zigzag of ${width} m traverses with no speeds keeps at least ${Math.round(100 * (1 - within))}%`,
+    kind: "hike",
+    events: along(zigzagOf(width), 0.5),
+    expect: { near: pathLengthM(zigzagOf(width)), within, live: within },
+  })),
+  {
+    name: "the 20 m zigzag read to 10 m with no speeds keeps at least 5%",
+    kind: "hike",
+    events: along(zigzag, 0.5, { accuracyM: () => 10 }),
+    expect: { near: pathLengthM(zigzag), within: 0.95, live: 0.95 },
+  },
+  ...[0.1, 0.25, 0.5, 1].flatMap((speed) =>
+    [3, 5, 10].map((accuracyM): MovementCase => ({
+      name: `300 m in a straight line at ${speed} m/s, read to ${accuracyM} m with no speeds, comes within ${speed < 1 ? 7 : 1}%`,
+      kind: "walk",
+      events: along([point(0, 0), point(0, 300)], speed, { accuracyM: () => accuracyM }),
+      expect: { near: 300, within: speed < 1 ? 0.07 : 0.01, live: speed < 1 ? 0.07 : 0.01 },
+    })),
+  ),
+  // Out and back by less than the gate around where it began, with no speeds, is drift.
+  ...[10, 20].flatMap((length) =>
+    [0.5, 1, 3].map((speed): MovementCase => ({
+      name: `${length} m out and back at ${speed} m/s with no speeds adds nothing`,
+      kind: "walk",
+      events: along([point(0, 0), point(0, length), point(0, 0)], speed),
+      expect: { atMost: 0 },
+    })),
+  ),
+  ...[
+    { length: 30, speed: 0.5, within: 0.1 },
+    { length: 30, speed: 1, within: 0.31 },
+    { length: 30, speed: 3, within: 0.16 },
+    { length: 50, speed: 0.5, within: 0.46 },
+    { length: 50, speed: 1, within: 0.02 },
+    { length: 50, speed: 3, within: 0.04 },
+    { length: 100, speed: 0.5, within: 0.22 },
+    { length: 100, speed: 1, within: 0.02 },
+    { length: 100, speed: 3, within: 0.03 },
+    { length: 200, speed: 0.5, within: 0.1 },
+    { length: 200, speed: 1, within: 0.02 },
+    { length: 200, speed: 3, within: 0.02 },
+  ].map(({ length, speed, within }): MovementCase => ({
+    name: `${length} m out and back at ${speed} m/s with no speeds comes within ${Math.round(within * 100)}%`,
+    kind: "walk",
+    events: along([point(0, 0), point(0, length), point(0, 0)], speed),
+    expect: { near: 2 * length, within, live: within },
+  })),
+  ...[0.4, 0.5, 0.6].flatMap((speed) =>
+    [20, 60, 120].map((seconds): MovementCase => {
+      const { events, metres } = pausedWalks(speed, seconds);
+      return {
+        name: `ten ${seconds} s walks at ${speed} m/s, two minutes apart, come within 3%`,
+        kind: "walk",
+        events,
+        expect: { near: metres, within: 0.03, live: 0.03 },
+      };
+    }),
+  ),
+  ...[1, 2, 3].map((walks): MovementCase => {
+    const { events, metres } = pausedWalks(0.5, 20, walks);
+    return {
+      name: `${walks} of 20 s walks at 0.5 m/s, each followed by two minutes still, come within 3%`,
+      kind: "walk",
+      events,
+      expect: { near: metres, within: 0.03, live: 0.03 },
+    };
+  }),
+  ...[0, 5, 30, 120].map((seconds): MovementCase => ({
+    name: `10 m out and back at 1 m/s, then ${seconds} s still, comes within 2 m`,
+    kind: "walk",
+    events: outAndBackThenStop(seconds),
+    expect: { near: 20, within: 2 / 20, live: 2 / 20 },
+  })),
+  // A phone that reports 0 for the first seconds while moving: the way out counts no
+  // further than the speeds allow, within the readings' accuracy.
+  ...[
+    { seconds: 5, within: 0.03 },
+    { seconds: 10, within: 0.13 },
+    { seconds: 15, within: 0.28 },
+  ].map(({ seconds, within }): MovementCase => ({
+    name: `20 m out and back at 1 m/s, reporting 0 for the first ${seconds} s, comes within ${Math.round(within * 100)}%`,
+    kind: "walk",
+    events: withSpeeds(along([point(0, 0), point(0, 20), point(0, 0)], 1), (index) =>
+      index < seconds ? 0 : 1,
+    ),
+    expect: { near: 40, within, live: within },
+  })),
 ];
 
 describe("movement", () => {
@@ -603,16 +842,19 @@ describe("a track's readings", () => {
     for (const event of moving(0, 10, 3)) {
       if (event.type === "fix") older = addReading(older, event.fix);
     }
-    const before = [...older.fixes];
+    const before = chainItems(older.points);
     const newer: Track<Fix> = addReading(older, (moving(11, 11, 3)[0] as { fix: Fix }).fix);
-    expect(newer.fixes.length).toBe(older.fixes.length + 1);
-    expect(older.fixes).toHaveLength(before.length);
-    expect([...older.fixes]).toEqual(before);
-    expect(older.fixes.toArray()).toEqual(before);
-    expect(older.fixes.slice(0, 100)).toEqual(before);
-    expect(older.fixes.at(before.length)).toBeUndefined();
-    expect(older.fixes.at(-1)).toBe(before.at(-1));
-    expect(Object.keys(older.fixes)).toEqual(["length"]);
+    const other: Track<Fix> = addReading(older, (moving(12, 12, 3)[0] as { fix: Fix }).fix);
+    expect(newer.points).toHaveLength(before.length + 1);
+    expect(other.points).toHaveLength(before.length + 1);
+    expect(chainItems(older.points)).toEqual(before);
+    expect(chainItems(newer.points).slice(0, -1)).toEqual(before);
+    expect(chainItems(other.points).slice(0, -1)).toEqual(before);
+    expect([older.pending!.at, newer.pending!.at, other.pending!.at]).toEqual([
+      T + 10_000,
+      T + 11_000,
+      T + 12_000,
+    ]);
   });
 });
 
