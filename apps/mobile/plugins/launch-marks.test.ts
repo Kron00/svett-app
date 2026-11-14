@@ -74,9 +74,59 @@ class AppDelegate: ExpoAppDelegate, ExpoReactNativeFactoryProvider {
 `);
   });
 
-  it("changes nothing the second time", () => {
+  it("changes nothing in an app delegate that already holds every mark", () => {
     const once = addLaunchMarks(TEMPLATE);
     expect(addLaunchMarks(once)).toBe(once);
+  });
+
+  it("refuses an app delegate that holds only some of the marks", () => {
+    const once = addLaunchMarks(TEMPLATE);
+    const withoutEnd = once
+      .replace("    LaunchMarks.finishLaunchingEnded()\n", "")
+      .replace(
+        "    let launched = super.application(application, didFinishLaunchingWithOptions: launchOptions)\n",
+        "",
+      )
+      .replace(
+        "    return launched\n",
+        "    return super.application(application, didFinishLaunchingWithOptions: launchOptions)\n",
+      );
+    expect(() => addLaunchMarks(withoutEnd)).toThrow(
+      "launch-marks: AppDelegate.swift holds only part of the launch marks, without the end of " +
+        "didFinishLaunching, with 2 LaunchMarks calls instead of 3. Delete apps/mobile/ios and " +
+        "run the prebuild again.",
+    );
+    const withoutMain = once.replace(/  static func main\(\) \{\n[^}]*\}\n\n/, "");
+    expect(() => addLaunchMarks(withoutMain)).toThrow("without main(), with 2 LaunchMarks calls");
+    expect(() => addLaunchMarks(once.replace("internal import SvettNative\n", ""))).toThrow(
+      "without the SvettNative import.",
+    );
+    const moved = once
+      .replace("    LaunchMarks.finishLaunchingStarted()\n", "")
+      .replace(
+        "    reactNativeFactory = factory\n",
+        "    reactNativeFactory = factory\n    LaunchMarks.finishLaunchingStarted()\n",
+      );
+    expect(() => addLaunchMarks(moved)).toThrow("without the start of didFinishLaunching.");
+    expect(() =>
+      addLaunchMarks(
+        once.replace(
+          "return launched\n",
+          "LaunchMarks.finishLaunchingEnded()\n    return launched\n",
+        ),
+      ),
+    ).toThrow("with 4 LaunchMarks calls instead of 3");
+  });
+
+  it("refuses an app delegate with one mark and nothing else from the plugin", () => {
+    expect(() =>
+      addLaunchMarks(
+        TEMPLATE.replace(
+          "    let delegate",
+          "    LaunchMarks.finishLaunchingStarted()\n    let delegate",
+        ),
+      ),
+    ).toThrow("without the SvettNative import, main(), the end of didFinishLaunching");
   });
 
   it("stops the prebuild when the template no longer has a place for a mark", () => {
