@@ -230,11 +230,7 @@ function ProfileContent({
               testID={`activity-${activity.id}`}
               trailing={{
                 type: "chevron",
-                onPress: () =>
-                  navigation.push("Post", {
-                    username: profile.username,
-                    postId: activity.id,
-                  }),
+                onPress: () => navigation.push("Post", { id: activity.id }),
               }}
             />
           ))}

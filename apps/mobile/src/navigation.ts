@@ -43,8 +43,8 @@ export type RootStackParamList = {
   Profile: { username: string };
   /** `list` is followers or following, parsed by the screen. */
   Connections: { username: string; list: string };
-  /** A post in full, named by its owner's username and its post ID. */
-  Post: { username: string; postId: string };
+  /** A post in full, named by its activity's social ID. */
+  Post: { id: string };
   Inbox: undefined;
 };
 

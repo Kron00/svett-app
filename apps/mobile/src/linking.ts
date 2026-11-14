@@ -12,7 +12,7 @@ import type { RootStackParamList } from "./navigation";
 // adds &kind=hevy for a Hevy CSV. scripts/sim/social.sh opens svett://profile,
 // svett://profile/edit?username=<name>, svett://people?q=<prefix>, svett://people/<name>,
 // svett://people/<name>/followers and svett://profile/requests. scripts/sim/feed.sh opens
-// svett://feed, svett://post/<username>/<post id> and svett://inbox.
+// svett://feed, svett://post/<social id> and svett://inbox.
 export const linking: LinkingOptions<RootStackParamList> = {
   prefixes: ["svett://"],
   filter: (url) => !url.includes("expo-development-client"),
@@ -43,7 +43,7 @@ export const linking: LinkingOptions<RootStackParamList> = {
       Connections: "people/:username/:list",
       Profile: "people/:username",
       People: "people",
-      Post: "post/:username/:postId",
+      Post: "post/:id",
       Inbox: "inbox",
     },
   },
