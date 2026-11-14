@@ -870,10 +870,8 @@ describe("TransferRepository", () => {
       transfers.undoImport(Option.getOrThrow(first).importBatchId, []),
     );
     const plan = await transfer(phone, (transfers) => transfers.previewImport(file));
-    expect(plan.changed.map((item) => item.title).toSorted()).toEqual([
-      "Landmine press",
-      "Push Day",
-    ]);
+    // The exercise comes back with the workout that uses it, so it is not listed on its own.
+    expect(plan.changed.map((item) => item.title)).toEqual(["Push Day"]);
     const second = await transfer(phone, (transfers) =>
       transfers.applyImport(
         file,

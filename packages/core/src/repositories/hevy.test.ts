@@ -96,6 +96,12 @@ const setsWithoutExercise = (database: Database) =>
     "SELECT s.id FROM activity_set s JOIN activity_exercise ae ON ae.id = s.activity_exercise_id JOIN activity a ON a.id = ae.activity_id LEFT JOIN exercise e ON e.id = ae.exercise_id AND e.deleted_at IS NULL WHERE s.deleted_at IS NULL AND ae.deleted_at IS NULL AND a.deleted_at IS NULL AND e.id IS NULL",
   );
 
+/** The sample's Legs workout alone. */
+const LEGS = sampleText("hevy-sample.csv")
+  .split("\n")
+  .filter((line, index) => index === 0 || line.startsWith('"Legs"'))
+  .join("\n");
+
 const pushId = ActivityId.make(importedId("activity", "hevy", "2026-11-03T18:30:00"));
 const pullId = ActivityId.make(importedId("activity", "hevy", "2026-11-05T07:15:00"));
 
@@ -255,6 +261,7 @@ describe("Hevy import", () => {
       removed: 0,
       restored: 2,
       left: 0,
+      kept: 0,
     });
     expect(workouts(database)).toEqual(before);
     expect(count(database, "activity_set")).toBe(25);
@@ -311,6 +318,42 @@ describe("Hevy import", () => {
         hevyExerciseId("Landmine Press"),
       ),
     ).toEqual([{ deleted_at: expect.any(Number) }]);
+  });
+
+  it("keeps a custom exercise a workout edited after a re-import still uses when Undo runs", async () => {
+    const { database, batch } = await importSample();
+    await undo(database, batch);
+    const plan = await preview(database, SAMPLE);
+    const again = await apply(
+      database,
+      SAMPLE,
+      plan.changed.map(({ key }) => key),
+    );
+    await database.runtime.runPromise(
+      Effect.flatMap(Effect.service(ActivityRepository), (activities) =>
+        activities.update(pushId, { notes: "Shoulder felt fine" }),
+      ),
+    );
+
+    // The other two go back to deleted. Push Day was edited, so it stays, and so does the
+    // custom exercise it uses.
+    expect(await undo(database, again!.importBatchId)).toEqual({
+      removed: 0,
+      restored: 2,
+      left: 1,
+      kept: 1,
+    });
+    expect(workouts(database).map(({ title, notes }) => ({ title, notes }))).toEqual([
+      { title: "Push Day", notes: "Shoulder felt fine" },
+    ]);
+    expect(setsWithoutExercise(database)).toEqual([]);
+    expect(
+      query(
+        database,
+        "SELECT deleted_at FROM exercise WHERE id = ?",
+        hevyExerciseId("Landmine Press"),
+      ),
+    ).toEqual([{ deleted_at: null }]);
   });
 
   it("keeps a workout's saved start when its new version is read in another zone", async () => {
@@ -423,18 +466,15 @@ describe("Hevy import", () => {
     expect(isNothingToImport(await preview(database, file, keep))).toBe(true);
   });
 
-  it("holds back a new start with the same sets as a workout here, however far it moved", async () => {
-    const { database } = await importSample();
-    const legs = sampleText("hevy-sample.csv")
-      .split("\n")
-      .filter((line, index) => index === 0 || line.startsWith('"Legs"'))
-      .join("\n");
-    for (const [start, end, at] of [
-      ["7 Nov 2026, 17:30", "7 Nov 2026, 18:40", Date.UTC(2026, 10, 7, 17, 30)],
-      ["11 Nov 2026, 17:00", "11 Nov 2026, 18:10", Date.UTC(2026, 10, 11, 17)],
-    ] as const) {
+  it.each([
+    { start: "7 Nov 2026, 17:30", end: "7 Nov 2026, 18:40", at: Date.UTC(2026, 10, 7, 17, 30) },
+    { start: "11 Nov 2026, 17:00", end: "11 Nov 2026, 18:10", at: Date.UTC(2026, 10, 11, 17) },
+  ])(
+    "holds back a new start with the same sets as a workout here, however far it moved: $start",
+    async ({ start, end, at }) => {
+      const { database } = await importSample();
       const moved = hevy(
-        legs.replaceAll("7 Nov 2026, 17:00", start).replaceAll("7 Nov 2026, 18:10", end),
+        LEGS.replaceAll("7 Nov 2026, 17:00", start).replaceAll("7 Nov 2026, 18:10", end),
       );
       const plan = await preview(database, moved);
       expect(plan.added).toEqual([]);
@@ -450,8 +490,8 @@ describe("Hevy import", () => {
       expect((await preview(database, moved, new Set([key]))).added).toEqual([
         { table: "activity", count: 1 },
       ]);
-    }
-  });
+    },
+  );
 
   it("holds back a new workout that overlaps one from another source", async () => {
     const database = openTestDatabase();
