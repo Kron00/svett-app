@@ -149,4 +149,32 @@ describe("CoachMessageRepository", () => {
     );
     expect(result).toEqual({ before: ["user", "assistant"], after: [] });
   });
+
+  it("keeps messages written in the same millisecond in order, and finds the latest conversation", async () => {
+    const { runtime, clock } = openTestDatabase();
+    const first = ConversationId.make("019b76da-a800-7000-8000-000000000001");
+    const second = ConversationId.make("019b76da-a800-7000-8000-000000000002");
+    const result = await runtime.runPromise(
+      Effect.gen(function* () {
+        const messages = yield* CoachMessageRepository;
+        const empty = yield* messages.latestConversation;
+        yield* messages.append({ conversationId: first, role: "user", content: "1" });
+        for (const content of ["2", "3", "4", "5", "6", "7", "8"]) {
+          yield* messages.append({ conversationId: first, role: "tool", content });
+        }
+        yield* clock.advance(1000);
+        yield* messages.append({ conversationId: second, role: "user", content: "a" });
+        return {
+          empty,
+          order: (yield* messages.conversation(first)).map((m) => m.content),
+          latest: yield* messages.latestConversation,
+        };
+      }),
+    );
+    expect(result).toEqual({
+      empty: null,
+      order: ["1", "2", "3", "4", "5", "6", "7", "8"],
+      latest: second,
+    });
+  });
 });

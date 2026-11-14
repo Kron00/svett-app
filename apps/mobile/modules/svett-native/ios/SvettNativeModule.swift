@@ -9,6 +9,7 @@ private let chatGPT = ChatGPTStub.make() ?? (
     account: ChatGPTAccount(transport: URLSessionTransport(), store: KeychainVaultStore()),
     signInPage: { $0 })
 @MainActor private let signInFlow = SignInFlow(account: chatGPT.account, signInPage: chatGPT.signInPage)
+private let coach = CoachLaunch.client(account: chatGPT.account)
 
 public class SvettNativeModule: Module {
     public func definition() -> ModuleDefinition {
@@ -64,6 +65,21 @@ public class SvettNativeModule: Module {
 
         AsyncFunction("signOutOfChatGPT") { (promise: Promise) in
             Task { promise.resolve(await chatGPT.account.signOut().record) }
+        }
+
+        Events("onCoachEvent")
+
+        // Streams one coach request. Each event goes to JavaScript tagged with `requestId`, and the
+        // last is always `done` or `failed`. The access token stays here.
+        AsyncFunction("sendCoachRequest") { (requestID: String, body: String, promise: Promise) in
+            Task {
+                await coach.send(Data(body.utf8)) { [weak self] event in
+                    var record = event.record
+                    record["requestId"] = requestID
+                    self?.sendEvent("onCoachEvent", record.mapValues { $0 as Any? })
+                }
+                promise.resolve()
+            }
         }
     }
 }

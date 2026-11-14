@@ -1,9 +1,14 @@
 import type { WorkoutAccess } from "@svett/core";
-import { requireNativeModule } from "expo";
+import { NativeModule, requireNativeModule } from "expo";
 
 // The ChatGPT functions return what Swift sends, unparsed. src/chatgpt/native.ts parses it with
 // the schemas in @svett/core. None of them returns a token.
-interface SvettNative {
+type SvettNativeEvents = {
+  /** One event of a coach request, tagged with its `requestId`. src/coach/native.ts parses it. */
+  onCoachEvent: (event: unknown) => void;
+};
+
+declare class SvettNative extends NativeModule<SvettNativeEvents> {
   /** When this process started, in milliseconds since 1970. */
   readonly launchedAt: number;
   /** The entitlement keys the running app is signed with, or null when they cannot be read. */
@@ -26,6 +31,11 @@ interface SvettNative {
   pasteSignInAddress(): Promise<string | null>;
   cancelSignIn(): Promise<void>;
   signOutOfChatGPT(): Promise<unknown>;
+  /**
+   * Sends one coach request body to OpenAI with the ChatGPT sign-in's token. Its events arrive as
+   * `onCoachEvent` with this `requestId`, the last one `done` or `failed`.
+   */
+  sendCoachRequest(requestId: string, body: string): Promise<void>;
 }
 
 export default requireNativeModule<SvettNative>("SvettNative");

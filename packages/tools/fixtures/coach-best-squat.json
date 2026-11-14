@@ -1,0 +1,778 @@
+{
+  "source": "stand-in",
+  "recordedAt": 1794589200000,
+  "exchanges": [
+    {
+      "request": {
+        "model": "gpt-6.1-sol",
+        "instructions": "You are the coach in svett, an app for lifting and cardio. Answer the user's questions about their training.\nRead the user's data with the svett tools before you state any number about it. Never guess a weight, a count or a date. If the tools return nothing, say so.\nWeights are in kilograms and distances in metres. Name the date of any set or workout you mention.\nAnswer in a few short sentences or a short list. Do not repeat the raw data.\nToday is 2026-11-13. The phone's time zone is UTC-07:00. Days the tools take and return are in that time zone.",
+        "input": [
+          {
+            "type": "message",
+            "role": "user",
+            "content": [
+              {
+                "type": "input_text",
+                "text": "What was my best squat set last month?"
+              }
+            ]
+          }
+        ],
+        "tools": [
+          {
+            "type": "namespace",
+            "name": "svett",
+            "description": "Read the user's own training data in svett.",
+            "tools": [
+              {
+                "type": "function",
+                "name": "search_exercises",
+                "description": "Finds exercises by name. Exercises the user has logged come first, with how many workouts they appear in. Use it to get an exercise id.",
+                "parameters": {
+                  "type": "object",
+                  "properties": {
+                    "query": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 60,
+                      "description": "Words in the exercise name, such as squat or bench press"
+                    },
+                    "limit": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 10,
+                      "description": "How many to return, at most 10"
+                    }
+                  },
+                  "required": ["query"],
+                  "additionalProperties": false
+                }
+              },
+              {
+                "type": "function",
+                "name": "list_workouts",
+                "description": "Lists the user's workouts between two days, newest first, with how many sets each held.",
+                "parameters": {
+                  "type": "object",
+                  "properties": {
+                    "from": {
+                      "type": "string",
+                      "description": "A day as YYYY-MM-DD, in the phone's time zone"
+                    },
+                    "to": {
+                      "type": "string",
+                      "description": "A day as YYYY-MM-DD, in the phone's time zone"
+                    },
+                    "limit": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 20,
+                      "description": "How many to return, at most 20"
+                    }
+                  },
+                  "required": ["from", "to"],
+                  "additionalProperties": false
+                }
+              },
+              {
+                "type": "function",
+                "name": "get_workout",
+                "description": "Reads one workout with its exercises and sets. Take the id from list_workouts.",
+                "parameters": {
+                  "type": "object",
+                  "properties": {
+                    "workoutId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": ["workoutId"],
+                  "additionalProperties": false
+                }
+              },
+              {
+                "type": "function",
+                "name": "best_sets",
+                "description": "The user's best working sets of one exercise between two days: heaviest first, then most reps. Warm-ups never count.",
+                "parameters": {
+                  "type": "object",
+                  "properties": {
+                    "exerciseId": {
+                      "type": "string",
+                      "description": "The exercise id from search_exercises"
+                    },
+                    "from": {
+                      "type": "string",
+                      "description": "A day as YYYY-MM-DD, in the phone's time zone"
+                    },
+                    "to": {
+                      "type": "string",
+                      "description": "A day as YYYY-MM-DD, in the phone's time zone"
+                    },
+                    "limit": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 5,
+                      "description": "How many to return, at most 5"
+                    }
+                  },
+                  "required": ["exerciseId", "from", "to"],
+                  "additionalProperties": false
+                }
+              },
+              {
+                "type": "function",
+                "name": "exercise_history",
+                "description": "One exercise's history between two days, one entry per workout, newest first: the top set, working sets, total reps and volume.",
+                "parameters": {
+                  "type": "object",
+                  "properties": {
+                    "exerciseId": {
+                      "type": "string",
+                      "description": "The exercise id from search_exercises"
+                    },
+                    "from": {
+                      "type": "string",
+                      "description": "A day as YYYY-MM-DD, in the phone's time zone"
+                    },
+                    "to": {
+                      "type": "string",
+                      "description": "A day as YYYY-MM-DD, in the phone's time zone"
+                    },
+                    "limit": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 20,
+                      "description": "How many to return, at most 20"
+                    }
+                  },
+                  "required": ["exerciseId", "from", "to"],
+                  "additionalProperties": false
+                }
+              },
+              {
+                "type": "function",
+                "name": "body_measurements",
+                "description": "The user's body measurements between two days, newest first, such as body weight, body fat or waist.",
+                "parameters": {
+                  "type": "object",
+                  "properties": {
+                    "from": {
+                      "type": "string",
+                      "description": "A day as YYYY-MM-DD, in the phone's time zone"
+                    },
+                    "to": {
+                      "type": "string",
+                      "description": "A day as YYYY-MM-DD, in the phone's time zone"
+                    },
+                    "kind": {
+                      "type": "string",
+                      "enum": [
+                        "body_weight",
+                        "body_fat",
+                        "neck",
+                        "shoulders",
+                        "chest",
+                        "left_biceps",
+                        "right_biceps",
+                        "left_forearm",
+                        "right_forearm",
+                        "abdomen",
+                        "waist",
+                        "hips",
+                        "left_thigh",
+                        "right_thigh",
+                        "left_calf",
+                        "right_calf"
+                      ],
+                      "description": "Only this measurement"
+                    },
+                    "limit": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 30,
+                      "description": "How many to return, at most 30"
+                    }
+                  },
+                  "required": ["from", "to"],
+                  "additionalProperties": false
+                }
+              },
+              {
+                "type": "function",
+                "name": "list_routines",
+                "description": "Lists the user's saved routines with their folder and exercises.",
+                "parameters": {
+                  "type": "object",
+                  "properties": {},
+                  "additionalProperties": false
+                }
+              }
+            ]
+          }
+        ],
+        "stream": true,
+        "store": false
+      },
+      "status": 200,
+      "body": "event: response.created\ndata: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_stand_in_1\",\"object\":\"response\",\"model\":\"gpt-6.1-sol\",\"status\":\"in_progress\",\"output\":[]},\"sequence_number\":0}\n\nevent: response.output_item.added\ndata: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"function_call\",\"id\":\"fc_stand_in_1\",\"call_id\":\"call_stand_in_1\",\"namespace\":\"svett\",\"name\":\"search_exercises\",\"arguments\":\"\",\"status\":\"in_progress\"},\"sequence_number\":1}\n\nevent: response.function_call_arguments.delta\ndata: {\"type\":\"response.function_call_arguments.delta\",\"item_id\":\"fc_stand_in_1\",\"output_index\":0,\"delta\":\"{\\\"query\\\":\\\"sq\",\"sequence_number\":2}\n\nevent: response.function_call_arguments.delta\ndata: {\"type\":\"response.function_call_arguments.delta\",\"item_id\":\"fc_stand_in_1\",\"output_index\":0,\"delta\":\"uat\\\",\\\"limit\\\"\",\"sequence_number\":3}\n\nevent: response.function_call_arguments.delta\ndata: {\"type\":\"response.function_call_arguments.delta\",\"item_id\":\"fc_stand_in_1\",\"output_index\":0,\"delta\":\":3}\",\"sequence_number\":4}\n\nevent: response.function_call_arguments.done\ndata: {\"type\":\"response.function_call_arguments.done\",\"item_id\":\"fc_stand_in_1\",\"output_index\":0,\"arguments\":\"{\\\"query\\\":\\\"squat\\\",\\\"limit\\\":3}\",\"sequence_number\":5}\n\nevent: response.output_item.done\ndata: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"type\":\"function_call\",\"id\":\"fc_stand_in_1\",\"call_id\":\"call_stand_in_1\",\"namespace\":\"svett\",\"name\":\"search_exercises\",\"arguments\":\"{\\\"query\\\":\\\"squat\\\",\\\"limit\\\":3}\",\"status\":\"completed\"},\"sequence_number\":6}\n\nevent: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_stand_in_1\",\"object\":\"response\",\"model\":\"gpt-6.1-sol\",\"status\":\"completed\",\"output\":[{\"type\":\"function_call\",\"id\":\"fc_stand_in_1\",\"call_id\":\"call_stand_in_1\",\"namespace\":\"svett\",\"name\":\"search_exercises\",\"arguments\":\"{\\\"query\\\":\\\"squat\\\",\\\"limit\\\":3}\",\"status\":\"completed\"}]},\"sequence_number\":7}\n\n",
+      "events": [
+        {
+          "type": "started"
+        },
+        {
+          "type": "toolCall",
+          "callId": "call_stand_in_1",
+          "name": "search_exercises",
+          "namespace": "svett",
+          "arguments": "{\"query\":\"squat\",\"limit\":3}"
+        },
+        {
+          "type": "done"
+        }
+      ]
+    },
+    {
+      "request": {
+        "model": "gpt-6.1-sol",
+        "instructions": "You are the coach in svett, an app for lifting and cardio. Answer the user's questions about their training.\nRead the user's data with the svett tools before you state any number about it. Never guess a weight, a count or a date. If the tools return nothing, say so.\nWeights are in kilograms and distances in metres. Name the date of any set or workout you mention.\nAnswer in a few short sentences or a short list. Do not repeat the raw data.\nToday is 2026-11-13. The phone's time zone is UTC-07:00. Days the tools take and return are in that time zone.",
+        "input": [
+          {
+            "type": "message",
+            "role": "user",
+            "content": [
+              {
+                "type": "input_text",
+                "text": "What was my best squat set last month?"
+              }
+            ]
+          },
+          {
+            "type": "function_call",
+            "call_id": "call_stand_in_1",
+            "name": "search_exercises",
+            "namespace": "svett",
+            "arguments": "{\"query\":\"squat\",\"limit\":3}"
+          },
+          {
+            "type": "function_call_output",
+            "call_id": "call_stand_in_1",
+            "output": "{\"exercises\":[{\"id\":\"1573695e-caed-522b-a990-5c38a33d3927\",\"name\":\"Barbell Squat\",\"equipment\":\"barbell\",\"primaryMuscles\":[\"quadriceps\"],\"timesLogged\":100},{\"id\":\"41a9580f-a7fa-5d3a-a295-b2df44c447c1\",\"name\":\"Box Squat\",\"equipment\":\"barbell\",\"primaryMuscles\":[\"quadriceps\"],\"timesLogged\":0},{\"id\":\"edd46430-1821-5456-9567-b1f319de3168\",\"name\":\"Hack Squat\",\"equipment\":\"machine\",\"primaryMuscles\":[\"quadriceps\"],\"timesLogged\":0}]}"
+          }
+        ],
+        "tools": [
+          {
+            "type": "namespace",
+            "name": "svett",
+            "description": "Read the user's own training data in svett.",
+            "tools": [
+              {
+                "type": "function",
+                "name": "search_exercises",
+                "description": "Finds exercises by name. Exercises the user has logged come first, with how many workouts they appear in. Use it to get an exercise id.",
+                "parameters": {
+                  "type": "object",
+                  "properties": {
+                    "query": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 60,
+                      "description": "Words in the exercise name, such as squat or bench press"
+                    },
+                    "limit": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 10,
+                      "description": "How many to return, at most 10"
+                    }
+                  },
+                  "required": ["query"],
+                  "additionalProperties": false
+                }
+              },
+              {
+                "type": "function",
+                "name": "list_workouts",
+                "description": "Lists the user's workouts between two days, newest first, with how many sets each held.",
+                "parameters": {
+                  "type": "object",
+                  "properties": {
+                    "from": {
+                      "type": "string",
+                      "description": "A day as YYYY-MM-DD, in the phone's time zone"
+                    },
+                    "to": {
+                      "type": "string",
+                      "description": "A day as YYYY-MM-DD, in the phone's time zone"
+                    },
+                    "limit": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 20,
+                      "description": "How many to return, at most 20"
+                    }
+                  },
+                  "required": ["from", "to"],
+                  "additionalProperties": false
+                }
+              },
+              {
+                "type": "function",
+                "name": "get_workout",
+                "description": "Reads one workout with its exercises and sets. Take the id from list_workouts.",
+                "parameters": {
+                  "type": "object",
+                  "properties": {
+                    "workoutId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": ["workoutId"],
+                  "additionalProperties": false
+                }
+              },
+              {
+                "type": "function",
+                "name": "best_sets",
+                "description": "The user's best working sets of one exercise between two days: heaviest first, then most reps. Warm-ups never count.",
+                "parameters": {
+                  "type": "object",
+                  "properties": {
+                    "exerciseId": {
+                      "type": "string",
+                      "description": "The exercise id from search_exercises"
+                    },
+                    "from": {
+                      "type": "string",
+                      "description": "A day as YYYY-MM-DD, in the phone's time zone"
+                    },
+                    "to": {
+                      "type": "string",
+                      "description": "A day as YYYY-MM-DD, in the phone's time zone"
+                    },
+                    "limit": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 5,
+                      "description": "How many to return, at most 5"
+                    }
+                  },
+                  "required": ["exerciseId", "from", "to"],
+                  "additionalProperties": false
+                }
+              },
+              {
+                "type": "function",
+                "name": "exercise_history",
+                "description": "One exercise's history between two days, one entry per workout, newest first: the top set, working sets, total reps and volume.",
+                "parameters": {
+                  "type": "object",
+                  "properties": {
+                    "exerciseId": {
+                      "type": "string",
+                      "description": "The exercise id from search_exercises"
+                    },
+                    "from": {
+                      "type": "string",
+                      "description": "A day as YYYY-MM-DD, in the phone's time zone"
+                    },
+                    "to": {
+                      "type": "string",
+                      "description": "A day as YYYY-MM-DD, in the phone's time zone"
+                    },
+                    "limit": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 20,
+                      "description": "How many to return, at most 20"
+                    }
+                  },
+                  "required": ["exerciseId", "from", "to"],
+                  "additionalProperties": false
+                }
+              },
+              {
+                "type": "function",
+                "name": "body_measurements",
+                "description": "The user's body measurements between two days, newest first, such as body weight, body fat or waist.",
+                "parameters": {
+                  "type": "object",
+                  "properties": {
+                    "from": {
+                      "type": "string",
+                      "description": "A day as YYYY-MM-DD, in the phone's time zone"
+                    },
+                    "to": {
+                      "type": "string",
+                      "description": "A day as YYYY-MM-DD, in the phone's time zone"
+                    },
+                    "kind": {
+                      "type": "string",
+                      "enum": [
+                        "body_weight",
+                        "body_fat",
+                        "neck",
+                        "shoulders",
+                        "chest",
+                        "left_biceps",
+                        "right_biceps",
+                        "left_forearm",
+                        "right_forearm",
+                        "abdomen",
+                        "waist",
+                        "hips",
+                        "left_thigh",
+                        "right_thigh",
+                        "left_calf",
+                        "right_calf"
+                      ],
+                      "description": "Only this measurement"
+                    },
+                    "limit": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 30,
+                      "description": "How many to return, at most 30"
+                    }
+                  },
+                  "required": ["from", "to"],
+                  "additionalProperties": false
+                }
+              },
+              {
+                "type": "function",
+                "name": "list_routines",
+                "description": "Lists the user's saved routines with their folder and exercises.",
+                "parameters": {
+                  "type": "object",
+                  "properties": {},
+                  "additionalProperties": false
+                }
+              }
+            ]
+          }
+        ],
+        "stream": true,
+        "store": false
+      },
+      "status": 200,
+      "body": "event: response.created\ndata: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_stand_in_2\",\"object\":\"response\",\"model\":\"gpt-6.1-sol\",\"status\":\"in_progress\",\"output\":[]},\"sequence_number\":0}\n\nevent: response.output_item.added\ndata: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"function_call\",\"id\":\"fc_stand_in_2\",\"call_id\":\"call_stand_in_2\",\"namespace\":\"svett\",\"name\":\"best_sets\",\"arguments\":\"\",\"status\":\"in_progress\"},\"sequence_number\":1}\n\nevent: response.function_call_arguments.delta\ndata: {\"type\":\"response.function_call_arguments.delta\",\"item_id\":\"fc_stand_in_2\",\"output_index\":0,\"delta\":\"{\\\"exerciseId\",\"sequence_number\":2}\n\nevent: response.function_call_arguments.delta\ndata: {\"type\":\"response.function_call_arguments.delta\",\"item_id\":\"fc_stand_in_2\",\"output_index\":0,\"delta\":\"\\\":\\\"1573695e-\",\"sequence_number\":3}\n\nevent: response.function_call_arguments.delta\ndata: {\"type\":\"response.function_call_arguments.delta\",\"item_id\":\"fc_stand_in_2\",\"output_index\":0,\"delta\":\"caed-522b-a9\",\"sequence_number\":4}\n\nevent: response.function_call_arguments.delta\ndata: {\"type\":\"response.function_call_arguments.delta\",\"item_id\":\"fc_stand_in_2\",\"output_index\":0,\"delta\":\"90-5c38a33d3\",\"sequence_number\":5}\n\nevent: response.function_call_arguments.delta\ndata: {\"type\":\"response.function_call_arguments.delta\",\"item_id\":\"fc_stand_in_2\",\"output_index\":0,\"delta\":\"927\\\",\\\"from\\\":\",\"sequence_number\":6}\n\nevent: response.function_call_arguments.delta\ndata: {\"type\":\"response.function_call_arguments.delta\",\"item_id\":\"fc_stand_in_2\",\"output_index\":0,\"delta\":\"\\\"2026-10-01\\\"\",\"sequence_number\":7}\n\nevent: response.function_call_arguments.delta\ndata: {\"type\":\"response.function_call_arguments.delta\",\"item_id\":\"fc_stand_in_2\",\"output_index\":0,\"delta\":\",\\\"to\\\":\\\"2026-\",\"sequence_number\":8}\n\nevent: response.function_call_arguments.delta\ndata: {\"type\":\"response.function_call_arguments.delta\",\"item_id\":\"fc_stand_in_2\",\"output_index\":0,\"delta\":\"10-31\\\",\\\"limi\",\"sequence_number\":9}\n\nevent: response.function_call_arguments.delta\ndata: {\"type\":\"response.function_call_arguments.delta\",\"item_id\":\"fc_stand_in_2\",\"output_index\":0,\"delta\":\"t\\\":3}\",\"sequence_number\":10}\n\nevent: response.function_call_arguments.done\ndata: {\"type\":\"response.function_call_arguments.done\",\"item_id\":\"fc_stand_in_2\",\"output_index\":0,\"arguments\":\"{\\\"exerciseId\\\":\\\"1573695e-caed-522b-a990-5c38a33d3927\\\",\\\"from\\\":\\\"2026-10-01\\\",\\\"to\\\":\\\"2026-10-31\\\",\\\"limit\\\":3}\",\"sequence_number\":11}\n\nevent: response.output_item.done\ndata: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"type\":\"function_call\",\"id\":\"fc_stand_in_2\",\"call_id\":\"call_stand_in_2\",\"namespace\":\"svett\",\"name\":\"best_sets\",\"arguments\":\"{\\\"exerciseId\\\":\\\"1573695e-caed-522b-a990-5c38a33d3927\\\",\\\"from\\\":\\\"2026-10-01\\\",\\\"to\\\":\\\"2026-10-31\\\",\\\"limit\\\":3}\",\"status\":\"completed\"},\"sequence_number\":12}\n\nevent: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_stand_in_2\",\"object\":\"response\",\"model\":\"gpt-6.1-sol\",\"status\":\"completed\",\"output\":[{\"type\":\"function_call\",\"id\":\"fc_stand_in_2\",\"call_id\":\"call_stand_in_2\",\"namespace\":\"svett\",\"name\":\"best_sets\",\"arguments\":\"{\\\"exerciseId\\\":\\\"1573695e-caed-522b-a990-5c38a33d3927\\\",\\\"from\\\":\\\"2026-10-01\\\",\\\"to\\\":\\\"2026-10-31\\\",\\\"limit\\\":3}\",\"status\":\"completed\"}]},\"sequence_number\":13}\n\n",
+      "events": [
+        {
+          "type": "started"
+        },
+        {
+          "type": "toolCall",
+          "callId": "call_stand_in_2",
+          "name": "best_sets",
+          "namespace": "svett",
+          "arguments": "{\"exerciseId\":\"1573695e-caed-522b-a990-5c38a33d3927\",\"from\":\"2026-10-01\",\"to\":\"2026-10-31\",\"limit\":3}"
+        },
+        {
+          "type": "done"
+        }
+      ]
+    },
+    {
+      "request": {
+        "model": "gpt-6.1-sol",
+        "instructions": "You are the coach in svett, an app for lifting and cardio. Answer the user's questions about their training.\nRead the user's data with the svett tools before you state any number about it. Never guess a weight, a count or a date. If the tools return nothing, say so.\nWeights are in kilograms and distances in metres. Name the date of any set or workout you mention.\nAnswer in a few short sentences or a short list. Do not repeat the raw data.\nToday is 2026-11-13. The phone's time zone is UTC-07:00. Days the tools take and return are in that time zone.",
+        "input": [
+          {
+            "type": "message",
+            "role": "user",
+            "content": [
+              {
+                "type": "input_text",
+                "text": "What was my best squat set last month?"
+              }
+            ]
+          },
+          {
+            "type": "function_call",
+            "call_id": "call_stand_in_1",
+            "name": "search_exercises",
+            "namespace": "svett",
+            "arguments": "{\"query\":\"squat\",\"limit\":3}"
+          },
+          {
+            "type": "function_call_output",
+            "call_id": "call_stand_in_1",
+            "output": "{\"exercises\":[{\"id\":\"1573695e-caed-522b-a990-5c38a33d3927\",\"name\":\"Barbell Squat\",\"equipment\":\"barbell\",\"primaryMuscles\":[\"quadriceps\"],\"timesLogged\":100},{\"id\":\"41a9580f-a7fa-5d3a-a295-b2df44c447c1\",\"name\":\"Box Squat\",\"equipment\":\"barbell\",\"primaryMuscles\":[\"quadriceps\"],\"timesLogged\":0},{\"id\":\"edd46430-1821-5456-9567-b1f319de3168\",\"name\":\"Hack Squat\",\"equipment\":\"machine\",\"primaryMuscles\":[\"quadriceps\"],\"timesLogged\":0}]}"
+          },
+          {
+            "type": "function_call",
+            "call_id": "call_stand_in_2",
+            "name": "best_sets",
+            "namespace": "svett",
+            "arguments": "{\"exerciseId\":\"1573695e-caed-522b-a990-5c38a33d3927\",\"from\":\"2026-10-01\",\"to\":\"2026-10-31\",\"limit\":3}"
+          },
+          {
+            "type": "function_call_output",
+            "call_id": "call_stand_in_2",
+            "output": "{\"exercise\":\"Barbell Squat\",\"setsLogged\":18,\"best\":[{\"day\":\"2026-10-14\",\"workout\":\"Legs\",\"type\":\"normal\",\"weightKg\":117.5,\"reps\":8,\"seconds\":null},{\"day\":\"2026-10-14\",\"workout\":\"Legs\",\"type\":\"normal\",\"weightKg\":117.5,\"reps\":7,\"seconds\":null},{\"day\":\"2026-10-30\",\"workout\":\"Legs\",\"type\":\"normal\",\"weightKg\":117.5,\"reps\":7,\"seconds\":null}]}"
+          }
+        ],
+        "tools": [
+          {
+            "type": "namespace",
+            "name": "svett",
+            "description": "Read the user's own training data in svett.",
+            "tools": [
+              {
+                "type": "function",
+                "name": "search_exercises",
+                "description": "Finds exercises by name. Exercises the user has logged come first, with how many workouts they appear in. Use it to get an exercise id.",
+                "parameters": {
+                  "type": "object",
+                  "properties": {
+                    "query": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 60,
+                      "description": "Words in the exercise name, such as squat or bench press"
+                    },
+                    "limit": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 10,
+                      "description": "How many to return, at most 10"
+                    }
+                  },
+                  "required": ["query"],
+                  "additionalProperties": false
+                }
+              },
+              {
+                "type": "function",
+                "name": "list_workouts",
+                "description": "Lists the user's workouts between two days, newest first, with how many sets each held.",
+                "parameters": {
+                  "type": "object",
+                  "properties": {
+                    "from": {
+                      "type": "string",
+                      "description": "A day as YYYY-MM-DD, in the phone's time zone"
+                    },
+                    "to": {
+                      "type": "string",
+                      "description": "A day as YYYY-MM-DD, in the phone's time zone"
+                    },
+                    "limit": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 20,
+                      "description": "How many to return, at most 20"
+                    }
+                  },
+                  "required": ["from", "to"],
+                  "additionalProperties": false
+                }
+              },
+              {
+                "type": "function",
+                "name": "get_workout",
+                "description": "Reads one workout with its exercises and sets. Take the id from list_workouts.",
+                "parameters": {
+                  "type": "object",
+                  "properties": {
+                    "workoutId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": ["workoutId"],
+                  "additionalProperties": false
+                }
+              },
+              {
+                "type": "function",
+                "name": "best_sets",
+                "description": "The user's best working sets of one exercise between two days: heaviest first, then most reps. Warm-ups never count.",
+                "parameters": {
+                  "type": "object",
+                  "properties": {
+                    "exerciseId": {
+                      "type": "string",
+                      "description": "The exercise id from search_exercises"
+                    },
+                    "from": {
+                      "type": "string",
+                      "description": "A day as YYYY-MM-DD, in the phone's time zone"
+                    },
+                    "to": {
+                      "type": "string",
+                      "description": "A day as YYYY-MM-DD, in the phone's time zone"
+                    },
+                    "limit": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 5,
+                      "description": "How many to return, at most 5"
+                    }
+                  },
+                  "required": ["exerciseId", "from", "to"],
+                  "additionalProperties": false
+                }
+              },
+              {
+                "type": "function",
+                "name": "exercise_history",
+                "description": "One exercise's history between two days, one entry per workout, newest first: the top set, working sets, total reps and volume.",
+                "parameters": {
+                  "type": "object",
+                  "properties": {
+                    "exerciseId": {
+                      "type": "string",
+                      "description": "The exercise id from search_exercises"
+                    },
+                    "from": {
+                      "type": "string",
+                      "description": "A day as YYYY-MM-DD, in the phone's time zone"
+                    },
+                    "to": {
+                      "type": "string",
+                      "description": "A day as YYYY-MM-DD, in the phone's time zone"
+                    },
+                    "limit": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 20,
+                      "description": "How many to return, at most 20"
+                    }
+                  },
+                  "required": ["exerciseId", "from", "to"],
+                  "additionalProperties": false
+                }
+              },
+              {
+                "type": "function",
+                "name": "body_measurements",
+                "description": "The user's body measurements between two days, newest first, such as body weight, body fat or waist.",
+                "parameters": {
+                  "type": "object",
+                  "properties": {
+                    "from": {
+                      "type": "string",
+                      "description": "A day as YYYY-MM-DD, in the phone's time zone"
+                    },
+                    "to": {
+                      "type": "string",
+                      "description": "A day as YYYY-MM-DD, in the phone's time zone"
+                    },
+                    "kind": {
+                      "type": "string",
+                      "enum": [
+                        "body_weight",
+                        "body_fat",
+                        "neck",
+                        "shoulders",
+                        "chest",
+                        "left_biceps",
+                        "right_biceps",
+                        "left_forearm",
+                        "right_forearm",
+                        "abdomen",
+                        "waist",
+                        "hips",
+                        "left_thigh",
+                        "right_thigh",
+                        "left_calf",
+                        "right_calf"
+                      ],
+                      "description": "Only this measurement"
+                    },
+                    "limit": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 30,
+                      "description": "How many to return, at most 30"
+                    }
+                  },
+                  "required": ["from", "to"],
+                  "additionalProperties": false
+                }
+              },
+              {
+                "type": "function",
+                "name": "list_routines",
+                "description": "Lists the user's saved routines with their folder and exercises.",
+                "parameters": {
+                  "type": "object",
+                  "properties": {},
+                  "additionalProperties": false
+                }
+              }
+            ]
+          }
+        ],
+        "stream": true,
+        "store": false
+      },
+      "status": 200,
+      "body": "event: response.created\ndata: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_stand_in_3\",\"object\":\"response\",\"model\":\"gpt-6.1-sol\",\"status\":\"in_progress\",\"output\":[]},\"sequence_number\":0}\n\nevent: response.output_item.added\ndata: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"message\",\"id\":\"msg_stand_in_3\",\"role\":\"assistant\",\"status\":\"in_progress\",\"content\":[]},\"sequence_number\":1}\n\nevent: response.content_part.added\ndata: {\"type\":\"response.content_part.added\",\"item_id\":\"msg_stand_in_3\",\"output_index\":0,\"content_index\":0,\"part\":{\"type\":\"output_text\",\"text\":\"\",\"annotations\":[]},\"sequence_number\":2}\n\nevent: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"item_id\":\"msg_stand_in_3\",\"output_index\":0,\"content_index\":0,\"delta\":\"Your best\",\"logprobs\":[],\"sequence_number\":3}\n\nevent: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"item_id\":\"msg_stand_in_3\",\"output_index\":0,\"content_index\":0,\"delta\":\" squat se\",\"logprobs\":[],\"sequence_number\":4}\n\nevent: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"item_id\":\"msg_stand_in_3\",\"output_index\":0,\"content_index\":0,\"delta\":\"t last mo\",\"logprobs\":[],\"sequence_number\":5}\n\nevent: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"item_id\":\"msg_stand_in_3\",\"output_index\":0,\"content_index\":0,\"delta\":\"nth was 1\",\"logprobs\":[],\"sequence_number\":6}\n\nevent: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"item_id\":\"msg_stand_in_3\",\"output_index\":0,\"content_index\":0,\"delta\":\"17.5 kg f\",\"logprobs\":[],\"sequence_number\":7}\n\nevent: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"item_id\":\"msg_stand_in_3\",\"output_index\":0,\"content_index\":0,\"delta\":\"or 8 reps\",\"logprobs\":[],\"sequence_number\":8}\n\nevent: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"item_id\":\"msg_stand_in_3\",\"output_index\":0,\"content_index\":0,\"delta\":\", on 2026\",\"logprobs\":[],\"sequence_number\":9}\n\nevent: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"item_id\":\"msg_stand_in_3\",\"output_index\":0,\"content_index\":0,\"delta\":\"-10-14 in\",\"logprobs\":[],\"sequence_number\":10}\n\nevent: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"item_id\":\"msg_stand_in_3\",\"output_index\":0,\"content_index\":0,\"delta\":\" your Leg\",\"logprobs\":[],\"sequence_number\":11}\n\nevent: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"item_id\":\"msg_stand_in_3\",\"output_index\":0,\"content_index\":0,\"delta\":\"s workout\",\"logprobs\":[],\"sequence_number\":12}\n\nevent: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"item_id\":\"msg_stand_in_3\",\"output_index\":0,\"content_index\":0,\"delta\":\". That wa\",\"logprobs\":[],\"sequence_number\":13}\n\nevent: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"item_id\":\"msg_stand_in_3\",\"output_index\":0,\"content_index\":0,\"delta\":\"s your Ba\",\"logprobs\":[],\"sequence_number\":14}\n\nevent: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"item_id\":\"msg_stand_in_3\",\"output_index\":0,\"content_index\":0,\"delta\":\"rbell Squ\",\"logprobs\":[],\"sequence_number\":15}\n\nevent: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"item_id\":\"msg_stand_in_3\",\"output_index\":0,\"content_index\":0,\"delta\":\"at.\",\"logprobs\":[],\"sequence_number\":16}\n\nevent: response.output_text.done\ndata: {\"type\":\"response.output_text.done\",\"item_id\":\"msg_stand_in_3\",\"output_index\":0,\"content_index\":0,\"text\":\"Your best squat set last month was 117.5 kg for 8 reps, on 2026-10-14 in your Legs workout. That was your Barbell Squat.\",\"logprobs\":[],\"sequence_number\":17}\n\nevent: response.content_part.done\ndata: {\"type\":\"response.content_part.done\",\"item_id\":\"msg_stand_in_3\",\"output_index\":0,\"content_index\":0,\"part\":{\"type\":\"output_text\",\"text\":\"Your best squat set last month was 117.5 kg for 8 reps, on 2026-10-14 in your Legs workout. That was your Barbell Squat.\",\"annotations\":[]},\"sequence_number\":18}\n\nevent: response.output_item.done\ndata: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"type\":\"message\",\"id\":\"msg_stand_in_3\",\"role\":\"assistant\",\"status\":\"completed\",\"content\":[{\"type\":\"output_text\",\"text\":\"Your best squat set last month was 117.5 kg for 8 reps, on 2026-10-14 in your Legs workout. That was your Barbell Squat.\",\"annotations\":[]}]},\"sequence_number\":19}\n\nevent: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_stand_in_3\",\"object\":\"response\",\"model\":\"gpt-6.1-sol\",\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"id\":\"msg_stand_in_3\",\"role\":\"assistant\",\"status\":\"completed\",\"content\":[{\"type\":\"output_text\",\"text\":\"Your best squat set last month was 117.5 kg for 8 reps, on 2026-10-14 in your Legs workout. That was your Barbell Squat.\",\"annotations\":[]}]}]},\"sequence_number\":20}\n\n",
+      "events": [
+        {
+          "type": "started"
+        },
+        {
+          "type": "text",
+          "delta": "Your best"
+        },
+        {
+          "type": "text",
+          "delta": " squat se"
+        },
+        {
+          "type": "text",
+          "delta": "t last mo"
+        },
+        {
+          "type": "text",
+          "delta": "nth was 1"
+        },
+        {
+          "type": "text",
+          "delta": "17.5 kg f"
+        },
+        {
+          "type": "text",
+          "delta": "or 8 reps"
+        },
+        {
+          "type": "text",
+          "delta": ", on 2026"
+        },
+        {
+          "type": "text",
+          "delta": "-10-14 in"
+        },
+        {
+          "type": "text",
+          "delta": " your Leg"
+        },
+        {
+          "type": "text",
+          "delta": "s workout"
+        },
+        {
+          "type": "text",
+          "delta": ". That wa"
+        },
+        {
+          "type": "text",
+          "delta": "s your Ba"
+        },
+        {
+          "type": "text",
+          "delta": "rbell Squ"
+        },
+        {
+          "type": "text",
+          "delta": "at."
+        },
+        {
+          "type": "done"
+        }
+      ]
+    }
+  ]
+}

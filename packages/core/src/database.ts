@@ -11,6 +11,7 @@ import {
   ProposalRepository,
 } from "./repositories/records.ts";
 import { RoutineRepository } from "./repositories/routines.ts";
+import { TrainingReads } from "./repositories/training.ts";
 import { Sql, type SqlDriver } from "./sql.ts";
 
 export const AccountId = Schema.String.check(Schema.isPattern(/^[A-Za-z0-9_-]{1,128}$/)).pipe(
@@ -36,6 +37,7 @@ export const Repositories = Layer.mergeAll(
   ImportRepository.layer,
   ProposalRepository.layer,
   CoachMessageRepository.layer,
+  TrainingReads.layer,
 );
 
 const prepared = Layer.effectDiscard(

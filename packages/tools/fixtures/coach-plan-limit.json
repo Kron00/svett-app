@@ -1,0 +1,227 @@
+{
+  "source": "stand-in",
+  "recordedAt": 1794589200000,
+  "exchanges": [
+    {
+      "request": {
+        "model": "gpt-6.1-sol",
+        "instructions": "You are the coach in svett, an app for lifting and cardio. Answer the user's questions about their training.\nRead the user's data with the svett tools before you state any number about it. Never guess a weight, a count or a date. If the tools return nothing, say so.\nWeights are in kilograms and distances in metres. Name the date of any set or workout you mention.\nAnswer in a few short sentences or a short list. Do not repeat the raw data.\nToday is 2026-11-13. The phone's time zone is UTC-07:00. Days the tools take and return are in that time zone.",
+        "input": [
+          {
+            "type": "message",
+            "role": "user",
+            "content": [
+              {
+                "type": "input_text",
+                "text": "What was my best squat set last month?"
+              }
+            ]
+          }
+        ],
+        "tools": [
+          {
+            "type": "namespace",
+            "name": "svett",
+            "description": "Read the user's own training data in svett.",
+            "tools": [
+              {
+                "type": "function",
+                "name": "search_exercises",
+                "description": "Finds exercises by name. Exercises the user has logged come first, with how many workouts they appear in. Use it to get an exercise id.",
+                "parameters": {
+                  "type": "object",
+                  "properties": {
+                    "query": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 60,
+                      "description": "Words in the exercise name, such as squat or bench press"
+                    },
+                    "limit": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 10,
+                      "description": "How many to return, at most 10"
+                    }
+                  },
+                  "required": ["query"],
+                  "additionalProperties": false
+                }
+              },
+              {
+                "type": "function",
+                "name": "list_workouts",
+                "description": "Lists the user's workouts between two days, newest first, with how many sets each held.",
+                "parameters": {
+                  "type": "object",
+                  "properties": {
+                    "from": {
+                      "type": "string",
+                      "description": "A day as YYYY-MM-DD, in the phone's time zone"
+                    },
+                    "to": {
+                      "type": "string",
+                      "description": "A day as YYYY-MM-DD, in the phone's time zone"
+                    },
+                    "limit": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 20,
+                      "description": "How many to return, at most 20"
+                    }
+                  },
+                  "required": ["from", "to"],
+                  "additionalProperties": false
+                }
+              },
+              {
+                "type": "function",
+                "name": "get_workout",
+                "description": "Reads one workout with its exercises and sets. Take the id from list_workouts.",
+                "parameters": {
+                  "type": "object",
+                  "properties": {
+                    "workoutId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": ["workoutId"],
+                  "additionalProperties": false
+                }
+              },
+              {
+                "type": "function",
+                "name": "best_sets",
+                "description": "The user's best working sets of one exercise between two days: heaviest first, then most reps. Warm-ups never count.",
+                "parameters": {
+                  "type": "object",
+                  "properties": {
+                    "exerciseId": {
+                      "type": "string",
+                      "description": "The exercise id from search_exercises"
+                    },
+                    "from": {
+                      "type": "string",
+                      "description": "A day as YYYY-MM-DD, in the phone's time zone"
+                    },
+                    "to": {
+                      "type": "string",
+                      "description": "A day as YYYY-MM-DD, in the phone's time zone"
+                    },
+                    "limit": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 5,
+                      "description": "How many to return, at most 5"
+                    }
+                  },
+                  "required": ["exerciseId", "from", "to"],
+                  "additionalProperties": false
+                }
+              },
+              {
+                "type": "function",
+                "name": "exercise_history",
+                "description": "One exercise's history between two days, one entry per workout, newest first: the top set, working sets, total reps and volume.",
+                "parameters": {
+                  "type": "object",
+                  "properties": {
+                    "exerciseId": {
+                      "type": "string",
+                      "description": "The exercise id from search_exercises"
+                    },
+                    "from": {
+                      "type": "string",
+                      "description": "A day as YYYY-MM-DD, in the phone's time zone"
+                    },
+                    "to": {
+                      "type": "string",
+                      "description": "A day as YYYY-MM-DD, in the phone's time zone"
+                    },
+                    "limit": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 20,
+                      "description": "How many to return, at most 20"
+                    }
+                  },
+                  "required": ["exerciseId", "from", "to"],
+                  "additionalProperties": false
+                }
+              },
+              {
+                "type": "function",
+                "name": "body_measurements",
+                "description": "The user's body measurements between two days, newest first, such as body weight, body fat or waist.",
+                "parameters": {
+                  "type": "object",
+                  "properties": {
+                    "from": {
+                      "type": "string",
+                      "description": "A day as YYYY-MM-DD, in the phone's time zone"
+                    },
+                    "to": {
+                      "type": "string",
+                      "description": "A day as YYYY-MM-DD, in the phone's time zone"
+                    },
+                    "kind": {
+                      "type": "string",
+                      "enum": [
+                        "body_weight",
+                        "body_fat",
+                        "neck",
+                        "shoulders",
+                        "chest",
+                        "left_biceps",
+                        "right_biceps",
+                        "left_forearm",
+                        "right_forearm",
+                        "abdomen",
+                        "waist",
+                        "hips",
+                        "left_thigh",
+                        "right_thigh",
+                        "left_calf",
+                        "right_calf"
+                      ],
+                      "description": "Only this measurement"
+                    },
+                    "limit": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 30,
+                      "description": "How many to return, at most 30"
+                    }
+                  },
+                  "required": ["from", "to"],
+                  "additionalProperties": false
+                }
+              },
+              {
+                "type": "function",
+                "name": "list_routines",
+                "description": "Lists the user's saved routines with their folder and exercises.",
+                "parameters": {
+                  "type": "object",
+                  "properties": {},
+                  "additionalProperties": false
+                }
+              }
+            ]
+          }
+        ],
+        "stream": true,
+        "store": false
+      },
+      "status": 429,
+      "body": "{\"error\":{\"message\":\"You have reached your ChatGPT plan's usage limit for this app.\",\"type\":\"invalid_request_error\",\"param\":null,\"code\":\"subscription_sharing_usage_limit_exceeded\"}}",
+      "events": [
+        {
+          "type": "failed",
+          "code": "subscription_sharing_usage_limit_exceeded",
+          "status": 429
+        }
+      ]
+    }
+  ]
+}
