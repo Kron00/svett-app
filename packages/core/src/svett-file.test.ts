@@ -2,7 +2,12 @@ import { Result } from "effect";
 import { describe, expect, it } from "vite-plus/test";
 
 import { EpochMillis } from "./schema.ts";
-import { decodeSvettFile, encodeSvettFile, exportFileName } from "./svett-file.ts";
+import {
+  decodeSvettFile,
+  encodeSvettFile,
+  exportFileName,
+  SVETT_FILE_VERSION,
+} from "./svett-file.ts";
 import { TABLE_KEYS, type Snapshot } from "./transfer.ts";
 
 const folder = {
@@ -31,7 +36,7 @@ describe("svett file", () => {
     const decoded = decodeSvettFile(text);
     expect(decoded).toEqual(
       Result.succeed({
-        version: 1,
+        version: SVETT_FILE_VERSION,
         exportedAt: 1_000,
         rows: 1,
         tables: { ...Object.fromEntries(TABLE_KEYS.map((key) => [key, []])), folder: [folder] },
@@ -67,6 +72,47 @@ describe("svett file", () => {
     expect(JSON.parse(text).tables.folder).toEqual([folder, deleted]);
   });
 
+  it("reads a version 1 file's workouts as finished, with every set done", () => {
+    const activity = {
+      id: "01900000-0000-7000-8000-0000000000a1",
+      updatedAt: 5,
+      deletedAt: null,
+      kind: "strength",
+      startedAt: 1_000,
+      durationS: 3_600,
+      title: "Legs",
+      notes: "",
+      energyKcal: null,
+      audience: "only_you",
+      hiddenFields: [],
+      source: "svett",
+      sourceId: null,
+      fingerprint: null,
+      importBatchId: null,
+    };
+    const set = {
+      id: "01900000-0000-7000-8000-0000000000a3",
+      updatedAt: 5,
+      deletedAt: null,
+      activityExerciseId: "01900000-0000-7000-8000-0000000000a2",
+      position: 0,
+      setType: "normal",
+      weightKg: 100,
+      reps: 5,
+      durationS: null,
+      distanceM: null,
+      rpe: null,
+    };
+    const decoded = decodeSvettFile(file({ activity: [activity], activity_set: [set] }, 1));
+    if (Result.isFailure(decoded)) throw new Error(decoded.failure.message);
+    expect(decoded.success.tables.activity).toEqual([
+      { ...activity, status: "finished", routineId: null },
+    ]);
+    expect(decoded.success.tables.activitySet).toEqual([
+      { ...set, done: true, targetRepsMin: null, targetRepsMax: null },
+    ]);
+  });
+
   it.each([
     ["text that is not JSON", "not json"],
     ["JSON that is not a svett file", JSON.stringify({ workouts: [] })],
@@ -78,7 +124,7 @@ describe("svett file", () => {
   });
 
   it("asks for an update when a newer svett made the file", () => {
-    expect(failure(file({}, 2))).toMatchObject({
+    expect(failure(file({}, SVETT_FILE_VERSION + 1))).toMatchObject({
       reason: "too_new",
       message: "A newer svett made this file. Update svett, then import it again.",
     });

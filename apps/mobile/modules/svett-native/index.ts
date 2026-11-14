@@ -4,7 +4,7 @@ import { requireNativeModule } from "expo";
 // The ChatGPT functions return what Swift sends, unparsed. src/chatgpt/native.ts parses it with
 // the schemas in @svett/core. None of them returns a token.
 interface SvettNative {
-  /** When this process started, in milliseconds since 1970. */
+  /** When the kernel started this process, in milliseconds since 1970. */
   readonly launchedAt: number;
   /** The entitlement keys the running app is signed with, or null when they cannot be read. */
   signedEntitlements(): string[] | null;

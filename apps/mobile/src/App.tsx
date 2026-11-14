@@ -6,6 +6,7 @@ import { StatusBar } from "expo-status-bar";
 
 import { ChatGPTScreen } from "./chatgpt/ChatGPTScreen";
 import { PhoneChecksScreen } from "./checks/PhoneChecksScreen";
+import { markLaunchOnNextFrame } from "./data/launch-timing";
 import { useNavigationTheme } from "./design/hooks";
 import { ExerciseDetailScreen } from "./exercises/ExerciseDetailScreen";
 import { EditExerciseScreen, NewExerciseScreen } from "./exercises/ExerciseFormScreen";
@@ -20,16 +21,24 @@ import { MuscleSetsScreen } from "./progress/MuscleSetsScreen";
 import { CalendarScreen } from "./progress/CalendarScreen";
 import { SetEditScreen } from "./progress/SetEditScreen";
 import { WorkoutScreen } from "./progress/WorkoutScreen";
+import { RoutineDetailScreen } from "./routines/RoutineDetailScreen";
+import { EditRoutineScreen, NewRoutineScreen } from "./routines/RoutineEditorScreen";
+import { SetTargetScreen } from "./routines/SetTargetScreen";
 import { TabNavigator } from "./TabNavigator";
 import { DataScreen } from "./transfer/DataScreen";
 import { ImportPreviewScreen } from "./transfer/ImportPreviewScreen";
 import { UndoImportScreen } from "./transfer/UndoImportScreen";
+import { WorkoutScreen as ActiveWorkoutScreen } from "./workout/WorkoutScreen";
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
 
 export default function App() {
   return (
-    <NavigationContainer theme={useNavigationTheme()} linking={linking}>
+    <NavigationContainer
+      theme={useNavigationTheme()}
+      linking={linking}
+      onReady={() => markLaunchOnNextFrame("screen")}
+    >
       <StatusBar style="auto" />
       <Stack.Navigator screenOptions={{ headerShown: false }}>
         <Stack.Screen
@@ -74,6 +83,40 @@ export default function App() {
           name="EditExercise"
           component={EditExerciseScreen}
           options={{ headerShown: true, title: "Edit exercise" }}
+        />
+        <Stack.Screen
+          name="PickExercise"
+          component={ExerciseLibraryScreen}
+          options={{ headerShown: true, title: "Add exercise", headerLargeTitle: true }}
+        />
+        <Stack.Screen
+          name="Routine"
+          component={RoutineDetailScreen}
+          options={{ headerShown: true, title: "" }}
+        />
+        <Stack.Screen
+          name="NewRoutine"
+          component={NewRoutineScreen}
+          options={{ headerShown: true, title: "New routine" }}
+        />
+        <Stack.Screen
+          name="EditRoutine"
+          component={EditRoutineScreen}
+          options={{ headerShown: true, title: "Edit routine" }}
+        />
+        <Stack.Screen
+          name="SetTarget"
+          component={SetTargetScreen}
+          options={({ route }) => ({
+            headerShown: true,
+            presentation: "modal",
+            title: `Set ${Number(route.params.set) + 1}`,
+          })}
+        />
+        <Stack.Screen
+          name="ActiveWorkout"
+          component={ActiveWorkoutScreen}
+          options={{ headerShown: true, title: "Workout" }}
         />
         <Stack.Screen
           name="PhoneChecks"

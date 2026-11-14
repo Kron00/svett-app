@@ -107,9 +107,16 @@ export const HiddenField = Schema.Literals([
 ]);
 export type HiddenField = typeof HiddenField.Type;
 
+/** A workout is in progress from its start until it is finished or discarded. */
+export const ActivityStatus = Schema.Literals(["in_progress", "finished"]);
+export type ActivityStatus = typeof ActivityStatus.Type;
+
 export const Activity = Schema.Struct({
   ...rowFields(ActivityId),
   kind: ActivityKind,
+  status: ActivityStatus,
+  /** The routine a workout was started from, so the logger can read its rest times. */
+  routineId: Schema.NullOr(RoutineId),
   startedAt: EpochMillis,
   durationS: DurationSeconds,
   title: Schema.String,
@@ -145,8 +152,16 @@ type SetValues = {
   readonly distanceM: number | null;
 };
 
-const setRecordsSomething = Schema.makeFilter<SetValues>((set) =>
-  set.reps !== null || set.durationS !== null || set.distanceM !== null
+type RepRange = { readonly repsMin: number | null; readonly repsMax: number | null };
+
+const repRangeInOrder = ({ repsMin, repsMax }: RepRange) =>
+  repsMin === null || repsMax === null || repsMin <= repsMax
+    ? undefined
+    : "a rep range starts at or below its end";
+
+// A set still to do in a workout in progress may be empty. Once done it records something.
+const setRecordsSomething = Schema.makeFilter<SetValues & { readonly done: boolean }>((set) =>
+  !set.done || set.reps !== null || set.durationS !== null || set.distanceM !== null
     ? undefined
     : "a set records reps, a time or a distance",
 );
@@ -161,7 +176,17 @@ export const ActivitySet = Schema.Struct({
   durationS: Schema.NullOr(DurationSeconds),
   distanceM: Schema.NullOr(NonNegative),
   rpe: Schema.NullOr(Rpe),
-}).check(setRecordsSomething);
+  done: Schema.BooleanFromBit,
+  /** The rep range the routine set as the goal, shown while the set is still to do. */
+  targetRepsMin: Schema.NullOr(NonNegativeInt),
+  targetRepsMax: Schema.NullOr(NonNegativeInt),
+})
+  .check(setRecordsSomething)
+  .check(
+    Schema.makeFilter((set) =>
+      repRangeInOrder({ repsMin: set.targetRepsMin, repsMax: set.targetRepsMax }),
+    ),
+  );
 export type ActivitySet = typeof ActivitySet.Type;
 
 export const ActivityTrack = Schema.Struct({
@@ -316,13 +341,7 @@ export const RoutineSet = Schema.Struct({
   repsMax: Schema.NullOr(NonNegativeInt),
   durationS: Schema.NullOr(DurationSeconds),
   distanceM: Schema.NullOr(NonNegative),
-}).check(
-  Schema.makeFilter((set) =>
-    set.repsMin === null || set.repsMax === null || set.repsMin <= set.repsMax
-      ? undefined
-      : "a rep range starts at or below its end",
-  ),
-);
+}).check(Schema.makeFilter(repRangeInOrder));
 export type RoutineSet = typeof RoutineSet.Type;
 
 export const MeasurementKind = Schema.Literals([

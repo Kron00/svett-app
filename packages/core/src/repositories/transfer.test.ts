@@ -33,6 +33,8 @@ import {
 } from "./records.ts";
 import { RoutineRepository } from "./routines.ts";
 import { TransferRepository } from "./transfer.ts";
+import { EMPTY_TARGET } from "../routine-plan.ts";
+import { startWorkoutFromRoutine } from "../start-workout.ts";
 
 type Database = Pick<ReturnType<typeof openTestDatabase>, "database" | "runtime">;
 
@@ -285,6 +287,150 @@ const fillEveryTable = async (database: Database) => {
   );
 };
 
+/** Starts a workout from a new one-exercise routine, as the Train tab does. */
+const startRoutine = (database: Database) =>
+  database.runtime.runPromise(
+    Effect.gen(function* () {
+      const routineId = yield* (yield* RoutineRepository).createRoutine({
+        folderId: null,
+        title: "Push",
+        notes: "",
+        position: 0,
+        exercises: [
+          {
+            exerciseId: libraryExerciseId("Barbell_Bench_Press_-_Medium_Grip"),
+            supersetGroup: null,
+            restS: null,
+            notes: "",
+            sets: [
+              { ...EMPTY_TARGET, weightKg: 80, repsMin: 5, repsMax: 5 },
+              { ...EMPTY_TARGET, weightKg: 80, repsMin: 5, repsMax: 8 },
+            ],
+          },
+        ],
+      });
+      return yield* startWorkoutFromRoutine(routineId);
+    }),
+  );
+
+const workoutInProgress = (database: Database) =>
+  database.runtime.runPromise(
+    Effect.flatMap(Effect.service(ActivityRepository), (activities) => activities.inProgress),
+  );
+
+const logged = (database: Database, title: string) =>
+  database.runtime.runPromise(
+    Effect.flatMap(Effect.service(ActivityRepository), (activities) =>
+      activities.create(workout(title)),
+    ),
+  );
+
+/** The file with every workout in it changed, as a file edited by hand. */
+const withWorkouts = (file: SvettFile, fields: Record<string, unknown>): SvettFile => ({
+  ...file,
+  tables: {
+    ...file.tables,
+    activity: (file.tables.activity ?? []).map((row) => Object.assign(row, fields)),
+  },
+});
+
+describe("TransferRepository and a workout in progress", () => {
+  it("leaves a workout in progress out of an export taken during it", async () => {
+    const phone = openTestDatabase(1);
+    await logged(phone, "Legs");
+    const draft = await startRoutine(phone);
+
+    const file = await exportFile(phone);
+    expect((file.tables.activity ?? []).map((row) => row["title"])).toEqual(["Legs"]);
+    expect((file.tables.activityExercise ?? []).map((row) => row["activityId"])).not.toContain(
+      draft,
+    );
+    expect(file.tables.activitySet).toHaveLength(2);
+    expect(file.tables.routine).toHaveLength(1);
+
+    const wiped = openTestDatabase(2);
+    await transfer(wiped, (repository) => repository.applyImport(file, []));
+    expect(await workoutInProgress(wiped)).toEqual(Option.none());
+    expect(pointersToDeleted(wiped)).toEqual([]);
+  });
+
+  it("skips a workout in progress in a file, counts it, and never puts a workout here in progress", async () => {
+    const other = openTestDatabase(2);
+    await logged(other, "Back");
+    const backInProgress = withWorkouts(await exportFile(other), { status: "in_progress" });
+    const phone = openTestDatabase(1);
+    const legs = await logged(phone, "Legs");
+    const legsInProgress = withWorkouts(await exportFile(phone), { status: "in_progress" });
+    const before = allRows(phone);
+
+    expect(
+      await transfer(phone, (repository) => repository.previewImport(backInProgress)),
+    ).toMatchObject({ added: [], changed: [], deleted: 0, skipped: 1 });
+    expect(
+      await transfer(phone, (repository) => repository.applyImport(backInProgress, [])),
+    ).toEqual(Option.none());
+    expect(
+      await transfer(phone, (repository) => repository.previewImport(legsInProgress)),
+    ).toMatchObject({ added: [], changed: [], skipped: 1 });
+    expect(
+      await transfer(phone, (repository) =>
+        repository.applyImport(legsInProgress, [`activity/${legs}`]),
+      ),
+    ).toEqual(Option.none());
+    expect(allRows(phone)).toEqual(before);
+    expect(await workoutInProgress(phone)).toEqual(Option.none());
+  });
+
+  it("keeps a workout discarded when Undo would put it back in progress beside another", async () => {
+    const phone = openTestDatabase(1);
+    const legs = await logged(phone, "Legs");
+    const renamed = withWorkouts(await exportFile(phone), { title: "Leg day" });
+    const { importBatchId } = Option.getOrThrow(
+      await transfer(phone, (repository) => repository.applyImport(renamed, [`activity/${legs}`])),
+    );
+    // A journal that holds a workout in progress, as one from a hand-edited file can.
+    phone.database
+      .prepare(
+        "UPDATE import_change SET replaced = json_set(replaced, '$.activity[0].status', 'in_progress') WHERE import_batch_id = ?",
+      )
+      .run(importBatchId);
+    const draft = await startRoutine(phone);
+
+    const undone = await transfer(phone, (repository) => repository.undoImport(importBatchId, []));
+    expect(undone).toEqual({ removed: 0, restored: 1, left: 0, kept: 0, discarded: 1 });
+    expect(Option.getOrThrow(await workoutInProgress(phone)).activity.id).toBe(draft);
+    expect(
+      phone.database
+        .prepare("SELECT title, status, deleted_at IS NOT NULL AS gone FROM activity WHERE id = ?")
+        .all(legs),
+    ).toEqual([{ title: "Legs", status: "in_progress", gone: 1 }]);
+    expect(pointersToDeleted(phone)).toEqual([]);
+  });
+
+  it("undoes an import whose journal was written before workouts had a status", async () => {
+    const phone = openTestDatabase(1);
+    const legs = await logged(phone, "Legs");
+    const renamed = withWorkouts(await exportFile(phone), { title: "Leg day" });
+    const { importBatchId } = Option.getOrThrow(
+      await transfer(phone, (repository) => repository.applyImport(renamed, [`activity/${legs}`])),
+    );
+    phone.database
+      .prepare(
+        "UPDATE import_change SET replaced = json_remove(replaced, '$.activity[0].status', '$.activity[0].routineId') WHERE import_batch_id = ?",
+      )
+      .run(importBatchId);
+
+    const preview = await transfer(phone, (repository) => repository.previewUndo(importBatchId));
+    expect(preview.changes.map(({ edited }) => edited)).toEqual([false]);
+    expect(await transfer(phone, (repository) => repository.undoImport(importBatchId, []))).toEqual(
+      { removed: 0, restored: 1, left: 0, kept: 0, discarded: 0 },
+    );
+    expect(
+      phone.database.prepare("SELECT title, status FROM activity WHERE deleted_at IS NULL").all(),
+    ).toEqual([{ title: "Legs", status: "finished" }]);
+  });
+});
+
 describe("TransferRepository", () => {
   it("exports every table, and a wiped database that imports the file equals the original row for row", async () => {
     const original = openTestDatabase(1);
@@ -442,6 +588,7 @@ describe("TransferRepository", () => {
       restored: 0,
       left: 0,
       kept: 0,
+      discarded: 0,
     });
     expect(liveRows(phone)["activity_set"]).toEqual([]);
   });
@@ -572,7 +719,7 @@ describe("TransferRepository", () => {
       ["Legs", "replaced", false],
     ]);
     const undone = await transfer(phone, (transfers) => transfers.undoImport(importBatchId, []));
-    expect(undone).toEqual({ removed: 1, restored: 1, left: 0, kept: 0 });
+    expect(undone).toEqual({ removed: 1, restored: 1, left: 0, kept: 0, discarded: 0 });
 
     // Undo writes the restored rows anew, so only their times differ from before.
     const withoutTimes = (rows: ReturnType<typeof liveRows>) =>
@@ -619,6 +766,7 @@ describe("TransferRepository", () => {
       restored: 0,
       left: 1,
       kept: 0,
+      discarded: 0,
     });
     expect(liveTitles(leave)).toEqual(["Chest"]);
 
@@ -669,6 +817,7 @@ describe("TransferRepository", () => {
       restored: 0,
       left: 1,
       kept: 0,
+      discarded: 0,
     });
     expect(workoutNow(leave)).toEqual({ notes: ["Felt strong"], reps: [6, 8] });
 
@@ -682,6 +831,7 @@ describe("TransferRepository", () => {
       restored: 1,
       left: 0,
       kept: 0,
+      discarded: 0,
     });
     expect(workoutNow(both)).toEqual({ notes: ["Felt strong"], reps: [5, 8] });
   });
@@ -802,6 +952,7 @@ describe("TransferRepository", () => {
       restored: 0,
       left: 0,
       kept: 1,
+      discarded: 0,
     });
     expect(liveTitles(phone)).toEqual(["Later push"]);
     expect(liveExercise(phone, "Landmine press")).toEqual([null]);
@@ -823,6 +974,7 @@ describe("TransferRepository", () => {
       restored: 0,
       left: 1,
       kept: 1,
+      discarded: 0,
     });
     expect(liveTitles(leave)).toEqual(["Push Day"]);
     expect(liveExercise(leave, "Landmine press")).toEqual([null]);
@@ -838,6 +990,7 @@ describe("TransferRepository", () => {
       restored: 0,
       left: 0,
       kept: 0,
+      discarded: 0,
     });
     expect(liveTitles(both)).toEqual([]);
     expect(liveExercise(both, "Landmine press")).toHaveLength(1);
@@ -869,6 +1022,7 @@ describe("TransferRepository", () => {
       restored: 0,
       left: 1,
       kept: 1,
+      discarded: 0,
     });
     expect(liveTitles(phone)).toEqual(["Push Day"]);
     expect(liveRows(phone)["activity_set"]).toHaveLength(2);
@@ -943,7 +1097,7 @@ describe("TransferRepository", () => {
       await transfer(phone, (transfers) =>
         transfers.undoImport(Option.getOrThrow(imported).importBatchId, []),
       ),
-    ).toEqual({ removed: 0, restored: 0, left: 0, kept: 1 });
+    ).toEqual({ removed: 0, restored: 0, left: 0, kept: 1, discarded: 0 });
     expect(liveRows(phone)["folder"]).toHaveLength(1);
     expect(pointersToDeleted(phone)).toEqual([]);
   });
