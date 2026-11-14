@@ -4,6 +4,7 @@ import {
   formatMeasurement,
   formatMeasurementChange,
   latestMeasurements,
+  measurementRangeText,
   measurementSeries,
   parseMeasurementEntry,
 } from "./body-measurements.ts";
@@ -58,10 +59,24 @@ describe("measurement text", () => {
     expect(formatMeasurementChange("waist", 0)).toBe("No change");
   });
 
-  it("takes only a value above zero from the keypad", () => {
-    expect(parseMeasurementEntry("82.5")).toBe(82.5);
-    expect(parseMeasurementEntry("")).toBeNull();
-    expect(parseMeasurementEntry("0")).toBeNull();
-    expect(parseMeasurementEntry(".")).toBeNull();
+  it("takes only a value in the kind's range from the keypad", () => {
+    expect(parseMeasurementEntry("body_weight", "82.5")).toBe(82.5);
+    expect(parseMeasurementEntry("body_fat", "18.5")).toBe(18.5);
+    expect(parseMeasurementEntry("waist", "88")).toBe(88);
+    expect(parseMeasurementEntry("body_weight", "")).toBeNull();
+    expect(parseMeasurementEntry("body_weight", "0")).toBeNull();
+    expect(parseMeasurementEntry("body_weight", ".")).toBeNull();
+    expect(parseMeasurementEntry("body_fat", "999.9")).toBeNull();
+    expect(parseMeasurementEntry("body_fat", "100")).toBeNull();
+    expect(parseMeasurementEntry("body_weight", "999.9")).toBeNull();
+    expect(parseMeasurementEntry("body_weight", "8")).toBeNull();
+    expect(parseMeasurementEntry("waist", "880")).toBeNull();
+    expect(parseMeasurementEntry("left_calf", "3")).toBeNull();
+  });
+
+  it("states each kind's range", () => {
+    expect(measurementRangeText("body_weight")).toBe("From 20 to 400 kg.");
+    expect(measurementRangeText("body_fat")).toBe("From 1 to 75 %.");
+    expect(measurementRangeText("waist")).toBe("From 10 to 250 cm.");
   });
 });

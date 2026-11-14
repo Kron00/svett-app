@@ -1,5 +1,11 @@
 import type { NumberEntryLimits } from "./number-entry.ts";
-import { MEASUREMENT_UNIT, MeasurementKind, type Measurement } from "./schema.ts";
+import {
+  isMeasurementValue,
+  MEASUREMENT_RANGE,
+  MEASUREMENT_UNIT,
+  MeasurementKind,
+  type Measurement,
+} from "./schema.ts";
 import type { SeriesPoint } from "./series.ts";
 import { formatWeightKg } from "./set-format.ts";
 
@@ -37,10 +43,16 @@ export const formatMeasurement = (kind: MeasurementKind, value: number): string 
 /** Every measurement is typed to one decimal, from a tape, a scale or a body fat reading. */
 export const MEASUREMENT_ENTRY: NumberEntryLimits = { decimals: 1, maxIntegerDigits: 3, step: 0.1 };
 
-/** The value a measurement entry holds, or null when it is empty or not above zero. */
-export const parseMeasurementEntry = (entry: string): number | null => {
+/** The value a measurement entry holds, or null when it is empty or outside the kind's range. */
+export const parseMeasurementEntry = (kind: MeasurementKind, entry: string): number | null => {
   const value = Number(entry);
-  return entry === "" || !Number.isFinite(value) || value <= 0 ? null : value;
+  return entry === "" || !isMeasurementValue(kind, value) ? null : value;
+};
+
+/** "From 20 to 400 kg." */
+export const measurementRangeText = (kind: MeasurementKind): string => {
+  const { min, max } = MEASUREMENT_RANGE[MEASUREMENT_UNIT[kind]];
+  return `From ${min} to ${formatMeasurement(kind, max)}.`;
 };
 
 export interface LatestMeasurement {

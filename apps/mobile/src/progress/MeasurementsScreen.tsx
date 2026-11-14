@@ -13,6 +13,7 @@ import {
   MEASUREMENT_LABEL,
   type MeasurementKind,
   MeasurementKind as MeasurementKinds,
+  measurementRangeText,
   measurementSeries,
   measurementUnitText,
   parseMeasurementEntry,
@@ -163,7 +164,7 @@ function AddMeasurementSheet({
   const [saving, setSaving] = useState(false);
   // State only disables Save after a render, and taps can land before it.
   const savingNow = useRef(false);
-  const value = parseMeasurementEntry(entry);
+  const value = parseMeasurementEntry(kind, entry);
   const close = (done: () => void) => {
     setEntry("");
     setError(null);
@@ -202,6 +203,9 @@ function AddMeasurementSheet({
           limits={MEASUREMENT_ENTRY}
           onKey={(key) => setEntry((current) => editNumberEntry(current, key, MEASUREMENT_ENTRY))}
         />
+        <AppText testID="measurement-range" variant="footnote" tone="secondary">
+          {measurementRangeText(kind)}
+        </AppText>
         {error === null ? null : <AppText tone="destructive">{error}</AppText>}
         <Button
           label="Save"

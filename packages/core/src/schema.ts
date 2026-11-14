@@ -349,13 +349,38 @@ export const MEASUREMENT_UNIT: Readonly<Record<MeasurementKind, "kg" | "percent"
   right_calf: "cm",
 };
 
+/**
+ * The values a measurement can take, by unit. A body fat reading is a
+ * percentage, and a body weight or tape length outside these is a typo.
+ */
+export const MEASUREMENT_RANGE: Readonly<
+  Record<(typeof MEASUREMENT_UNIT)[MeasurementKind], { readonly min: number; readonly max: number }>
+> = {
+  kg: { min: 20, max: 400 },
+  percent: { min: 1, max: 75 },
+  cm: { min: 10, max: 250 },
+};
+
+export const isMeasurementValue = (kind: MeasurementKind, value: number): boolean => {
+  const { min, max } = MEASUREMENT_RANGE[MEASUREMENT_UNIT[kind]];
+  return Number.isFinite(value) && value >= min && value <= max;
+};
+
 export const Measurement = Schema.Struct({
   ...rowFields(MeasurementId),
   kind: MeasurementKind,
   measuredAt: EpochMillis,
-  value: Schema.Finite.check(Schema.isGreaterThan(0)),
+  value: Schema.Finite,
   ...provenanceFields,
-}).check(provenanceRule);
+})
+  .check(provenanceRule)
+  .check(
+    Schema.makeFilter((row) =>
+      isMeasurementValue(row.kind, row.value)
+        ? undefined
+        : `a ${row.kind} measurement is within its range`,
+    ),
+  );
 export type Measurement = typeof Measurement.Type;
 
 export const ImportStatus = Schema.Literals(["previewed", "applied", "undone"]);
