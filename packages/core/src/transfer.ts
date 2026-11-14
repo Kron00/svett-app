@@ -1,0 +1,292 @@
+import { contentFingerprint } from "./ids.ts";
+import { EpochMillis, Fingerprint, type MeasurementKind } from "./schema.ts";
+import { TABLES } from "./table.ts";
+
+export type TableKey = keyof typeof TABLES;
+
+/** Every table, parents before their children. */
+export const TABLE_KEYS = Object.keys(TABLES) as ReadonlyArray<TableKey>;
+
+export type AnyRow = Readonly<Record<string, unknown>> & {
+  readonly id: string;
+  readonly updatedAt: EpochMillis;
+  readonly deletedAt: EpochMillis | null;
+};
+
+/** Live rows of every table. */
+export type Snapshot = Readonly<Record<TableKey, ReadonlyArray<AnyRow>>>;
+
+/** Rows of some tables, such as the rows of one record. */
+export type TableRows = Partial<Record<TableKey, ReadonlyArray<AnyRow>>>;
+
+/**
+ * The table each table's rows belong to, through which key. A row with no parent is the
+ * top of a record, such as a workout's activity, and its record holds every row below it.
+ * Adding a table fails the type check until it is listed here, so export and import cover it.
+ */
+export const PARENT: Readonly<
+  Record<TableKey, { readonly table: TableKey; readonly key: string } | null>
+> = {
+  importBatch: null,
+  importChange: { table: "importBatch", key: "importBatchId" },
+  exercise: null,
+  activity: null,
+  activityExercise: { table: "activity", key: "activityId" },
+  activitySet: { table: "activityExercise", key: "activityExerciseId" },
+  activityTrack: { table: "activity", key: "activityId" },
+  activitySample: { table: "activityTrack", key: "activityTrackId" },
+  folder: null,
+  routine: null,
+  routineExercise: { table: "routine", key: "routineId" },
+  routineSet: { table: "routineExercise", key: "routineExerciseId" },
+  measurement: null,
+  proposal: null,
+  coachMessage: null,
+};
+
+export const CHILDREN: Readonly<Record<TableKey, ReadonlyArray<TableKey>>> = Object.fromEntries(
+  TABLE_KEYS.map((key) => [key, TABLE_KEYS.filter((child) => PARENT[child]?.table === key)]),
+) as unknown as Record<TableKey, ReadonlyArray<TableKey>>;
+
+export const tableKeyOf = (name: string): TableKey | undefined =>
+  TABLE_KEYS.find((key) => TABLES[key].name === name);
+
+/** What one record is called in a preview. */
+const NOUN: Readonly<Record<TableKey, readonly [one: string, other: string]>> = {
+  importBatch: ["import", "imports"],
+  importChange: ["import record", "import records"],
+  exercise: ["exercise", "exercises"],
+  activity: ["workout", "workouts"],
+  activityExercise: ["workout exercise", "workout exercises"],
+  activitySet: ["workout set", "workout sets"],
+  activityTrack: ["route", "routes"],
+  activitySample: ["route point", "route points"],
+  folder: ["folder", "folders"],
+  routine: ["routine", "routines"],
+  routineExercise: ["routine exercise", "routine exercises"],
+  routineSet: ["routine set", "routine sets"],
+  measurement: ["measurement", "measurements"],
+  proposal: ["coach proposal", "coach proposals"],
+  coachMessage: ["coach message", "coach messages"],
+};
+
+export const countLabel = (table: TableKey, count: number): string =>
+  `${count.toLocaleString("en-US")} ${NOUN[table][count === 1 ? 0 : 1]}`;
+
+/** A record: its top row and every row below it. */
+export interface Item {
+  readonly key: string;
+  readonly table: TableKey;
+  readonly id: string;
+  readonly rows: TableRows;
+}
+
+export interface ItemSummary {
+  readonly key: string;
+  readonly table: TableKey;
+  readonly id: string;
+  readonly title: string;
+  /** When the record happened, such as a workout's start, when it has such a time. */
+  readonly at: EpochMillis | null;
+}
+
+const itemKey = (table: TableKey, id: string) => `${TABLES[table].name}/${id}`;
+
+/**
+ * Groups rows into records. A row whose parent is missing heads its own record under the
+ * parent's key, so the same rows group the same way on both sides of an import.
+ */
+export const groupItems = (rows: TableRows, lookup: TableRows = rows): Map<string, Item> => {
+  const index = new Map<TableKey, Map<string, AnyRow>>();
+  for (const source of [lookup, rows]) {
+    for (const key of TABLE_KEYS) {
+      const byId = index.get(key) ?? new Map<string, AnyRow>();
+      for (const row of source[key] ?? []) if (!byId.has(row.id)) byId.set(row.id, row);
+      index.set(key, byId);
+    }
+  }
+  const rootOf = (table: TableKey, row: AnyRow): { table: TableKey; id: string } => {
+    const parent = PARENT[table];
+    if (parent === null) return { table, id: row.id };
+    const parentId = String(row[parent.key]);
+    const parentRow = index.get(parent.table)?.get(parentId);
+    return parentRow === undefined
+      ? { table: parent.table, id: parentId }
+      : rootOf(parent.table, parentRow);
+  };
+
+  const items = new Map<
+    string,
+    Item & { readonly rows: Partial<Record<TableKey, Array<AnyRow>>> }
+  >();
+  for (const table of TABLE_KEYS) {
+    for (const row of rows[table] ?? []) {
+      const root = rootOf(table, row);
+      const key = itemKey(root.table, root.id);
+      const item = items.get(key) ?? { key, ...root, rows: {} };
+      (item.rows[table] ??= []).push(row);
+      items.set(key, item);
+    }
+  }
+  return items;
+};
+
+const sortedRows = (rows: TableRows, withTimes: boolean) =>
+  TABLE_KEYS.flatMap((table) =>
+    (rows[table] ?? [])
+      .map((row) => {
+        if (withTimes) return row;
+        const { updatedAt: _, ...content } = row;
+        return content;
+      })
+      .toSorted((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
+      .map((row) => [TABLES[table].name, row]),
+  );
+
+/** Equal for two records with the same rows, whenever each row last changed. */
+export const contentOf = (rows: TableRows): Fingerprint =>
+  Fingerprint.make(contentFingerprint(sortedRows(rows, false)));
+
+/** Changes with any write to the record, even one that leaves its content as it was. */
+export const writtenOf = (rows: TableRows): Fingerprint =>
+  Fingerprint.make(contentFingerprint(sortedRows(rows, true)));
+
+const MEASUREMENT_TITLE: Readonly<Record<MeasurementKind, string>> = {
+  body_weight: "Body weight",
+  body_fat: "Body fat",
+  neck: "Neck",
+  shoulders: "Shoulders",
+  chest: "Chest",
+  left_biceps: "Left biceps",
+  right_biceps: "Right biceps",
+  left_forearm: "Left forearm",
+  right_forearm: "Right forearm",
+  abdomen: "Abdomen",
+  waist: "Waist",
+  hips: "Hips",
+  left_thigh: "Left thigh",
+  right_thigh: "Right thigh",
+  left_calf: "Left calf",
+  right_calf: "Right calf",
+};
+
+const IMPORT_SOURCE_TITLE: Readonly<Record<string, string>> = {
+  hevy: "Hevy import",
+  apple_health: "Apple Health import",
+  svett_file: "svett file import",
+};
+
+const text = (value: unknown) => (typeof value === "string" ? value : "");
+const time = (value: unknown) =>
+  typeof value === "number" && Number.isInteger(value) && value >= 0
+    ? EpochMillis.make(value)
+    : null;
+const capitalized = (value: string) => value.charAt(0).toUpperCase() + value.slice(1);
+const shortened = (value: string, length = 60) =>
+  value.length <= length ? value : `${value.slice(0, length - 1).trimEnd()}…`;
+
+/** The title and time a preview shows for a record. */
+export const summarize = (item: Item): ItemSummary => {
+  const top = item.rows[item.table]?.find((row) => row.id === item.id);
+  const base = { key: item.key, table: item.table, id: item.id };
+  const fallback = capitalized(NOUN[item.table][0]);
+  if (top === undefined) return { ...base, title: fallback, at: null };
+  switch (item.table) {
+    case "activity":
+      return {
+        ...base,
+        title: text(top["title"]) || capitalized(text(top["kind"])) || fallback,
+        at: time(top["startedAt"]),
+      };
+    case "routine":
+    case "proposal":
+      return {
+        ...base,
+        title: text(top["title"]) || fallback,
+        at: time(top["createdAt"] ?? null),
+      };
+    case "folder":
+    case "exercise":
+      return { ...base, title: text(top["name"]) || fallback, at: null };
+    case "measurement":
+      return {
+        ...base,
+        title: MEASUREMENT_TITLE[top["kind"] as MeasurementKind] ?? fallback,
+        at: time(top["measuredAt"]),
+      };
+    case "coachMessage":
+      return {
+        ...base,
+        title: shortened(text(top["content"]).replaceAll(/\s+/g, " ").trim()) || fallback,
+        at: time(top["createdAt"]),
+      };
+    case "importBatch":
+      return {
+        ...base,
+        title: IMPORT_SOURCE_TITLE[text(top["source"])] ?? fallback,
+        at: time(top["createdAt"]),
+      };
+    default:
+      return { ...base, title: fallback, at: null };
+  }
+};
+
+export type PlannedItem =
+  | { readonly status: "new"; readonly incoming: Item; readonly summary: ItemSummary }
+  | {
+      readonly status: "changed";
+      readonly incoming: Item;
+      readonly local: Item;
+      readonly summary: ItemSummary;
+    }
+  | { readonly status: "unchanged"; readonly summary: ItemSummary };
+
+export interface ImportPlan {
+  readonly items: ReadonlyArray<PlannedItem>;
+  /** New records per table, in table order, for the tables that have any. */
+  readonly added: ReadonlyArray<{ readonly table: TableKey; readonly count: number }>;
+  /** Records here that the file holds another version of. Import keeps yours unless chosen. */
+  readonly changed: ReadonlyArray<ItemSummary>;
+  readonly unchanged: number;
+}
+
+const byTimeThenTitle = (a: ItemSummary, b: ItemSummary) =>
+  (b.at ?? 0) - (a.at ?? 0) || a.title.localeCompare(b.title) || a.key.localeCompare(b.key);
+
+/**
+ * Compares the records in a file with the ones here, by ID. A record that is not here is
+ * new. One whose rows match, however long ago each changed, is unchanged and left alone.
+ * Any other is changed, and the preview lists it.
+ */
+export const planImport = (local: TableRows, incoming: TableRows): ImportPlan => {
+  const lookup = Object.fromEntries(
+    TABLE_KEYS.map((key) => [key, [...(incoming[key] ?? []), ...(local[key] ?? [])]]),
+  ) as TableRows;
+  const incomingItems = groupItems(incoming, lookup);
+  const localItems = groupItems(local, lookup);
+  const items: Array<PlannedItem> = [];
+  for (const item of incomingItems.values()) {
+    const summary = summarize(item);
+    const here = localItems.get(item.key);
+    if (here === undefined) items.push({ status: "new", incoming: item, summary });
+    else if (contentOf(here.rows) === contentOf(item.rows))
+      items.push({ status: "unchanged", summary });
+    else items.push({ status: "changed", incoming: item, local: here, summary });
+  }
+  const added = TABLE_KEYS.map((table) => ({
+    table,
+    count: items.filter((item) => item.status === "new" && item.summary.table === table).length,
+  })).filter(({ count }) => count > 0);
+  return {
+    items,
+    added,
+    changed: items
+      .filter((item) => item.status === "changed")
+      .map((item) => item.summary)
+      .toSorted(byTimeThenTitle),
+    unchanged: items.filter((item) => item.status === "unchanged").length,
+  };
+};
+
+export const isNothingToImport = (plan: ImportPlan): boolean =>
+  plan.added.length === 0 && plan.changed.length === 0;

@@ -32,6 +32,7 @@ const table = <A extends RowBase>(
 /** Every table svett stores, in an order where parents come before their children. */
 export const TABLES = {
   importBatch: table("import_batch", Model.ImportBatch),
+  importChange: table("import_change", Model.ImportChange),
   exercise: table("exercise", Model.Exercise),
   activity: table("activity", Model.Activity),
   activityExercise: table("activity_exercise", Model.ActivityExercise),
@@ -81,6 +82,23 @@ export const insertRows = <A extends RowBase>(target: Table<A>, rows: ReadonlyAr
   Effect.gen(function* () {
     const sql = yield* Sql;
     const statement = `INSERT INTO ${target.name} (${selectList(target)}) VALUES (${target.keys.map(() => "?").join(", ")})`;
+    for (const row of rows) {
+      yield* sql.run(statement, yield* encode(target, row));
+    }
+  });
+
+/**
+ * Writes whole rows that arrive with their own IDs, such as a svett file's. A row with
+ * the same ID, live or deleted, is replaced.
+ */
+export const putRows = <A extends RowBase>(target: Table<A>, rows: ReadonlyArray<A>) =>
+  Effect.gen(function* () {
+    const sql = yield* Sql;
+    const columns = target.keys.map(columnOf);
+    const statement = `INSERT INTO ${target.name} (${columns.join(", ")}) VALUES (${columns.map(() => "?").join(", ")}) ON CONFLICT (id) DO UPDATE SET ${columns
+      .filter((column) => column !== "id")
+      .map((column) => `${column} = excluded.${column}`)
+      .join(", ")}`;
     for (const row of rows) {
       yield* sql.run(statement, yield* encode(target, row));
     }

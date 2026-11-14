@@ -3,6 +3,7 @@ import { Schema } from "effect";
 import { importedId } from "./ids.ts";
 import entries from "./exercise-library.json" with { type: "json" };
 import {
+  EpochMillis,
   type Equipment,
   type ExerciseCategory,
   ExerciseId,
@@ -145,6 +146,9 @@ export const fromLibraryEntry = (entry: LibraryEntry): LibraryExercise => ({
 });
 
 /** The bundled library's IDs, read without decoding the library. */
+/** Every install stores the same library rows, so an export or sync never sees them as changed. */
+export const LIBRARY_UPDATED_AT = EpochMillis.make(0);
+
 export const libraryIds = (): ReadonlyArray<string> => entries.map((entry) => entry.id);
 
 /** The bundled library, parsed and mapped to svett's muscles and equipment. */

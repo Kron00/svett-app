@@ -1,6 +1,6 @@
 import { Context, Effect, Layer } from "effect";
 
-import { exerciseLibrary, libraryIds } from "../exercise-library.ts";
+import { exerciseLibrary, LIBRARY_UPDATED_AT, libraryIds } from "../exercise-library.ts";
 import { Ids } from "../ids.ts";
 import { type Exercise, ExerciseId } from "../schema.ts";
 import { Sql } from "../sql.ts";
@@ -47,7 +47,6 @@ const makeExerciseRepository = Effect.gen(function* () {
             ),
           );
           const missing = library.filter((exercise) => !present.has(exercise.id));
-          const updatedAt = yield* currentTime;
           yield* insertRows(
             TABLES.exercise,
             missing.map(({ sourceId, ...exercise }) => ({
@@ -56,7 +55,7 @@ const makeExerciseRepository = Effect.gen(function* () {
               sourceId,
               fingerprint: null,
               importBatchId: null,
-              updatedAt,
+              updatedAt: LIBRARY_UPDATED_AT,
               deletedAt: null,
             })),
           );

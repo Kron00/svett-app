@@ -36,6 +36,8 @@ export const MeasurementId = Uuid.pipe(Schema.brand("MeasurementId"));
 export type MeasurementId = typeof MeasurementId.Type;
 export const ImportBatchId = Uuid.pipe(Schema.brand("ImportBatchId"));
 export type ImportBatchId = typeof ImportBatchId.Type;
+export const ImportChangeId = Uuid.pipe(Schema.brand("ImportChangeId"));
+export type ImportChangeId = typeof ImportChangeId.Type;
 export const ProposalId = Uuid.pipe(Schema.brand("ProposalId"));
 export type ProposalId = typeof ProposalId.Type;
 export const CoachMessageId = Uuid.pipe(Schema.brand("CoachMessageId"));
@@ -393,6 +395,36 @@ export const ImportBatch = Schema.Struct({
   status: ImportStatus,
 });
 export type ImportBatch = typeof ImportBatch.Type;
+
+export const ImportChangeKind = Schema.Literals(["added", "replaced"]);
+export type ImportChangeKind = typeof ImportChangeKind.Type;
+
+/** A record's rows by table name, as a svett file holds them. */
+export const RowsByTable = Schema.Record(Schema.String, Schema.Array(Schema.Unknown));
+export type RowsByTable = typeof RowsByTable.Type;
+
+/** One record an import added or replaced, kept so Undo can take the import back. */
+export const ImportChange = Schema.Struct({
+  ...rowFields(ImportChangeId),
+  importBatchId: ImportBatchId,
+  change: ImportChangeKind,
+  /** The table and ID of the record's top row, such as the activity of a workout. */
+  itemTable: Schema.NonEmptyString,
+  itemId: Uuid,
+  title: Schema.String,
+  itemAt: Schema.NullOr(EpochMillis),
+  /** The rows the import replaced. Undo puts them back. */
+  replaced: Schema.NullOr(Schema.fromJsonString(RowsByTable)),
+  /** The fingerprint of the record's rows as the import left them. Any later edit changes it. */
+  written: Fingerprint,
+}).check(
+  Schema.makeFilter((row) =>
+    (row.change === "added") === (row.replaced === null)
+      ? undefined
+      : "a replaced record keeps the rows it replaced, and an added one has none",
+  ),
+);
+export type ImportChange = typeof ImportChange.Type;
 
 export const ProposalOrigin = Schema.Literals(["coach", "assistant"]);
 export type ProposalOrigin = typeof ProposalOrigin.Type;
