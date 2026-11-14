@@ -2,7 +2,7 @@ import { LegendList } from "@legendapp/list/react-native";
 import { useNavigation } from "@react-navigation/native";
 import {
   ActivityRepository,
-  exerciseSummary,
+  exerciseNameList,
   formatRecordValue,
   formatVolumeKg,
   formatWorkoutDuration,
@@ -45,7 +45,8 @@ function HistoryRow({
   const { activity } = row;
   const sport = SPORTS[activity.kind];
   const when = `${formatDay(activity.startedAt)} · ${formatWorkoutDuration(activity.durationS)}`;
-  const exercises = activity.kind === "strength" ? exerciseSummary(row.exerciseNames) : sport.label;
+  const exercises =
+    activity.kind === "strength" ? exerciseNameList(row.exerciseNames) : sport.label;
   const totals =
     row.setCount === 0 ? null : `${row.setCount} sets · ${formatVolumeKg(row.volumeKg)}`;
   return (

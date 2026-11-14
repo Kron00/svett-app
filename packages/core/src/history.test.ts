@@ -3,7 +3,7 @@ import { describe, expect, it } from "vite-plus/test";
 import { DurationSeconds } from "./duration.ts";
 import {
   describeSet,
-  exerciseSummary,
+  exerciseNameList,
   formatVolumeKg,
   formatWorkoutDuration,
   workingVolumeKg,
@@ -58,7 +58,7 @@ describe("formatVolumeKg", () => {
   });
 });
 
-describe("exerciseSummary", () => {
+describe("exerciseNameList", () => {
   it.each([
     [[], "No exercises"],
     [["Squat"], "Squat"],
@@ -66,7 +66,7 @@ describe("exerciseSummary", () => {
     [["Squat", "Leg Press", "Calf Raise"], "Squat, Leg Press and Calf Raise"],
     [["Squat", "Leg Press", "Calf Raise", "Curl", "Plank"], "Squat, Leg Press and 3 more"],
   ])("names %o as %s", (names, expected) => {
-    expect(exerciseSummary(names)).toBe(expected);
+    expect(exerciseNameList(names)).toBe(expected);
   });
 });
 

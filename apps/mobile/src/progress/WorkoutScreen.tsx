@@ -5,7 +5,7 @@ import {
   formatWeightKg,
   formatWorkoutDuration,
   HistoryRepository,
-  MUSCLE_LABELS,
+  MUSCLE_LABEL,
   MUSCLE_SPLIT_RULE,
   type MuscleShare,
   RECORD_RULES,
@@ -116,11 +116,11 @@ function MuscleSplitCard({ split }: { readonly split: ReadonlyArray<MuscleShare>
           <View
             key={share.muscle}
             accessible
-            accessibilityLabel={`${MUSCLE_LABELS[share.muscle]}, ${share.percent} percent, ${formatWeightKg(share.sets)} sets`}
+            accessibilityLabel={`${MUSCLE_LABEL[share.muscle]}, ${share.percent} percent, ${formatWeightKg(share.sets)} sets`}
             className="gap-1"
           >
             <View className="flex-row flex-wrap justify-between gap-x-3">
-              <AppText variant="subheadline">{MUSCLE_LABELS[share.muscle]}</AppText>
+              <AppText variant="subheadline">{MUSCLE_LABEL[share.muscle]}</AppText>
               <AppText variant="subheadline" tone="secondary" numeric>
                 {share.percent}% · {formatWeightKg(share.sets)} sets
               </AppText>

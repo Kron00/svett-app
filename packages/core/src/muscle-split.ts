@@ -1,28 +1,5 @@
 import type { Muscle, SetType } from "./schema.ts";
 
-export const MUSCLE_LABELS: Readonly<Record<Muscle, string>> = {
-  abdominals: "Abs",
-  abductors: "Abductors",
-  adductors: "Adductors",
-  biceps: "Biceps",
-  calves: "Calves",
-  cardio: "Cardio",
-  chest: "Chest",
-  forearms: "Forearms",
-  full_body: "Full body",
-  glutes: "Glutes",
-  hamstrings: "Hamstrings",
-  lats: "Lats",
-  lower_back: "Lower back",
-  neck: "Neck",
-  quadriceps: "Quads",
-  shoulders: "Shoulders",
-  traps: "Traps",
-  triceps: "Triceps",
-  upper_back: "Upper back",
-  other: "Other",
-};
-
 /** The rule muscleSplit follows, in words, so the screen can show how it counted. */
 export const MUSCLE_SPLIT_RULE =
   "Each set counts once for its exercise's main muscle. When an exercise has more than one main muscle, the set is shared equally between them. Warm-up sets are left out.";
