@@ -1,27 +1,35 @@
 import { isLiftedSet, isWorkingSet } from "./performed-set.ts";
 import type { LoggedSet } from "./repositories/training.ts";
 
+const byTime = (a: LoggedSet, b: LoggedSet) => a.startedAt - b.startedAt || a.position - b.position;
+
 /**
  * The best working sets, best first. Warm-ups never count. Among sets of at least one rep with a
  * weight, the rule the heaviest weight record keeps, a heavier set beats a lighter one, then more
- * reps win, then the earlier set. When no set is like that, as for pull-ups, the most reps win,
- * then the longest time.
+ * reps win, then the earlier set. When no set is like that, as for pull-ups or planks, weight
+ * plays no part: the most reps win, then the longest time, and a set with neither, such as a
+ * failed attempt of 0 reps, is never a best set.
  */
 export function rankBestSets(
   sets: ReadonlyArray<LoggedSet>,
   limit: number,
 ): ReadonlyArray<LoggedSet> {
   const working = sets.filter(isWorkingSet);
-  const weighted = working.filter(isLiftedSet);
-  const pool = weighted.length > 0 ? weighted : working;
-  const ranked = [...pool].sort(
-    (a, b) =>
-      (b.weightKg ?? 0) - (a.weightKg ?? 0) ||
-      (b.reps ?? 0) - (a.reps ?? 0) ||
-      (b.durationS ?? 0) - (a.durationS ?? 0) ||
-      a.startedAt - b.startedAt ||
-      a.position - b.position,
-  );
+  const lifted = working.filter(isLiftedSet);
+  const ranked =
+    lifted.length > 0
+      ? [...lifted].sort(
+          (a, b) =>
+            (b.weightKg ?? 0) - (a.weightKg ?? 0) || (b.reps ?? 0) - (a.reps ?? 0) || byTime(a, b),
+        )
+      : working
+          .filter((set) => (set.reps ?? 0) >= 1 || (set.durationS ?? 0) > 0)
+          .sort(
+            (a, b) =>
+              (b.reps ?? 0) - (a.reps ?? 0) ||
+              (b.durationS ?? 0) - (a.durationS ?? 0) ||
+              byTime(a, b),
+          );
   return ranked.slice(0, limit);
 }
 
@@ -48,7 +56,7 @@ export function exerciseSessions(sets: ReadonlyArray<LoggedSet>): ReadonlyArray<
   }
   const sessions = [...byWorkout.values()].map((group): ExerciseSession => {
     const first = group[0]!;
-    const working = group.filter((set) => set.setType !== "warm_up");
+    const working = group.filter(isWorkingSet);
     return {
       activityId: first.activityId,
       title: first.title,

@@ -54,6 +54,20 @@ describe("rankBestSets", () => {
     expect(rankBestSets(sets, 1)).toEqual([sets[1]]);
   });
 
+  it("ranks a bodyweight set of reps above a failed attempt of 0 reps at any weight", () => {
+    const sets = [set(1, 0, "failure", 150, 0), set(1, 1, "normal", null, 12)];
+    expect(rankBestSets(sets, 2)).toEqual([sets[1]]);
+  });
+
+  it("finds no best set in a lone failed attempt of 0 reps", () => {
+    expect(rankBestSets([set(1, 0, "failure", 150, 0)], 1)).toEqual([]);
+  });
+
+  it("ranks timed sets with no reps by time, whatever they carried", () => {
+    const sets = [set(1, 0, "normal", 20, null, 45), set(1, 1, "normal", null, null, 90)];
+    expect(rankBestSets(sets, 2)).toEqual([sets[1], sets[0]]);
+  });
+
   it("finds nothing among warm-ups alone", () => {
     expect(rankBestSets([set(1, 0, "warm_up", 60, 5)], 3)).toEqual([]);
   });
