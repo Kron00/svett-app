@@ -52,6 +52,7 @@ SVETT_METRO=host:port ~/svett-app/scripts/devbook-build.sh <branch> # Debug buil
 ~/svett-app/scripts/sim/chatgpt.sh --live [--release] [out-dir]   # Sign in with a real ChatGPT account, on request only
 ~/svett-app/scripts/sim/exercises.sh [--release] [out-dir]        # Search the library and prove a custom exercise survives a restart
 ~/svett-app/scripts/sim/progress.sh [--release] [out-dir]         # Progress charts on the 300-workout fixture
+~/svett-app/scripts/sim/data.sh [--release] [out-dir]             # Export, wipe, import, import again and undo
 ```
 
 `devbook-build.sh` syncs `~/svett-app` to the branch, installs packages, builds the app for the simulator, installs it and opens it. It signs the simulator app to run locally, with no team, so the app carries its entitlements. The Keychain and Apple Health refuse an app without them. Metro's log is `~/svett-app/metro.log`. The first run needs the clone, so run it from a copy of the script or clone the repo to `~/svett-app` first.
@@ -88,6 +89,26 @@ The app icon is rendered from `assets/icon.svg` with `pnpm icon`. Commit the reg
 
 The release job in `.github/workflows/ci.yml` runs after each merge to `main`. `scripts/build-ipa.sh` builds the Release app for devices, signs the app and each app extension ad hoc with its own target's entitlements file, and writes `build/release/svett.ipa`. `scripts/signing-entitlements.ts` fills in build variables such as `$(PRODUCT_BUNDLE_IDENTIFIER)` first and refuses `aps-environment`, and the build checks the signed app has no push entitlement. Push needs a paid Apple account, so svett uses local notifications only. It runs on rena-devbook too, from a full clone. `scripts/publish-release.sh` then creates the GitHub release `v<version>` with `svett.ipa` and `altstore.json`, which `scripts/altstore-source.ts` writes from every published release and from the permissions inside the built app. Change the major and minor version in `apps/mobile/app.config.ts`. The commit count on `main` is the rest, unless `SVETT_BUILD_NUMBER` is set for `scripts/build-ipa.sh`.
 
+### Server
+
+`apps/server` is the phase 6 server, one Effect service on Node with PostgreSQL. Node runs its TypeScript directly, as it does the scripts. The root `Dockerfile` builds it. Coolify deploys that image as `svett-app` at `https://svett-app.jservers.net`, with the PostgreSQL database `svett-app-db`, whose address Coolify sets in `DATABASE_URL`. Run `jservers status`, `jservers logs` or `jservers deploys` from the repo to look at it.
+
+`GET /health` answers `{"status":"ok","database":"ok","latestBackup":"<time>","restoreCheck":{...}}`. It answers 503 with `"database":"unreachable"` when the database does not answer. `restoreCheck` shows the newest backup the server restored to prove it works, when it did, whether it `restored`, and how many `tables` came back. It is `null` until the first check since the server started.
+
+Server migrations go at the end of `MIGRATIONS` in `apps/server/src/migrations.ts`, keyed `<id>_<name>`. They run when the server starts. Never edit one that has shipped.
+
+The server backs up its database with `pg_dump` into `BACKUP_DIR`, which is `/backups`, a Coolify volume that outlives each deploy. It takes one on start when the newest is more than a day old, then one every night at 03:00 UTC (`BACKUP_CRON`). It keeps the newest 14 (`BACKUP_KEEP`). A dump gets its `svett-<time>.dump` name only once it is complete, and never replaces a backup that has the name. One backup of a database runs at a time, across every server and the command line, through a PostgreSQL advisory lock. Another one skips and logs why. After each backup, and for the newest one on start, the server restores it into a new, empty scratch database `svett_restore_<tag>_<time>_<random>` on the same PostgreSQL, where `<tag>` stands for the live database, counts the tables, and drops it. Each check has its own, so checks on several servers never meet. A check holds an advisory lock named for its scratch database until it drops it, and gives up and drops it after 6 hours. On start the server drops its own live database's scratch databases more than a day old, which a crash left behind. Advisory locks only reach sessions on the same database, so it never touches another live database's. It takes each one's lock first and skips any that a running check still holds. To take one now, run `node apps/server/src/cli.ts backup` in the container. It fails if another backup is running.
+
+To restore, create an empty database on the same PostgreSQL and run this in the server container:
+
+```sh
+RESTORE_DATABASE_URL='<the empty database>' node apps/server/src/cli.ts restore /backups/<file>
+```
+
+It refuses a database that already holds a table, so it never merges into live data. Then point `DATABASE_URL` at the restored database with `jservers env set` and restart.
+
+The server tests start PostgreSQL in Docker and run `pg_dump` and `pg_restore` from the same image, so Docker must be running. Both images are `postgres:16-alpine`, the deployed database's version, unless `SVETT_TEST_POSTGRES_IMAGE` or `SVETT_TEST_PG_TOOLS_IMAGE` says otherwise. The Dockerfile installs the client tools of that same major version, because a newer `pg_restore` sends settings an older server refuses. Change the three together.
+
 ### Simulator scripts inside T3 Code
 
 An agent in T3 Code must drive the simulator through the command that T3's `device_open` tool returns, never through `simctl launch`, `simctl openurl` or its own `agent-device` session. The scripts follow that rule when `SVETT_DEVICE_CMD` holds the command. They still build with `xcodebuild` and install with `simctl install`. Without the variable they behave as before, for use outside T3.
@@ -115,6 +136,8 @@ The data layer lives in `packages/core`. Follow these patterns so every table st
 
 **Repositories.** Only a repository writes its tables. Screens and features never run SQL. Each repository is a `Context.Service` in `packages/core/src/repositories/` with a `layer` built by `Layer.effect`. It captures `Sql` and `Ids` and returns plain methods built from `insertRows`, `selectRows`, `updateRow` and `softDeleteRows` in `table.ts`. Wrap a write that touches several rows in `sql.transaction`. Deletes are soft. Deleting a parent deletes its children with the same `deleted_at`, and a restore brings back exactly the rows with that time. Reads never return deleted rows.
 
+**Export and import.** `TransferRepository` writes a svett file's whole rows with their own IDs, and puts back what an import replaced, so it is the one writer that spans every table. Phase 6 sync will apply rows the same way. A new table also needs its parent in `PARENT` in `packages/core/src/transfer.ts`, or the type check fails, and the round-trip test in `repositories/transfer.test.ts` fails until it puts a row in the table. A file's version is `SVETT_FILE_VERSION`. Raise it with any change to the file's shape. A file holds every row, deleted ones too, so a deletion survives the round trip. An import only adds or replaces the rows the file holds. It never removes a row the file leaves out. Every import records each record it added or replaced in `import_change`, with the IDs of the rows it wrote and the versions they replaced, and Undo works from those rows. Library exercises share the time `LIBRARY_UPDATED_AT` until edited, so every install holds the same library rows.
+
 **IDs and time.** A new row's ID comes from its `Origin`. Rows made in svett get a UUIDv7 from the `Ids` service. Imported rows get a UUIDv5 of their source and source identity through `importedId`, and their children add a path such as `/exercise/0/set/2`. Library exercises use `libraryExerciseId`. Read time from Effect's `Clock`, never `Date.now()`, and never use `Math.random()` for IDs.
 
 **Databases.** `databaseLayer(driver, ids)` migrates, seeds the exercise library and provides every repository. Each owner has its own file, named by `databaseFileName`. The app opens it with expo-sqlite in `apps/mobile/src/data/database.ts`.
@@ -130,6 +153,8 @@ The data layer lives in `packages/core`. Follow these patterns so every table st
 ```
 
 It generates the fixture into `<out-dir>`, copies it into the app's data container, and screenshots the Progress tab's counts twice. `01-anonymous.png` is a plain launch. `02-fixture.png` is a relaunch through `launch.sh` with `-svettFixture <absolute path>`.
+
+`scripts/sim/data.sh` proves export and import on the fixture. It exports through the share sheet, launches on a new empty database file, imports the export through `svett://import?file=<name>`, and checks the result equals the fixture row for row, deleted rows included, with `scripts/compare-databases.ts`. It imports the same file again and expects nothing new, then undoes the import from Your data. The export, both comparisons, `summary.txt` and the screenshots go to `<out-dir>`, by default `~/svett-proof/<branch>/data/`.
 
 iOS turns `-key value` launch arguments into user defaults, which React Native's `Settings` module reads, so the switch needs no native code. Without it the app opens the anonymous database. The Progress tab shows the counts it read.
 

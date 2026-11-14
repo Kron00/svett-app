@@ -21,6 +21,9 @@ import { ExercisesScreen } from "./progress/ExercisesScreen";
 import { MeasurementsScreen } from "./progress/MeasurementsScreen";
 import { MuscleSetsScreen } from "./progress/MuscleSetsScreen";
 import { TabNavigator } from "./TabNavigator";
+import { DataScreen } from "./transfer/DataScreen";
+import { ImportPreviewScreen } from "./transfer/ImportPreviewScreen";
+import { UndoImportScreen } from "./transfer/UndoImportScreen";
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
 
@@ -29,6 +32,8 @@ const Stack = createNativeStackNavigator<RootStackParamList>();
 // svett://chatgpt,
 // because agent-device refuses taps in screen content on iOS 27. It reads UIKit's
 // touch-transparent floating bar containers as toolbars that cover the whole screen.
+// scripts/sim/data.sh reaches export and import the same way, through svett://data,
+// svett://import?file=<name> and svett://imports/<id>/undo.
 const linking: LinkingOptions<RootStackParamList> = {
   prefixes: ["svett://"],
   filter: (url) => !url.includes("expo-development-client"),
@@ -46,6 +51,9 @@ const linking: LinkingOptions<RootStackParamList> = {
       ExerciseProgress: "progress/exercise/:exerciseId",
       MuscleSets: "progress/muscles",
       Measurements: "progress/measurements",
+      Data: "data",
+      ImportPreview: "import",
+      UndoImport: "imports/:importBatchId/undo",
     },
   },
 };
@@ -122,6 +130,21 @@ export default function App() {
           name="Measurements"
           component={MeasurementsScreen}
           options={{ headerShown: true, title: "Body measurements" }}
+        />
+        <Stack.Screen
+          name="Data"
+          component={DataScreen}
+          options={{ headerShown: true, title: "Your data", headerLargeTitle: true }}
+        />
+        <Stack.Screen
+          name="ImportPreview"
+          component={ImportPreviewScreen}
+          options={{ headerShown: true, title: "Import" }}
+        />
+        <Stack.Screen
+          name="UndoImport"
+          component={UndoImportScreen}
+          options={{ headerShown: true, title: "Undo import" }}
         />
       </Stack.Navigator>
     </NavigationContainer>

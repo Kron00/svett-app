@@ -880,6 +880,156 @@ check "exercises.sh fails when the first result is not the library exercise" tes
 check "exercises.sh names the result it found instead" \
   grep -qxF 'The first result was not "Barbell Squat". Its label is "Barbell Squat Jump, Chest · Cable".' "$output"
 
+# data.sh runs against a fake fixture, a fake app and the real compare script.
+# The fake pnpm writes a small fixture database. The fake device stands in for
+# svett: Export writes a svett file to the cache folder, Import copies the
+# fixture to the wiped database with one import batch, and Undo deletes every
+# workout and marks the batch undone. FAKE_IMPORT_DIFFERS changes a workout on
+# import, FAKE_IMPORT_TWICE records a second batch when the same file opens
+# again, and FAKE_NO_EXPORT writes no export. The Import and Undo buttons and the
+# past import start below the fold, as at the largest text size, so only a scroll
+# finds them.
+data_fake="$root/data-bin"
+mkdir -p "$data_fake"
+cat >"$data_fake/pnpm" <<'EOF'
+#!/usr/bin/env bash
+[[ "$1 $2" == "fixture --out" ]] || { echo "fake pnpm: unexpected $*" >&2; exit 1; }
+node -e 'new (require("node:sqlite").DatabaseSync)(process.argv[1]).exec(process.argv[2])' "$3" "
+  CREATE TABLE import_batch (id TEXT PRIMARY KEY, updated_at INTEGER, deleted_at INTEGER, source TEXT, created_at INTEGER, status TEXT);
+  CREATE TABLE import_change (id TEXT PRIMARY KEY, updated_at INTEGER, deleted_at INTEGER, import_batch_id TEXT);
+  CREATE TABLE activity (id TEXT PRIMARY KEY, updated_at INTEGER, deleted_at INTEGER, title TEXT);
+  CREATE TABLE activity_set (id TEXT PRIMARY KEY, updated_at INTEGER, deleted_at INTEGER, reps INTEGER);
+  INSERT INTO activity VALUES ('a1', 1, NULL, 'Legs'), ('a2', 1, NULL, 'Back');
+  INSERT INTO activity_set VALUES ('s1', 1, NULL, 5), ('s2', 1, NULL, 5), ('s3', 1, NULL, 8);
+"
+EOF
+
+cat >"$data_fake/data-device" <<EOF
+#!/usr/bin/env bash
+echo "\$*" >>"$root/bound-calls"
+documents="$root/data container/Documents"
+sql() {
+  node -e 'new (require("node:sqlite").DatabaseSync)(process.argv[1]).exec(process.argv[2])' "\$@"
+}
+args=" \$* "
+case "\$args" in
+  *" --launch-args=/"*) echo "\${args##*--launch-args=}" | sed 's/ *$//' >"$root/launched" ;;
+  *" open com.kron00.svett svett://import?file="*)
+    if [[ -n "\${FAKE_IMPORT_TWICE:-}" && -e "\$documents/svett-wiped.db" ]]; then
+      sql "\$documents/svett-wiped.db" "INSERT INTO import_batch VALUES ('b2', 2, NULL, 'svett_file', 2, 'applied')"
+    fi ;;
+  *' wait id="import-apply"'* | *' wait id="undo-apply"'* | *' wait id="import-batch-0"'* | *' is visible id="import-apply"'* | *' is visible id="undo-apply"'* | *' is visible id="import-batch-0"'*)
+    exit 1 ;;
+  *" get attrs "*)
+    echo "\$*" >"$root/last-attrs"
+    echo '{"rect": {"x": 20, "y": 300, "width": 120, "height": 40}}' ;;
+  *" press "[0-9]*)
+    case "\$(cat "$root/last-attrs")" in
+      *export-button*)
+        if [[ -z "\${FAKE_NO_EXPORT:-}" ]]; then
+          mkdir -p "$root/data container/Library/Caches"
+          echo '{"format":"svett","version":1,"exportedAt":0,"tables":{"activity":[{}],"folder":[]}}' \
+            >"$root/data container/Library/Caches/svett-export-2026-11-13.json"
+        fi ;;
+      *import-apply*)
+        cp "\$documents/svett-fixture.db" "\$documents/svett-wiped.db"
+        sql "\$documents/svett-wiped.db" "INSERT INTO import_batch VALUES ('b1', 1, NULL, 'svett_file', 1, 'applied'); INSERT INTO import_change VALUES ('c1', 1, NULL, 'b1')"
+        [[ -z "\${FAKE_IMPORT_DIFFERS:-}" ]] ||
+          sql "\$documents/svett-wiped.db" "UPDATE activity SET title = 'Changed' WHERE id = 'a1'" ;;
+      *undo-apply*)
+        sql "\$documents/svett-wiped.db" "UPDATE activity SET deleted_at = 9; UPDATE activity_set SET deleted_at = 9; UPDATE import_batch SET status = 'undone'" ;;
+    esac ;;
+  *" get text "*)
+    launched=\$(cat "$root/launched")
+    if [[ -e "\$launched" ]]; then
+      node -e '
+        const database = new (require("node:sqlite").DatabaseSync)(process.argv[1]);
+        const count = (table) => database.prepare("SELECT count(*) AS n FROM " + table + " WHERE deleted_at IS NULL").get().n;
+        console.log(count("activity") + " workouts, " + count("activity_set") + " sets");
+      ' "\$launched"
+    else
+      echo "0 workouts, 0 sets"
+    fi ;;
+esac
+exit 0
+EOF
+chmod +x "$data_fake"/*
+
+# run_data [VAR=value...] [data.sh args...] leaves the exit status in data_status.
+run_data() {
+  local -a vars=()
+  while [[ "${1:-}" == *=* ]]; do
+    vars+=("$1")
+    shift
+  done
+  rm -rf "$root/simctl-calls" "$root/bound-calls" "$root/launched" "$root/data container"
+  data_status=0
+  env PATH="$data_fake:$fake:$PATH" SVETT_DEVICE_CMD="data-device --session 't3-test session' --device FAKE-UDID" \
+    "${vars[@]}" "$repo/scripts/sim/data.sh" "$@" >"$output" 2>&1 || data_status=$?
+}
+
+documents="$root/data container/Documents"
+fixture_args="--launch-args=-svettFixture --launch-args=$documents/svett-fixture.db"
+wiped_args="--launch-args=-svettFixture --launch-args=$documents/svett-wiped.db"
+import_link="com.kron00.svett svett://import?file=svett-proof-import.json"
+
+case_name="data.sh Debug with SVETT_DEVICE_CMD"
+run_data "$root/data proof"
+[[ "$data_status" == 0 ]] || fail "data.sh failed"
+check "data.sh opens the fixture, exports, wipes, imports twice and undoes, in that order" only_open \
+  "$debug_open $fixture_args" "com.kron00.svett svett://data" "$debug_open $wiped_args" "$import_link" \
+  "$debug_open $wiped_args" "$import_link" "com.kron00.svett svett://data" "$debug_open $wiped_args"
+check "data.sh presses Export, Import, the past import and Undo at their centres" \
+  only_calls "get attrs" 'get attrs id="export-button"' 'get attrs id="import-apply"' \
+  'get attrs id="import-batch-0"' 'get attrs id="undo-apply"'
+check "data.sh presses only the Progress tab by selector, which agent-device allows" \
+  only_calls 'press [^0-9]' 'press label="Progress, tab, 3 of 5"' 'press label="Progress, tab, 3 of 5"' \
+  'press label="Progress, tab, 3 of 5"'
+check "data.sh shoots at the largest text size, then restores the default" \
+  only_calls "settings text-size" \
+  "settings text-size accessibility-extra-extra-extra-large" "settings text-size large"
+check "data.sh keeps the export it made" test -e "$root/data proof/svett-export-2026-11-13.json"
+check "data.sh finds the imported database equal to the fixture row for row" \
+  grep -qxF "Equal row for row." "$root/data proof/compare-import.txt"
+check "data.sh writes each step's result to the summary" grep -qF \
+  "Export, wipe, import: equal to the fixture row for row." "$root/data proof/summary.txt"
+check "data.sh checks Progress after the import and after Undo" grep -qxF \
+  "Undo: 0 workouts, 0 sets, and the import is marked undone." "$root/data proof/summary.txt"
+check "data.sh screenshots every step" only_calls "screenshot" \
+  "screenshot $root/data proof/01-data.png" "screenshot $root/data proof/02-share-sheet.png" \
+  "screenshot $root/data proof/03-wiped.png" "screenshot $root/data proof/04-import-preview.png" \
+  "screenshot $root/data proof/05-imported.png" "screenshot $root/data proof/06-counts-after-import.png" \
+  "screenshot $root/data proof/07-import-again.png" "screenshot $root/data proof/08-data-with-import.png" \
+  "screenshot $root/data proof/09-undo-preview.png" "screenshot $root/data proof/10-undone.png" \
+  "screenshot $root/data proof/11-counts-after-undo.png"
+check "data.sh with SVETT_DEVICE_CMD calls neither simctl launch nor openurl" no_simctl_launch_or_openurl
+
+case_name="data.sh Release with SVETT_DEVICE_CMD"
+run_data --release "$root/data-release"
+[[ "$data_status" == 0 ]] || fail "data.sh --release failed"
+check "data.sh Release relaunches the installed app without Metro" only_open \
+  "com.kron00.svett --relaunch $fixture_args" "com.kron00.svett svett://data" \
+  "com.kron00.svett --relaunch $wiped_args" "$import_link" "com.kron00.svett --relaunch $wiped_args" \
+  "$import_link" "com.kron00.svett svett://data" "com.kron00.svett --relaunch $wiped_args"
+
+case_name="data.sh when the import differs from the fixture"
+run_data FAKE_IMPORT_DIFFERS=1 "$root/data-differs"
+check "data.sh fails when the imported database differs" test "$data_status" -ne 0
+check "data.sh says the imported database differs" grep -qF "The imported database differs from the fixture" "$output"
+check "data.sh restores the default text size after a failure" \
+  only_calls "settings text-size" \
+  "settings text-size accessibility-extra-extra-extra-large" "settings text-size large"
+
+case_name="data.sh when the same file imports twice"
+run_data FAKE_IMPORT_TWICE=1 "$root/data-twice"
+check "data.sh fails when importing the same file again records another import" \
+  grep -qF "Importing the same file again" "$output"
+
+case_name="data.sh when export writes no file"
+run_data FAKE_NO_EXPORT=1 "$root/data-no-export"
+check "data.sh fails when export writes no file" \
+  grep -qF "Export wrote no svett-export-*.json to svett's cache folder" "$output"
+
 # Stands in for swift on the Mac. FAKE_SWIFT_FAIL fails the tests.
 cat >"$fake/swift" <<EOF
 #!/usr/bin/env bash
