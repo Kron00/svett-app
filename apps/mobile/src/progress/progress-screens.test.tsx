@@ -193,4 +193,33 @@ describe("Progress screens with the 300-workout fixture", () => {
     await until(() => texts(root).includes("79.5 kg"), "showing the new weight");
     expect(chartIn(root, "chart-measurement").props.points).toHaveLength(106);
   });
+
+  it("saves one measurement however often Save is pressed while it saves", async () => {
+    const root = await show(<MeasurementsScreen />, "measurements", {
+      kind: "body_weight",
+      range: "all",
+      sheet: "open",
+    });
+    const before = chartIn(root, "chart-measurement").props.points.length;
+    const keypad = root
+      .find(byTestID("measurement-sheet"))
+      .find((node) => typeof node.props.onKey === "function");
+    await act(async () => {
+      for (const key of ["8", "0"]) keypad.props.onKey(key);
+    });
+    const save = () =>
+      root.find(
+        (node) => node.props.testID === "save-measurement" && String(node.type) === "Pressable",
+      );
+    act(() => {
+      for (let press = 0; press < 3; press++) save().props.onPress();
+    });
+    expect(save().props.disabled).toBe(true);
+    await until(() => app.route.params?.sheet === undefined, "closing the sheet");
+    await until(
+      () => chartIn(root, "chart-measurement").props.points.length !== before,
+      "showing the new weight",
+    );
+    expect(chartIn(root, "chart-measurement").props.points).toHaveLength(before + 1);
+  });
 });

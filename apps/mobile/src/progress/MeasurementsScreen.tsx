@@ -19,7 +19,7 @@ import {
   rangeStart,
 } from "@svett/core";
 import { type RouteProp, useNavigation, useRoute } from "@react-navigation/native";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { ScrollView, View } from "react-native";
 
 import { appDatabase } from "../data/database";
@@ -160,11 +160,29 @@ function AddMeasurementSheet({
 }) {
   const [entry, setEntry] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  // State only disables Save after a render, and taps can land before it.
+  const savingNow = useRef(false);
   const value = parseMeasurementEntry(entry);
   const close = (done: () => void) => {
     setEntry("");
     setError(null);
     done();
+  };
+  const save = (measured: number) => {
+    if (savingNow.current) return;
+    savingNow.current = true;
+    setSaving(true);
+    appDatabase()
+      .runPromise(addMeasurement(kind, measured))
+      .then(
+        () => close(onSaved),
+        (cause: unknown) => setError(`The measurement was not saved. ${String(cause)}`),
+      )
+      .finally(() => {
+        savingNow.current = false;
+        setSaving(false);
+      });
   };
   return (
     <Sheet
@@ -188,15 +206,9 @@ function AddMeasurementSheet({
         <Button
           label="Save"
           testID="save-measurement"
-          disabled={value === null}
+          disabled={value === null || saving}
           onPress={() => {
-            if (value === null) return;
-            appDatabase()
-              .runPromise(addMeasurement(kind, value))
-              .then(
-                () => close(onSaved),
-                (cause: unknown) => setError(`The measurement was not saved. ${String(cause)}`),
-              );
+            if (value !== null) save(value);
           }}
         />
       </View>
