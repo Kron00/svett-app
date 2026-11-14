@@ -1,7 +1,11 @@
 import "../global.css";
 
 import { createBottomTabNavigator } from "@react-navigation/bottom-tabs";
-import { type LinkingOptions, NavigationContainer } from "@react-navigation/native";
+import {
+  getFocusedRouteNameFromRoute,
+  type LinkingOptions,
+  NavigationContainer,
+} from "@react-navigation/native";
 import { createNativeStackNavigator } from "@react-navigation/native-stack";
 import { StatusBar } from "expo-status-bar";
 import { SymbolView } from "expo-symbols";
@@ -88,7 +92,12 @@ export default function App() {
     <NavigationContainer theme={useNavigationTheme()} linking={linking}>
       <StatusBar style="auto" />
       <Stack.Navigator screenOptions={{ headerShown: false }}>
-        <Stack.Screen name="Tabs" component={TabNavigator} />
+        <Stack.Screen
+          name="Tabs"
+          component={TabNavigator}
+          // A pushed screen's back button names the tab it came from, such as "Train".
+          options={({ route }) => ({ title: getFocusedRouteNameFromRoute(route) ?? "Home" })}
+        />
         <Stack.Screen
           name="Gallery"
           component={GalleryScreen}
