@@ -214,6 +214,7 @@ const fillEveryTable = async (database: Database) => {
               latitude: 59.33,
               longitude: 18.06,
               altitudeM: 12,
+              segment: 0,
             },
             { kind: "heart_rate", recordedAt: EpochMillis.make(T0 - 86_000_000), bpm: 142 },
             {

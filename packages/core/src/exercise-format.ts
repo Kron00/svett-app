@@ -88,6 +88,7 @@ export const SOURCE_LABEL: Readonly<Record<Source, string>> = {
   library: "svett library",
   hevy: "Imported from Hevy",
   apple_health: "Imported from Apple Health",
+  gpx: "Imported from a GPX file",
 };
 
 /** What the new and edit exercise screens hold while the user fills them in. */
