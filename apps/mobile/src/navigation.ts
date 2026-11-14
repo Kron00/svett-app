@@ -12,6 +12,8 @@ export type RootStackParamList = {
   Tabs: NavigatorScreenParams<TabParamList> | undefined;
   Gallery: { sheet?: "open" } | undefined;
   PhoneChecks: undefined;
+  RecordCardio: undefined;
+  Activity: { id: string };
   ChatGPT: undefined;
   /** A coach proposal's preview, with Apply and Undo. */
   Proposal: { id: string };

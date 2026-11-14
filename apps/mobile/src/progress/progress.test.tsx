@@ -14,7 +14,8 @@ import type { ReactElement, ReactNode } from "react";
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
-import { appDatabase } from "../data/current";
+import { appDatabase, currentDatabase } from "../data/current";
+import { writeTo } from "../data/store";
 import type { RootStackParamList } from "../navigation";
 import { changeWorkoutSettings } from "../settings/store";
 import { CalendarScreen } from "./CalendarScreen";
@@ -363,6 +364,40 @@ describe("history", () => {
     expect(() => byTestId(history, `workout-${newest}`)).not.toThrow();
     expect(() => byTestId(history, "undo-delete-banner")).toThrow();
   });
+
+  it("deletes once when Delete workout is tapped twice in the same frame", async () => {
+    const detail = await render(<WorkoutScreen {...screenProps("Workout", { id: newest })} />);
+    const remove = byTestId(detail, "workout-delete");
+    await act(async () => {
+      remove.props.onPress();
+      remove.props.onPress();
+    });
+    await showsTestId(detail, "workout-delete-error");
+    expect(() => byTestId(detail, "workout-delete-error")).toThrow();
+    expect(navigation.navigate).toHaveBeenCalledTimes(1);
+    expect(navigation.navigate).toHaveBeenCalledWith("Tabs", { screen: "Progress" });
+
+    const history = await render(<ProgressScreen />);
+    await press(byTestId(history, "undo-delete"));
+    await showsLine(history, "2 workouts, 5 sets");
+  });
+
+  it("brings a workout back once and keeps Close disabled while Undo runs", async () => {
+    const detail = await render(<WorkoutScreen {...screenProps("Workout", { id: newest })} />);
+    await press(byTestId(detail, "workout-delete"));
+    const history = await render(<ProgressScreen />);
+    expect(byTestId(history, "undo-delete-close").props.disabled).toBe(false);
+
+    const undo = byTestId(history, "undo-delete");
+    act(() => {
+      undo.props.onPress();
+      undo.props.onPress();
+    });
+    expect(byTestId(history, "undo-delete-close").props.disabled).toBe(true);
+    await showsLine(history, "2 workouts, 5 sets");
+    expect(() => byTestId(history, "undo-delete-error")).toThrow();
+    expect(() => byTestId(history, "undo-delete-banner")).toThrow();
+  });
 });
 
 describe("the calendar", () => {
@@ -441,6 +476,37 @@ describe("the streak across midnight", () => {
     for (const listener of appState.listeners) listener("active");
     await settle();
     expect(streak(history)).toBe("Streak, 0 weeks");
+    await act(async () => history.unmount());
+  });
+});
+
+describe("a recorded run in history", () => {
+  it("opens on its route screen, and a workout opens on its sets", async () => {
+    const history = await render(<ProgressScreen />);
+    const run = await writeTo(
+      currentDatabase(),
+      Effect.flatMap(Effect.service(ActivityRepository), (activities) =>
+        activities.create({
+          kind: "run",
+          startedAt: EpochMillis.make(Date.now() - DAY),
+          durationS: DurationSeconds.make(1_800),
+          title: "Morning run",
+          notes: "",
+          energyKcal: null,
+          audience: "only_you",
+          hiddenFields: [],
+          origin: MADE_HERE,
+          track: null,
+          exercises: [],
+        }),
+      ),
+    );
+    await showsTestId(history, `workout-${run}`);
+
+    await press(byTestId(history, `workout-${run}`));
+    expect(navigation.navigate).toHaveBeenCalledWith("Activity", { id: run });
+    await press(byTestId(history, `workout-${newest}`));
+    expect(navigation.navigate).toHaveBeenLastCalledWith("Workout", { id: newest });
     await act(async () => history.unmount());
   });
 });

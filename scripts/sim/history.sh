@@ -80,8 +80,12 @@ screenshot() {
 
 # rows_on_screen succeeds when the snapshot holds at least one history row. A
 # selector check cannot say this, because two rows on screen make it ambiguous.
+# It reads the whole snapshot before it looks. Piped into grep -q, agent-device
+# would lose its pipe at the first row and fail the check under pipefail.
 rows_on_screen() {
-  agent_device snapshot 2>/dev/null | grep -q '"history-row"'
+  local snapshot
+  snapshot=$(agent_device snapshot 2>/dev/null) || return 1
+  [[ "$snapshot" == *'"history-row"'* ]]
 }
 
 # Scrolls the screen until the element $1 is on screen.

@@ -3,6 +3,7 @@ import { useNavigation } from "@react-navigation/native";
 import { type ReactNode, useEffect } from "react";
 import { ActionSheetIOS, Alert, ScrollView, View } from "react-native";
 
+import { RecordCardioRow } from "../cardio/RecordCardioRow";
 import type { OpenDatabase } from "../data/current";
 import {
   markLaunch,
@@ -238,7 +239,8 @@ function ColdStartTiming() {
 }
 
 /**
- * The Train tab: the workout in progress, routines by folder, and the exercise library.
+ * The Train tab: the workout in progress, recording cardio, routines by folder, and the
+ * exercise library.
  */
 export function TrainScreen() {
   useEffect(() => markLaunch("train"), []);
@@ -285,6 +287,9 @@ export function TrainScreen() {
           />
         </View>
       ) : null}
+      <ListSection header="Cardio">
+        <RecordCardioRow key="record" />
+      </ListSection>
       <View className="gap-3">
         <SectionHeader title="Routines" action={{ label: "New folder", onPress: newFolder }} />
         <View className="px-gutter">
