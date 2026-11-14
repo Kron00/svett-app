@@ -1,6 +1,5 @@
 import "../global.css";
 
-import { createBottomTabNavigator } from "@react-navigation/bottom-tabs";
 import {
   getFocusedRouteNameFromRoute,
   type LinkingOptions,
@@ -8,30 +7,21 @@ import {
 } from "@react-navigation/native";
 import { createNativeStackNavigator } from "@react-navigation/native-stack";
 import { StatusBar } from "expo-status-bar";
-import { SymbolView } from "expo-symbols";
-import { View } from "react-native";
 
 import { PhoneChecksScreen } from "./checks/PhoneChecksScreen";
 import { useNavigationTheme } from "./design/hooks";
 import { ExerciseDetailScreen } from "./exercises/ExerciseDetailScreen";
 import { EditExerciseScreen, NewExerciseScreen } from "./exercises/ExerciseFormScreen";
-import { ExerciseLibraryRow } from "./exercises/ExerciseLibraryRow";
 import { ExerciseLibraryScreen, NewExerciseButton } from "./exercises/ExerciseLibraryScreen";
-import { DesignGalleryRow } from "./gallery/DesignGalleryRow";
 import { GalleryScreen } from "./gallery/GalleryScreen";
 import type { RootStackParamList } from "./navigation";
-import { PhoneChecksRow } from "./PhoneChecksRow";
-import { PlaceholderScreen } from "./PlaceholderScreen";
 import { ExerciseProgressScreen } from "./progress/ExerciseProgressScreen";
 import { ExercisesScreen } from "./progress/ExercisesScreen";
 import { MeasurementsScreen } from "./progress/MeasurementsScreen";
 import { MuscleSetsScreen } from "./progress/MuscleSetsScreen";
-import { ProgressScreen } from "./progress/ProgressScreen";
-import { TABS } from "./tabs";
-import { ListSection } from "./ui/List";
+import { TabNavigator } from "./TabNavigator";
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
-const Tabs = createBottomTabNavigator();
 
 // The scripts in scripts/sim/ open screens through these links, such as
 // svett://gallery?sheet=open, svett://exercises?q=bench and svett://progress/muscles,
@@ -56,48 +46,6 @@ const linking: LinkingOptions<RootStackParamList> = {
     },
   },
 };
-
-function TabNavigator() {
-  return (
-    <Tabs.Navigator>
-      {TABS.map((tab) => (
-        <Tabs.Screen
-          key={tab.name}
-          name={tab.name}
-          options={{
-            tabBarIcon: ({ color, size }) => (
-              <SymbolView name={tab.symbol} tintColor={color} size={size} />
-            ),
-          }}
-        >
-          {() =>
-            tab.name === "Progress" ? (
-              <ProgressScreen />
-            ) : (
-              <PlaceholderScreen tab={tab}>
-                {tab.name === "Train" ? (
-                  <View className="mt-6 self-stretch">
-                    <ListSection>
-                      <ExerciseLibraryRow />
-                    </ListSection>
-                  </View>
-                ) : null}
-                {tab.name === "You" ? (
-                  <View className="mt-6 self-stretch">
-                    <ListSection>
-                      <PhoneChecksRow />
-                      <DesignGalleryRow />
-                    </ListSection>
-                  </View>
-                ) : null}
-              </PlaceholderScreen>
-            )
-          }
-        </Tabs.Screen>
-      ))}
-    </Tabs.Navigator>
-  );
-}
 
 export default function App() {
   return (
