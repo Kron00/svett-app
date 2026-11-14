@@ -111,12 +111,21 @@ tap() {
 }
 
 # expect_text <selector> <text> fails unless the element's text holds <text>.
+# expect_text <selector> <text> reads the element until it shows the text, for up to
+# 10 seconds, because a screen can still be loading, such as the workout counts
+# reading "Opening the database" right after a delete.
 expect_text() {
-  local text
+  local text attempt
   reveal "$1" || fail "Could not bring $1 on screen"
-  text=$(agent_device get text "$1") || fail "Could not read $1"
-  [[ "$text" == *"$2"* ]] || fail "Expected $1 to show \"$2\", but it shows \"$text\""
-  echo "$1 shows \"$2\""
+  for attempt in $(seq 10); do
+    text=$(agent_device get text "$1") || fail "Could not read $1"
+    [[ "$text" != *"$2"* ]] || {
+      echo "$1 shows \"$2\""
+      return 0
+    }
+    ((attempt == 10)) || agent_device wait 1000
+  done
+  fail "Expected $1 to show \"$2\", but it shows \"$text\""
 }
 
 open_link() {

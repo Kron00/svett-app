@@ -929,7 +929,11 @@ case "\$args" in
       *workout-save-routine*) touch "\$state/routine" ;;
     esac ;;
   *' get text id="workout-counts" '*)
-    if flag deleted; then echo "299 workouts, 6000 sets"; else echo "300 workouts, 6023 sets"; fi ;;
+    # The first read after a delete still shows the counts loading, as on iOS.
+    if flag deleted && [[ ! -e "\$state/counts-loading" ]]; then
+      touch "\$state/counts-loading"
+      echo "Opening the database"
+    elif flag deleted; then echo "299 workouts, 6000 sets"; else echo "300 workouts, 6023 sets"; fi ;;
   *' get text id="set-first" '*)
     if flag edited; then echo "Set 1, 222.5 kg × 8, Heaviest weight record"; else echo "Set 1, 92.5 kg × 8"; fi ;;
   *' get text id="workout-records" '*) echo "Records, 3" ;;
