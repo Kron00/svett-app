@@ -99,9 +99,9 @@ const snapshot: Effect.Effect<Snapshot, never, Sql> = Effect.map(
 const inIds = "id IN (SELECT value FROM json_each(?))";
 
 /**
- * The rows an import wrote, deleted or not, and every live row now below them, such as a set
- * added to an imported workout later. With `root`, also the record's top row, deleted or not,
- * and every live row below it, so the rows cover the whole record.
+ * The rows an import wrote and every row now below them, deleted or not, such as a set added to
+ * an imported workout later. With `root`, also the record's top row and every row below it, so
+ * the rows cover the whole record, deleted rows included.
  */
 const journalRows = (
   rowIds: RowIdsByTable,
@@ -122,9 +122,11 @@ const journalRows = (
         for (const child of CHILDREN[key]) {
           const parentKey = columnOf(PARENT[child]?.key ?? "id");
           const found = yield* Effect.orDie(
-            selectRows(anyTable(child), `${parentKey} IN (SELECT value FROM json_each(?))`, [
-              parentIds,
-            ]),
+            selectRowsWithDeleted(
+              anyTable(child),
+              `${parentKey} IN (SELECT value FROM json_each(?))`,
+              [parentIds],
+            ),
           );
           yield* below(child, add(child, found));
         }

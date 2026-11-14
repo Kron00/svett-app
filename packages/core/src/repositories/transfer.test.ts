@@ -643,6 +643,36 @@ describe("TransferRepository", () => {
     expect(workoutNow(both)).toEqual({ notes: ["Felt strong"], reps: [5, 8] });
   });
 
+  it("lists a workout whose deleted set changed after an import that took another of its sets", async () => {
+    const database = openTestDatabase(1);
+    const id = await database.runtime.runPromise(
+      Effect.flatMap(Effect.service(ActivityRepository), (activities) =>
+        activities.create(workout("Legs")),
+      ),
+    );
+    database.database.prepare("UPDATE activity_set SET deleted_at = 1 WHERE reps = 8").run();
+    const own = await exportFile(database);
+    const sets = own.tables.activitySet ?? [];
+    const heavy = sets.find((row) => row["reps"] === 5)!;
+    const file: SvettFile = {
+      ...own,
+      tables: {
+        ...own.tables,
+        activitySet: [...sets.filter((row) => row !== heavy), { ...heavy, reps: 6 }],
+      },
+    };
+    const taken = await transfer(database, (transfers) =>
+      transfers.applyImport(file, [`activity/${id}`]),
+    );
+    const batch = Option.getOrThrow(taken).importBatchId;
+    // A change to a deleted row, as sync can deliver, is an edit the live rows do not show.
+    database.database
+      .prepare("UPDATE activity_set SET reps = 9, updated_at = updated_at + 1 WHERE reps = 8")
+      .run();
+    const preview = await transfer(database, (transfers) => transfers.previewUndo(batch));
+    expect(preview.changes.map(({ edited }) => edited)).toEqual([true]);
+  });
+
   it("refuses to undo an import twice", async () => {
     const other = openTestDatabase(2);
     await other.runtime.runPromise(
