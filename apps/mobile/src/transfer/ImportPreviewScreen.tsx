@@ -35,7 +35,7 @@ import {
   withTransfers,
 } from "./files";
 import { formatDay } from "./format";
-import { HevyMatch, type NameChoices, type UnknownName } from "./HevyMatch";
+import { HevyMatch, type MatchExercise, type NameChoices, type UnknownName } from "./HevyMatch";
 
 type Loaded =
   | { readonly kind: "svett"; readonly file: SvettFile }
@@ -48,6 +48,7 @@ type State =
       readonly kind: "matching";
       readonly file: HevyFile;
       readonly names: ReadonlyArray<UnknownName>;
+      readonly exercises: ReadonlyArray<MatchExercise>;
     }
   | {
       readonly kind: "ready";
@@ -80,19 +81,22 @@ const plan = async (loaded: Loaded, keep: ReadonlySet<string> = new Set()): Prom
   plan: await withTransfers((transfers) => transfers.previewImport(inputOf(loaded, keep))),
 });
 
-/** The names no earlier choice, bundled match or earlier import accounts for. */
-async function unknownNames(file: HevyFile): Promise<ReadonlyArray<UnknownName>> {
+/**
+ * The names no earlier choice, bundled match or earlier import accounts for, with every
+ * exercise here to match them to.
+ */
+async function unknownNames(file: HevyFile): Promise<{
+  readonly names: ReadonlyArray<UnknownName>;
+  readonly exercises: ReadonlyArray<MatchExercise>;
+}> {
   const matches = await withAliases((aliases) => aliases.matchHevyNames(exerciseNames(file)));
   const unknown = matches.filter((match) => match.exerciseId === null);
-  if (unknown.length === 0) return [];
+  if (unknown.length === 0) return { names: [], exercises: [] };
   const exercises = await withExercises((repository) => repository.list);
-  return unknown.map(({ name }) => ({
-    name,
-    suggestions: suggestExercises(name, exercises).map(({ id, name: title }) => ({
-      id,
-      name: title,
-    })),
-  }));
+  return {
+    names: unknown.map(({ name }) => ({ name, suggestions: suggestExercises(name, exercises) })),
+    exercises,
+  };
 }
 
 /** Reads the file, then asks for unknown exercise names, then waits for Import. */
@@ -110,8 +114,10 @@ async function preview(source: ImportFileSource | null, kind: "svett" | "hevy"):
   if (file.workouts.length === 0) {
     return { kind: "refused", message: "This Hevy export has no workouts." };
   }
-  const names = await unknownNames(file);
-  return names.length > 0 ? { kind: "matching", file, names } : plan({ kind: "hevy", file });
+  const { names, exercises } = await unknownNames(file);
+  return names.length > 0
+    ? { kind: "matching", file, names, exercises }
+    : plan({ kind: "hevy", file });
 }
 
 const duplicateReason = ({ reason, other }: PossibleDuplicate) => {
@@ -338,7 +344,11 @@ export function ImportPreviewScreen() {
         </View>
       ) : null}
       {state.kind === "matching" ? (
-        <HevyMatch names={state.names} onContinue={(choices) => matched(state.file, choices)} />
+        <HevyMatch
+          names={state.names}
+          exercises={state.exercises}
+          onContinue={(choices) => matched(state.file, choices)}
+        />
       ) : null}
       {state.kind === "ready" ? (
         <Plan
