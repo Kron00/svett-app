@@ -90,11 +90,14 @@ screenshot() {
 }
 
 # expect <what> <selector or text...>: waits for it on screen, and stops the run when it
-# does not show.
+# does not show. At the largest text size the screen scrolls to reach Sign out, so a
+# selector that is not on screen is looked for above, then below.
 expect() {
   local what=$1 timeout=${timeout:-15000}
   shift
-  agent_device wait "$@" "$timeout" >/dev/null || {
+  agent_device wait "$@" "$timeout" >/dev/null ||
+    { [[ $# == 1 ]] && agent_device scroll up --until "$1" >/dev/null 2>&1; } ||
+    { [[ $# == 1 ]] && agent_device scroll down --until "$1" >/dev/null 2>&1; } || {
     agent_device screenshot "$out/missing.png" || true
     echo "Expected $what, which did not show. The screen is in $out/missing.png" >&2
     exit 1

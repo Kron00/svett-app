@@ -653,13 +653,21 @@ EOF
 
 # Stands in for the bound command on the ChatGPT settings. Every element has the same
 # frame, every wait succeeds except one for text containing FAKE_MISSING, the signed-in
-# state is always on screen, and no system alert shows.
+# state is always on screen, and no system alert shows. Pressing Sign out scrolls the
+# signed-out state above the screen until a scroll up brings it back.
 cat >"$fake/chatgpt-device" <<EOF
 #!/usr/bin/env bash
 echo "\$*" >>"$root/bound-calls"
 args=" \$* "
 case "\$args" in
-  *" get attrs "*) echo '{"rect": {"x": 20, "y": 300, "width": 120, "height": 40}}' ;;
+  *" get attrs "*)
+    echo "\$args" >"$root/chatgpt-last-attrs"
+    echo '{"rect": {"x": 20, "y": 300, "width": 120, "height": 40}}' ;;
+  *" press "[0-9]*)
+    [[ "\$(cat "$root/chatgpt-last-attrs" 2>/dev/null)" != *chatgpt-sign-out* ]] || touch "$root/chatgpt-scrolled" ;;
+  *' scroll up --until id="chatgpt-state-signedOut"'*) rm -f "$root/chatgpt-scrolled" ;;
+  *' wait id="chatgpt-state-signedOut"'*)
+    [[ ! -e "$root/chatgpt-scrolled" ]] && [[ -z "\${FAKE_MISSING:-}" || "\$args" != *"\$FAKE_MISSING"* ]] ;;
   *" is visible "*) [[ "\$args" == *chatgpt-state-signedIn* ]] ;;
   *" alert wait "*) exit 1 ;;
   *" wait "*) [[ -z "\${FAKE_MISSING:-}" || "\$args" != *"\$FAKE_MISSING"* ]] ;;
@@ -674,7 +682,7 @@ run_chatgpt() {
     vars+=("$1")
     shift
   done
-  rm -f "$root/simctl-calls" "$root/bound-calls" "$root/swift-calls"
+  rm -f "$root/simctl-calls" "$root/bound-calls" "$root/swift-calls" "$root/chatgpt-scrolled"
   chatgpt_status=0
   env PATH="$fake:$PATH" HOME="$root/home" \
     SVETT_DEVICE_CMD="chatgpt-device --session 't3-test session' --device FAKE-UDID" \
