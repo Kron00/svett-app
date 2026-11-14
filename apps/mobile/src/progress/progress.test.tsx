@@ -244,7 +244,8 @@ describe("a past workout", () => {
     });
     expect(byTestId(edit, "set-edit-save").props.disabled).toBe(true);
     expect(byTestId(edit, "set-edit-cancel").props.disabled).toBe(true);
-    await settle();
+    // The detail reads the set again after the save lands, which can take more than one tick.
+    for (let wait = 0; wait < 50 && !lines(detail).includes("100 kg × 7"); wait++) await settle();
 
     expect(navigation.goBack).toHaveBeenCalledTimes(1);
     expect(lines(detail)).toEqual(expect.arrayContaining(["122.5 kg × 4", "100 kg × 7"]));
