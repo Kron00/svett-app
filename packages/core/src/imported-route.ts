@@ -18,22 +18,33 @@ export const STAY_RADIUS_M = 20;
 export const STAY_MS = 60_000;
 
 /**
- * The readings with a speed of 0 where they are part of a stop, for a route read from a
- * file. The phone's own speed tells K1's filter a stop from slow movement, but files
- * rarely carry it, and by position alone the filter counts drift at a stop after moving
- * as distance. A file holds every reading at once, so a stop is found by looking ahead:
- * readings that all lie within `STAY_RADIUS_M` of the first of them for `STAY_MS`. It
- * lasts while each next reading lies that close to the average of the stop so far. A
- * reading that reports its own speed keeps it.
+ * This many readings at each end of a stop go to the filter, enough for it to pause and
+ * resume. The filter is paused through the rest and adds nothing for them.
+ */
+export const STOP_EDGE_READINGS = 10;
+
+const hasSpeed = (fix: Fix) => fix.speedMps !== undefined && fix.speedMps !== null;
+
+/**
+ * The readings for K1's filter from a route read from a file, with a speed of 0 where
+ * they are part of a stop. The phone's own speed tells the filter a stop from slow
+ * movement, but files rarely carry it, and by position alone the filter counts drift at
+ * a stop after moving as distance. A file holds every reading at once, so a stop is
+ * found by looking ahead: readings that all lie within `STAY_RADIUS_M` of the first of
+ * them for `STAY_MS`. It lasts while each next reading lies that close to the average
+ * of the stop so far. Inside a stop only the readings near its ends are kept, so a long
+ * stop costs the filter little. A reading that reports its own speed keeps it, and is
+ * always kept.
  */
 export const withStops = (fixes: ReadonlyArray<Fix>): Array<Fix> => {
-  const still = Array.from({ length: fixes.length }, () => false);
+  const readings: Array<Fix> = [];
   let start = 0;
   while (start < fixes.length) {
     const first = fixes[start]!;
     let end = start + 1;
     while (end < fixes.length && distanceM(first, fixes[end]!) <= STAY_RADIUS_M) end++;
     if (fixes[end - 1]!.at - first.at < STAY_MS) {
+      readings.push(first);
       start++;
       continue;
     }
@@ -50,14 +61,16 @@ export const withStops = (fixes: ReadonlyArray<Fix>): Array<Fix> => {
       latitude += fixes[end]!.latitude;
       longitude += fixes[end]!.longitude;
     }
-    still.fill(true, start, end);
+    for (let index = start; index < end; index++) {
+      const fix = fixes[index]!;
+      if (hasSpeed(fix)) readings.push(fix);
+      else if (index < start + STOP_EDGE_READINGS || index >= end - STOP_EDGE_READINGS) {
+        readings.push({ ...fix, speedMps: 0 });
+      }
+    }
     start = end;
   }
-  return fixes.map((fix, index) =>
-    still[index] && (fix.speedMps === undefined || fix.speedMps === null)
-      ? { ...fix, speedMps: 0 }
-      : fix,
-  );
+  return readings;
 };
 
 /** A point of an imported route, as K1's filter reads it. */
