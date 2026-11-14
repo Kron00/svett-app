@@ -8,6 +8,20 @@ apps/mobile/android/
 metro.log
 .metro.pid
 *.ipa
+*.tsbuildinfo
+coverage/
+*.log
+.vscode/
+.idea/
+# Signing material. Release signing is ad hoc in CI, so none of it belongs here.
+*.p8
+*.p12
+*.pem
+*.key
+*.cer
+*.mobileprovision
+*.keystore
+*.jks
 .env
 .env.*
 !.env.example

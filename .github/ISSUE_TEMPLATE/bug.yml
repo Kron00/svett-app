@@ -1,0 +1,44 @@
+name: Bug report
+description: Something in svett does not work as it should.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Leave out names, email addresses, tokens and real workout exports. Use made-up data in screenshots and files.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you saw, and what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open the Log tab
+        2. Start a strength workout
+        3. ...
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: svett version
+      description: Shown in AltStore, or the commit if you built it yourself.
+    validations:
+      required: true
+  - type: input
+    id: device
+    attributes:
+      label: Device and iOS version
+      placeholder: iPhone 16 Pro Max, iOS 27.1
+    validations:
+      required: true
+  - type: textarea
+    id: extra
+    attributes:
+      label: Screenshots or logs
+      description: Optional. Remove personal data first.
