@@ -2824,7 +2824,8 @@ check "tools.sh still types 225 lb into the field" \
 # proposal on the Train tab before Apply, FAKE_UNDO_KEEPS after Undo, FAKE_NO_REFUSAL
 # shows no refusal for the malformed routine, and FAKE_LEG_CARD shows a card for it.
 # FAKE_CARD_LOW keeps the routine's card at the bottom edge until a drag, and
-# FAKE_GLIDE moves an element on the first read after a scroll.
+# FAKE_GLIDE moves an element on the first read after a scroll. The chat ends on the
+# card or the refusal, so the answer's text sits above the screen, out of a wait's reach.
 cat >"$fake/proposals-device" <<'EOF'
 #!/usr/bin/env bash
 echo "$*" >>"$FAKE_ROOT/bound-calls"
@@ -2921,8 +2922,8 @@ case "$1" in
       svett://train) put screen train ;;
       *) exit 1 ;;
     esac ;;
-  wait) [[ "$2" =~ ^[0-9]+$ ]] || holds "$2" ;;
-  is) holds "$3" && ! below_fold "$3" ;;
+  wait) [[ "$2" =~ ^[0-9]+$ ]] || { holds "$2" && ! below_fold "$2" && [[ "$2" != 'id="coach-answer"' ]]; } ;;
+  is) holds "$3" && ! below_fold "$3" && [[ "$3" != 'id="coach-answer"' ]] ;;
   scroll)
     touch "$s/gliding"
     holds "$4" ;;
@@ -3056,8 +3057,8 @@ check "proposals.sh says the routine is still listed after Undo" \
 case_name="proposals.sh when the malformed routine shows no refusal"
 run_proposals FAKE_NO_REFUSAL=1 "$root/proposals-silent"
 check "proposals.sh fails without the refusal" test "$proposals_status" -ne 0
-check "proposals.sh says the refusal did not show" \
-  grep -qF "Why svett refused the malformed routine did not show." "$output"
+check "proposals.sh says the answer to the malformed routine never ended in a refusal" \
+  grep -qF 'The coach'"'"'s answer to "Plan a leg day for me" did not show.' "$output"
 
 case_name="proposals.sh when the malformed routine shows a card"
 run_proposals FAKE_LEG_CARD=1 "$root/proposals-leg-card"

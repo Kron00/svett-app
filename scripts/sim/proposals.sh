@@ -205,7 +205,19 @@ expect_text() {
   fail "Expected $1 to show \"$2\", but it shows \"$text\"."
 }
 
-# ask <stand-in> <question>: relaunches svett on the fixture with the stand-in and asks.
+# answered <selector> <what is missing>: waits up to a minute for the element the answer
+# ends with. The chat scrolls to its end, so the answer's text is above the screen by then.
+answered() {
+  local attempt
+  for attempt in $(seq 60); do
+    reveal "$1" && return 0
+    agent_device wait 1000 >/dev/null
+  done
+  fail "$2 did not show."
+}
+
+# ask <stand-in> <question> <last element>: relaunches svett on the fixture with the
+# stand-in, asks, and waits for the element the answer ends with.
 ask() {
   local flags=(--relaunch ${front_flags[@]+"${front_flags[@]}"})
   local argument
@@ -216,7 +228,7 @@ ask() {
   agent_device open "$bundle_id" "${flags[@]}"
   agent_device wait "$you_tab" 120000 >/dev/null || fail "svett did not show its tabs."
   open_link "svett://coach?ask=$(encode "$2")"
-  timeout=60000 expect 'id="coach-answer"' "The coach's answer to \"$2\""
+  answered "$3" "The coach's answer to \"$2\""
 }
 
 open_train() {
@@ -252,7 +264,7 @@ folder() {
 agent_device settings text-size accessibility-extra-extra-extra-large
 
 # A routine.
-ask routine "$routine_question"
+ask routine "$routine_question" "role=\"button\" label=\"Preview $routine_title\""
 bring "role=\"button\" label=\"Preview $routine_title\"" "The card for \"$routine_title\" under the answer"
 screenshot routine-answer
 open_train
@@ -278,7 +290,7 @@ nowhere "$(row "$routine_row")" "The Train tab still lists \"$routine_title\" af
 screenshot routine-gone
 
 # A program of three routines in a new folder.
-ask program "$program_question"
+ask program "$program_question" "role=\"button\" label=\"Preview $program_folder\""
 bring "role=\"button\" label=\"Preview $program_folder\"" "The card for \"$program_folder\" under the answer"
 screenshot program-answer
 open_train
@@ -310,7 +322,7 @@ done
 screenshot program-gone
 
 # A malformed routine: svett refuses it, stores nothing and says why.
-ask malformed "$malformed_question"
+ask malformed "$malformed_question" 'id="coach-proposal-error"'
 bring 'id="coach-proposal-error"' "Why svett refused the malformed routine"
 expect_text 'id="coach-proposal-error"' "svett refused a proposal from the coach, so nothing was saved."
 screenshot malformed
