@@ -2,8 +2,7 @@ import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { manualClock } from "@svett/core/node";
-import { Effect, Exit, Fiber, Layer, type Redacted } from "effect";
+import { Effect, Exit, Fiber, Layer, type Redacted, Schedule } from "effect";
 import { SqlClient } from "effect/sql/SqlClient";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 
@@ -11,7 +10,7 @@ import { Backups, NightlyBackups } from "./backups.ts";
 import { ServerConfig } from "./config.ts";
 import { databaseLayer, migrate } from "./database.ts";
 import { PgTools } from "./pg-tools.ts";
-import { restoreBackup } from "./restore.ts";
+import { RESTORE_CHECK_DATABASE, restoreBackup } from "./restore.ts";
 import { startTestPostgres, type TestPostgres } from "./test-postgres.ts";
 
 let postgres: TestPostgres;
@@ -35,7 +34,7 @@ const run = <A, E>(url: Redacted.Redacted, effect: Effect.Effect<A, E, SqlClient
 const backupsLayer = (
   url: Redacted.Redacted,
   backupDir: string,
-  options: { readonly backupKeep?: number } = {},
+  options: { readonly backupKeep?: number; readonly backupCron?: string } = {},
 ) =>
   Backups.layer.pipe(
     Layer.provideMerge(PgTools.layer(postgres.tools)),
@@ -47,7 +46,7 @@ const backupsLayer = (
           databaseUrl: url,
           backupDir,
           backupKeep: options.backupKeep ?? 14,
-          backupCron: "0 3 * * *",
+          backupCron: options.backupCron ?? "0 3 * * *",
         }),
       ),
     ),
@@ -105,6 +104,25 @@ const snapshot = (url: Redacted.Redacted) =>
       `;
       return { rows, columns, indexes };
     }),
+  );
+
+/** Runs the nightly loop until `until` gives a value, then stops it. */
+const runNightly = <A>(
+  layer: Layer.Layer<Backups | ServerConfig>,
+  until: Effect.Effect<A | undefined, unknown, Backups>,
+) =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      const fiber = yield* Effect.forkChild(Layer.launch(NightlyBackups));
+      const result = yield* until.pipe(
+        Effect.flatMap((value) =>
+          value === undefined ? Effect.fail("not yet" as const) : Effect.succeed(value),
+        ),
+        Effect.retry({ schedule: Schedule.spaced("100 millis"), times: 600 }),
+      );
+      yield* Fiber.interrupt(fiber);
+      return result;
+    }).pipe(Effect.provide(layer)),
   );
 
 describe("server backups", { timeout: 120_000 }, () => {
@@ -177,6 +195,37 @@ describe("server backups", { timeout: 120_000 }, () => {
     expect(tables).toEqual([{ table_name: "keep_me" }]);
   });
 
+  it("checks a backup restores in a scratch database and drops it after", async () => {
+    const source = await newDatabase();
+    await seed(source);
+    const dir = await tempDir();
+    const scratchDatabases = () =>
+      run(
+        source,
+        Effect.flatMap(
+          Effect.service(SqlClient),
+          (sql) => sql`select datname from pg_database where datname = ${RESTORE_CHECK_DATABASE}`,
+        ),
+      );
+
+    const [good, broken] = await Effect.runPromise(
+      Effect.gen(function* () {
+        const backups = yield* Effect.service(Backups);
+        const backup = yield* backups.takeNow;
+        const passed = yield* backups.checkRestore(backup);
+        yield* Effect.promise(() => writeFile(backup.file, "not a dump"));
+        const failed = yield* backups.checkRestore(backup);
+        return [passed, failed] as const;
+      }).pipe(Effect.provide(backupsLayer(source, dir))),
+    );
+
+    // The seeded table and the migrations table come back.
+    expect(good.tables).toBe(2);
+    expect(broken.tables).toBeUndefined();
+    expect(await scratchDatabases()).toEqual([]);
+    expect((await snapshot(source)).rows).toHaveLength(3);
+  });
+
   it("leaves no backup file behind when the dump fails", async () => {
     const dir = await tempDir();
     await writeFile(join(dir, "README"), "not a backup\n");
@@ -189,48 +238,50 @@ describe("server backups", { timeout: 120_000 }, () => {
     expect(await readdir(dir)).toEqual(["README"]);
   });
 
-  it("backs up at once on start, then every night at 03:00 UTC, keeping the newest", async () => {
+  it("backs up at once on start when the newest is old, then on every tick, keeping the newest", async () => {
     const source = await newDatabase();
     await seed(source);
     const dir = await tempDir();
-    await writeFile(join(dir, "svett-20261101T030000Z.dump"), "an old backup");
-    const clock = manualClock(Date.parse("2026-11-13T21:15:42Z"));
+    const old = "svett-20261101T030000Z.dump";
+    await writeFile(join(dir, old), "an old backup");
 
-    const expected = [
-      "svett-20261113T211542Z.dump",
-      "svett-20261114T030000Z.dump",
-      "svett-20261115T030000Z.dump",
-      "svett-20261116T030000Z.dump",
-      "svett-20261117T030000Z.dump",
-    ];
-    const finished = async () => {
-      const names = await readdir(dir);
-      return names.includes(expected[2]!) && !names.includes("svett-20261101T030000Z.dump");
-    };
+    // Every two seconds instead of nightly, so the test sees several runs.
+    const layer = backupsLayer(source, dir, { backupKeep: 3, backupCron: "*/2 * * * * *" });
+    const check = await runNightly(
+      layer,
+      Effect.gen(function* () {
+        const names = yield* Effect.promise(() => readdir(dir));
+        const backups = yield* Effect.service(Backups);
+        const last = yield* backups.lastRestoreCheck;
+        return names.length === 3 && !names.includes(old) ? last : undefined;
+      }),
+    );
 
-    const program = Effect.gen(function* () {
-      const fiber = yield* Effect.forkChild(Layer.launch(NightlyBackups));
-      const deadline = Date.now() + 60_000;
-      // Each turn of the nightly loop moves the manual clock on to the next 03:00 at once.
-      while (!(yield* Effect.promise(finished)) && Date.now() < deadline) {
-        yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 50)));
-      }
-      yield* Fiber.interrupt(fiber);
-    });
+    const names = (await readdir(dir)).toSorted();
+    expect(names).toHaveLength(3);
+    expect(names.every((name) => /^svett-\d{8}T\d{6}Z\.dump$/.test(name))).toBe(true);
+    // Each new backup is checked by a restore, which brings back both tables.
+    expect(check.tables).toBe(2);
+  });
 
-    await Effect.runPromise(
-      program.pipe(
-        Effect.provide(backupsLayer(source, dir, { backupKeep: 3 })),
-        Effect.provide(clock.layer),
+  it("only checks the newest backup on start when it is less than a day old", async () => {
+    const source = await newDatabase();
+    await seed(source);
+    const dir = await tempDir();
+    const layer = backupsLayer(source, dir);
+    const taken = await Effect.runPromise(
+      Effect.flatMap(Effect.service(Backups), (backups) => backups.takeNow).pipe(
+        Effect.provide(layer),
       ),
     );
 
-    // The loop may finish one more night before it stops, but the files left are
-    // always the newest three nights in a row, with no partial dump among them.
-    const names = (await readdir(dir)).toSorted();
-    const first = expected.indexOf(names[0]!);
-    expect(first).toBeGreaterThanOrEqual(0);
-    expect(names).toEqual(expected.slice(first, first + 3));
+    const check = await runNightly(
+      layer,
+      Effect.flatMap(Effect.service(Backups), (backups) => backups.lastRestoreCheck),
+    );
+
+    expect(check).toMatchObject({ backupTakenAt: taken.takenAt, tables: 2 });
+    expect(await readdir(dir)).toEqual([taken.file.split("/").pop()]);
     await rm(dir, { recursive: true });
   });
 });

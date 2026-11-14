@@ -9,16 +9,17 @@ import type { PgToolCommands } from "./pg-tools.ts";
 const exec = promisify(execFile);
 
 /**
- * The PostgreSQL the server tests run against. Keep its major version in step with
- * the database the deployment uses.
+ * The tests pair the versions the deployment runs: Coolify's PostgreSQL 16, and the
+ * client tools the Dockerfile installs. Change all three together.
  */
-export const TEST_POSTGRES_IMAGE = process.env.SVETT_TEST_POSTGRES_IMAGE ?? "postgres:18-alpine";
+export const TEST_POSTGRES_IMAGE = process.env.SVETT_TEST_POSTGRES_IMAGE ?? "postgres:16-alpine";
+export const TEST_PG_TOOLS_IMAGE = process.env.SVETT_TEST_PG_TOOLS_IMAGE ?? "postgres:16-alpine";
 
 export interface TestPostgres {
   /** The address of database `name` on the test server, password included. */
   readonly url: (name: string) => Redacted.Redacted;
   readonly createDatabase: (name: string) => Promise<Redacted.Redacted>;
-  /** pg_dump and pg_restore from the same image, so no PostgreSQL install is needed. */
+  /** pg_dump and pg_restore run from an image, so no PostgreSQL install is needed. */
   readonly tools: PgToolCommands;
   readonly stop: () => Promise<void>;
 }
@@ -83,7 +84,7 @@ export const startTestPostgres = async (): Promise<TestPostgres> => {
       "host",
       "--env",
       "PGPASSWORD",
-      TEST_POSTGRES_IMAGE,
+      TEST_PG_TOOLS_IMAGE,
       name,
     ];
 

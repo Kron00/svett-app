@@ -1,8 +1,9 @@
 # The svett server (apps/server). Coolify builds this file from the repo root.
 FROM node:26.12.1-alpine
 
-# pg_dump for the nightly backups. It must be at least the database's major version.
-RUN apk add --no-cache postgresql18-client \
+# pg_dump and pg_restore for the backups. Their major version matches the database's,
+# Coolify's PostgreSQL 16, since a newer pg_restore sends settings 16 refuses.
+RUN apk add --no-cache postgresql16-client \
   && npm install --global --no-fund --no-audit pnpm@12.14.0
 
 WORKDIR /app

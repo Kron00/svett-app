@@ -88,11 +88,11 @@ The release job in `.github/workflows/ci.yml` runs after each merge to `main`. `
 
 `apps/server` is the phase 6 server, one Effect service on Node with PostgreSQL. Node runs its TypeScript directly, as it does the scripts. The root `Dockerfile` builds it. Coolify deploys that image as `svett-app` at `https://svett-app.jservers.net`, with the PostgreSQL database `svett-app-db`, whose address Coolify sets in `DATABASE_URL`. Run `jservers status`, `jservers logs` or `jservers deploys` from the repo to look at it.
 
-`GET /health` answers `{"status":"ok","database":"ok","latestBackup":"<time>"}`. It answers 503 with `"database":"unreachable"` when the database does not answer.
+`GET /health` answers `{"status":"ok","database":"ok","latestBackup":"<time>","restoreCheck":{...}}`. It answers 503 with `"database":"unreachable"` when the database does not answer. `restoreCheck` shows the newest backup the server restored to prove it works, when it did, whether it `restored`, and how many `tables` came back. It is `null` until the first check since the server started.
 
 Server migrations go at the end of `MIGRATIONS` in `apps/server/src/migrations.ts`, keyed `<id>_<name>`. They run when the server starts. Never edit one that has shipped.
 
-The server backs up its database with `pg_dump` into `BACKUP_DIR`, which is `/backups`, a Coolify volume that outlives each deploy. It takes one on start when the newest is more than a day old, then one every night at 03:00 UTC (`BACKUP_CRON`). It keeps the newest 14 (`BACKUP_KEEP`). A dump gets its `svett-<time>.dump` name only once it is complete. To take one now, run `node apps/server/src/cli.ts backup` in the container.
+The server backs up its database with `pg_dump` into `BACKUP_DIR`, which is `/backups`, a Coolify volume that outlives each deploy. It takes one on start when the newest is more than a day old, then one every night at 03:00 UTC (`BACKUP_CRON`). It keeps the newest 14 (`BACKUP_KEEP`). A dump gets its `svett-<time>.dump` name only once it is complete. After each backup, and for the newest one on start, the server restores it into a new, empty scratch database `svett_restore_check` on the same PostgreSQL, counts the tables, and drops it. To take one now, run `node apps/server/src/cli.ts backup` in the container.
 
 To restore, create an empty database on the same PostgreSQL and run this in the server container:
 
@@ -102,7 +102,7 @@ RESTORE_DATABASE_URL='<the empty database>' node apps/server/src/cli.ts restore 
 
 It refuses a database that already holds a table, so it never merges into live data. Then point `DATABASE_URL` at the restored database with `jservers env set` and restart.
 
-The server tests start PostgreSQL in Docker and run `pg_dump` and `pg_restore` from the same image, so Docker must be running. The image is `postgres:18-alpine`, or `SVETT_TEST_POSTGRES_IMAGE`. Keep its major version the same as the deployed database's.
+The server tests start PostgreSQL in Docker and run `pg_dump` and `pg_restore` from the same image, so Docker must be running. Both images are `postgres:16-alpine`, the deployed database's version, unless `SVETT_TEST_POSTGRES_IMAGE` or `SVETT_TEST_PG_TOOLS_IMAGE` says otherwise. The Dockerfile installs the client tools of that same major version, because a newer `pg_restore` sends settings an older server refuses. Change the three together.
 
 ### Simulator scripts inside T3 Code
 

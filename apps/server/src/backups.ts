@@ -2,10 +2,22 @@ import { mkdir, readdir, rename, rm } from "node:fs/promises";
 import { join } from "node:path";
 
 import { backupFileName, backupsToPrune, backupTakenAt, newestBackupsFirst } from "@svett/core";
-import { Clock, Context, Cron, Data, Effect, Layer, Result, Schedule, Semaphore } from "effect";
+import {
+  Clock,
+  Context,
+  Cron,
+  Data,
+  Effect,
+  Layer,
+  Ref,
+  Result,
+  Schedule,
+  Semaphore,
+} from "effect";
 
 import { ServerConfig } from "./config.ts";
 import { PgTools, type PgToolError } from "./pg-tools.ts";
+import { checkRestore } from "./restore.ts";
 
 export class BackupError extends Data.TaggedError("BackupError")<{
   readonly message: string;
@@ -16,11 +28,25 @@ export interface LatestBackup {
   readonly takenAt: number;
 }
 
+export interface RestoreCheck {
+  readonly backupTakenAt: number;
+  readonly checkedAt: number;
+  /** How many tables the restore brought back, or undefined when it failed. */
+  readonly tables: number | undefined;
+}
+
 export interface BackupsService {
   /** Dumps the database to a new file, then deletes backups past the kept number. */
   readonly takeNow: Effect.Effect<LatestBackup, BackupError | PgToolError>;
   /** The newest finished backup, if there is one. */
   readonly latest: Effect.Effect<LatestBackup | undefined, BackupError>;
+  /**
+   * Restores `backup` into a scratch database on the live server, then drops it.
+   * A failed restore is reported in the result, not as an error.
+   */
+  readonly checkRestore: (backup: LatestBackup) => Effect.Effect<RestoreCheck>;
+  /** The result of the newest restore check since the server started. */
+  readonly lastRestoreCheck: Effect.Effect<RestoreCheck | undefined>;
 }
 
 const DAY_MILLIS = 24 * 60 * 60 * 1000;
@@ -73,15 +99,41 @@ export class Backups extends Context.Service<Backups, BackupsService>()("svett/s
         }),
       );
 
-      return Backups.of({ takeNow, latest });
+      const lastCheck = yield* Ref.make<RestoreCheck | undefined>(undefined);
+
+      const restoreCheck = (backup: LatestBackup) =>
+        lock.withPermits(1)(
+          Effect.gen(function* () {
+            const tables = yield* checkRestore(backup.file, config.databaseUrl).pipe(
+              Effect.provideService(PgTools, tools),
+              Effect.tapCause((cause) => Effect.logError("Restore check failed", cause)),
+              Effect.orElseSucceed(() => undefined),
+            );
+            const result = {
+              backupTakenAt: backup.takenAt,
+              checkedAt: yield* Clock.currentTimeMillis,
+              tables,
+            };
+            yield* Ref.set(lastCheck, result);
+            return result;
+          }),
+        );
+
+      return Backups.of({
+        takeNow,
+        latest,
+        checkRestore: restoreCheck,
+        lastRestoreCheck: Ref.get(lastCheck),
+      });
     }),
   );
 }
 
 /**
- * Takes a backup at every tick of the configured cron schedule, in UTC. On start it
- * takes one at once when the newest is more than a day old, so a server that was
- * down overnight does not skip a day.
+ * Takes a backup at every tick of the configured cron schedule, in UTC, and proves
+ * each one restores. On start it takes one at once when the newest is more than a
+ * day old, so a server that was down overnight does not skip a day, and checks the
+ * newest backup restores.
  */
 export const NightlyBackups: Layer.Layer<never, BackupError, Backups | ServerConfig> =
   Layer.effectDiscard(
@@ -95,8 +147,16 @@ export const NightlyBackups: Layer.Layer<never, BackupError, Backups | ServerCon
         });
       }
 
+      const check = (backup: LatestBackup) =>
+        Effect.flatMap(backups.checkRestore(backup), ({ tables }) =>
+          tables === undefined
+            ? Effect.void
+            : Effect.logInfo(`Restore check of ${backup.file} brought back ${tables} tables`),
+        );
+
       const takeOne = backups.takeNow.pipe(
         Effect.tap(({ file }) => Effect.logInfo(`Backup written to ${file}`)),
+        Effect.flatMap(check),
         Effect.catchCause((cause) => Effect.logError("Backup failed", cause)),
       );
 
@@ -104,7 +164,8 @@ export const NightlyBackups: Layer.Layer<never, BackupError, Backups | ServerCon
         const newest = yield* backups.latest;
         const now = yield* Clock.currentTimeMillis;
         if (newest === undefined || now - newest.takenAt > DAY_MILLIS) yield* takeOne;
-      }).pipe(Effect.catchCause((cause) => Effect.logError("Backup check failed", cause)));
+        else yield* check(newest);
+      }).pipe(Effect.catchCause((cause) => Effect.logError("Backup failed", cause)));
 
       yield* Effect.forkScoped(
         Effect.andThen(catchUp, Effect.schedule(takeOne, Schedule.cron(cron.success))),

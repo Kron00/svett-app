@@ -9,7 +9,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 
 import { Backups } from "./backups.ts";
 import { ServerConfig } from "./config.ts";
-import { databaseLayer } from "./database.ts";
+import { databaseLayer, migrate } from "./database.ts";
 import { Routes } from "./http.ts";
 import { PgTools } from "./pg-tools.ts";
 import { startTestPostgres, type TestPostgres } from "./test-postgres.ts";
@@ -54,6 +54,7 @@ const serve = (url: Redacted.Redacted, backupDir: string) => {
 describe("GET /health", { timeout: 60_000 }, () => {
   it("answers ok with the time of the newest backup", async () => {
     const url = await postgres.createDatabase("health_ok");
+    await Effect.runPromise(migrate.pipe(Effect.provide(databaseLayer(url))));
     const dir = await mkdtemp(join(tmpdir(), "svett-health-"));
 
     const [before, backup, after] = await Effect.runPromise(
@@ -61,20 +62,27 @@ describe("GET /health", { timeout: 60_000 }, () => {
         const first = yield* getHealth;
         const backups = yield* Effect.service(Backups);
         const taken = yield* backups.takeNow;
+        yield* backups.checkRestore(taken);
         return [first, taken, yield* getHealth] as const;
       }).pipe(Effect.provide(serve(url, dir))),
     );
 
     expect(before).toEqual({
       status: 200,
-      body: { status: "ok", database: "ok", latestBackup: null },
+      body: { status: "ok", database: "ok", latestBackup: null, restoreCheck: null },
     });
     expect(after).toEqual({
       status: 200,
       body: {
         status: "ok",
         database: "ok",
-        latestBackup: new Date(Math.floor(backup.takenAt / 1000) * 1000).toISOString(),
+        latestBackup: new Date(backup.takenAt).toISOString(),
+        restoreCheck: {
+          backup: new Date(backup.takenAt).toISOString(),
+          checkedAt: expect.any(String),
+          restored: true,
+          tables: 1,
+        },
       },
     });
   });
@@ -85,7 +93,7 @@ describe("GET /health", { timeout: 60_000 }, () => {
     const health = await Effect.runPromise(getHealth.pipe(Effect.provide(serve(unreachable, dir))));
     expect(health).toEqual({
       status: 503,
-      body: { status: "error", database: "unreachable", latestBackup: null },
+      body: { status: "error", database: "unreachable", latestBackup: null, restoreCheck: null },
     });
   });
 });

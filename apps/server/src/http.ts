@@ -4,6 +4,8 @@ import { SqlClient } from "effect/sql/SqlClient";
 
 import { Backups } from "./backups.ts";
 
+const iso = (millis: number) => new Date(millis).toISOString();
+
 const health = Effect.gen(function* () {
   const sql = yield* SqlClient;
   const backups = yield* Backups;
@@ -13,11 +15,21 @@ const health = Effect.gen(function* () {
     Effect.orElseSucceed(() => false),
   );
   const latest = yield* backups.latest.pipe(Effect.orElseSucceed(() => undefined));
+  const check = yield* backups.lastRestoreCheck;
   return HttpServerResponse.jsonUnsafe(
     {
       status: databaseUp ? "ok" : "error",
       database: databaseUp ? "ok" : "unreachable",
-      latestBackup: latest === undefined ? null : new Date(latest.takenAt).toISOString(),
+      latestBackup: latest === undefined ? null : iso(latest.takenAt),
+      restoreCheck:
+        check === undefined
+          ? null
+          : {
+              backup: iso(check.backupTakenAt),
+              checkedAt: iso(check.checkedAt),
+              restored: check.tables !== undefined,
+              tables: check.tables ?? null,
+            },
     },
     { status: databaseUp ? 200 : 503 },
   );
