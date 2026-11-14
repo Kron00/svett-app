@@ -237,6 +237,8 @@ open_link svett://data 'id="data"'
 screenshot data-with-import
 tap 'id="import-batch-0"'
 agent_device wait 'id="undo-import"' 60000
+# The plan reads in a moment, so the screenshot waits for the Undo button below it.
+reveal 'id="undo-apply"'
 screenshot undo-preview
 tap 'id="undo-apply"'
 agent_device wait 'id="undo-done"' 300000

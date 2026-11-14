@@ -54,7 +54,7 @@ function Plan({
         <EmptyState
           symbol="arrow.uturn.backward.circle"
           title="Already undone"
-          message="This import was undone earlier. Import the file again to bring its records back."
+          message="This import was undone earlier. To bring its records back, import the file again and switch each record to the file's version."
         />
       </View>
     );

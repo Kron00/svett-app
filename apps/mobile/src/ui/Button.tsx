@@ -45,7 +45,7 @@ export function Button({
       disabled={disabled}
       onPress={onPress}
       testID={testID}
-      className={`min-h-target flex-row items-center justify-center gap-2 rounded-full px-5 py-3 ${style.container}`}
+      className={`min-h-target shrink flex-row items-center justify-center gap-2 rounded-full px-5 py-3 ${style.container}`}
       style={({ pressed }) => ({ opacity: disabled ? 0.4 : pressed ? 0.6 : 1 })}
     >
       {symbol ? <Icon name={symbol} color={style.symbol} weight="semibold" /> : null}
