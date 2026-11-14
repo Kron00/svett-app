@@ -2,7 +2,7 @@ import { Schema } from "effect";
 
 import { type DurationSeconds, formatDuration } from "./duration.ts";
 import { linkParam, linkParams } from "./link-params.ts";
-import type { PlannedSet, WorkoutStart } from "./repositories/activities.ts";
+import type { PlannedSet, NewWorkout } from "./repositories/activities.ts";
 import type { RoutineDetail, RoutineDraft, RoutineSetDraft } from "./repositories/routines.ts";
 import {
   type ActivitySet,
@@ -189,7 +189,7 @@ const plannedSet = ({
 });
 
 /** The workout a routine starts: its exercises in order, each set filled in from its target. */
-export const workoutFromRoutine = ({ routine, exercises }: RoutineDetail): WorkoutStart => ({
+export const workoutFromRoutine = ({ routine, exercises }: RoutineDetail): NewWorkout => ({
   title: routine.title,
   routineId: routine.id,
   exercises: exercises.map(({ exercise, sets }) => ({

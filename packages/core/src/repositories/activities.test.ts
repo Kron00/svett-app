@@ -12,7 +12,7 @@ import {
   ActivityRepository,
   type PlannedSet,
   type SetDraft,
-  type WorkoutStart,
+  type NewWorkout,
 } from "./activities.ts";
 import { MADE_HERE, type Origin } from "./origin.ts";
 
@@ -175,7 +175,7 @@ describe("ActivityRepository", () => {
   it("starts a workout in progress that history and counts leave out until it is finished", async () => {
     const database = openTestDatabase();
     await run(database, (activities) => activities.create(workout()));
-    const started: WorkoutStart = {
+    const started: NewWorkout = {
       title: "Push",
       routineId: null,
       exercises: [
@@ -220,7 +220,7 @@ describe("ActivityRepository", () => {
 
   it("refuses a second workout while one is in progress, and allows one after a discard", async () => {
     const database = openTestDatabase();
-    const start: WorkoutStart = { title: "Push", routineId: null, exercises: [] };
+    const start: NewWorkout = { title: "Push", routineId: null, exercises: [] };
     const first = await run(database, (activities) => activities.startWorkout(start));
     const exit = await database.runtime.runPromiseExit(
       Effect.flatMap(Effect.service(ActivityRepository), (activities) =>
@@ -243,7 +243,7 @@ describe("ActivityRepository", () => {
 
   it("refuses to restore a discarded workout in progress while another is in progress", async () => {
     const database = openTestDatabase();
-    const start: WorkoutStart = { title: "Push", routineId: null, exercises: [] };
+    const start: NewWorkout = { title: "Push", routineId: null, exercises: [] };
     const first = await run(database, (activities) => activities.startWorkout(start));
     await run(database, (activities) => activities.remove(first));
     await database.runtime.runPromise(database.clock.advance(1000));

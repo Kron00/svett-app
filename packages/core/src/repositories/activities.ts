@@ -50,7 +50,7 @@ export type PlannedSet = Pick<
 >;
 
 /** A strength workout to start now. It stays in progress until it is finished or discarded. */
-export interface WorkoutStart {
+export interface NewWorkout {
   readonly title: string;
   readonly routineId: RoutineId | null;
   readonly exercises: ReadonlyArray<
@@ -209,7 +209,7 @@ const makeActivityRepository = Effect.gen(function* () {
   );
 
   /** Starts a strength workout now, with every set still to do. */
-  const startWorkout = ({ title, routineId, exercises }: WorkoutStart) =>
+  const startWorkout = ({ title, routineId, exercises }: NewWorkout) =>
     run(
       sql.transaction(
         Effect.gen(function* () {
