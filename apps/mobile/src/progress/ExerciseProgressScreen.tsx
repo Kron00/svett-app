@@ -9,11 +9,13 @@ import {
   exerciseSeries,
   formatDay,
   formatRecordValue,
+  formatShownRecordValue,
   isChartRange,
   personalRecords,
   RECORD_RULES,
   RECORDS_RULE,
   rangeStart,
+  seriesIn,
   summarizeSeries,
 } from "@svett/core";
 import { type RouteProp, useNavigation, useRoute } from "@react-navigation/native";
@@ -22,6 +24,7 @@ import { useLayoutEffect, useMemo } from "react";
 import { ScrollView, View } from "react-native";
 
 import { useQuery } from "../data/useQuery";
+import { useWorkoutSettings } from "../settings/store";
 import type { RootNavigation, RootStackParamList } from "../navigation";
 import { AppText } from "../ui/AppText";
 import { EmptyState } from "../ui/EmptyState";
@@ -68,6 +71,7 @@ function ExerciseProgress({
   readonly onRange: (range: ChartRange) => void;
 }) {
   const navigation = useNavigation<RootNavigation>();
+  const { unit } = useWorkoutSettings();
   const { state } = useQuery(query);
   const title =
     state.status === "ready" ? Option.getOrUndefined(state.value.exercise)?.name : undefined;
@@ -113,9 +117,9 @@ function ExerciseProgress({
             ) : null}
             {exerciseMetrics(sets).map((metric) => {
               const rule = EXERCISE_METRIC_RULES[metric];
-              const points = exerciseSeries(sets, metric, from);
+              const points = seriesIn(exerciseSeries(sets, metric, from), rule.unit, unit);
               const summary = summarizeSeries(points);
-              const format = (value: number) => formatRecordValue(rule.unit, value);
+              const format = (value: number) => formatShownRecordValue(rule.unit, value, unit);
               return (
                 <ChartCard
                   key={metric}
@@ -140,7 +144,7 @@ function ExerciseProgress({
                     key={best.kind}
                     title={RECORD_RULES[best.kind].label}
                     subtitle={`${formatDay(best.achievedAt)}. ${RECORD_RULES[best.kind].rule}`}
-                    value={formatRecordValue(RECORD_RULES[best.kind].unit, best.value)}
+                    value={formatRecordValue(RECORD_RULES[best.kind].unit, best.value, unit)}
                   />
                 ))}
               </ListSection>

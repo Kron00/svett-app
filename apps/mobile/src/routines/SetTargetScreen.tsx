@@ -8,7 +8,7 @@ import {
   type SetType,
   setTargetEntry,
   setTargetFromEntry,
-  WEIGHT_KG_ENTRY,
+  WEIGHT_ENTRY,
 } from "@svett/core";
 import { type RouteProp, useNavigation, useRoute } from "@react-navigation/native";
 import { useState } from "react";
@@ -21,6 +21,7 @@ import { Button } from "../ui/Button";
 import { EmptyState } from "../ui/EmptyState";
 import { EntryField, Keypad } from "../ui/NumberEntry";
 import { SegmentedControl } from "../ui/SegmentedControl";
+import { workoutSettings } from "../settings/store";
 import { changeDraft, useDraft } from "./draft";
 
 type Field = "weight" | "repsFrom" | "repsTo";
@@ -28,10 +29,10 @@ type Field = "weight" | "repsFrom" | "repsTo";
 const FIELDS: ReadonlyArray<{
   readonly field: Field;
   readonly label: string;
-  readonly unit?: string;
+  readonly unit?: "weight";
   readonly testID: string;
 }> = [
-  { field: "weight", label: "Weight", unit: "kg", testID: "target-weight" },
+  { field: "weight", label: "Weight", unit: "weight", testID: "target-weight" },
   { field: "repsFrom", label: "Reps", testID: "target-reps-from" },
   { field: "repsTo", label: "Up to reps", testID: "target-reps-to" },
 ];
@@ -54,8 +55,10 @@ export function SetTargetScreen() {
   const setIndex = Number(params.set);
   const draft = useDraft();
   const set = draft?.form.exercises[exerciseIndex]?.sets[setIndex];
+  // The unit the target opened in, so a switch elsewhere mid-edit never misreads the field.
+  const [weightUnit] = useState(() => workoutSettings().unit);
   const [entry, setEntry] = useState<SetTargetEntry | null>(() =>
-    set === undefined ? null : setTargetEntry(set),
+    set === undefined ? null : setTargetEntry(set, weightUnit),
   );
   const [focused, setFocused] = useState<Field>("repsFrom");
   const stacked = useIsAccessibilityTextSize();
@@ -72,13 +75,13 @@ export function SetTargetScreen() {
     );
   }
 
-  const limits = focused === "weight" ? WEIGHT_KG_ENTRY : REPS_ENTRY;
+  const limits = focused === "weight" ? WEIGHT_ENTRY[weightUnit] : REPS_ENTRY;
   const press = (key: KeypadKey) =>
     setEntry({ ...entry, [focused]: editNumberEntry(entry[focused], key, limits) });
 
   const done = () => {
     changeDraft((form) =>
-      replaceSet(form, exerciseIndex, setIndex, setTargetFromEntry(entry, set)),
+      replaceSet(form, exerciseIndex, setIndex, setTargetFromEntry(entry, set, weightUnit)),
     );
     navigation.goBack();
   };
@@ -110,7 +113,7 @@ export function SetTargetScreen() {
               label={label}
               value={entry[field]}
               placeholder="None"
-              unit={unit}
+              unit={unit === "weight" ? weightUnit : undefined}
               focused={focused === field}
               onPress={() => setFocused(field)}
               testID={testID}

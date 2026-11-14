@@ -10,6 +10,7 @@ import type { RootStackParamList } from "./navigation";
 // toolbars that cover the whole screen. scripts/sim/data.sh reaches export and import
 // the same way, through svett://data, svett://import?file=<name> and
 // svett://imports/<id>/undo. scripts/sim/hevy.sh adds &kind=hevy for a Hevy CSV.
+// scripts/sim/tools.sh opens svett://settings/workout and svett://tools/plates?kg=100.
 export const linking: LinkingOptions<RootStackParamList> = {
   prefixes: ["svett://"],
   filter: (url) => !url.includes("expo-development-client"),
@@ -46,6 +47,9 @@ export const linking: LinkingOptions<RootStackParamList> = {
       ActiveWorkout: "train/workout",
       AddWorkoutExercise: "train/workout/exercises",
       ReplaceWorkoutExercise: "train/workout/exercise/:exercise/replace",
+      WarmUp: "train/workout/exercise/:exercise/warm-up",
+      Plates: "tools/plates",
+      WorkoutSettings: "settings/workout",
     },
   },
 };

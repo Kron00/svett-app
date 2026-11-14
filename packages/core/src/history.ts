@@ -12,6 +12,8 @@ import type {
   Muscle,
 } from "./schema.ts";
 import { formatSetLoad, formatWeightKg, setBadge, type SetBadge } from "./set-format.ts";
+import { type SupersetPlace, supersetPlaces } from "./superset.ts";
+import { type WeightUnit, weightIn } from "./weight-unit.ts";
 
 type VolumeSet = Pick<ActivitySet, "setType" | "weightKg" | "reps">;
 
@@ -23,9 +25,9 @@ export const workingVolumeKg = (sets: ReadonlyArray<VolumeSet>): number =>
     0,
   );
 
-/** "12,450 kg", the way a workout's volume reads in history. */
-export const formatVolumeKg = (kg: number): string =>
-  `${String(Math.round(kg)).replaceAll(/\B(?=(\d{3})+$)/g, ",")} kg`;
+/** "12,450 kg" or "27,448 lb", the way a workout's volume reads in history. */
+export const formatVolumeKg = (kg: number, unit: WeightUnit): string =>
+  `${String(Math.round(weightIn(kg, unit))).replaceAll(/\B(?=(\d{3})+$)/g, ",")} ${unit}`;
 
 /** A workout's length to the minute, such as "58 min" or "1 h 5 min". */
 export const formatWorkoutDuration = (seconds: number): string => {
@@ -38,14 +40,17 @@ export const formatWorkoutDuration = (seconds: number): string => {
 const formatDistance = (metres: number): string =>
   metres >= 1000 ? `${formatWeightKg(metres / 1000)} km` : `${formatWeightKg(metres)} m`;
 
-/** Everything a set recorded, such as "80 kg × 8", "1:05" or "20 kg · 1:05". */
+/** Everything a set recorded, such as "80 kg × 8 · RPE 8", "1:05" or "20 kg · 1:05". */
 export const describeSet = (
-  set: Pick<ActivitySet, "weightKg" | "reps" | "durationS" | "distanceM">,
+  set: Pick<ActivitySet, "weightKg" | "reps" | "durationS" | "distanceM"> &
+    Partial<Pick<ActivitySet, "rpe">>,
+  unit: WeightUnit = "kg",
 ): string =>
   [
-    formatSetLoad(set.weightKg, set.reps),
+    formatSetLoad(set.weightKg, set.reps, unit),
     set.durationS === null ? null : formatDuration(set.durationS),
     set.distanceM === null ? null : formatDistance(set.distanceM),
+    set.rpe === null || set.rpe === undefined ? null : `RPE ${set.rpe}`,
   ]
     .filter((part) => part !== null)
     .join(" · ");
@@ -92,6 +97,8 @@ export type WorkoutSet = ActivitySet & {
 
 export type WorkoutExercise = {
   readonly exercise: ActivityExercise;
+  /** Where it sits in a superset, or null. */
+  readonly superset: SupersetPlace | null;
   readonly name: string;
   readonly primaryMuscles: ReadonlyArray<Muscle>;
   readonly sets: ReadonlyArray<WorkoutSet>;
@@ -116,11 +123,13 @@ export const describeWorkout = (
   library: ReadonlyMap<ExerciseId, Exercise>,
   records: ReadonlyMap<string, ReadonlyArray<RecordKind>>,
 ): WorkoutView => {
-  const exercises = detail.exercises.map(({ exercise, sets }): WorkoutExercise => {
+  const supersets = supersetPlaces(detail.exercises.map(({ exercise }) => exercise));
+  const exercises = detail.exercises.map(({ exercise, sets }, index): WorkoutExercise => {
     const info = library.get(exercise.exerciseId);
     let normal = 0;
     return {
       exercise,
+      superset: supersets[index] ?? null,
       name: info?.name ?? DELETED_EXERCISE,
       primaryMuscles: info?.primaryMuscles ?? [],
       sets: sets.map((set) => {
@@ -158,7 +167,7 @@ export const routineFromWorkout = (detail: ActivityDetail, position: number): Ro
   exercises: detail.exercises.map(({ exercise, sets }) => ({
     exerciseId: exercise.exerciseId,
     supersetGroup: exercise.supersetGroup,
-    restS: null,
+    restS: exercise.restS,
     notes: exercise.notes,
     sets: sets.map((set) => ({
       setType: set.setType,

@@ -9,6 +9,7 @@ import {
   SET_FIELD_COLUMNS,
   type SetColumn,
   typeIntoField,
+  type WeightUnit,
   type WorkoutLog,
 } from "@svett/core";
 
@@ -23,6 +24,10 @@ export interface Focus {
   readonly fresh: boolean;
   /** The store's count of failed saves when the text was set. */
   readonly failures: number;
+  /** The unit weights are typed in. */
+  readonly unit: WeightUnit;
+  /** The value stored when the keypad opened. Text that still reads as it keeps it exactly. */
+  readonly stored: number | null;
 }
 
 /** The keypad opened on one field, holding the value stored there. */
@@ -31,13 +36,16 @@ export const focusField = (
   set: ActivitySet,
   column: SetColumn,
   failures: number,
+  unit: WeightUnit,
 ): Focus => ({
   setId: set.id,
   exerciseId: exercise.row.exerciseId,
   column,
-  text: entryText(column, columnValue(set, column)),
+  text: entryText(column, columnValue(set, column), unit),
   fresh: true,
   failures,
+  unit,
+  stored: columnValue(set, column),
 });
 
 /**
@@ -57,7 +65,9 @@ export const liveFocus = (log: WorkoutLog, focus: Focus | null, failures: number
     if (!shown) return null;
     return {
       focus:
-        focus.failures === failures ? focus : focusField(exercise, set, focus.column, failures),
+        focus.failures === failures
+          ? focus
+          : focusField(exercise, set, focus.column, failures, focus.unit),
       exercise,
       set,
     };
@@ -74,12 +84,13 @@ export const pressKey = (
 ) => {
   const live = liveFocus(log, focus, failures);
   if (live === null) return null;
-  const text = typeIntoField(live.focus.column, live.focus.text, key, live.focus.fresh);
+  const { column, unit, stored } = live.focus;
+  const text = typeIntoField(column, live.focus.text, key, live.focus.fresh, unit);
   return {
     focus: { ...live.focus, text, fresh: false },
     exercise: live.exercise,
     set: live.set,
-    value: entryValue(live.focus.column, text),
+    value: entryValue(column, text, unit, stored),
   };
 };
 
@@ -96,9 +107,9 @@ export const nextField = (log: WorkoutLog, focus: Focus): Focus | null => {
   if (at === -1) return null;
   const { exercise, set, columns } = fields[at]!;
   const column = columns[columns.indexOf(focus.column) + 1];
-  if (column !== undefined) return focusField(exercise, set, column, focus.failures);
+  if (column !== undefined) return focusField(exercise, set, column, focus.failures, focus.unit);
   const next = fields[at + 1];
   return next === undefined
     ? null
-    : focusField(next.exercise, next.set, next.columns[0]!, focus.failures);
+    : focusField(next.exercise, next.set, next.columns[0]!, focus.failures, focus.unit);
 };
