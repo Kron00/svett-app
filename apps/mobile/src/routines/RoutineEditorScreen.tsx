@@ -16,7 +16,7 @@ import { type RouteProp, useNavigation, useRoute } from "@react-navigation/nativ
 import { type ReactNode, useEffect, useMemo, useState } from "react";
 import { ScrollView, View } from "react-native";
 
-import { currentDatabase } from "../data/current";
+import { currentDatabase, type OpenDatabase } from "../data/current";
 import { useWorkoutSettings } from "../settings/store";
 import { useOnFocus } from "../data/loaded";
 import { useIsAccessibilityTextSize } from "../design/hooks";
@@ -225,7 +225,8 @@ function Editor({
   );
 }
 
-const loadFolders = () => readRoutines((routines) => routines.listFolders);
+const loadFolders = (database: OpenDatabase) =>
+  readRoutines(database, (routines) => routines.listFolders);
 
 function EditorScroll({ children }: { readonly children: ReactNode }) {
   return (
@@ -280,17 +281,20 @@ export function EditRoutineScreen() {
   const route = useRoute<RouteProp<RootStackParamList, "EditRoutine">>();
   const draft = useOwnedDraft(route.key);
   const loaded = useRoutine(route.params.id);
-  const detail = loaded.state === "ready" ? loaded.value?.detail : undefined;
+  const read = loaded.state === "ready" ? loaded : undefined;
+  const detail = read?.value?.detail;
+  const readFrom = read?.database;
   useEffect(() => {
-    if (detail !== undefined && draft === null) {
+    if (detail !== undefined && readFrom !== undefined && draft === null) {
+      // The routine saves back into the database it was read from, or nowhere.
       openDraft({
         owner: route.key,
         routineId: detail.routine.id,
-        database: currentDatabase(),
+        database: readFrom,
         form: routineForm(detail),
       });
     }
-  }, [detail, draft, route.key]);
+  }, [detail, readFrom, draft, route.key]);
   return (
     <EditorScroll>
       {draft !== null ? <Editor draft={draft} onSaved={() => navigation.goBack()} /> : null}

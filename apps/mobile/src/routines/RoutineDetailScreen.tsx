@@ -12,7 +12,8 @@ import { Effect, Option } from "effect";
 import { useState } from "react";
 import { Alert, ScrollView, View } from "react-native";
 
-import { write } from "../data/store";
+import type { OpenDatabase } from "../data/current";
+import { writeTo } from "../data/store";
 import { useWorkoutSettings } from "../settings/store";
 import type { RootNavigation, RootStackParamList } from "../navigation";
 import { AppText } from "../ui/AppText";
@@ -24,9 +25,10 @@ import { changeRoutines, exerciseName, type RoutineView, useRoutine } from "./da
 
 type Started = { readonly started: true } | { readonly started: false; readonly title: string };
 
-/** Starts the routine, or names the workout already in progress. */
-const start = (id: RoutineId) =>
-  write(
+/** Starts the routine in `database`, or names the workout already in progress there. */
+const start = (database: OpenDatabase, id: RoutineId) =>
+  writeTo(
+    database,
     startWorkoutFromRoutine(id).pipe(
       Effect.as<Started>({ started: true }),
       Effect.catchTag("WorkoutInProgressError", ({ activityId }) =>
@@ -43,7 +45,17 @@ const start = (id: RoutineId) =>
     ),
   );
 
-function Details({ view, reload }: { readonly view: RoutineView; readonly reload: () => void }) {
+const notChanged = (error: unknown) => Alert.alert("The routine was not changed", String(error));
+
+function Details({
+  database,
+  view,
+  reload,
+}: {
+  readonly database: OpenDatabase;
+  readonly view: RoutineView;
+  readonly reload: () => void;
+}) {
   const navigation = useNavigation<RootNavigation>();
   const { routine, exercises } = view.detail;
   const [choosingFolder, setChoosingFolder] = useState(false);
@@ -54,7 +66,7 @@ function Details({ view, reload }: { readonly view: RoutineView; readonly reload
 
   const startWorkout = () => {
     setStarting(true);
-    start(routine.id)
+    start(database, routine.id)
       .then((result) => {
         if (result.started) {
           navigation.navigate("ActiveWorkout");
@@ -74,16 +86,20 @@ function Details({ view, reload }: { readonly view: RoutineView; readonly reload
   };
 
   const move = (to: number) =>
-    void changeRoutines((routines) =>
+    void changeRoutines(database, (routines) =>
       routines.orderRoutines(moveItem(view.siblings, index, to).map((sibling) => sibling.id)),
-    ).then(reload);
+    ).then(reload, notChanged);
 
   const moveToFolder = (folderId: FolderId | null) =>
-    void changeRoutines((routines) => routines.moveRoutine(routine.id, folderId)).then(reload);
+    void changeRoutines(database, (routines) => routines.moveRoutine(routine.id, folderId)).then(
+      reload,
+      notChanged,
+    );
 
   const duplicate = () =>
-    void changeRoutines((routines) => routines.duplicateRoutine(routine.id)).then((copy) =>
-      navigation.push("Routine", { id: copy }),
+    void changeRoutines(database, (routines) => routines.duplicateRoutine(routine.id)).then(
+      (copy) => navigation.push("Routine", { id: copy }),
+      notChanged,
     );
 
   const remove = () =>
@@ -93,8 +109,9 @@ function Details({ view, reload }: { readonly view: RoutineView; readonly reload
         text: "Delete",
         style: "destructive",
         onPress: () =>
-          void changeRoutines((routines) => routines.removeRoutine(routine.id)).then(() =>
-            navigation.goBack(),
+          void changeRoutines(database, (routines) => routines.removeRoutine(routine.id)).then(
+            () => navigation.goBack(),
+            notChanged,
           ),
       },
     ]);
@@ -220,7 +237,7 @@ export function RoutineDetailScreen() {
       contentContainerStyle={{ gap: 24, paddingVertical: 16 }}
     >
       {loaded.state === "ready" && loaded.value !== null ? (
-        <Details view={loaded.value} reload={loaded.reload} />
+        <Details database={loaded.database} view={loaded.value} reload={loaded.reload} />
       ) : null}
       {loaded.state === "ready" && loaded.value === null ? (
         <EmptyState

@@ -17,7 +17,7 @@ import { act, create, type ReactTestInstance, type ReactTestRenderer } from "rea
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 import { currentDatabase, switchOwner } from "../data/current";
-import { MOVE_UNFINISHED, write } from "../data/store";
+import { MOVE_UNFINISHED, writeTo } from "../data/store";
 import { AccountProvider } from "./AccountProvider";
 import { AccountScreen } from "./AccountScreen";
 
@@ -237,7 +237,7 @@ describe("a lapsed session", () => {
     await until(() => has(root, "session-lapsed"), "saying the sign-in lapsed");
     expect(texts(root)).toContain("Sign in again to sync");
 
-    await write(logWorkout("Logged while lapsed"));
+    await writeTo(currentDatabase(), logWorkout("Logged while lapsed"));
     expect(await titles(first)).toEqual(["Logged while lapsed"]);
     expect(await titles(phone)).toEqual(["Phone run"]);
   });
@@ -249,7 +249,7 @@ describe("a lapsed session", () => {
     const store = await import("../data/store");
     relaunched.followSession(null);
     expect(relaunched.currentDatabase().owner).toEqual({ kind: "account", accountId: FIRST });
-    await store.write(logWorkout("Logged offline"));
+    await store.writeTo(relaunched.currentDatabase(), logWorkout("Logged offline"));
     expect(await titles(first)).toEqual(["Logged offline"]);
     expect(await titles(phone)).toEqual(["Phone run"]);
   });
@@ -257,7 +257,7 @@ describe("a lapsed session", () => {
   it("opens a separate database when a different account signs in after the lapse", async () => {
     const { root, session } = await renderAccount();
     await session(FIRST);
-    await write(logWorkout("First's run"));
+    await writeTo(currentDatabase(), logWorkout("First's run"));
     await session(null);
     await session(SECOND);
     expect(ownerKind()).toEqual({ kind: "account", accountId: SECOND });
@@ -289,7 +289,7 @@ describe("signing out", () => {
     await until(isAnonymous, "opening the anonymous database");
     expect(has(root, "session-lapsed")).toBe(false);
     expect(has(root, "sign-in-choose")).toBe(true);
-    await write(logWorkout("Logged signed out"));
+    await writeTo(currentDatabase(), logWorkout("Logged signed out"));
     expect(await titles(phone)).toEqual(["Logged signed out", "Phone run"]);
     expect(await titles(first)).toEqual([]);
   });
@@ -311,7 +311,9 @@ describe("an unfinished move with nobody signed in", () => {
 
   it("refuses to save into the empty database instead of losing the workout", async () => {
     expect(currentDatabase().handle.target).toEqual({ kind: "empty" });
-    await expect(write(logWorkout("Lost run"))).rejects.toThrow(MOVE_UNFINISHED);
+    await expect(writeTo(currentDatabase(), logWorkout("Lost run"))).rejects.toThrow(
+      MOVE_UNFINISHED,
+    );
     expect(await titles(empty)).toEqual([]);
     expect(await titles(phone)).toEqual(["Phone run"]);
   });

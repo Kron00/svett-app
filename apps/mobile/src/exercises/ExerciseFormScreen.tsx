@@ -18,6 +18,7 @@ import { type RouteProp, useNavigation, useRoute } from "@react-navigation/nativ
 import { useState } from "react";
 import { ScrollView, View } from "react-native";
 
+import { currentDatabase } from "../data/current";
 import type { RootNavigation, RootStackParamList } from "../navigation";
 import { AppText } from "../ui/AppText";
 import { Button } from "../ui/Button";
@@ -164,13 +165,15 @@ function Form({
 export function NewExerciseScreen() {
   const navigation = useNavigation<RootNavigation>();
   const params = useRoute<RouteProp<RootStackParamList, "NewExercise">>().params;
+  // The exercise belongs to whoever was signed in when the form opened, or to nobody.
+  const [database] = useState(currentDatabase);
   return (
     <Form
       // A second link while the form is open starts it over with the new values.
       key={JSON.stringify(params ?? {})}
       initial={exerciseFormFromParams(params)}
       onSave={async (fields) => {
-        const id = await changeExercises((exercises) =>
+        const id = await changeExercises(database, (exercises) =>
           exercises.create({ ...fields, origin: MADE_HERE }),
         );
         navigation.replace("Exercise", { id });
@@ -211,13 +214,14 @@ export function EditExerciseScreen() {
     return <View className="flex-1 bg-background" />;
   }
   const exerciseId = loaded.value.id;
+  const { database } = loaded;
   // The form takes its values once. A reload when the screen comes back keeps what was typed.
   return (
     <Form
       key={exerciseId}
       initial={exerciseForm(loaded.value)}
       onSave={async (fields) => {
-        await changeExercises((exercises) => exercises.update(exerciseId, fields));
+        await changeExercises(database, (exercises) => exercises.update(exerciseId, fields));
         navigation.goBack();
       }}
     />

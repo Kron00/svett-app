@@ -18,7 +18,8 @@ import { Effect, Option, Schema } from "effect";
 import { useRef, useState } from "react";
 import { ScrollView, View } from "react-native";
 
-import { useQuery, write } from "../data/store";
+import type { OpenDatabase } from "../data/current";
+import { useQuery, writeTo } from "../data/store";
 import { workoutSettings } from "../settings/store";
 import { useIsAccessibilityTextSize } from "../design/hooks";
 import type { RootStackParamList } from "../navigation";
@@ -48,10 +49,13 @@ const parseIds = Schema.decodeUnknownOption(
 );
 
 function SetEditor({
+  database,
   set,
   exerciseName,
   onDone,
 }: {
+  /** The database the set was read from, the only one its edit saves into. */
+  readonly database: OpenDatabase;
   readonly set: WorkoutSet;
   readonly exerciseName: string;
   readonly onDone: () => void;
@@ -75,7 +79,8 @@ function SetEditor({
     }
     savingNow.current = true;
     setSaving(true);
-    write(
+    writeTo(
+      database,
       Effect.flatMap(Effect.service(ActivityRepository), (activities) =>
         activities.updateSet(set.id, result.patch),
       ),
@@ -169,7 +174,7 @@ export function SetEditScreen({ route, navigation }: Props) {
           ?.exercises.flatMap((entry) => entry.sets.map((set) => ({ entry, set })))
           .find(({ set }) => set.id === ids?.setId)
       : undefined;
-  if (found === undefined) {
+  if (found === undefined || query.status !== "ready") {
     return (
       <View className="flex-1 justify-center bg-background">
         <EmptyState
@@ -184,6 +189,7 @@ export function SetEditScreen({ route, navigation }: Props) {
   return (
     <SetEditor
       key={found.set.id}
+      database={query.database}
       set={found.set}
       exerciseName={found.entry.name}
       onDone={() => navigation.goBack()}

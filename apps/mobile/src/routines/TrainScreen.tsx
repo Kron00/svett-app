@@ -3,6 +3,7 @@ import { useNavigation } from "@react-navigation/native";
 import { type ReactNode, useEffect } from "react";
 import { ActionSheetIOS, Alert, ScrollView, View } from "react-native";
 
+import type { OpenDatabase } from "../data/current";
 import {
   markLaunch,
   markLaunchOnNextFrame,
@@ -18,6 +19,9 @@ import { IconButton } from "../ui/IconButton";
 import { ListRow, ListSection, SectionHeader } from "../ui/List";
 import { startEmpty } from "../workout/actions";
 import { changeRoutines, type RoutineOverview, useRoutineOverview } from "./data";
+
+const folderNotChanged = (error: unknown) =>
+  Alert.alert("The folder was not changed", String(error));
 
 const folderPrompt = (title: string, name: string, onSave: (name: string) => void) =>
   Alert.prompt(
@@ -39,11 +43,13 @@ const folderPrompt = (title: string, name: string, onSave: (name: string) => voi
   );
 
 function FolderHeader({
+  database,
   folder,
   folders,
   routineCount,
   onChanged,
 }: {
+  readonly database: OpenDatabase;
   readonly folder: Folder;
   readonly folders: ReadonlyArray<Folder>;
   readonly routineCount: number;
@@ -52,9 +58,9 @@ function FolderHeader({
   const navigation = useNavigation<RootNavigation>();
   const index = folders.findIndex((other) => other.id === folder.id);
   const move = (to: number) =>
-    void changeRoutines((routines) =>
+    void changeRoutines(database, (routines) =>
       routines.orderFolders(moveItem(folders, index, to).map((other) => other.id)),
-    ).then(onChanged);
+    ).then(onChanged, folderNotChanged);
 
   const actions: ReadonlyArray<{ readonly label: string; readonly run: () => void }> = [
     {
@@ -68,9 +74,9 @@ function FolderHeader({
           "Rename folder",
           folder.name,
           (name) =>
-            void changeRoutines((routines) => routines.updateFolder(folder.id, { name })).then(
-              onChanged,
-            ),
+            void changeRoutines(database, (routines) =>
+              routines.updateFolder(folder.id, { name }),
+            ).then(onChanged, folderNotChanged),
         ),
     },
     ...(index > 0 ? [{ label: "Move folder up", run: () => move(index - 1) }] : []),
@@ -91,7 +97,10 @@ function FolderHeader({
           text: "Delete",
           style: "destructive",
           onPress: () =>
-            void changeRoutines((routines) => routines.removeFolder(folder.id)).then(onChanged),
+            void changeRoutines(database, (routines) => routines.removeFolder(folder.id)).then(
+              onChanged,
+              folderNotChanged,
+            ),
         },
       ],
     );
@@ -133,10 +142,12 @@ function FolderHeader({
 }
 
 function Section({
+  database,
   section,
   overview,
   onChanged,
 }: {
+  readonly database: OpenDatabase;
   readonly section: RoutineSection;
   readonly overview: RoutineOverview;
   readonly onChanged: () => void;
@@ -163,6 +174,7 @@ function Section({
     <View className="gap-2">
       {section.folder !== null ? (
         <FolderHeader
+          database={database}
           folder={section.folder}
           folders={overview.folders}
           routineCount={section.routines.length}
@@ -179,9 +191,11 @@ function Section({
 }
 
 function Routines({
+  database,
   overview,
   onChanged,
 }: {
+  readonly database: OpenDatabase;
   readonly overview: RoutineOverview;
   readonly onChanged: () => void;
 }) {
@@ -201,6 +215,7 @@ function Routines({
         overview.sections.map((section) => (
           <Section
             key={section.folder?.id ?? "loose"}
+            database={database}
             section={section}
             overview={overview}
             onChanged={onChanged}
@@ -232,9 +247,9 @@ export function TrainScreen() {
   const newFolder = () =>
     folderPrompt("New folder", "", (name) => {
       if (loaded.state !== "ready") return;
-      void changeRoutines((routines) =>
+      void changeRoutines(loaded.database, (routines) =>
         routines.createFolder({ name, position: endPosition(loaded.value.folders) }),
-      ).then(loaded.reload);
+      ).then(loaded.reload, folderNotChanged);
     });
 
   return (
@@ -262,7 +277,7 @@ export function TrainScreen() {
             label="Start empty workout"
             symbol="plus"
             onPress={() =>
-              void startEmpty().then((started) => {
+              void startEmpty(loaded.database).then((started) => {
                 if (started === true) navigation.navigate("ActiveWorkout");
               })
             }
@@ -283,7 +298,7 @@ export function TrainScreen() {
         </View>
       </View>
       {loaded.state === "ready" ? (
-        <Routines overview={loaded.value} onChanged={loaded.reload} />
+        <Routines database={loaded.database} overview={loaded.value} onChanged={loaded.reload} />
       ) : null}
       {loaded.state === "failed" ? (
         <EmptyState

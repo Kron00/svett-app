@@ -101,8 +101,10 @@ vi.mock("../data/current", async () => {
     appDatabase: () => runtime,
     currentDatabase: () => database,
     movePending: () => false,
+    sameDatabase: (a: unknown, b: unknown) => a === b,
     stillOpen: (open: unknown) => open === database,
     subscribeDatabase: () => () => undefined,
+    useCurrentDatabase: () => database,
   };
 });
 

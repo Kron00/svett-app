@@ -5,7 +5,7 @@ import { File, Paths } from "expo-file-system";
 import * as Sharing from "expo-sharing";
 
 import { currentDatabase, type OpenDatabase, stillOpen } from "../data/current";
-import { write } from "../data/store";
+import { writeTo } from "../data/store";
 import { transferInTurn } from "../data/turns";
 
 /** Runs `body` with the transfer repository of `database`, by default the open one. */
@@ -29,7 +29,7 @@ export const changeTransfers = <A, E>(
 ) =>
   transferInTurn(() =>
     stillOpen(database)
-      ? write(Effect.flatMap(Effect.service(TransferRepository), body))
+      ? writeTo(database, Effect.flatMap(Effect.service(TransferRepository), body))
       : Promise.reject(new Error(DATABASE_SWITCHED)),
   );
 
@@ -51,7 +51,7 @@ export const changeAliases = <A, E>(
 ) =>
   transferInTurn(() =>
     stillOpen(database)
-      ? write(Effect.flatMap(Effect.service(ExerciseAliasRepository), body))
+      ? writeTo(database, Effect.flatMap(Effect.service(ExerciseAliasRepository), body))
       : Promise.reject(new Error(DATABASE_SWITCHED)),
   );
 

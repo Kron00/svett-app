@@ -1,7 +1,8 @@
 import {
   AccountId,
   ActivityExerciseId,
-  type ActivityRepository,
+  ActivityRepository,
+  type ActivityId,
   ANONYMOUS,
   databaseLayer,
   encodeMoveJournal,
@@ -11,10 +12,10 @@ import {
   startEmptyWorkout,
 } from "@svett/core";
 import { openNodeDatabase } from "@svett/core/node";
-import { ManagedRuntime, Option } from "effect";
+import { Effect, ManagedRuntime, Option } from "effect";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
-import { MOVE_UNFINISHED } from "../data/store";
+import { MOVE_UNFINISHED, SWITCHED_BEFORE_WRITE } from "../data/store";
 
 const app = vi.hoisted(() => ({
   databases: new Map<string, unknown>(),
@@ -52,15 +53,22 @@ vi.mock("expo-notifications", () => ({
 }));
 vi.mock("../account/config", () => ({ CLERK_PUBLISHABLE_KEY: "pk_test_svett" }));
 // Each owner's file is an in-memory SQLite database that outlives its handles, as a file would.
+// A closed handle refuses every read and write, as expo-sqlite does.
 vi.mock("../data/database", () => ({
   launchFixture: () => undefined,
-  openDatabaseHandle: (target: { kind: string; owner?: { kind: string; accountId?: string } }) => ({
-    target,
-    get runtime() {
-      return app.databases.get(target.owner?.accountId ?? target.owner?.kind ?? target.kind);
-    },
-    close: async () => {},
-  }),
+  openDatabaseHandle: (target: { kind: string; owner?: { kind: string; accountId?: string } }) => {
+    let closed = false;
+    return {
+      target,
+      get runtime() {
+        if (closed) throw new Error("This database is closed.");
+        return app.databases.get(target.owner?.accountId ?? target.owner?.kind ?? target.kind);
+      },
+      close: async () => {
+        closed = true;
+      },
+    };
+  },
 }));
 
 type Runtime = ManagedRuntime.ManagedRuntime<ActivityRepository | ExerciseRepository, unknown>;
@@ -148,15 +156,16 @@ describe("the workout in progress when someone signs in or out", () => {
     expect(await inProgress(first)).toEqual(own);
   });
 
-  it("saves a change made just before a switch to neither database, and shows no problem", async () => {
+  it("saves changes made just before a switch into their own database, where signing back in shows them", async () => {
     const { current, store, actions } = await launch();
     const started = await inProgress(phone);
 
+    actions.renameWorkout("Typed as");
     actions.renameWorkout("Typed as the switch happened");
     current.switchOwner({ kind: "account", accountId: FIRST });
     await settled(store);
 
-    expect(await inProgress(phone)).toEqual(started);
+    expect(await inProgress(phone)).toEqual({ ...started, title: "Typed as the switch happened" });
     expect(await inProgress(first)).toBeNull();
     expect(store.workoutState()).toMatchObject({
       status: "ready",
@@ -164,6 +173,38 @@ describe("the workout in progress when someone signs in or out", () => {
       problem: null,
       failures: 0,
     });
+
+    current.switchOwner(ANONYMOUS);
+    await settled(store);
+    expect(store.currentWorkout()?.activity.title).toBe("Typed as the switch happened");
+  });
+
+  it("refuses a change to the previous owner's workout made once the switch began, and says why", async () => {
+    const { current, store } = await launch();
+    const started = await inProgress(phone);
+    // A screen still holding the phone's workout renames it after the account's database opened.
+    const rename = (id: ActivityId, title: string) =>
+      store.changeWorkout(
+        (log) => ({ ...log, activity: { ...log.activity, title } }),
+        Effect.flatMap(Effect.service(ActivityRepository), (activities) =>
+          activities.updateWorkout(id, { title }),
+        ),
+      );
+
+    current.switchOwner({ kind: "account", accountId: FIRST });
+    rename(started!.id, "Typed after the switch");
+
+    // The account's workout shows why, until the next read.
+    await vi.waitFor(() =>
+      expect(store.workoutState()).toMatchObject({
+        status: "ready",
+        log: null,
+        problem: `Error: ${SWITCHED_BEFORE_WRITE}`,
+        failures: 1,
+      }),
+    );
+    expect(await inProgress(phone)).toEqual(started);
+    expect(await inProgress(first)).toBeNull();
   });
 
   it("refuses to start a workout while a move into an account is unfinished", async () => {

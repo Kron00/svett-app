@@ -2,12 +2,13 @@ import type { Effect } from "effect";
 import { useEffect, useEffectEvent, useState, useSyncExternalStore } from "react";
 
 import {
-  appDatabase,
   currentDatabase,
   movePending,
   type OpenDatabase,
+  sameDatabase,
   stillOpen,
   subscribeDatabase,
+  useCurrentDatabase,
 } from "./current";
 import type { AppServices } from "./database";
 
@@ -56,30 +57,63 @@ export const quietWriteTo = async <A, E>(
   database: OpenDatabase,
   effect: Effect.Effect<A, E, AppServices>,
 ): Promise<A> => {
-  if (!stillOpen(database)) throw new Error(SWITCHED_BEFORE_WRITE);
-  if (movePending(database)) throw new Error(MOVE_UNFINISHED);
+  const refusal = writeRefusal(database);
+  if (refusal !== null) throw new Error(refusal);
   return database.handle.runtime.runPromise(effect);
 };
 
-/** Runs a write on the open database, then has every screen read again. */
-export const write = <A, E>(effect: Effect.Effect<A, E, AppServices>): Promise<A> =>
-  writeTo(currentDatabase(), effect);
+/** Why a write to `database` would be refused now, or null when it may go ahead. */
+export const writeRefusal = (database: OpenDatabase): string | null => {
+  if (!stillOpen(database)) return SWITCHED_BEFORE_WRITE;
+  if (movePending(database)) return MOVE_UNFINISHED;
+  return null;
+};
+
+/**
+ * Runs a write that `writeRefusal` let through earlier and that waited its turn since. It
+ * writes into `database` even when someone signed in or out meanwhile, because the change was
+ * made to that database's data. The caller keeps the database open until it is done.
+ */
+export const writeAccepted = async <A, E>(
+  database: OpenDatabase,
+  effect: Effect.Effect<A, E, AppServices>,
+  everywhere: boolean,
+): Promise<A> => {
+  try {
+    return await database.handle.runtime.runPromise(effect);
+  } finally {
+    if (everywhere) changed();
+  }
+};
+
+/** Runs a read on `database`. */
+export const readFrom = <A, E>(
+  database: OpenDatabase,
+  effect: Effect.Effect<A, E, AppServices>,
+): Promise<A> => database.handle.runtime.runPromise(effect);
 
 export type Query<A> =
   | { readonly status: "loading" }
-  | { readonly status: "ready"; readonly value: A }
+  | {
+      readonly status: "ready";
+      readonly value: A;
+      /** The database the value was read from, where every action on it writes. */
+      readonly database: OpenDatabase;
+    }
   | { readonly status: "failed"; readonly message: string };
 
 /**
  * Reads from the database when `key` changes and after every write. The last
  * value stays on screen while the next read runs, so a list never blinks empty
- * when it loads more or refreshes.
+ * when it loads more or refreshes. A value read from another database than the open one
+ * never shows, so after a sign-in or sign-out the screen loads instead.
  */
 export function useQuery<A, E>(
   key: string,
   read: () => Effect.Effect<A, E, AppServices>,
 ): Query<A> {
   const seen = useSyncExternalStore(subscribe, () => version);
+  const open = useCurrentDatabase();
   const [query, setQuery] = useState<Query<A>>({ status: "loading" });
   // The read closes over the screen's latest props, and key and the write version say when to run it.
   const latestRead = useEffectEvent(
@@ -87,15 +121,16 @@ export function useQuery<A, E>(
   );
   useEffect(() => {
     let current = true;
-    appDatabase()
-      .runPromise(latestRead({ key, version: seen }))
-      .then(
-        (value) => current && setQuery({ status: "ready", value }),
-        (error: unknown) => current && setQuery({ status: "failed", message: String(error) }),
-      );
+    const database = currentDatabase();
+    readFrom(database, latestRead({ key, version: seen })).then(
+      (value) => current && setQuery({ status: "ready", value, database }),
+      (error: unknown) => current && setQuery({ status: "failed", message: String(error) }),
+    );
     return () => {
       current = false;
     };
   }, [key, seen]);
-  return query;
+  return query.status === "ready" && !sameDatabase(query.database, open)
+    ? { status: "loading" }
+    : query;
 }

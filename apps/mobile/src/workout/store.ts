@@ -18,7 +18,8 @@ import {
   stillOpen,
   subscribeDatabase,
 } from "../data/current";
-import { quietWriteTo, writeTo } from "../data/store";
+import { writeAccepted, writeRefusal } from "../data/store";
+import { holdOpen } from "../data/turns";
 import { skipRestTimer } from "./rest";
 
 export type WorkoutState =
@@ -41,7 +42,9 @@ type Change = (log: WorkoutLog) => WorkoutLog;
 let saved: WorkoutState = { status: "loading" };
 /**
  * The database the workout shown was read from. A workout in progress is a draft in the
- * database it was started in, so each change to it saves there and nowhere else.
+ * database it was started in, so each change to it saves there and nowhere else. It stays the
+ * previous owner's after a switch until the next owner's workout is read, so a change made
+ * to what was shown in between is refused.
  */
 let shownFrom: OpenDatabase | null = null;
 /** Changes shown before they are saved, oldest first. Each read is shown with them on top. */
@@ -94,15 +97,18 @@ const target = (): OpenDatabase => shownFrom ?? currentDatabase();
 
 /**
  * Signing in or out opens another database, with its own workout in progress or none. The
- * previous owner's workout stays in their database, and nothing of it shows or saves here,
- * its rest timer included.
+ * previous owner's workout stays in their database, and nothing of it shows here, its rest
+ * timer included. Changes made to it before the switch still save there, ahead of the read.
  */
 subscribeDatabase(() => {
-  if (shownFrom !== null && !sameDatabase(shownFrom, currentDatabase())) {
+  if (
+    shownFrom !== null &&
+    !sameDatabase(shownFrom, currentDatabase()) &&
+    saved.status !== "loading"
+  ) {
     saved = { status: "loading" };
     unsaved = [];
     failures = 0;
-    shownFrom = null;
     show();
     void skipRestTimer();
   }
@@ -112,15 +118,25 @@ subscribeDatabase(() => {
 /** Reads the workout in progress again, after every change already asked for is saved. */
 export const reloadWorkout = (): Promise<void> => enqueue(read);
 
-const failed = (database: OpenDatabase, error: unknown) =>
+/** Shows what the database holds, and why the last change was not saved. */
+const refused = (error: unknown) =>
   enqueue(async () => {
-    // A change to the previous owner's workout, refused after a switch, is not this one's problem.
-    if (!sameDatabase(database, currentDatabase())) return;
     failures += 1;
     await read();
     keepSaved((log) => log, String(error));
     show();
   });
+
+const failed = (database: OpenDatabase, error: unknown) =>
+  // The previous owner's workout is not on screen any more, so its failure is not this one's.
+  sameDatabase(database, currentDatabase()) ? refused(error) : Promise.resolve();
+
+/**
+ * Saves a change to the workout in `database` in its turn, even when someone signs in or out
+ * before the turn comes, because the change was made to that database's workout. The database
+ * stays open until it is saved, so signing back in shows it.
+ */
+const saveInTurn = <A>(task: () => Promise<A>): Promise<A> => holdOpen(enqueue(task));
 
 /**
  * Saves a change through the repositories, then shows what the database holds. Every change
@@ -130,10 +146,13 @@ const failed = (database: OpenDatabase, error: unknown) =>
 export const saveWorkout = <A>(
   effect: Effect.Effect<A, unknown, Services>,
   everywhere = false,
+  database: OpenDatabase = target(),
 ): Promise<A | null> => {
-  const database = target();
-  return enqueue(async () => {
-    const result = await (everywhere ? writeTo : quietWriteTo)(database, effect);
+  // Only a change made once another database is open, or while a move is unfinished, is refused.
+  const refusal = writeRefusal(database);
+  if (refusal !== null) return refused(new Error(refusal)).then(() => null);
+  return saveInTurn(async () => {
+    const result = await writeAccepted(database, effect, everywhere);
     await read();
     return result;
   }).catch(async (error: unknown) => {
@@ -155,13 +174,18 @@ export const changeWorkout = (
 ) => {
   const edit = { change };
   const database = target();
+  const refusal = writeRefusal(database);
+  if (refusal !== null) {
+    void refused(new Error(refusal));
+    return;
+  }
   if (shown === "now") {
     unsaved = [...unsaved, edit];
     show();
   }
-  void enqueue(async () => {
+  void saveInTurn(async () => {
     try {
-      await quietWriteTo(database, save);
+      await writeAccepted(database, save, false);
     } finally {
       unsaved = unsaved.filter((other) => other !== edit);
     }
