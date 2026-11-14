@@ -2058,6 +2058,10 @@ check "logger.sh says what the timing line showed" \
 # once it shows. A relaunch keeps a running rest, unless FAKE_FORGETS_REST.
 # FAKE_REST_IN_SUPERSET rests after the first exercise of a superset, and
 # FAKE_STORES_LB stores a weight typed in pounds as kilograms without converting it.
+# An entry field is selected while the keypad types into it. FAKE_FIELD_MISSES=n
+# makes the first n presses on entry fields miss. With FAKE_GLIDES an entry field
+# is still moving up for its first three reads, and a press where it was before
+# it stopped misses.
 cat >"$fake/tools-device" <<'EOF'
 #!/usr/bin/env node
 const fs = require("node:fs");
@@ -2069,7 +2073,7 @@ const KG_PER_LB = 0.45359237;
 const stateFile = `${process.env.FAKE_STATE}/state.json`;
 const state = fs.existsSync(stateFile)
   ? JSON.parse(fs.readFileSync(stateFile, "utf8"))
-  : { screen: "home", unit: "kg", workout: null, scrolled: [], rest: null, focus: null };
+  : { screen: "home", unit: "kg", workout: null, scrolled: [], rest: null, focus: null, fieldPresses: 0, reads: {} };
 const save = () => {
   fs.mkdirSync(process.env.FAKE_STATE, { recursive: true });
   fs.writeFileSync(stateFile, JSON.stringify(state));
@@ -2126,7 +2130,7 @@ const PLATES = {
 };
 const elements = () => {
   const found = [];
-  const add = (id, label = "") => found.push({ id, label });
+  const add = (id, label = "", selected = false) => found.push({ id, label, selected });
   if (state.screen === "home") return found;
   if (state.screen === "springboard") {
     if (state.rest !== null && !process.env.FAKE_NO_NOTIFICATION) add(null, "Rest is over");
@@ -2161,8 +2165,10 @@ const elements = () => {
       if (inSuperset(e)) add(`workout-superset-${e}`, "Superset A");
       exercise.sets.forEach((_, s) => {
         add(`workout-set-${e}-${s}`, doneLabel(exercise, s));
-        add(`set-${e}-${s}-weight`);
-        add(`set-${e}-${s}-reps`);
+        for (const column of ["weight", "reps"]) {
+          const focus = state.focus;
+          add(`set-${e}-${s}-${column}`, "", focus?.e === e && focus.s === s && focus.column === column);
+        }
       });
     });
     if (state.focus) for (const key of "0123456789") add(`key-${key}`);
@@ -2173,20 +2179,32 @@ const elements = () => {
 const parse = (selector) => ({
   id: /id="([^"]*)"/.exec(selector)?.[1] ?? null,
   label: /label="([^"]*)"/.exec(selector)?.[1] ?? null,
+  selected: /selected=true/.test(selector),
 });
 const find = (selector) => {
   const wanted = parse(selector);
   return elements().find((element) =>
-    (wanted.id === null || element.id === wanted.id) && (wanted.label === null || element.label === wanted.label)) ?? null;
+    (wanted.id === null || element.id === wanted.id) && (wanted.label === null || element.label === wanted.label) &&
+    (!wanted.selected || element.selected)) ?? null;
 };
+const isField = (id) => /^set-\d+-\d+-(weight|reps)$/.test(id ?? "");
+// Where an element is after `reads` reads of its frame. A gliding field stops after three.
+const topAt = (id, reads) => (process.env.FAKE_GLIDES && isField(id) ? 600 + 20 * Math.max(0, 3 - reads) : 600);
+const centre = (top) => `${16 + 408 / 2} ${top + 50 / 2}`;
 const belowFold = (element) =>
   /^(workout-exercise|workout-superset|workout-set|exercise-options|set)-1/.test(element.id ?? "") ||
   element.id === "plates-heavier";
 const visible = (element) => element !== null && (!belowFold(element) || state.scrolled.includes(element.id));
 const show = (screen) => { state.screen = screen; state.scrolled = []; };
 const heaviest = (exercise) => Math.max(...exercise.sets.filter((one) => one.type !== "warm_up" && one.weight !== null).map((one) => one.weight));
-const press = () => {
+const press = (point) => {
   const target = state.target;
+  if (isField(target)) {
+    state.fieldPresses += 1;
+    const missed = state.fieldPresses <= Number(process.env.FAKE_FIELD_MISSES ?? 0) ||
+      point !== centre(topAt(target, state.reads[target] ?? 0));
+    if (missed) return;
+  }
   const workout = state.workout;
   let m;
   if (target === "label:Pounds") state.unit = "lb";
@@ -2290,11 +2308,13 @@ switch (command[0]) {
     const element = find(command[2]);
     if (element === null) fail();
     state.target = element.id ?? `label:${element.label}`;
-    console.log(JSON.stringify({ label: element.label, rect: { x: 16, y: 600, width: 408, height: 50 } }));
+    const reads = state.reads[state.target] ?? 0;
+    state.reads[state.target] = reads + 1;
+    console.log(JSON.stringify({ label: element.label, rect: { x: 16, y: topAt(state.target, reads), width: 408, height: 50 } }));
     break;
   }
   case "press":
-    press();
+    press(`${command[1]} ${command[2]}`);
     break;
   case "alert":
     if (command[1] === "wait" && !state.alert) fail();
@@ -2352,8 +2372,14 @@ check "tools.sh waits on the Home Screen for the rest notification" \
   bound_got "--session t3-test session --device FAKE-UDID wait text Rest is over 60000"
 check "tools.sh types 225 lb on the keypad, then the reps, without the keypad's Next or Done" \
   only_calls 'get attrs id="(set-[0-9]+-[0-9]+-|key-|keypad-)' \
-  'get attrs id="set-0-1-weight"' 'get attrs id="key-2"' 'get attrs id="key-2"' 'get attrs id="key-5"' \
-  'get attrs id="set-0-1-reps"' 'get attrs id="key-5"'
+  'get attrs id="set-0-1-weight"' 'get attrs id="set-0-1-weight"' 'get attrs id="set-0-1-weight"' \
+  'get attrs id="key-2"' 'get attrs id="key-2"' 'get attrs id="key-5"' \
+  'get attrs id="set-0-1-reps"' 'get attrs id="set-0-1-reps"' 'get attrs id="set-0-1-reps"' \
+  'get attrs id="key-5"'
+check "tools.sh types only once the field it pressed is selected with the keypad open" \
+  only_calls 'wait id="(set-[0-9]+-[0-9]+-[a-z]+" selected=true|key-2")' \
+  'wait id="set-0-1-weight" selected=true 3000' 'wait id="key-2" 3000' \
+  'wait id="set-0-1-reps" selected=true 3000' 'wait id="key-2" 3000'
 check "tools.sh scrolls down to the second exercise's superset before it checks it" \
   bound_got '--session t3-test session --device FAKE-UDID scroll down --until id="workout-superset-1" label="Superset A"'
 check "tools.sh finds 225 lb stored as kilograms while the workout is in progress" \
@@ -2403,5 +2429,29 @@ run_tools FAKE_STORES_LB=1 "$root/tools-unconverted"
 check "tools.sh fails when the database holds pounds as kilograms" test "$tools_status" -ne 0
 check "tools.sh says the workout is not stored as logged" \
   grep -qxF "The database does not hold \"Evening workout\" as logged. See $root/tools-unconverted/pounds.txt" "$output"
+
+case_name="tools.sh when the first press on an entry field misses"
+run_tools FAKE_FIELD_MISSES=1 "$root/tools-missed"
+[[ "$tools_status" == 0 ]] || fail "tools.sh failed after one missed press"
+check "tools.sh presses the weight field again, then types 225 lb into it" \
+  grep -qxF "Set 1.2: normal, $squat_kg kg, 5 reps, done" "$root/tools-missed/pounds.txt"
+check "tools.sh says the first press did not select the field" \
+  grep -qxF "Pressing the weight of Barbell Squat's first working set did not select it with the keypad open, try 1 of 2" "$output"
+
+case_name="tools.sh when every press on an entry field misses"
+run_tools FAKE_FIELD_MISSES=99 "$root/tools-missing"
+check "tools.sh fails when the field never takes a press" test "$tools_status" -ne 0
+check "tools.sh names the field the keypad never opened for" \
+  grep -qxF "Pressing the weight of Barbell Squat's first working set (id=\"set-0-1-weight\") did not select it and open the keypad, after two presses" "$output"
+check "tools.sh never types on the keypad when the field never took a press" \
+  only_calls 'get attrs id="key-'
+
+case_name="tools.sh when an entry field is still moving after a scroll"
+run_tools FAKE_GLIDES=1 "$root/tools-glides"
+[[ "$tools_status" == 0 ]] || fail "tools.sh failed on a field that was still moving"
+check "tools.sh presses the field where it stopped, at the first try" \
+  bash -c '! grep -qF "try 1 of 2" "$1"' _ "$output"
+check "tools.sh still types 225 lb into the field" \
+  grep -qxF "Set 1.2: normal, $squat_kg kg, 5 reps, done" "$root/tools-glides/pounds.txt"
 
 echo "$passed passed"

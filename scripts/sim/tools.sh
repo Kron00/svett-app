@@ -37,11 +37,13 @@
 # centre of its frame, because agent-device 0.21.37 refuses a selector press
 # inside screen content on iOS 27. It presses only controls whose centre is
 # clear of the screen's bottom edge, so it never presses the keypad's Next and
-# Done or the rest timer's buttons there. Numbered screenshots go to out-dir, by
-# default ~/svett-proof/<branch>/tools/. Like tabs.sh, Debug opens the
-# development client on Metro at SVETT_METRO, --release opens the installed
-# Release build, and every step runs through SVETT_DEVICE_CMD when it is set.
-# simctl only finds the data container.
+# Done or the rest timer's buttons there. Before it presses an entry field it
+# reads the field's frame until it stops moving, and it types only once the
+# field is selected with the keypad open, pressing it once more if not. Numbered
+# screenshots go to out-dir, by default ~/svett-proof/<branch>/tools/. Like
+# tabs.sh, Debug opens the development client on Metro at SVETT_METRO, --release
+# opens the installed Release build, and every step runs through
+# SVETT_DEVICE_CMD when it is set. simctl only finds the data container.
 set -euo pipefail
 
 usage() {
@@ -164,20 +166,70 @@ centre_of() {
   ' "$frame"
 }
 
-# tap <selector> [what is missing]: brings the element on screen and presses the
-# centre of its frame. One whose centre sits at the bottom edge, where iOS 27
-# keeps the home indicator, is dragged up first.
-tap() {
-  local point drags=0
-  bring "$@"
+# settled_centre <selector>: the centre of the element's frame once two reads in
+# a row agree, because the workout keeps gliding for a moment after a pan or a
+# scroll, and a press at a frame read during the glide lands beside the element.
+settled_centre() {
+  local before after reads=0
+  before=$(centre_of "$1") || return 1
+  while ((reads < 10)); do
+    agent_device wait 250 >/dev/null
+    after=$(centre_of "$1") || return 1
+    if [[ "$after" == "$before" ]]; then
+      echo "$after"
+      return 0
+    fi
+    before=$after
+    reads=$((reads + 1))
+  done
+  return 1
+}
+
+# clear_point <selector> [settle]: prints the centre of the element's frame. One
+# whose centre sits at the bottom edge, where iOS 27 keeps the home indicator, is
+# dragged up first, and its frame is then read until it settles. With settle it
+# is read until it settles anyway.
+clear_point() {
+  local point drags=0 settle=${2:-}
   point=$(centre_of "$1") || fail "$1 is not on screen"
   while ((${point#* } > safe_bottom)); do
     ((drags < 3)) || fail "$1 stayed at the bottom edge of the screen"
     agent_device gesture pan 20 600 0 -300 400
     drags=$((drags + 1))
+    settle=true
     point=$(centre_of "$1") || fail "$1 is not on screen"
   done
+  if [[ -n "$settle" ]]; then
+    point=$(settled_centre "$1") || fail "$1 kept moving on screen"
+  fi
+  echo "$point"
+}
+
+# tap <selector> [what is missing]: brings the element on screen and presses the
+# centre of its frame.
+tap() {
+  local point
+  bring "$@"
+  point=$(clear_point "$1")
   agent_device press "${point% *}" "${point#* }"
+}
+
+# field <id> <name>: presses an entry field of the workout and waits until it is
+# selected with the keypad open, because keys pressed while the press missed go
+# to another field or nowhere. A press that missed is tried once more.
+field() {
+  local selector="id=\"$1\"" point attempt
+  for attempt in 1 2; do
+    bring "$selector" "$2 never came on screen"
+    point=$(clear_point "$selector" settle)
+    agent_device press "${point% *}" "${point#* }"
+    if agent_device wait "$selector selected=true" 3000 >/dev/null 2>&1 &&
+      agent_device wait 'id="key-2"' 3000 >/dev/null 2>&1; then
+      return 0
+    fi
+    echo "Pressing $2 did not select it with the keypad open, try $attempt of 2" >&2
+  done
+  fail "Pressing $2 ($selector) did not select it and open the keypad, after two presses"
 }
 
 # key <digit>...: presses keys on the keypad, which stays open over the workout.
@@ -296,9 +348,9 @@ tap 'id="rest-sheet-30"'
 expect 'id="workout"' "Choosing a rest time did not go back to the workout"
 
 # The fixture's last Barbell Squat began with a warm-up, so its first working set is the second.
-tap 'id="set-0-1-weight"'
+field set-0-1-weight "the weight of Barbell Squat's first working set"
 key 2 2 5
-tap 'id="set-0-1-reps"'
+field set-0-1-reps "the reps of Barbell Squat's first working set"
 key 5
 expect_set 0 1 "Set 1, 225 lb, 5 reps, To do"
 screenshot pounds-typed
