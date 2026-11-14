@@ -104,17 +104,16 @@ export const putRows = <A extends RowBase>(target: Table<A>, rows: ReadonlyArray
     }
   });
 
-/** Reads the live rows that match `where`. Rows with `deleted_at` set are never returned. */
-export const selectRows = <A extends RowBase>(
+const readRows = <A extends RowBase>(
   target: Table<A>,
-  where = "1 = 1",
-  params: ReadonlyArray<SqlValue> = [],
-  orderBy = "id",
+  where: string,
+  params: ReadonlyArray<SqlValue>,
+  orderBy: string,
 ) =>
   Effect.gen(function* () {
     const sql = yield* Sql;
     const rows = yield* sql.all(
-      `SELECT ${selectList(target)} FROM ${target.name} WHERE deleted_at IS NULL AND (${where}) ORDER BY ${orderBy}`,
+      `SELECT ${selectList(target)} FROM ${target.name} WHERE ${where} ORDER BY ${orderBy}`,
       params,
     );
     const decode = Schema.decodeUnknownSync(target.schema);
@@ -122,6 +121,24 @@ export const selectRows = <A extends RowBase>(
       decode(Object.fromEntries(target.keys.map((key) => [key, row[columnOf(key)] ?? null]))),
     );
   });
+
+/** Reads the live rows that match `where`. Rows with `deleted_at` set are never returned. */
+export const selectRows = <A extends RowBase>(
+  target: Table<A>,
+  where = "1 = 1",
+  params: ReadonlyArray<SqlValue> = [],
+  orderBy = "id",
+) => readRows(target, `deleted_at IS NULL AND (${where})`, params, orderBy);
+
+/**
+ * Reads the rows that match `where`, deleted ones too. Only export, import and Undo need
+ * deleted rows, so that a deletion travels with the data like any other change.
+ */
+export const selectRowsWithDeleted = <A extends RowBase>(
+  target: Table<A>,
+  where = "1 = 1",
+  params: ReadonlyArray<SqlValue> = [],
+) => readRows(target, `(${where})`, params, "id");
 
 export const selectById = <A extends RowBase>(target: Table<A>, id: string) =>
   Effect.map(selectRows(target, "id = ?", [id]), (rows) => Option.fromNullishOr(rows[0]));

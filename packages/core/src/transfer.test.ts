@@ -64,13 +64,62 @@ describe("planImport", () => {
     expect(plan.changed.map((item) => item.key)).toEqual(["activity/a"]);
   });
 
-  it("lists a workout here with a set the file lacks as changed", () => {
+  it("leaves a set here that the file lacks as it is, since import never removes rows", () => {
     const local = workout("Legs");
     const plan = planImport(
       { ...local, activitySet: [...local.activitySet, row("s2", { activityExerciseId: "e" })] },
       local,
     );
+    expect(plan).toMatchObject({ added: [], changed: [], unchanged: 1 });
+  });
+
+  it("plans to write only the rows the file holds, not the workout above them", () => {
+    const local = workout("Legs");
+    const changedSet = row("s", { activityExerciseId: "e", reps: 6 });
+    expect(planImport(local, { activitySet: local.activitySet })).toMatchObject({
+      changed: [],
+      unchanged: 1,
+    });
+    const plan = planImport(local, { activitySet: [changedSet] });
     expect(plan.changed.map((item) => item.key)).toEqual(["activity/a"]);
+    expect(plan.items).toEqual([
+      expect.objectContaining({
+        status: "changed",
+        writes: { activitySet: [changedSet] },
+        replaced: { activitySet: local.activitySet },
+      }),
+    ]);
+  });
+
+  it("lists a workout deleted here as changed, and a deletion in the file the same way", () => {
+    const deleted = (rows: ReturnType<typeof workout>) => ({
+      activity: rows.activity.map((top) => ({ ...top, deletedAt: EpochMillis.make(7) })),
+    });
+    expect(planImport(deleted(workout("Legs")), workout("Legs")).changed).toHaveLength(1);
+    expect(planImport(workout("Legs"), deleted(workout("Legs"))).changed).toHaveLength(1);
+  });
+
+  it("keeps a record the file holds only as deleted, without counting it as new", () => {
+    const measurement = row("m", { kind: "body_weight", measuredAt: 5 });
+    const plan = planImport(
+      {},
+      { measurement: [{ ...measurement, deletedAt: EpochMillis.make(9) }] },
+    );
+    expect(plan).toMatchObject({ added: [], deleted: 1, changed: [] });
+    expect(isNothingToImport(plan)).toBe(false);
+  });
+
+  it("lets the file's version of a library exercise replace the one svett seeded", () => {
+    const seeded = row("x", { name: "Squat", source: "library" }, 0);
+    const deleted = { ...seeded, updatedAt: EpochMillis.make(9), deletedAt: EpochMillis.make(9) };
+    const plan = planImport({ exercise: [seeded] }, { exercise: [deleted] });
+    expect(plan).toMatchObject({ deleted: 1, changed: [] });
+    expect(plan.items).toMatchObject([
+      { status: "new", writes: { exercise: [deleted] }, replaced: { exercise: [seeded] } },
+    ]);
+
+    const edited = { ...seeded, updatedAt: EpochMillis.make(3), name: "Back squat" };
+    expect(planImport({ exercise: [edited] }, { exercise: [deleted] }).changed).toHaveLength(1);
   });
 
   it("lists changed records newest first", () => {

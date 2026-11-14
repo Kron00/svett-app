@@ -3,7 +3,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import { databaseLayer } from "../database.ts";
 import { DurationSeconds } from "../duration.ts";
-import { libraryExerciseId } from "../exercise-library.ts";
+import { exerciseLibrary, libraryExerciseId } from "../exercise-library.ts";
 import { buildFixture } from "../fixture.ts";
 import { contentFingerprint, Ids } from "../ids.ts";
 import { manualClock } from "../manual-clock.ts";
@@ -16,6 +16,8 @@ import {
   type ImportBatchId,
   SourceIdentity,
 } from "../schema.ts";
+import { MIGRATIONS, migrate } from "../migrations.ts";
+import { Sql } from "../sql.ts";
 import { decodeSvettFile, type SvettFile } from "../svett-file.ts";
 import { TABLES } from "../table.ts";
 import { openTestDatabase, T0 } from "../test-database.ts";
@@ -95,6 +97,15 @@ const liveRows = (database: Database, without?: ImportBatchId) =>
           (row) =>
             without === undefined || (row["id"] !== without && row["import_batch_id"] !== without),
         ),
+    ]),
+  );
+
+/** Every row of every table, deleted or not, leaving out the batch an import made. */
+const everyRow = (database: Database, without: ImportBatchId) =>
+  Object.fromEntries(
+    Object.entries(allRows(database)).map(([name, rows]) => [
+      name,
+      rows.filter((row) => row["id"] !== without && row["import_batch_id"] !== without),
     ]),
   );
 
@@ -215,6 +226,10 @@ const fillEveryTable = async (database: Database) => {
         }),
       );
       yield* transfers.applyImport(fromOtherPhone, []);
+
+      const gone = yield* activities.create(workout("Deleted later"));
+      yield* activities.remove(gone);
+      yield* exercises.remove(libraryExerciseId("Barbell_Deadlift"));
     }),
   );
 };
@@ -233,7 +248,150 @@ describe("TransferRepository", () => {
     const imported = await transfer(wiped, (repository) => repository.applyImport(file, []));
     const batch = Option.getOrThrow(imported).importBatchId;
 
-    expect(liveRows(wiped, batch)).toEqual(liveRows(original));
+    expect(everyRow(wiped, batch)).toEqual(allRows(original));
+  });
+
+  it("keeps deletions through export and import, even of a library exercise svett seeds", async () => {
+    const original = openTestDatabase(1);
+    const deadlift = libraryExerciseId("Barbell_Deadlift");
+    await original.runtime.runPromise(
+      Effect.gen(function* () {
+        const activities = yield* ActivityRepository;
+        yield* activities.remove(yield* activities.create(workout("Gone")));
+        yield* activities.create(workout("Kept"));
+        yield* (yield* ExerciseRepository).remove(deadlift);
+      }),
+    );
+    const file = await exportFile(original);
+    const wiped = openTestDatabase(2);
+
+    const plan = await transfer(wiped, (repository) => repository.previewImport(file));
+    expect({ added: plan.added, deleted: plan.deleted, changed: plan.changed }).toEqual({
+      added: [{ table: "activity", count: 1 }],
+      deleted: 2,
+      changed: [],
+    });
+    const imported = await transfer(wiped, (repository) => repository.applyImport(file, []));
+    const batch = Option.getOrThrow(imported).importBatchId;
+
+    expect(everyRow(wiped, batch)).toEqual(allRows(original));
+    expect(liveTitles(wiped)).toEqual(["Kept"]);
+    const exercise = await wiped.runtime.runPromise(
+      Effect.flatMap(Effect.service(ExerciseRepository), (exercises) => exercises.get(deadlift)),
+    );
+    expect(exercise).toEqual(Option.none());
+
+    // Undo puts back the library exercise as svett seeded it.
+    await transfer(wiped, (repository) => repository.undoImport(batch, []));
+    expect(
+      wiped.database.prepare("SELECT deleted_at FROM exercise WHERE id = ?").get(deadlift),
+    ).toEqual({ deleted_at: null });
+  });
+
+  it("gives an export of a database made before library rows shared one time the same rows in a new install", async () => {
+    const { database, driver } = openNodeDatabase();
+    const legacy = ManagedRuntime.make(Layer.merge(Sql.layer(driver), manualClock(T0).layer));
+    await legacy.runPromise(migrate(MIGRATIONS.slice(0, 1)));
+    // The first release seeded the library with the time of each install.
+    const bundled = exerciseLibrary();
+    const insert = database.prepare(
+      "INSERT INTO exercise (id, updated_at, deleted_at, name, category, equipment, primary_muscles, secondary_muscles, source, source_id, fingerprint, import_batch_id) VALUES (?, ?, NULL, ?, ?, ?, ?, ?, 'library', ?, NULL, NULL)",
+    );
+    for (const exercise of bundled) {
+      insert.run(
+        exercise.id,
+        T0 - 1_000,
+        exercise.name,
+        exercise.category,
+        exercise.equipment,
+        JSON.stringify(exercise.primaryMuscles),
+        JSON.stringify(exercise.secondaryMuscles),
+        exercise.sourceId,
+      );
+    }
+    const squat = libraryExerciseId("Barbell_Squat");
+    database
+      .prepare("UPDATE exercise SET name = 'Back squat', updated_at = ? WHERE id = ?")
+      .run(T0 - 500, squat);
+    const upgraded: Database = {
+      database,
+      runtime: ManagedRuntime.make(
+        Layer.provideMerge(databaseLayer(driver, Ids.layerSeeded(5)), manualClock(T0).layer),
+      ),
+    };
+
+    const file = await exportFile(upgraded);
+    const times = new Map((file.tables.exercise ?? []).map((row) => [row.id, row.updatedAt]));
+    expect(times.get(squat)).toBe(T0 - 500);
+    expect(new Set([...times].filter(([id]) => id !== squat).map(([, at]) => at))).toEqual(
+      new Set([0]),
+    );
+
+    // The new install's seeded copy is not yours, so the renamed exercise replaces it unasked.
+    const fresh = openTestDatabase(6);
+    const plan = await transfer(fresh, (repository) => repository.previewImport(file));
+    expect({ added: plan.added, changed: plan.changed }).toEqual({
+      added: [{ table: "exercise", count: 1 }],
+      changed: [],
+    });
+    const imported = await transfer(fresh, (repository) => repository.applyImport(file, []));
+    const batch = Option.getOrThrow(imported).importBatchId;
+    expect(everyRow(fresh, batch)).toEqual(allRows(upgraded));
+  });
+
+  it("takes a file that holds only an existing set without touching its workout", async () => {
+    const phone = openTestDatabase(1);
+    await phone.runtime.runPromise(
+      Effect.flatMap(Effect.service(ActivityRepository), (activities) =>
+        activities.create(workout("Legs")),
+      ),
+    );
+    const own = await exportFile(phone);
+    const set = (own.tables.activitySet ?? []).find((row) => row["reps"] === 5)!;
+    const file: SvettFile = {
+      ...own,
+      tables: { activitySet: [{ ...set, reps: 6 }] },
+      rows: 1,
+    };
+    const plan = await transfer(phone, (repository) => repository.previewImport(file));
+    const key = plan.changed[0]!.key;
+    const taken = await transfer(phone, (repository) => repository.applyImport(file, [key]));
+    expect(Option.getOrThrow(taken)).toMatchObject({ added: 0, replaced: 1 });
+
+    expect(liveTitles(phone)).toEqual(["Legs"]);
+    const live = liveRows(phone);
+    expect(live["activity_exercise"]).toHaveLength(1);
+    expect(live["activity_set"]?.map((row) => row["reps"]).toSorted()).toEqual([6, 8]);
+  });
+
+  it("undoes a set imported without its workout", async () => {
+    const other = openTestDatabase(2);
+    await other.runtime.runPromise(
+      Effect.flatMap(Effect.service(ActivityRepository), (activities) =>
+        activities.create(workout("Back")),
+      ),
+    );
+    const theirs = await exportFile(other);
+    const file: SvettFile = {
+      ...theirs,
+      tables: { activitySet: theirs.tables.activitySet ?? [] },
+      rows: 2,
+    };
+    const phone = openTestDatabase(1);
+    const imported = await transfer(phone, (repository) => repository.applyImport(file, []));
+    const batch = Option.getOrThrow(imported).importBatchId;
+    expect(liveRows(phone)["activity_set"]).toHaveLength(2);
+
+    const preview = await transfer(phone, (repository) => repository.previewUndo(batch));
+    expect(preview.changes.map(({ change, edited }) => [change.change, edited])).toEqual([
+      ["added", false],
+    ]);
+    expect(await transfer(phone, (repository) => repository.undoImport(batch, []))).toEqual({
+      removed: 1,
+      restored: 0,
+      left: 0,
+    });
+    expect(liveRows(phone)["activity_set"]).toEqual([]);
   });
 
   it("imports the 300-workout fixture back into an empty database unchanged", async () => {
@@ -326,8 +484,8 @@ describe("TransferRepository", () => {
     );
     const otherFile = await exportFile(other);
     const ownFile = await exportFile(phone);
-    // The file's copy of Legs gains a set the phone does not have, and the phone's copy has
-    // a set the file does not, so taking it both adds and removes rows.
+    // The file's copy of Legs gains a set the phone does not have, and lacks one the phone
+    // has. Taking it adds the new set and leaves the one the file lacks.
     const legs = ownFile.tables.activitySet ?? [];
     const file: SvettFile = {
       ...ownFile,
@@ -444,7 +602,7 @@ describe("TransferRepository", () => {
     });
   });
 
-  it("brings back a workout that an undo removed when the file is imported again", async () => {
+  it("lists a workout an undo removed as changed, and brings it back when you take it", async () => {
     const other = openTestDatabase(2);
     await other.runtime.runPromise(
       Effect.flatMap(Effect.service(ActivityRepository), (activities) =>
@@ -459,8 +617,15 @@ describe("TransferRepository", () => {
     );
     expect(liveTitles(phone)).toEqual([]);
 
-    const second = await transfer(phone, (transfers) => transfers.applyImport(file, []));
-    expect(Option.getOrThrow(second)).toMatchObject({ added: 1, replaced: 0 });
+    const plan = await transfer(phone, (transfers) => transfers.previewImport(file));
+    expect(plan.changed.map((item) => item.title)).toEqual(["Back"]);
+    expect(await transfer(phone, (transfers) => transfers.applyImport(file, []))).toEqual(
+      Option.none(),
+    );
+    const second = await transfer(phone, (transfers) =>
+      transfers.applyImport(file, [plan.changed[0]!.key]),
+    );
+    expect(Option.getOrThrow(second)).toMatchObject({ added: 0, replaced: 1 });
     expect(liveTitles(phone)).toEqual(["Back"]);
   });
 

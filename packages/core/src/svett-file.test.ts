@@ -50,14 +50,21 @@ describe("svett file", () => {
     );
   });
 
-  it("reads a table the file leaves out as empty, and leaves out rows marked deleted", () => {
-    const decoded = decodeSvettFile(
-      file({
-        folder: [folder, { ...folder, id: "01900000-0000-7000-8000-000000000002", deletedAt: 9 }],
-      }),
-    );
-    expect(Result.isSuccess(decoded) && decoded.success.tables.folder).toEqual([folder]);
+  it("reads a table the file leaves out as empty, and keeps rows marked deleted", () => {
+    const deleted = { ...folder, id: "01900000-0000-7000-8000-000000000002", deletedAt: 9 };
+    const decoded = decodeSvettFile(file({ folder: [folder, deleted] }));
+    expect(Result.isSuccess(decoded) && decoded.success.tables.folder).toEqual([folder, deleted]);
+    expect(Result.isSuccess(decoded) && decoded.success.rows).toBe(2);
     expect(Result.isSuccess(decoded) && decoded.success.tables.activity).toEqual([]);
+  });
+
+  it("writes rows marked deleted, so a deletion survives the round trip", () => {
+    const deleted = { ...folder, id: "01900000-0000-7000-8000-000000000002", deletedAt: 9 };
+    const text = encodeSvettFile(
+      snapshot({ folder: [folder, deleted] as never }),
+      EpochMillis.make(1_000),
+    );
+    expect(JSON.parse(text).tables.folder).toEqual([folder, deleted]);
   });
 
   it.each([
@@ -96,6 +103,73 @@ describe("svett file", () => {
     expect(failure(file({ gym: [] }))).toMatchObject({
       reason: "invalid",
       message: "The file has a table svett does not know, gym.",
+    });
+  });
+
+  describe("import changes", () => {
+    const change = (fields: Record<string, unknown>) => ({
+      id: "01900000-0000-7000-8000-0000000000c1",
+      updatedAt: 5,
+      deletedAt: null,
+      importBatchId: "01900000-0000-7000-8000-0000000000b1",
+      change: "replaced",
+      itemTable: "folder",
+      itemId: folder.id,
+      title: "Push pull legs",
+      itemAt: null,
+      rowIds: { folder: [folder.id] },
+      replaced: { folder: [folder] },
+      written: "0".repeat(64),
+      ...fields,
+    });
+
+    it("reads an import change whose kept rows pass their tables' rules", () => {
+      expect(Result.isSuccess(decodeSvettFile(file({ import_change: [change({})] })))).toBe(true);
+    });
+
+    it.each([
+      [
+        "a table svett does not know",
+        { replaced: { not_a_table: [{ junk: true }] } },
+        "it names a table svett does not know, not_a_table",
+      ],
+      [
+        "a row that breaks its table's rules",
+        { replaced: { folder: [{ ...folder, name: "" }] } },
+        "it keeps a folder row that is not valid",
+      ],
+      [
+        "a row the import did not write",
+        { rowIds: { folder: [] } },
+        "it keeps a folder row the import did not write",
+      ],
+      [
+        "an unknown table among the rows it wrote",
+        { rowIds: { gym: [folder.id] } },
+        "it names a table svett does not know, gym",
+      ],
+      [
+        "an import change inside it that is not valid",
+        {
+          itemTable: "import_change",
+          itemId: "01900000-0000-7000-8000-0000000000c2",
+          rowIds: { import_change: ["01900000-0000-7000-8000-0000000000c2"] },
+          replaced: {
+            import_change: [
+              change({
+                id: "01900000-0000-7000-8000-0000000000c2",
+                replaced: { not_a_table: [{ junk: true }] },
+              }),
+            ],
+          },
+        },
+        "it names a table svett does not know, not_a_table",
+      ],
+    ])("refuses an import change that keeps %s, before anything is written", (_, fields, why) => {
+      expect(failure(file({ import_change: [change(fields)] }))).toMatchObject({
+        reason: "invalid",
+        message: `Row 1 of import_change is not valid, because ${why}.`,
+      });
     });
   });
 });

@@ -1,5 +1,14 @@
-import { contentFingerprint } from "./ids.ts";
-import { EpochMillis, Fingerprint, type ImportSource, type MeasurementKind } from "./schema.ts";
+import { Exit, Schema } from "effect";
+
+import { LIBRARY_UPDATED_AT } from "./exercise-library.ts";
+import { canonicalJson, contentFingerprint } from "./ids.ts";
+import {
+  EpochMillis,
+  Fingerprint,
+  type ImportChange,
+  type ImportSource,
+  type MeasurementKind,
+} from "./schema.ts";
 import { TABLES } from "./table.ts";
 
 export type TableKey = keyof typeof TABLES;
@@ -13,7 +22,7 @@ export type AnyRow = Readonly<Record<string, unknown>> & {
   readonly deletedAt: EpochMillis | null;
 };
 
-/** Live rows of every table. */
+/** Every row of every table, deleted ones too. */
 export type Snapshot = Readonly<Record<TableKey, ReadonlyArray<AnyRow>>>;
 
 /** Rows of some tables, such as the rows of one record. */
@@ -131,25 +140,17 @@ export const groupItems = (rows: TableRows, lookup: TableRows = rows): Map<strin
   return items;
 };
 
-const sortedRows = (rows: TableRows, withTimes: boolean) =>
-  TABLE_KEYS.flatMap((table) =>
-    (rows[table] ?? [])
-      .map((row) => {
-        if (withTimes) return row;
-        const { updatedAt: _, ...content } = row;
-        return content;
-      })
-      .toSorted((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
-      .map((row) => [TABLES[table].name, row]),
-  );
-
-/** Equal for two records with the same rows, whenever each row last changed. */
-export const contentOf = (rows: TableRows): Fingerprint =>
-  Fingerprint.make(contentFingerprint(sortedRows(rows, false)));
-
 /** Changes with any write to the record, even one that leaves its content as it was. */
 export const writtenOf = (rows: TableRows): Fingerprint =>
-  Fingerprint.make(contentFingerprint(sortedRows(rows, true)));
+  Fingerprint.make(
+    contentFingerprint(
+      TABLE_KEYS.flatMap((table) =>
+        (rows[table] ?? [])
+          .toSorted((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
+          .map((row) => [TABLES[table].name, row]),
+      ),
+    ),
+  );
 
 const MEASUREMENT_TITLE: Readonly<Record<MeasurementKind, string>> = {
   body_weight: "Body weight",
@@ -233,20 +234,27 @@ export const summarize = (item: Item): ItemSummary => {
   }
 };
 
+/** The rows an import writes for one record, and the versions here it writes over. */
+interface Writes {
+  readonly incoming: Item;
+  /** The file's rows that differ from the rows here with the same ID, or are not here. */
+  readonly writes: TableRows;
+  /** The rows here that `writes` replace, deleted or not. */
+  readonly replaced: TableRows;
+  readonly summary: ItemSummary;
+}
+
 export type PlannedItem =
-  | { readonly status: "new"; readonly incoming: Item; readonly summary: ItemSummary }
-  | {
-      readonly status: "changed";
-      readonly incoming: Item;
-      readonly local: Item;
-      readonly summary: ItemSummary;
-    }
+  | ({ readonly status: "new" } & Writes)
+  | ({ readonly status: "changed" } & Writes)
   | { readonly status: "unchanged"; readonly summary: ItemSummary };
 
 export interface ImportPlan {
   readonly items: ReadonlyArray<PlannedItem>;
   /** New records per table, in table order, for the tables that have any. */
   readonly added: ReadonlyArray<{ readonly table: TableKey; readonly count: number }>;
+  /** New records the file holds only as deleted. Import keeps them, still deleted. */
+  readonly deleted: number;
   /** Records here that the file holds another version of. Import keeps yours unless chosen. */
   readonly changed: ReadonlyArray<ItemSummary>;
   readonly unchanged: number;
@@ -255,33 +263,66 @@ export interface ImportPlan {
 const byTimeThenTitle = (a: ItemSummary, b: ItemSummary) =>
   (b.at ?? 0) - (a.at ?? 0) || a.title.localeCompare(b.title) || a.key.localeCompare(b.key);
 
+const sameContent = (a: AnyRow, b: AnyRow) =>
+  canonicalJson({ ...a, updatedAt: 0 }) === canonicalJson({ ...b, updatedAt: 0 });
+
 /**
- * Compares the records in a file with the ones here, by ID. A record that is not here is
- * new. One whose rows match, however long ago each changed, is unchanged and left alone.
- * Any other is changed, and the preview lists it.
+ * A library exercise as the app seeded it. It is not yours to keep, so a file's version of
+ * it, such as a deletion, counts as new rather than as a change to your copy.
+ */
+const isSeed = (table: TableKey, row: AnyRow) =>
+  table === "exercise" &&
+  row["source"] === "library" &&
+  row.updatedAt === LIBRARY_UPDATED_AT &&
+  row.deletedAt === null;
+
+export const isLive = (rows: TableRows) =>
+  TABLE_KEYS.some((key) => (rows[key] ?? []).some((row) => row.deletedAt === null));
+
+/**
+ * Compares the rows in a file with the ones here, by ID, and groups them into records. An
+ * import writes only the file's rows. A row the file leaves out stays as it is here, and a
+ * deletion travels as a row marked deleted. A record none of whose rows are here is new. One
+ * whose rows all match, however long ago each changed, is unchanged and left alone. Any other
+ * is changed, and the preview lists it.
  */
 export const planImport = (local: TableRows, incoming: TableRows): ImportPlan => {
   const lookup = Object.fromEntries(
     TABLE_KEYS.map((key) => [key, [...(incoming[key] ?? []), ...(local[key] ?? [])]]),
   ) as TableRows;
-  const incomingItems = groupItems(incoming, lookup);
-  const localItems = groupItems(local, lookup);
+  const here = new Map(
+    TABLE_KEYS.map((key) => [key, new Map((local[key] ?? []).map((row) => [row.id, row]))]),
+  );
   const items: Array<PlannedItem> = [];
-  for (const item of incomingItems.values()) {
+  for (const item of groupItems(incoming, lookup).values()) {
     const summary = summarize(item);
-    const here = localItems.get(item.key);
-    if (here === undefined) items.push({ status: "new", incoming: item, summary });
-    else if (contentOf(here.rows) === contentOf(item.rows))
-      items.push({ status: "unchanged", summary });
-    else items.push({ status: "changed", incoming: item, local: here, summary });
+    const writes: Partial<Record<TableKey, Array<AnyRow>>> = {};
+    const replaced: Partial<Record<TableKey, Array<AnyRow>>> = {};
+    let yours = !isRootSeedOrMissing(item, here);
+    for (const table of TABLE_KEYS) {
+      for (const row of item.rows[table] ?? []) {
+        const current = here.get(table)?.get(row.id);
+        if (current !== undefined && !isSeed(table, current)) yours = true;
+        if (current !== undefined && sameContent(current, row)) continue;
+        (writes[table] ??= []).push(row);
+        if (current !== undefined) (replaced[table] ??= []).push(current);
+      }
+    }
+    if (Object.keys(writes).length === 0) items.push({ status: "unchanged", summary });
+    else {
+      items.push({ status: yours ? "changed" : "new", incoming: item, writes, replaced, summary });
+    }
   }
   const added = TABLE_KEYS.map((table) => ({
     table,
-    count: items.filter((item) => item.status === "new" && item.summary.table === table).length,
+    count: items.filter(
+      (item) => item.status === "new" && item.summary.table === table && isLive(item.writes),
+    ).length,
   })).filter(({ count }) => count > 0);
   return {
     items,
     added,
+    deleted: items.filter((item) => item.status === "new" && !isLive(item.writes)).length,
     changed: items
       .filter((item) => item.status === "changed")
       .map((item) => item.summary)
@@ -290,8 +331,51 @@ export const planImport = (local: TableRows, incoming: TableRows): ImportPlan =>
   };
 };
 
+/** True when the record's top row is not here, or is a library exercise as seeded. */
+const isRootSeedOrMissing = (
+  item: Item,
+  here: ReadonlyMap<TableKey, ReadonlyMap<string, AnyRow>>,
+) => {
+  const root = here.get(item.table)?.get(item.id);
+  return root === undefined || isSeed(item.table, root);
+};
+
+/**
+ * Why an import change cannot be trusted, or undefined when it can. Its journal must name
+ * known tables, and each kept row must pass its table's schema and be one the import wrote.
+ * An import change kept inside another is checked the same way.
+ */
+export const journalProblem = (change: ImportChange): string | undefined => {
+  if (tableKeyOf(change.itemTable) === undefined) {
+    return `it names a table svett does not know, ${change.itemTable}`;
+  }
+  const written = new Map<string, ReadonlySet<string>>();
+  for (const [name, ids] of Object.entries(change.rowIds)) {
+    if (tableKeyOf(name) === undefined) return `it names a table svett does not know, ${name}`;
+    written.set(name, new Set(ids));
+  }
+  for (const [name, rows] of Object.entries(change.replaced ?? {})) {
+    const key = tableKeyOf(name);
+    if (key === undefined) return `it names a table svett does not know, ${name}`;
+    const decode = Schema.decodeUnknownExit(Schema.toType(TABLES[key].schema));
+    for (const raw of rows) {
+      const row = decode(raw);
+      if (Exit.isFailure(row)) return `it keeps a ${name} row that is not valid`;
+      const value = row.value as AnyRow;
+      if (!written.get(name)?.has(value.id)) {
+        return `it keeps a ${name} row the import did not write`;
+      }
+      if (key === "importChange") {
+        const nested = journalProblem(value as unknown as ImportChange);
+        if (nested !== undefined) return nested;
+      }
+    }
+  }
+  return undefined;
+};
+
 export const isNothingToImport = (plan: ImportPlan): boolean =>
-  plan.added.length === 0 && plan.changed.length === 0;
+  plan.added.length === 0 && plan.deleted === 0 && plan.changed.length === 0;
 
 export const recordsLabel = (count: number): string =>
   `${count.toLocaleString("en-US")} ${count === 1 ? "record" : "records"}`;

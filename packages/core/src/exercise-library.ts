@@ -145,10 +145,10 @@ export const fromLibraryEntry = (entry: LibraryEntry): LibraryExercise => ({
   secondaryMuscles: unique(entry.secondaryMuscles.map((muscle) => MUSCLE_FROM_LIBRARY[muscle])),
 });
 
-/** The bundled library's IDs, read without decoding the library. */
 /** Every install stores the same library rows, so an export or sync never sees them as changed. */
 export const LIBRARY_UPDATED_AT = EpochMillis.make(0);
 
+/** The bundled library's IDs, read without decoding the library. */
 export const libraryIds = (): ReadonlyArray<string> => entries.map((entry) => entry.id);
 
 /** The bundled library, parsed and mapped to svett's muscles and equipment. */

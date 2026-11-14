@@ -1,8 +1,14 @@
 import { Data, Exit, Result, Schema } from "effect";
 
-import { EpochMillis } from "./schema.ts";
+import { EpochMillis, type ImportChange } from "./schema.ts";
 import { TABLES } from "./table.ts";
-import { type AnyRow, type Snapshot, TABLE_KEYS, type TableRows } from "./transfer.ts";
+import {
+  type AnyRow,
+  journalProblem,
+  type Snapshot,
+  TABLE_KEYS,
+  type TableRows,
+} from "./transfer.ts";
 
 /** Raised by every change to the file's shape. An older svett refuses a newer file. */
 export const SVETT_FILE_VERSION = 1;
@@ -10,7 +16,7 @@ export const SVETT_FILE_VERSION = 1;
 export interface SvettFile {
   readonly version: number;
   readonly exportedAt: EpochMillis;
-  /** Live rows by table, each parsed by its table's schema. */
+  /** Rows by table, deleted ones too, each parsed by its table's schema. */
   readonly tables: TableRows;
   /** How many rows the file holds. */
   readonly rows: number;
@@ -29,17 +35,16 @@ const Envelope = Schema.Struct({
 });
 
 /**
- * Writes every live row of every table as one JSON file. Rows keep their IDs and their
- * fields as the app reads them, so the file is readable on its own.
+ * Writes every row of every table as one JSON file. Rows keep their IDs and their fields as
+ * the app reads them, so the file is readable on its own. Deleted rows go too, so a deletion
+ * survives an export and import, even of a library exercise that every install seeds.
  */
 export const encodeSvettFile = (snapshot: Snapshot, exportedAt: EpochMillis): string =>
   JSON.stringify({
     format: "svett",
     version: SVETT_FILE_VERSION,
     exportedAt,
-    tables: Object.fromEntries(
-      TABLE_KEYS.map((key) => [TABLES[key].name, snapshot[key].filter((row) => !row.deletedAt)]),
-    ),
+    tables: Object.fromEntries(TABLE_KEYS.map((key) => [TABLES[key].name, snapshot[key]])),
   });
 
 export const exportFileName = (exportedAt: EpochMillis): string =>
@@ -51,8 +56,9 @@ const notSvett = new SvettFileError({
 });
 
 /**
- * Reads a svett file. Every row passes its table's schema, so a damaged or edited file is
- * refused whole rather than half imported. Rows marked deleted are left out.
+ * Reads a svett file. Every row passes its table's schema, and every import change's journal
+ * passes the schemas of the tables it names, so a damaged or edited file is refused whole
+ * rather than half imported.
  */
 export const decodeSvettFile = (text: string): Result.Result<SvettFile, SvettFileError> => {
   let json: unknown;
@@ -89,7 +95,7 @@ export const decodeSvettFile = (text: string): Result.Result<SvettFile, SvettFil
     const name = TABLES[key].name;
     const decode = Schema.decodeUnknownExit(Schema.toType(TABLES[key].schema));
     const seen = new Set<string>();
-    const live: Array<AnyRow> = [];
+    const kept: Array<AnyRow> = [];
     for (const [index, raw] of (tables[name] ?? []).entries()) {
       const row = decode(raw);
       if (Exit.isFailure(row)) {
@@ -109,11 +115,21 @@ export const decodeSvettFile = (text: string): Result.Result<SvettFile, SvettFil
           }),
         );
       }
+      const problem =
+        key === "importChange" ? journalProblem(value as unknown as ImportChange) : undefined;
+      if (problem !== undefined) {
+        return Result.fail(
+          new SvettFileError({
+            reason: "invalid",
+            message: `Row ${index + 1} of ${name} is not valid, because ${problem}.`,
+          }),
+        );
+      }
       seen.add(value.id);
-      if (value.deletedAt === null) live.push(value);
+      kept.push(value);
     }
-    parsed[key] = live;
-    rows += live.length;
+    parsed[key] = kept;
+    rows += kept.length;
   }
   return Result.succeed({ version, exportedAt, tables: parsed, rows });
 };

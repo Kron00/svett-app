@@ -33,7 +33,7 @@ const anImport = (database: DatabaseSync) => {
     "INSERT INTO import_batch (id, updated_at, deleted_at, source, created_at, status) VALUES ('b', 1, NULL, 'svett_file', 1, 'applied')",
   );
   database.exec(
-    "INSERT INTO import_change (id, updated_at, deleted_at, import_batch_id, change, item_table, item_id, title, item_at, replaced, written) VALUES ('c', 1, NULL, 'b', 'added', 'activity', 'a', 'Legs', NULL, NULL, 'f')",
+    "INSERT INTO import_change (id, updated_at, deleted_at, import_batch_id, change, item_table, item_id, title, item_at, row_ids, replaced, written) VALUES ('c', 1, NULL, 'b', 'added', 'activity', 'a', 'Legs', NULL, '{}', NULL, 'f')",
   );
 };
 
@@ -69,15 +69,35 @@ describe("compareDatabases", () => {
     );
   });
 
-  it("finds a row the copy lacks, or holds only as deleted", () => {
+  it("finds a row the copy lacks", () => {
     const comparison = compareDatabases(
       original,
-      copy((database) => database.exec("UPDATE measurement SET deleted_at = 1 WHERE rowid = 1")),
+      copy((database) => database.exec("DELETE FROM measurement WHERE rowid = 1")),
     );
     expect(comparison.tables.find(({ table }) => table === "measurement")).toMatchObject({
       missing: 1,
       extra: 0,
     });
+  });
+
+  it("finds a row the copy holds deleted, and a deleted row the copy lacks", () => {
+    const deletedHere = compareDatabases(
+      original,
+      copy((database) => database.exec("UPDATE measurement SET deleted_at = 1 WHERE rowid = 1")),
+    );
+    expect(deletedHere.tables.find(({ table }) => table === "measurement")).toMatchObject({
+      missing: 1,
+      extra: 1,
+    });
+    const deletedOriginal = copy((database) =>
+      database.exec("UPDATE measurement SET deleted_at = 1 WHERE rowid = 1"),
+    );
+    const lacking = copy((database) => database.exec("DELETE FROM measurement WHERE rowid = 1"));
+    expect(
+      compareDatabases(deletedOriginal, lacking).tables.find(
+        ({ table }) => table === "measurement",
+      ),
+    ).toMatchObject({ missing: 1, extra: 0 });
   });
 });
 

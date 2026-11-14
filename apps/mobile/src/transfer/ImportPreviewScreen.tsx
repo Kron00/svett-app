@@ -110,6 +110,11 @@ function Plan({
               </ListSection>
             </View>
           )}
+          {plan.deleted === 0 ? null : (
+            <AppText variant="subheadline" tone="secondary" className="px-gutter">
+              {recordsLabel(plan.deleted)} deleted before the export stay deleted here.
+            </AppText>
+          )}
           {plan.unchanged === 0 ? null : (
             <AppText variant="subheadline" tone="secondary" className="px-gutter">
               {recordsLabel(plan.unchanged)} in the file are already here and stay as they are.

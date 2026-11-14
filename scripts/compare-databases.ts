@@ -5,7 +5,7 @@ import { DatabaseSync } from "node:sqlite";
 
 export interface TableComparison {
   readonly table: string;
-  /** Live rows in the original. */
+  /** Rows in the original, deleted ones too. */
   readonly rows: number;
   /** Original rows the other database lacks or holds with any column different. */
   readonly missing: number;
@@ -31,7 +31,7 @@ const tablesOf = (database: DatabaseSync, schema: string) =>
     .map((row) => String(row["name"]));
 
 /**
- * Compares the live rows of every table, every column. The import batches the other
+ * Compares every row of every table, deleted ones too, every column. The import batches the other
  * database has and the original lacks, and their changes, come from the import that made
  * it, so they are left out of the comparison and listed instead.
  */
@@ -67,8 +67,8 @@ export function compareDatabases(originalPath: string, importedPath: string): Co
           .all(table)
           .map((row) => `"${String(row["name"])}"`)
           .join(", ");
-        const original = `SELECT ${columns} FROM original."${table}" WHERE deleted_at IS NULL`;
-        const imported = `SELECT ${columns} FROM main."${table}" WHERE deleted_at IS NULL AND ${leftOut[table] ?? "1 = 1"}`;
+        const original = `SELECT ${columns} FROM original."${table}"`;
+        const imported = `SELECT ${columns} FROM main."${table}" WHERE ${leftOut[table] ?? "1 = 1"}`;
         const count = (query: string) => {
           const statement = database.prepare(`SELECT count(*) AS n FROM (${query})`);
           statement.setAllowUnknownNamedParameters(true);

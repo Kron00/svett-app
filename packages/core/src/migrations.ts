@@ -71,7 +71,8 @@ CREATE INDEX coach_message_conversation ON coach_message (conversation_id, creat
 
 const importChanges = `
 CREATE TABLE import_change (${row}, import_batch_id TEXT NOT NULL, change TEXT NOT NULL, item_table TEXT NOT NULL,
-  item_id TEXT NOT NULL, title TEXT NOT NULL, item_at INTEGER, replaced TEXT, written TEXT NOT NULL) STRICT;
+  item_id TEXT NOT NULL, title TEXT NOT NULL, item_at INTEGER, row_ids TEXT NOT NULL, replaced TEXT,
+  written TEXT NOT NULL) STRICT;
 CREATE INDEX import_change_batch ON import_change (import_batch_id);
 `;
 
