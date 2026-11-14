@@ -171,13 +171,13 @@ describe("HistoryRepository.workout", () => {
   });
 
   it("badges a workout as the charts do when another started at the same time", async () => {
-    const { log, view, run } = open();
+    const { log, view, database } = open();
     await log(1, "A", [{ exerciseId: DEADLIFT, sets: [set(100, 5)] }]);
     const b = await log(1, "B", [
       { exerciseId: SQUAT, sets: [set(60, 5)] },
       { exerciseId: DEADLIFT, sets: [set(110, 5)] },
     ]);
-    const charted = await run(() =>
+    const charted = await database.runtime.runPromise(
       Effect.gen(function* () {
         const progress = yield* ProgressRepository;
         return personalRecords(yield* progress.performedSets()).records;
