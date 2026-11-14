@@ -31,10 +31,7 @@ import { DataScreen } from "./transfer/DataScreen";
 import { ImportPreviewScreen } from "./transfer/ImportPreviewScreen";
 import { UndoImportScreen } from "./transfer/UndoImportScreen";
 import { reloadWorkout } from "./workout/store";
-import {
-  FinishWorkoutButton,
-  WorkoutScreen as ActiveWorkoutScreen,
-} from "./workout/WorkoutScreen";
+import { WorkoutScreen as ActiveWorkoutScreen } from "./workout/WorkoutScreen";
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
 
@@ -162,11 +159,7 @@ export default function App() {
         <Stack.Screen
           name="ActiveWorkout"
           component={ActiveWorkoutScreen}
-          options={{
-            headerShown: true,
-            title: "Workout",
-            headerRight: () => <FinishWorkoutButton />,
-          }}
+          options={{ headerShown: true, title: "Workout" }}
         />
         <Stack.Screen
           name="AddWorkoutExercise"

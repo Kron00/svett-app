@@ -255,7 +255,8 @@ check_rows() {
 }
 
 finish_workout() {
-  tap 'id="finish-workout"'
+  # Finish is a native bar item, which carries its label but no identifier.
+  tap 'label="Finish"'
   agent_device alert wait 5000 >/dev/null || fail "Finish asked nothing"
   # The confirmation is svett's own alert, which agent-device's alert accept cannot
   # answer, so its button is pressed by its label like any other control.

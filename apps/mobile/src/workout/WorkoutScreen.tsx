@@ -7,11 +7,10 @@ import {
   SET_TYPE_OPTIONS,
   type SetColumn,
   setBadges,
-  unfinishedSets,
   type WorkoutLog,
 } from "@svett/core";
 import { useFocusEffect, useNavigation } from "@react-navigation/native";
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useLayoutEffect, useRef, useState } from "react";
 import { Alert, type HostInstance, ScrollView, type ScrollViewInstance, View } from "react-native";
 
 import type { RootNavigation } from "../navigation";
@@ -24,7 +23,6 @@ import { OptionSheet } from "../ui/OptionSheet";
 import { TextField } from "../ui/TextField";
 import {
   discard,
-  finish,
   logBy,
   removeSet,
   renameWorkout,
@@ -34,6 +32,7 @@ import {
   typeValue,
 } from "./actions";
 import { ExerciseCard } from "./ExerciseCard";
+import { finishItems } from "./finish";
 import { type Focus, focusField, liveFocus, nextField, pressKey } from "./focus";
 import { reloadWorkout, useWorkout } from "./store";
 import { showTiming, useElapsed, useLastDoneTiming } from "./timing";
@@ -287,45 +286,19 @@ function Logger({
   );
 }
 
-/** The Finish button in the workout's header. */
-export function FinishWorkoutButton() {
-  const navigation = useNavigation<RootNavigation>();
-  const workout = useWorkout();
-  const log = workout.status === "ready" ? workout.log : null;
-  if (log === null) return null;
-  const left = unfinishedSets(log.exercises);
-  const finishNow = () =>
-    void finish().then((result) => {
-      if (result.finished) navigation.goBack();
-      else Alert.alert("The workout is not finished", result.problem);
-    });
-  return (
-    <Button
-      label="Finish"
-      variant="plain"
-      onPress={() =>
-        Alert.alert(
-          `Finish ${log.activity.title}?`,
-          left === 0
-            ? "It is saved to your history."
-            : `${left === 1 ? "1 set" : `${left} sets`} not marked done ${left === 1 ? "is" : "are"} left out.`,
-          [
-            { text: "Cancel", style: "cancel" },
-            { text: "Finish workout", isPreferred: true, onPress: finishNow },
-          ],
-        )
-      }
-      testID="finish-workout"
-    />
-  );
-}
-
 /**
  * The workout in progress. Every change is saved as it is made, so a workout cut off by a
  * crash or a killed app opens again as it was.
  */
 export function WorkoutScreen() {
   const workout = useWorkout();
+  const navigation = useNavigation<RootNavigation>();
+  const ready = workout.status === "ready" && workout.log !== null;
+  useLayoutEffect(() => {
+    navigation.setOptions({
+      unstable_headerRightItems: () => finishItems(ready, () => navigation.goBack()),
+    });
+  }, [navigation, ready]);
   useFocusEffect(
     useCallback(() => {
       void reloadWorkout();

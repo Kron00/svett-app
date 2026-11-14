@@ -21,6 +21,8 @@ import type { Focus } from "./focus";
 
 const app = vi.hoisted(() => ({ runtime: undefined as unknown }));
 vi.mock("../data/database", () => ({ appDatabase: () => app.runtime }));
+const alert = vi.hoisted(() => vi.fn());
+vi.mock("react-native", () => ({ Alert: { alert } }));
 
 const squat = libraryExerciseId("Barbell_Squat");
 const plank = libraryExerciseId("Plank");
@@ -126,6 +128,7 @@ const tempFile = () => join(mkdtempSync(join(tmpdir(), "svett-logger-")), "svett
 
 afterEach(() => {
   app.runtime = undefined;
+  alert.mockClear();
 });
 
 describe("the workout store", () => {
@@ -264,5 +267,59 @@ describe("the workout store", () => {
     );
     expect(shownSet(running).reps).toBe(5);
     expect(shownText(running, field)).toBe("5");
+  });
+});
+
+describe("the Finish item in the workout's header", () => {
+  /** The header's Finish item, pressed, and the alert it shows. */
+  const pressFinish = async (running: Launched, leave: () => void) => {
+    const { finishItems } = await import("./finish");
+    const [item] = finishItems(true, leave);
+    if (item?.type !== "button") throw new Error("no Finish button");
+    expect(item).toMatchObject({ label: "Finish", accessibilityLabel: "Finish" });
+    item.onPress();
+    const [title, message, buttons] = alert.mock.lastCall!;
+    return { title, message, finishWorkout: () => buttons[1].onPress() };
+  };
+
+  it("is there only while a workout is ready", async () => {
+    const { finishItems } = await import("./finish");
+    expect(finishItems(false, () => {})).toEqual([]);
+    expect(finishItems(true, () => {})).toHaveLength(1);
+  });
+
+  it("asks before it finishes, then saves the workout and leaves the screen", async () => {
+    const opened = openApp(":memory:");
+    await startSquats(opened.runtime);
+    const running = await launch(opened.runtime);
+    running.actions.typeValue(shownSet(running), "reps", 5);
+    await running.store.reloadWorkout();
+    running.actions.toggleSetDone(running.store.currentWorkout()!.exercises[0]!, 0);
+    await vi.waitFor(() => expect(shownSet(running).done).toBe(true));
+    const leave = vi.fn();
+
+    const asked = await pressFinish(running, leave);
+    expect(asked.title).toBe(`Finish ${running.store.currentWorkout()!.activity.title}?`);
+    expect(asked.message).toBe("2 sets not marked done are left out.");
+    expect(leave).not.toHaveBeenCalled();
+
+    asked.finishWorkout();
+    await vi.waitFor(() => expect(leave).toHaveBeenCalledOnce());
+    await running.store.reloadWorkout();
+    expect(running.store.currentWorkout()).toBe(null);
+  });
+
+  it("says why and stays when no set is done", async () => {
+    const opened = openApp(":memory:");
+    await startSquats(opened.runtime);
+    const running = await launch(opened.runtime);
+    const leave = vi.fn();
+
+    (await pressFinish(running, leave)).finishWorkout();
+    await vi.waitFor(() =>
+      expect(alert).toHaveBeenLastCalledWith("The workout is not finished", expect.any(String)),
+    );
+    expect(leave).not.toHaveBeenCalled();
+    expect(running.store.currentWorkout()).not.toBe(null);
   });
 });
