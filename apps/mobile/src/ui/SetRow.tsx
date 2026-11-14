@@ -188,8 +188,8 @@ export function SetRow({ columns = WEIGHT_AND_REPS, ...props }: SetRowProps) {
           {setButton}
           {previous}
         </View>
-        {lines.map((line, index) => (
-          <View key={index} testID="set-row-line" className="flex-row items-center gap-2">
+        {lines.map((line) => (
+          <View key={line[0]?.key} testID="set-row-line" className="flex-row items-center gap-2">
             {line}
           </View>
         ))}

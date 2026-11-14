@@ -63,6 +63,8 @@ function renderAt(
   return tree.root;
 }
 
+const isHost = (node: ReactTestInstance, type: string) => (node.type as unknown) === type;
+
 const byTestID = (root: ReactTestInstance, testID: string) =>
   root.find((node) => typeof node.type === "string" && node.props.testID === testID);
 
@@ -70,15 +72,15 @@ const byTestID = (root: ReactTestInstance, testID: string) =>
 const viewAround = (node: ReactTestInstance): ReactTestInstance => {
   const parent = node.parent;
   if (parent === null) throw new Error("no View around it");
-  return parent.type === "View" ? parent : viewAround(parent);
+  return isHost(parent, "View") ? parent : viewAround(parent);
 };
 
 /** The test IDs of the controls on each line below the set's badge, in order. */
 const linesOf = (root: ReactTestInstance) =>
   root
-    .findAll((node) => node.type === "View" && node.props.testID === "set-row-line")
+    .findAll((node) => isHost(node, "View") && node.props.testID === "set-row-line")
     .map((line) =>
-      line.findAll((node) => node.type === "Pressable").map((node) => String(node.props.testID)),
+      line.findAll((node) => isHost(node, "Pressable")).map((node) => String(node.props.testID)),
     );
 
 describe("SetRow", () => {
@@ -92,7 +94,7 @@ describe("SetRow", () => {
     const weight = byTestID(root, "field-weight");
     expect(viewAround(weight).props.className).toBe("flex-1");
     expect(weight.props.accessibilityValue).toEqual({ text: "Empty" });
-    const shown = weight.findAll((node) => node.type === "Text").map((node) => node.props.children);
+    const shown = weight.findAll((node) => isHost(node, "Text")).map((node) => node.props.children);
     expect(shown).toEqual(["132.28", "lb"]);
   });
 
@@ -117,7 +119,7 @@ describe("SetRow", () => {
     expect(linesOf(root)).toEqual([]);
     const row = viewAround(viewAround(byTestID(root, "field-weight")));
     expect(
-      row.findAll((node) => node.type === "Pressable").map((node) => node.props.testID),
+      row.findAll((node) => isHost(node, "Pressable")).map((node) => node.props.testID),
     ).toEqual(["set-type", "field-weight", "field-reps", "set"]);
   });
 });
