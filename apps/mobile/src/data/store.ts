@@ -1,10 +1,17 @@
 import type { Effect } from "effect";
 import { useEffect, useEffectEvent, useState, useSyncExternalStore } from "react";
 
-import { type AppServices, appDatabase } from "./database";
+import { appDatabase, subscribeDatabase } from "./current";
+import type { AppServices } from "./database";
 
 let version = 0;
 const listeners = new Set<() => void>();
+const changed = () => {
+  version++;
+  for (const listener of listeners) listener();
+};
+// Signing in or out, or moving data into an account, replaces the data as a whole.
+subscribeDatabase(changed);
 const subscribe = (listener: () => void) => {
   listeners.add(listener);
   return () => {
@@ -17,8 +24,7 @@ export const write = async <A, E>(effect: Effect.Effect<A, E, AppServices>): Pro
   try {
     return await appDatabase().runPromise(effect);
   } finally {
-    version++;
-    for (const listener of listeners) listener();
+    changed();
   }
 };
 

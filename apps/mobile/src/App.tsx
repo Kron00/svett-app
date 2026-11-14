@@ -8,6 +8,8 @@ import {
 import { createNativeStackNavigator } from "@react-navigation/native-stack";
 import { StatusBar } from "expo-status-bar";
 
+import { AccountProvider } from "./account/AccountProvider";
+import { AccountScreen } from "./account/AccountScreen";
 import { ChatGPTScreen } from "./chatgpt/ChatGPTScreen";
 import { PhoneChecksScreen } from "./checks/PhoneChecksScreen";
 import { useNavigationTheme } from "./design/hooks";
@@ -32,7 +34,7 @@ const Stack = createNativeStackNavigator<RootStackParamList>();
 
 // The scripts in scripts/sim/ open screens through these links, such as
 // svett://gallery?sheet=open, svett://exercises?q=bench, svett://progress/muscles and
-// svett://chatgpt,
+// svett://chatgpt and svett://account,
 // because agent-device refuses taps in screen content on iOS 27. It reads UIKit's
 // touch-transparent floating bar containers as toolbars that cover the whole screen.
 // scripts/sim/data.sh reaches export and import the same way, through svett://data,
@@ -46,6 +48,7 @@ const linking: LinkingOptions<RootStackParamList> = {
       Tabs: { screens: { Progress: "progress" } },
       Gallery: "gallery",
       ChatGPT: "chatgpt",
+      Account: "account",
       NewExercise: "exercises/new",
       Exercises: "exercises",
       EditExercise: "exercise/:id/edit",
@@ -66,6 +69,7 @@ const linking: LinkingOptions<RootStackParamList> = {
 
 export default function App() {
   return (
+    <AccountProvider>
     <NavigationContainer theme={useNavigationTheme()} linking={linking}>
       <StatusBar style="auto" />
       <Stack.Navigator screenOptions={{ headerShown: false }}>
@@ -84,6 +88,11 @@ export default function App() {
           name="ChatGPT"
           component={ChatGPTScreen}
           options={{ headerShown: true, title: "ChatGPT" }}
+        />
+        <Stack.Screen
+          name="Account"
+          component={AccountScreen}
+          options={{ headerShown: true, title: "Account" }}
         />
         <Stack.Screen
           name="Exercises"
@@ -169,5 +178,6 @@ export default function App() {
         />
       </Stack.Navigator>
     </NavigationContainer>
+    </AccountProvider>
   );
 }

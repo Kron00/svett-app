@@ -3,7 +3,7 @@ import { useFocusEffect } from "@react-navigation/native";
 import { Effect, Option, Schema } from "effect";
 import { useCallback, useState } from "react";
 
-import { appDatabase } from "../data/database";
+import { appDatabase } from "../data/current";
 
 export type Loaded<A> =
   | { readonly state: "loading" }

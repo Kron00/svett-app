@@ -93,7 +93,11 @@ vi.mock("@react-navigation/native", async () => {
     useFocusEffect: (effect: () => () => void) => useEffect(effect, [effect]),
   };
 });
-vi.mock("../data/database", () => ({ appDatabase: () => app.runtime }));
+vi.mock("../data/current", () => ({
+  appDatabase: () => app.runtime,
+  databaseVersion: () => 0,
+  subscribeDatabase: () => () => undefined,
+}));
 
 // Twelve days after the fixture's last workout, like the day this was written.
 const NOW = new Date(2026, 10, 13, 12).getTime();

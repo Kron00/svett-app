@@ -31,6 +31,7 @@ export type RootStackParamList = {
   /** `uri` is a picked file. `file` names a file in svett's documents, for svett://import links. */
   ImportPreview: { uri?: string; file?: string };
   UndoImport: { importBatchId: string };
+  Account: undefined;
 };
 
 export type RootNavigation = NativeStackNavigationProp<RootStackParamList>;

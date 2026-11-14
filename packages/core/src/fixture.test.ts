@@ -25,4 +25,18 @@ describe("buildFixture", () => {
     const usual = await buildFixture(openNodeDatabase().driver);
     expect(other.checksum).not.toBe(usual.checksum);
   });
+
+  it("can bring the same training in as one Hevy import", async () => {
+    const { database, driver } = openNodeDatabase();
+    const imported = await buildFixture(driver, FIXTURE_SEED, 300, { imported: true });
+    const usual = await buildFixture(openNodeDatabase().driver);
+    expect({ ...imported, checksum: "" }).toEqual({ ...usual, checksum: "" });
+    expect(
+      database
+        .prepare(
+          "SELECT source, count(*) AS n, count(DISTINCT import_batch_id) AS batches FROM activity GROUP BY source",
+        )
+        .all(),
+    ).toEqual([{ source: "hevy", n: 300, batches: 1 }]);
+  });
 });

@@ -5,6 +5,7 @@ import {
   emailProblem,
   isNewAccount,
   normalizeCode,
+  moveOfferMessage,
   shouldOfferMove,
   SIGN_IN_START,
   type SignInEvent,
@@ -234,5 +235,19 @@ describe("moving the phone's data into the account", () => {
     expect(shouldOfferMove({ alreadyAsked: false, anonymousRows: 12 })).toBe(true);
     expect(shouldOfferMove({ alreadyAsked: true, anonymousRows: 12 })).toBe(false);
     expect(shouldOfferMove({ alreadyAsked: false, anonymousRows: 0 })).toBe(false);
+  });
+});
+
+describe("the move offer", () => {
+  it("says how much the phone holds", () => {
+    expect(moveOfferMessage({ workouts: 300, sets: 6023 })).toBe(
+      "This phone holds 300 workouts with 6,023 sets from before you signed in.",
+    );
+    expect(moveOfferMessage({ workouts: 1, sets: 1 })).toBe(
+      "This phone holds 1 workout with 1 set from before you signed in.",
+    );
+    expect(moveOfferMessage({ workouts: 0, sets: 0 })).toBe(
+      "This phone holds routines or measurements from before you signed in.",
+    );
   });
 });

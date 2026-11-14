@@ -160,3 +160,17 @@ export const shouldOfferMove = (input: {
   readonly alreadyAsked: boolean;
   readonly anonymousRows: number;
 }) => !input.alreadyAsked && input.anonymousRows > 0;
+
+export interface MoveCounts {
+  readonly workouts: number;
+  readonly sets: number;
+}
+
+const plural = (count: number, one: string, many: string) =>
+  `${String(count).replaceAll(/\B(?=(\d{3})+(?!\d))/g, ",")} ${count === 1 ? one : many}`;
+
+/** What the move offer says the phone holds. */
+export const moveOfferMessage = ({ workouts, sets }: MoveCounts) =>
+  workouts === 0
+    ? "This phone holds routines or measurements from before you signed in."
+    : `This phone holds ${plural(workouts, "workout", "workouts")} with ${plural(sets, "set", "sets")} from before you signed in.`;

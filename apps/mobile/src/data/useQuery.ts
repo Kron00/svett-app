@@ -1,8 +1,9 @@
 import { Cause, type Effect, Exit } from "effect";
 import { useFocusEffect } from "@react-navigation/native";
-import { useCallback, useState } from "react";
+import { useCallback, useState, useSyncExternalStore } from "react";
 
-import { type AppServices, appDatabase } from "./database";
+import { appDatabase, databaseVersion, subscribeDatabase } from "./current";
+import type { AppServices } from "./database";
 
 export type QueryState<A> =
   | { readonly status: "loading" }
@@ -11,8 +12,8 @@ export type QueryState<A> =
 
 /**
  * Runs `query` against the app's database each time the screen comes into
- * view, whenever the caller passes a new query, and on `reload`, such as after
- * a save. Callers memoize the query on its inputs. A result for a query the
+ * view, whenever the caller passes a new query, when signing in or out swaps
+ * the database, and on `reload`, such as after a save. Callers memoize the query on its inputs. A result for a query the
  * screen has moved on from is dropped.
  */
 export function useQuery<A, E>(
@@ -22,6 +23,8 @@ export function useQuery<A, E>(
   readonly reload: () => void;
 } {
   const [state, setState] = useState<QueryState<A>>({ status: "loading" });
+  // Signing in or out swaps the database, so a screen in view reads the new one.
+  const generation = useSyncExternalStore(subscribeDatabase, databaseVersion);
   const load = useCallback(() => {
     let current = true;
     void appDatabase()
@@ -37,7 +40,7 @@ export function useQuery<A, E>(
     return () => {
       current = false;
     };
-  }, [query]);
+  }, [query, generation]);
   useFocusEffect(load);
   return { state, reload: load };
 }

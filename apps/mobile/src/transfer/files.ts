@@ -4,7 +4,7 @@ import * as DocumentPicker from "expo-document-picker";
 import { File, Paths } from "expo-file-system";
 import * as Sharing from "expo-sharing";
 
-import { appDatabase } from "../data/database";
+import { appDatabase } from "../data/current";
 import { write } from "../data/store";
 
 /** Runs `body` with the transfer repository of the database this launch opened. */
