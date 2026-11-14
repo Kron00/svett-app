@@ -30,6 +30,61 @@ const failure = (text: string) => {
   return result.failure;
 };
 
+const activity = {
+  id: "01900000-0000-7000-8000-0000000000a1",
+  updatedAt: 5,
+  deletedAt: null,
+  kind: "strength",
+  startedAt: 1_000,
+  durationS: 3_600,
+  title: "Legs",
+  notes: "",
+  energyKcal: null,
+  audience: "only_you",
+  hiddenFields: [],
+  source: "svett",
+  sourceId: null,
+  fingerprint: null,
+  importBatchId: null,
+};
+const exercise = (n: number) => ({
+  id: `01900000-0000-7000-8000-0000000000e${n}`,
+  updatedAt: 5,
+  deletedAt: null,
+  activityId: activity.id,
+  exerciseId: "01900000-0000-7000-8000-0000000000f1",
+  position: n,
+  supersetGroup: null,
+  notes: "",
+});
+const set = (n: number, of: number, values: Record<string, unknown>) => ({
+  id: `01900000-0000-7000-8000-0000000000d${n}`,
+  updatedAt: 5,
+  deletedAt: null,
+  activityExerciseId: `01900000-0000-7000-8000-0000000000e${of}`,
+  position: n,
+  setType: "normal",
+  weightKg: null,
+  reps: null,
+  durationS: null,
+  distanceM: null,
+  rpe: null,
+  ...values,
+});
+const tablesOf = (text: string) => {
+  const result = decodeSvettFile(text);
+  if (Result.isFailure(result)) throw new Error(result.failure.message);
+  return result.success.tables;
+};
+
+/** A set row as a version 2 file holds it. */
+const v2 = (row: Record<string, unknown>) => ({
+  ...row,
+  done: true,
+  targetRepsMin: null,
+  targetRepsMax: null,
+});
+
 describe("svett file", () => {
   it("reads back what it wrote", () => {
     const text = encodeSvettFile(snapshot({ folder: [folder] as never }), EpochMillis.make(1_000));
@@ -72,57 +127,10 @@ describe("svett file", () => {
     expect(JSON.parse(text).tables.folder).toEqual([folder, deleted]);
   });
 
-  const activity = {
-    id: "01900000-0000-7000-8000-0000000000a1",
-    updatedAt: 5,
-    deletedAt: null,
-    kind: "strength",
-    startedAt: 1_000,
-    durationS: 3_600,
-    title: "Legs",
-    notes: "",
-    energyKcal: null,
-    audience: "only_you",
-    hiddenFields: [],
-    source: "svett",
-    sourceId: null,
-    fingerprint: null,
-    importBatchId: null,
-  };
-  const exercise = (n: number) => ({
-    id: `01900000-0000-7000-8000-0000000000e${n}`,
-    updatedAt: 5,
-    deletedAt: null,
-    activityId: activity.id,
-    exerciseId: "01900000-0000-7000-8000-0000000000f1",
-    position: n,
-    supersetGroup: null,
-    notes: "",
-  });
-  const set = (n: number, exercise: number, values: Record<string, unknown>) => ({
-    id: `01900000-0000-7000-8000-0000000000d${n}`,
-    updatedAt: 5,
-    deletedAt: null,
-    activityExerciseId: `01900000-0000-7000-8000-0000000000e${exercise}`,
-    position: n,
-    setType: "normal",
-    weightKg: null,
-    reps: null,
-    durationS: null,
-    distanceM: null,
-    rpe: null,
-    ...values,
-  });
-  const decoded = (text: string) => {
-    const result = decodeSvettFile(text);
-    if (Result.isFailure(result)) throw new Error(result.failure.message);
-    return result.success.tables;
-  };
-
   it("reads a version 1 file's workouts as finished, every set done, and each exercise by its sets", () => {
     const squat = set(1, 1, { weightKg: 100, reps: 5 });
     const plank = set(2, 2, { durationS: 60 });
-    const tables = decoded(
+    const tables = tablesOf(
       file(
         {
           activity: [activity],
@@ -144,13 +152,7 @@ describe("svett file", () => {
   });
 
   it("reads a version 2 file's exercises with the set fields their sets give, as migration 4 did", () => {
-    const v2 = (row: Record<string, unknown>) => ({
-      ...row,
-      done: true,
-      targetRepsMin: null,
-      targetRepsMax: null,
-    });
-    const tables = decoded(
+    const tables = tablesOf(
       file(
         {
           activity: [{ ...activity, status: "finished", routineId: null }],
@@ -179,7 +181,7 @@ describe("svett file", () => {
   });
 
   it("keeps the set fields a file names, whatever its sets hold", () => {
-    const tables = decoded(
+    const tables = tablesOf(
       file(
         {
           activity: [{ ...activity, status: "in_progress", routineId: null }],

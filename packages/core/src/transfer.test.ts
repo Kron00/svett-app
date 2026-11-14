@@ -225,10 +225,7 @@ describe("workouts in progress", () => {
     expect(writtenOf(inProgress(before))).not.toBe(writtenOf(before));
     const timed = {
       ...after,
-      activityExercise: after.activityExercise.map((exercise) => ({
-        ...exercise,
-        setFields: "time",
-      })),
+      activityExercise: [row("e", { activityId: "a", setFields: "time" })],
     };
     expect(writtenOf(timed)).not.toBe(writtenOf(before));
   });

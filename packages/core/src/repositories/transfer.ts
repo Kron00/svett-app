@@ -116,7 +116,9 @@ const decodeRows = (rows: RowsByTable, here: TableRows, rowIds: RowIdsByTable) =
       const list = filled[key];
       if (list === undefined) continue;
       const decode = Schema.decodeUnknownEffect(Schema.toType(TABLES[key].schema));
-      decoded[key] = (yield* Effect.orDie(Effect.forEach(list, decode))) as ReadonlyArray<AnyRow>;
+      decoded[key] = (yield* Effect.orDie(
+        Effect.forEach(list, (row) => decode(row)),
+      )) as ReadonlyArray<AnyRow>;
     }
     return decoded as TableRows;
   });

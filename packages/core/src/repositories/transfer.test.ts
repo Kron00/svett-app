@@ -452,6 +452,18 @@ describe("TransferRepository and a workout in progress", () => {
   });
 });
 
+const timedSet = {
+  setType: "normal",
+  weightKg: null,
+  reps: null,
+  distanceM: null,
+  rpe: null,
+} as const;
+
+/** The row as svett wrote it before set fields. */
+const withoutSetFieldsKey = <A extends Readonly<Record<string, unknown>>>(row: A): A =>
+  Object.fromEntries(Object.entries(row).filter(([field]) => field !== "setFields")) as A;
+
 /** A workout with a lift logged by weight and reps and a plank logged by time. */
 const liftAndPlank = (title: string): ActivityDraft => ({
   ...workout(title),
@@ -462,22 +474,8 @@ const liftAndPlank = (title: string): ActivityDraft => ({
       supersetGroup: null,
       notes: "",
       sets: [
-        {
-          setType: "normal",
-          weightKg: null,
-          reps: null,
-          durationS: 60,
-          distanceM: null,
-          rpe: null,
-        },
-        {
-          setType: "normal",
-          weightKg: null,
-          reps: null,
-          durationS: 45,
-          distanceM: null,
-          rpe: null,
-        },
+        { ...timedSet, durationS: DurationSeconds.make(60) },
+        { ...timedSet, durationS: DurationSeconds.make(45) },
       ],
     },
   ],
@@ -492,7 +490,7 @@ const withoutSetFields = (file: SvettFile): string =>
     tables: Object.fromEntries(
       TABLE_KEYS.map((key) => [
         TABLES[key].name,
-        (file.tables[key] ?? []).map(({ setFields: _, ...row }) => row),
+        (file.tables[key] ?? []).map(withoutSetFieldsKey),
       ]),
     ),
   });
@@ -534,11 +532,12 @@ describe("TransferRepository and rows made before set fields", () => {
       ...file,
       tables: {
         ...file.tables,
-        activity: (file.tables.activity ?? []).map((row) => ({ ...row, title: "Core day" })),
-        activityExercise: (file.tables.activityExercise ?? []).map((row) => ({
-          ...row,
-          notes: "Hold longer",
-        })),
+        activity: (file.tables.activity ?? []).map((row) =>
+          Object.assign({}, row, { title: "Core day" }),
+        ),
+        activityExercise: (file.tables.activityExercise ?? []).map((row) =>
+          Object.assign({}, row, { notes: "Hold longer" }),
+        ),
       },
     };
     const { importBatchId } = Option.getOrThrow(
@@ -549,9 +548,7 @@ describe("TransferRepository and rows made before set fields", () => {
     const record = await exportFile(phone);
     const before: TableRows = {
       activity: record.tables.activity ?? [],
-      activityExercise: (record.tables.activityExercise ?? []).map(
-        ({ setFields: _, ...row }) => row as typeof row & { id: string },
-      ),
+      activityExercise: (record.tables.activityExercise ?? []).map(withoutSetFieldsKey),
       activitySet: record.tables.activitySet ?? [],
     };
     phone.database

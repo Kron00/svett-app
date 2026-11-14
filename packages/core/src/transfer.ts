@@ -153,7 +153,7 @@ export const withAddedFields = (rows: RawRows, beside: RawRows = rows): RawRows 
           ? list
           : (list ?? []).map((raw) => {
               const row = fieldsOf(raw);
-              return row === undefined ? raw : { ...fill(row), ...row };
+              return row === undefined ? raw : Object.assign(fill(row), row);
             }),
       ];
     }),
