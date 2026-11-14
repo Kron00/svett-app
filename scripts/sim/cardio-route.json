@@ -1,0 +1,12 @@
+{
+  "description": "2.4 km north-east through Cupertino in four 600 m legs with gentle bends. The recording pauses at the third waypoint.",
+  "speedMps": 6,
+  "pauseAt": 2,
+  "waypoints": [
+    { "latitude": 37.33, "longitude": -122.03 },
+    { "latitude": 37.335314, "longitude": -122.028822 },
+    { "latitude": 37.339447, "longitude": -122.024459 },
+    { "latitude": 37.344761, "longitude": -122.02328 },
+    { "latitude": 37.348895, "longitude": -122.018917 }
+  ]
+}

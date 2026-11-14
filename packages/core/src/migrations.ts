@@ -115,6 +115,13 @@ const gear = `
 CREATE TABLE gear (${row}, unit TEXT NOT NULL, plates TEXT NOT NULL, bars TEXT NOT NULL) STRICT;
 `;
 
+// A recorded route is one line per stretch between pauses. Earlier location samples
+// came from one stretch.
+const sampleSegment = `
+ALTER TABLE activity_sample ADD COLUMN segment INTEGER;
+UPDATE activity_sample SET segment = 0 WHERE kind = 'location';
+`;
+
 /** Applied in order and never edited once released. A change to the schema is a new migration. */
 export const MIGRATIONS: ReadonlyArray<Migration> = [
   { version: 1, name: "initial", sql: initial },
@@ -124,6 +131,7 @@ export const MIGRATIONS: ReadonlyArray<Migration> = [
   { version: 5, name: "set fields", sql: setFields },
   { version: 6, name: "rest timer", sql: restTimer },
   { version: 7, name: "plates and bars", sql: gear },
+  { version: 8, name: "sample segment", sql: sampleSegment },
 ];
 
 export class DatabaseTooNewError extends Data.TaggedError("DatabaseTooNewError")<{
