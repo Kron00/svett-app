@@ -181,7 +181,8 @@ ask() {
 # because the chat shrinks when the keyboard rises.
 drag_chat() {
   local x y height start travel
-  read -r x y _ height < <(frame 'id="coach"') || fail "The chat did not show."
+  # The navigation bar answers to id="coach" too, so the chat is picked by its role.
+  read -r x y _ height < <(frame 'role="other" id="coach"') || fail "The chat did not show."
   start=$((y + height - height / 10))
   travel=$((height * 45 / 100))
   ((start <= safe_bottom)) ||

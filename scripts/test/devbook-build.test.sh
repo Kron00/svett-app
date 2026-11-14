@@ -813,6 +813,9 @@ case "\$*" in
   *' is visible id="coach-new"') [[ -n "\${FAKE_SHORT_CHAT:-}" ]] || ((\$(scrolled) < 200)) ;;
   *' is visible id="coach-answer"') ((\$(scrolled) > 700)) ;;
   *' get attrs id="coach"')
+    echo 'Error (AMBIGUOUS_MATCH): Selector matched 2 elements: id="coach"' >&2
+    exit 1 ;;
+  *' get attrs role="other" id="coach"')
     if raised; then rect 0 0 440 360; else rect 0 0 440 "\${FAKE_CHAT_BOTTOM:-590}"; fi ;;
   *' get attrs id="coach-new"') rect 20 \$((205 - \$(scrolled))) 400 60 ;;
   *' get attrs id="coach-answer"') rect 20 120 400 200 ;;
