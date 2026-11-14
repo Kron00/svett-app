@@ -12,7 +12,7 @@ import {
   recordedDistanceM,
 } from "@svett/core";
 import { useEffect, useState } from "react";
-import { Alert, Linking, ScrollView, View } from "react-native";
+import { AccessibilityInfo, Alert, Linking, ScrollView, View } from "react-native";
 
 import { useStore } from "../checks/store";
 import { SPORTS } from "../design/tokens";
@@ -46,6 +46,41 @@ function useNow(ticking: boolean): number {
   return now;
 }
 
+/** What the Record screen says when Start did not start a recording, word for word. */
+export const startProblemText = (problem: Exclude<StartOutcome, { kind: "started" }>): string =>
+  problem.kind === "denied"
+    ? "svett needs your location to record a route. Allow it in Settings."
+    : `The recording did not start, at the ${problem.step} step. ${problem.message}`;
+
+/**
+ * Why Start did not start, right under the sport picker, so it shows without scrolling
+ * at the largest text size, where Start itself sits near the bottom of the screen.
+ */
+function StartProblem({
+  problem,
+}: {
+  readonly problem: Exclude<StartOutcome, { kind: "started" }>;
+}) {
+  const text = startProblemText(problem);
+  useEffect(() => {
+    AccessibilityInfo.announceForAccessibility(text);
+  }, [text]);
+  return (
+    <View className="gap-3" accessibilityLiveRegion="polite" testID="record-start-problem">
+      <AppText tone="destructive" testID="record-start-problem-text">
+        {text}
+      </AppText>
+      {problem.kind === "denied" ? (
+        <Button
+          label="Open Settings"
+          variant="secondary"
+          onPress={() => void Linking.openSettings()}
+        />
+      ) : null}
+    </View>
+  );
+}
+
 function Setup() {
   const [kind, setKind] = useState<CardioKind>("run");
   const [problem, setProblem] = useState<Exclude<StartOutcome, { kind: "started" }>>();
@@ -53,9 +88,12 @@ function Setup() {
 
   const start = async () => {
     setStarting(true);
-    const outcome = await startRecording(kind);
-    setStarting(false);
-    setProblem(outcome.kind === "started" ? undefined : outcome);
+    try {
+      const outcome = await startRecording(kind);
+      setProblem(outcome.kind === "started" ? undefined : outcome);
+    } finally {
+      setStarting(false);
+    }
   };
 
   return (
@@ -66,6 +104,7 @@ function Setup() {
         selected={kind}
         onSelect={setKind}
       />
+      {problem === undefined ? null : <StartProblem problem={problem} />}
       <AppText tone="secondary">
         svett records your route with GPS, also with the screen locked. Pause when you stop, and
         finish to save it.
@@ -77,21 +116,6 @@ function Setup() {
         onPress={() => void start()}
         testID="record-start"
       />
-      {problem?.kind === "denied" ? (
-        <View className="gap-3">
-          <AppText tone="destructive">
-            svett needs your location to record a route. Allow it in Settings.
-          </AppText>
-          <Button
-            label="Open Settings"
-            variant="secondary"
-            onPress={() => void Linking.openSettings()}
-          />
-        </View>
-      ) : null}
-      {problem?.kind === "error" ? (
-        <AppText tone="destructive">The recording did not start. {problem.message}</AppText>
-      ) : null}
     </View>
   );
 }

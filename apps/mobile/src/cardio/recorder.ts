@@ -4,6 +4,7 @@ import {
   fixOf,
   type LocationReading,
   makeRecorder,
+  RecorderError,
   type Recording,
 } from "@svett/core";
 import { Effect } from "effect";
@@ -102,21 +103,35 @@ TaskManager.defineTask<{ locations: ReadonlyArray<LocationReading> }>(
 // again picks the recording back up, or pauses it when GPS will not start.
 void tracked(Effect.runPromise(recorder.restore)).catch(() => undefined);
 
+/** Where a start failed, in asking for location or in one of the recorder's steps. */
+export type StartStep = "permission" | "start" | RecorderError["step"];
+
 export type StartOutcome =
   | { readonly kind: "started" }
   | { readonly kind: "denied" }
-  | { readonly kind: "error"; readonly message: string };
+  | { readonly kind: "error"; readonly step: StartStep; readonly message: string };
+
+const failedAt = (step: StartStep, error: unknown): StartOutcome => ({
+  kind: "error",
+  step: error instanceof RecorderError ? error.step : step,
+  message: problemOf(error),
+});
 
 export async function startRecording(kind: CardioKind): Promise<StartOutcome> {
-  const foreground = await Location.requestForegroundPermissionsAsync();
-  if (!foreground.granted) return { kind: "denied" };
-  // With only While Using, iOS still records with the screen locked, since the
-  // recording started in front and shows the location indicator.
-  await Location.requestBackgroundPermissionsAsync();
+  // Either request can reject, such as when iOS reports a location error while it asks.
+  try {
+    const foreground = await Location.requestForegroundPermissionsAsync();
+    if (!foreground.granted) return { kind: "denied" };
+    // With only While Using, iOS still records with the screen locked, since the
+    // recording started in front and shows the location indicator.
+    await Location.requestBackgroundPermissionsAsync();
+  } catch (error) {
+    return failedAt("permission", error);
+  }
   try {
     await appDatabase().runPromise(recorder.start(kind));
   } catch (error) {
-    return { kind: "error", message: problemOf(error) };
+    return failedAt("start", error);
   }
   recordingProblem.set(undefined);
   return { kind: "started" };
