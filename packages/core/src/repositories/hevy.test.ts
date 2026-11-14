@@ -384,7 +384,11 @@ describe("Hevy import", () => {
     expect(workouts(phone).map(({ title }) => title)).toEqual(["Push Day"]);
     expect(setsWithoutExercise(phone)).toEqual([]);
     expect(
-      query(phone, "SELECT deleted_at FROM exercise WHERE id = ?", hevyExerciseId("Landmine Press")),
+      query(
+        phone,
+        "SELECT deleted_at FROM exercise WHERE id = ?",
+        hevyExerciseId("Landmine Press"),
+      ),
     ).toEqual([{ deleted_at: null }]);
     expect(pointersToDeleted(phone)).toEqual([]);
   });

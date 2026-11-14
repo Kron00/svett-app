@@ -279,22 +279,22 @@ const written = (items: ReadonlyArray<PlannedItem>, picked: ReadonlyArray<Planne
 
 describe("withRequired", () => {
   it("brings back what a restored record names in turn", () => {
-    // A workout names a deleted exercise, which names the deleted import it came from.
+    // A session names a deleted exercise, which names the deleted import it came from.
     const batch = planned("batch", "restore");
     const exercise = planned("exercise", "restore", ["batch"]);
-    const workout = planned("workout", "changed", ["exercise"]);
+    const session = planned("session", "changed", ["exercise"]);
     const other = planned("other", "restore");
-    expect(written([batch, exercise, workout, other], [workout])).toEqual([
+    expect(written([batch, exercise, session, other], [session])).toEqual([
       "batch",
       "exercise",
-      "workout",
+      "session",
     ]);
   });
 
   it("stops at a record it already brings back when two name each other", () => {
     const a = planned("a", "restore", ["b"]);
     const b = planned("b", "restore", ["a"]);
-    const workout = planned("workout", "new", ["a"]);
-    expect(written([a, b, workout], [workout])).toEqual(["a", "b", "workout"]);
+    const session = planned("session", "new", ["a"]);
+    expect(written([a, b, session], [session])).toEqual(["a", "b", "session"]);
   });
 });

@@ -19,7 +19,7 @@ import {
 import { MIGRATIONS, migrate } from "../migrations.ts";
 import { Sql } from "../sql.ts";
 import { decodeSvettFile, type SvettFile } from "../svett-file.ts";
-import { columnOf, TABLES } from "../table.ts";
+import { TABLES } from "../table.ts";
 import { openTestDatabase, pointersToDeleted, T0 } from "../test-database.ts";
 import { PARENT, REFERENCES, TABLE_KEYS, undoSelection } from "../transfer.ts";
 import { type ActivityDraft, ActivityRepository } from "./activities.ts";
