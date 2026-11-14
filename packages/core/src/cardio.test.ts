@@ -364,12 +364,12 @@ describe("summarize", () => {
     );
     // The last reading of each stretch has nothing after it to confirm it.
     const expected = [fixes(first).slice(0, -1), fixes(second).slice(0, -1)];
-    expect(summary.segments.map((kept) => kept.map((fix) => fix.at))).toEqual(
-      expected.map((read) => read.map((fix) => fix.at)),
+    expect(summary.segments.map((kept) => kept.map((point) => point.at))).toEqual(
+      expected.map((read) => read.map((reading) => reading.at)),
     );
     for (const [segment, kept] of summary.segments.entries()) {
-      for (const [index, fix] of kept.entries()) {
-        expect(distanceM(fix, expected[segment]![index]!)).toBeLessThan(0.1);
+      for (const [index, point] of kept.entries()) {
+        expect(distanceM(point, expected[segment]![index]!)).toBeLessThan(0.1);
       }
     }
     expect(summary.activityId).toBe(ACTIVITY);

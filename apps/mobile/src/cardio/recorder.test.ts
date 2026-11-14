@@ -84,7 +84,7 @@ describe("readings delivered in the background", () => {
     phone.diskFull = true;
     await deliver(1);
     expect(recordingProblem.get()).toBe("GPS readings are being lost. No space left on device");
-    expect(recording.get()?.segments[0]?.fixes).toHaveLength(0);
+    expect(recording.get()?.segments[0]?.pending).toBeNull();
   });
 
   it("clears that once readings are saved again", async () => {
@@ -93,7 +93,8 @@ describe("readings delivered in the background", () => {
     phone.diskFull = false;
     await deliver(3);
     expect(recordingProblem.get()).toBeUndefined();
-    expect(recording.get()?.segments[0]?.fixes).toHaveLength(1);
+    // The reading waits there for a later one to confirm it.
+    expect(recording.get()?.segments[0]?.pending?.at).toBe(T + 3000);
   });
 
   it("keeps a problem it did not report when readings are saved", async () => {

@@ -371,7 +371,7 @@ export const addReading = <R extends Reading>(track: Track<R>, reading: R): Trac
  */
 const smoothed = (estimates: ReadonlyArray<Estimate>, motion: Motion): LatLng[] => {
   const count = estimates.length;
-  const positions: LatLng[] = new Array(count);
+  const positions: LatLng[] = Array.from({ length: count });
   let afterEastMps = 0;
   let afterNorthMps = 0;
   for (let index = count - 1; index >= 0; index--) {
@@ -427,7 +427,7 @@ export const smoothTrack = <R extends Reading>(
   const count = track.estimates.length;
   if (count === 0) return [];
   const positions = smoothed(track.estimates, track.motion);
-  const alongM: number[] = new Array(count).fill(0);
+  const alongM = Array.from({ length: count }, () => 0);
   for (const { from, to, stop } of track.stretches) {
     if (stop === null) {
       for (let index = from + 1; index <= to; index++) {

@@ -112,6 +112,8 @@ The data layer lives in `packages/core`. Follow these patterns so every table st
 
 **Routes.** A recorded route is one line per stretch between pauses, kept in each location sample's `segment`. Distance, splits, climb, the map and the elevation chart never join two stretches. Anyone but the owner, such as the feed or an export for someone else, reads a track only through `sharedTrack` in `packages/core/src/cardio.ts`, which leaves out the hidden start and end. Only the owner's own screens read the samples.
 
+**GPS readings.** Every reading passes through the filter in `packages/core/src/track-filter.ts` before it counts. It is a constant-velocity Kalman filter with noise from each reading's accuracy and process noise per sport in `MOTION`. It drops readings outside its Mahalanobis gate, counts a reading once a later one confirms it, finds stops with a still model and saves the track after a Rauch-Tung-Striebel pass. Each stretch between pauses gets its own filter. Imported tracks should run through it too, one filter per track segment.
+
 **Databases.** `databaseLayer(driver, ids)` migrates, seeds the exercise library and provides every repository. Each owner has its own file, named by `databaseFileName`. The app opens it with expo-sqlite in `apps/mobile/src/data/database.ts`.
 
 **Tests.** Tests run on `node:sqlite` in memory. `openTestDatabase()` in `packages/core/src/test-database.ts` returns a migrated, seeded database with a manual clock and seeded IDs. Test through the repositories and assert what a caller sees. Read the SQLite file directly only to check what a repository cannot show, such as deleted rows.
