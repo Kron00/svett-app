@@ -3,6 +3,7 @@ import {
   type CoachEvent,
   databaseLayer,
   Ids,
+  libraryExerciseId,
   PLAN_LIMIT_CODE,
 } from "@svett/core";
 import { manualClock, openNodeDatabase } from "@svett/core/node";
@@ -19,6 +20,7 @@ const app = vi.hoisted(() => ({
   answer: (_number: number): ReadonlyArray<unknown> => [],
   requests: 0,
   focus: undefined as (() => void) | undefined,
+  navigated: [] as Array<readonly [string, unknown]>,
   appState: undefined as ((state: string) => void) | undefined,
 }));
 
@@ -45,7 +47,10 @@ vi.mock("@react-navigation/native", async () => {
   const { useEffect } = await import("react");
   return {
     DarkTheme: {},
-    useNavigation: () => ({ navigate: () => {}, setParams: () => {} }),
+    useNavigation: () => ({
+      navigate: (name: string, params: unknown) => app.navigated.push([name, params]),
+      setParams: () => {},
+    }),
     useRoute: () => ({ params: undefined }),
     useFocusEffect: (effect: () => void) => {
       useEffect(() => {
@@ -101,6 +106,7 @@ beforeEach(() => {
   app.status = () => Promise.resolve(SIGNED_IN);
   app.answer = () => [{ type: "text", delta: "Hello." }, { type: "done" }];
   app.requests = 0;
+  app.navigated = [];
 });
 
 afterEach(() => (app.runtime as ManagedRuntime.ManagedRuntime<never, never>).dispose());
@@ -134,6 +140,27 @@ async function send(tree: ReactTestRenderer, question: string) {
   await act(async () => button!.props.onPress());
   await settle();
 }
+
+const proposeUpper = (exerciseId: string): CoachEvent => ({
+  type: "toolCall",
+  callId: "call_propose",
+  name: "propose_routine",
+  namespace: "svett",
+  arguments: JSON.stringify({
+    title: "Upper",
+    exercises: [{ exerciseId, sets: [{ weightKg: 60, repsMin: 8, repsMax: 10 }] }],
+  }),
+});
+
+const answerAfter = (call: CoachEvent) => (number: number) =>
+  number === 1
+    ? [call, { type: "done" }]
+    : [{ type: "text", delta: "Here it is." }, { type: "done" }];
+
+const pressables = (tree: ReactTestRenderer, label: string) =>
+  tree.root.findAll(
+    (node) => (node.type as string) === "Pressable" && node.props.accessibilityLabel === label,
+  );
 
 const sendDisabled = (tree: ReactTestRenderer) =>
   byTestID(tree, "coach-send")[0]!.props.disabled as boolean;
@@ -186,5 +213,34 @@ describe("CoachScreen", () => {
     await settle();
     act(() => byTestID(tree, "coach-input")[0]!.props.onChangeText("Once more?"));
     expect(sendDisabled(tree)).toBe(false);
+  });
+
+  it("shows a routine the coach proposed under its answer, with Preview", async () => {
+    app.answer = answerAfter(proposeUpper(libraryExerciseId("Barbell_Squat")));
+    const tree = await open();
+    await send(tree, "Plan a routine");
+    expect(texts(tree)).toEqual(
+      expect.arrayContaining([
+        "Here it is.",
+        "Upper",
+        "A routine of 1 exercise",
+        "Not applied. Nothing is saved until you tap Apply.",
+      ]),
+    );
+    expect(byTestID(tree, "coach-proposal-error")).toHaveLength(0);
+    const [preview] = pressables(tree, "Preview Upper");
+    await act(async () => preview!.props.onPress());
+    expect(app.navigated).toEqual([["Proposal", { id: expect.any(String) }]]);
+  });
+
+  it("says why svett refused a proposal with an exercise it does not have, and shows no card", async () => {
+    app.answer = answerAfter(proposeUpper("019a0000-0000-7000-8000-00000000beef"));
+    const tree = await open();
+    await send(tree, "Plan a routine");
+    const [refusal] = byTestID(tree, "coach-proposal-error");
+    expect(refusal!.props.children).toBe(
+      "svett refused a proposal from the coach, so nothing was saved. no exercise has the id 019a0000-0000-7000-8000-00000000beef. Find exercise ids with search_exercises, then propose again",
+    );
+    expect(pressables(tree, "Preview Upper")).toHaveLength(0);
   });
 });

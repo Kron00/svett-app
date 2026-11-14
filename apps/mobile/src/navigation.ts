@@ -13,6 +13,8 @@ export type RootStackParamList = {
   Gallery: { sheet?: "open" } | undefined;
   PhoneChecks: undefined;
   ChatGPT: undefined;
+  /** A coach proposal's preview, with Apply and Undo. */
+  Proposal: { id: string };
   Exercises: { q?: string; muscle?: string; equipment?: string } | undefined;
   Exercise: { id: string };
   NewExercise:

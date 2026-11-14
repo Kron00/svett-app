@@ -9,7 +9,7 @@ import { askCoach, type ChatEntry, chatEntries } from "@svett/tools";
 import { type RouteProp, useFocusEffect, useNavigation, useRoute } from "@react-navigation/native";
 import { Effect } from "effect";
 import { uuid } from "expo";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import {
   AppState,
   KeyboardAvoidingView,
@@ -27,6 +27,7 @@ import { Button } from "../ui/Button";
 import { EmptyState } from "../ui/EmptyState";
 import { Composer } from "./Composer";
 import { swiftTransport } from "./native";
+import { ProposalCard } from "./ProposalCard";
 
 type CoachRoute = RouteProp<CoachStackParamList, "CoachRoot">;
 
@@ -61,6 +62,26 @@ const latestConversation = () =>
 
 function readLine(sources: ReadonlyArray<string>) {
   return sources.length === 0 ? "Read none of your data" : `Read: ${sources.join(" · ")}`;
+}
+
+/**
+ * What the coach proposed while answering, as cards with Preview, and why the app refused each
+ * proposal the model got wrong. A refused proposal stored nothing.
+ */
+function Proposals({ entry }: { readonly entry: ChatEntry }) {
+  if (entry.proposals.length === 0 && entry.problems.length === 0) return null;
+  return (
+    <View className="gap-3 self-stretch">
+      {entry.problems.map((problem) => (
+        <AppText key={problem} testID="coach-proposal-error" tone="warning" selectable>
+          {`svett refused a proposal from the coach, so nothing was saved. ${problem}`}
+        </AppText>
+      ))}
+      {entry.proposals.map((id) => (
+        <ProposalCard key={id} id={id} />
+      ))}
+    </View>
+  );
 }
 
 function Question({
@@ -306,17 +327,16 @@ export function CoachScreen() {
             }}
           />
         )}
-        {entries.map((entry, index) =>
-          entry.role === "user" ? (
-            <Question key={entry.id} text={entry.text} sources={entry.sources} />
-          ) : (
-            <Answer
-              key={entry.id}
-              entry={entry}
-              last={index === lastAnswer && pending === undefined}
-            />
-          ),
-        )}
+        {entries.map((entry, index) => (
+          <Fragment key={entry.id}>
+            {entry.role === "user" ? (
+              <Question text={entry.text} sources={entry.sources} />
+            ) : (
+              <Answer entry={entry} last={index === lastAnswer && pending === undefined} />
+            )}
+            <Proposals entry={entry} />
+          </Fragment>
+        ))}
         {pending === undefined ? null : (
           <View testID="coach-pending" className="gap-3 self-stretch">
             <Question text={pending.question} sources={NO_SOURCES} />
