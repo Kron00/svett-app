@@ -56,15 +56,16 @@ const render = () => {
   return tree.root;
 };
 
+const isText = (node: ReactTestInstance) => (node.type as unknown) === "Text";
+
 /** Every testID and text on the screen, top to bottom. */
 const inOrder = (root: ReactTestInstance) =>
   root
     .findAll(
       (node) =>
-        typeof node.type === "string" &&
-        (typeof node.props.testID === "string" || node.type === "Text"),
+        typeof node.type === "string" && (typeof node.props.testID === "string" || isText(node)),
     )
-    .map((node) => (node.type === "Text" ? String(node.props.children) : `#${node.props.testID}`));
+    .map((node) => (isText(node) ? String(node.props.children) : `#${node.props.testID}`));
 
 const pressStart = async (root: ReactTestInstance) => {
   const start = root.find(
