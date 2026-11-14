@@ -185,7 +185,6 @@ const setIds = (tree: ReactTestRenderer) =>
     .findAll((node) => isHost(node, "Pressable") && String(node.props.testID).startsWith("set-"))
     .map((node) => String(node.props.testID).slice("set-".length));
 
-/** Lets reads finish until `line` is on screen, as a detail reads a set again after a save. */
 /** Lets reads finish until the element with `testID` is on screen, or gone when `shown` is false. */
 const showsTestId = async (
   tree: ReactTestRenderer,
@@ -201,6 +200,7 @@ const showsTestId = async (
   return showsTestId(tree, testID, shown, tries - 1);
 };
 
+/** Lets reads finish until `line` is on screen, as a detail reads a set again after a save. */
 const showsLine = async (tree: ReactTestRenderer, line: string, tries = 50): Promise<void> => {
   if (tries === 0 || lines(tree).includes(line)) return;
   await settle();
@@ -249,6 +249,7 @@ describe("a past workout", () => {
     await pressLabels(edit, ["Delete", "Delete", "Delete", "1", "2", "2", "Decimal point", "5"]);
     await pressLabels(edit, ["Reps", "Delete", "4"]);
     await press(byTestId(edit, "set-edit-save"));
+    await showsLine(detail, "122.5 kg × 4");
 
     expect(navigation.goBack).toHaveBeenCalled();
     expect(lines(detail)).toEqual(expect.arrayContaining(["122.5 kg × 4", "100 kg × 5"]));
@@ -309,13 +310,15 @@ describe("history", () => {
     expect(navigation.navigate).toHaveBeenCalledWith("Tabs", { screen: "Progress" });
     // The screen keeps showing the workout while it slides away.
     expect(lines(detail)).toContain("105 kg × 5");
+    // The counts and the list are separate reads that finish in either order, so wait for each.
+    await showsLine(history, "1 workouts, 2 sets");
     expect(textOf(byTestId(history, "workout-counts"))).toBe("1 workouts, 2 sets");
-    // The list reads again after the counts do, so wait for it rather than one tick.
     await showsTestId(history, `workout-${newest}`, false);
     expect(() => byTestId(history, `workout-${newest}`)).toThrow();
     expect(textOf(byTestId(history, "undo-delete-banner"))).toContain("Deleted Heavy legs.");
 
     await press(byTestId(history, "undo-delete"));
+    await showsLine(history, "2 workouts, 5 sets");
     expect(textOf(byTestId(history, "workout-counts"))).toBe("2 workouts, 5 sets");
     await showsTestId(history, `workout-${newest}`);
     expect(() => byTestId(history, `workout-${newest}`)).not.toThrow();
