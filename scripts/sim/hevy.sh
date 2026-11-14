@@ -8,7 +8,8 @@
 # Hevy sample in packages/core/test-data. It matches one unknown exercise name
 # to the first suggestion on the match screen, keeps the other as a new
 # exercise, and checks the database holds the sample's three workouts and 25
-# sets. It imports the sample again and checks nothing was added. It imports
+# sets. It presses Done, as a user would, then opens the sample again and checks
+# nothing was added. It imports
 # the changed sample, with one workout changed and one renamed, checks both are
 # listed as changed and nothing is new, takes both, and checks the database
 # holds the new versions. Last it undoes that import and checks the earlier
@@ -127,9 +128,16 @@ launch_on() {
   agent_device wait "$you_tab" 120000
 }
 
+# open_link <link> <element> <seconds> <what> opens the link and fails when the element is not
+# on screen within the time. A preview that never starts would otherwise only time out.
 open_link() {
   agent_device open "$bundle_id" "$1"
-  agent_device wait "$2" 180000
+  if ! agent_device wait "$2" "$(($3 * 1000))"; then
+    if agent_device is visible 'id="import-done"' >/dev/null 2>&1; then
+      fail "$1 left the last import's result on screen instead of starting a new preview"
+    fi
+    fail "$1 did not show $4 within $3 seconds"
+  fi
   agent_device wait 1000
 }
 
@@ -186,14 +194,14 @@ show_counts empty
 is_count "$shown" 0 0 || fail "The new database is not empty: $shown"
 note "Empty database: $shown."
 
-open_link "svett://import?file=$sample&kind=hevy" 'id="hevy-match"'
+open_link "svett://import?file=$sample&kind=hevy" 'id="hevy-match"' 180 "the exercise match"
 screenshot match
 tap 'id="match-1-0"'
 screenshot match-chosen
 tap 'id="match-continue"'
 # At the largest text size the buttons and lists start below the fold, so the script
 # waits for the summary at the top of the preview, and tap and reveal scroll to the rest.
-agent_device wait 'id="hevy-summary"' 60000
+agent_device wait 'id="hevy-summary"' 60000 || fail "The preview showed no Hevy summary after the match"
 screenshot preview
 said=$(text_of 'id="hevy-summary"')
 [[ "$said" == *"3 workouts and 25 sets"* ]] || fail "The preview does not count the sample: $said"
@@ -209,15 +217,17 @@ matched=$(sql "SELECT e.name FROM exercise_alias x JOIN exercise e ON e.id = x.e
                WHERE x.deleted_at IS NULL AND x.name = 'Chest Supported Machine Row'")
 [[ -n "$matched" ]] || fail "The match screen remembered no exercise for Chest Supported Machine Row"
 note "First import: $now. Chest Supported Machine Row matched to $matched, and remembered."
+tap 'id="import-close"'
+agent_device wait absent 'id="import-preview"' 10000 || fail "Done did not close the import"
 
-open_link "svett://import?file=$sample&kind=hevy" 'id="hevy-summary"'
+open_link "svett://import?file=$sample&kind=hevy" 'id="hevy-summary"' 60 "the Hevy summary"
 reveal 'id="import-nothing-new"' || fail "Importing the sample again does not say nothing is new"
 screenshot import-again
 [[ "$(state)" == "$imported_state" ]] || fail "Importing the sample again changed the workouts: $(state)"
 [[ "$(batches)" == applied ]] || fail "Importing the sample again recorded another import: $(batches)"
 note "Same file again: nothing new, no name asked again, one import on record."
 
-open_link "svett://import?file=$changed&kind=hevy" 'id="hevy-summary"'
+open_link "svett://import?file=$changed&kind=hevy" 'id="hevy-summary"' 60 "the Hevy summary"
 reveal 'id="import-changed"' || fail "The changed sample lists no changed workout"
 screenshot changed-preview
 first=$(text_of 'id="import-changed-0"')

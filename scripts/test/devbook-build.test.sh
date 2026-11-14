@@ -1036,8 +1036,11 @@ check "data.sh fails when export writes no file" \
 # workouts switched on the changed sample's, and Undo writes the sample's back.
 # FAKE_HEVY_TWICE records another import when the sample opens again,
 # FAKE_HEVY_NEW shows new records for the changed sample, and FAKE_HEVY_UNDO
-# leaves the changed workouts after Undo. Import and Undo start below the fold,
-# as at the largest text size, so only a scroll finds them.
+# leaves the changed workouts after Undo. From the second link on,
+# FAKE_HEVY_NO_SUMMARY never shows the Hevy summary, and FAKE_HEVY_STALE also
+# keeps the last import's result on screen, as the app did before a link
+# started a new preview. Import and Undo start below the fold, as at the
+# largest text size, so only a scroll finds them.
 cat >"$data_fake/hevy-device" <<EOF
 #!/usr/bin/env bash
 echo "\$*" >>"$root/bound-calls"
@@ -1066,11 +1069,15 @@ case "\$args" in
   *" open com.kron00.svett svett://import?file="*)
     file=\${args##*file=}
     echo "\${file%%&*}" >"$root/hevy-opened"
+    echo "\${file%%&*}" >>"$root/hevy-opens"
     rm -f "$root/hevy-taken"
     if [[ -n "\${FAKE_HEVY_TWICE:-}" && -e "\$database" ]]; then
       sql "INSERT INTO import_batch VALUES ('b9', NULL, 9, 'applied')"
     fi ;;
   *'id="import-new"'*) [[ -n "\${FAKE_HEVY_NEW:-}" ]] || exit 1 ;;
+  *' wait id="hevy-summary"'*)
+    [[ -z "\${FAKE_HEVY_NO_SUMMARY:-}\${FAKE_HEVY_STALE:-}" || "\$(wc -l <"$root/hevy-opens")" -lt 2 ]] || exit 1 ;;
+  *' is visible id="import-done"'*) [[ -n "\${FAKE_HEVY_STALE:-}" ]] || exit 1 ;;
   *' wait id="import-apply"'* | *' wait id="undo-apply"'* | *' is visible id="import-apply"'* | *' is visible id="undo-apply"'*)
     exit 1 ;;
   *" get attrs "*)
@@ -1128,7 +1135,7 @@ run_hevy() {
     shift
   done
   rm -rf "$root/simctl-calls" "$root/bound-calls" "$root/launched" "$root/data container" \
-    "$root/hevy-opened" "$root/hevy-taken"
+    "$root/hevy-opened" "$root/hevy-opens" "$root/hevy-taken"
   hevy_status=0
   env PATH="$data_fake:$fake:$PATH" SVETT_DEVICE_CMD="hevy-device --session 't3-test session' --device FAKE-UDID" \
     "${vars[@]}" "$repo/scripts/sim/hevy.sh" "$@" >"$output" 2>&1 || hevy_status=$?
@@ -1146,10 +1153,13 @@ check "hevy.sh copies both Hevy samples into svett's documents" \
 check "hevy.sh opens an empty database, imports the sample twice, then the changed sample, then relaunches" \
   only_open "$debug_open $hevy_db_args" "$hevy_sample_link" "$hevy_sample_link" "$hevy_changed_link" \
   "$debug_open $hevy_db_args"
-check "hevy.sh presses the match, Import, both changed workouts, Undo and its confirmation at their centres" \
+check "hevy.sh presses the match, Import, Done, both changed workouts, Undo and its confirmation at their centres" \
   only_calls "get attrs" 'get attrs id="match-1-0"' 'get attrs id="match-continue"' \
-  'get attrs id="import-apply"' 'get attrs id="import-changed-0"' 'get attrs id="import-changed-1"' \
-  'get attrs id="import-apply"' 'get attrs id="import-undo"' 'get attrs id="undo-apply"'
+  'get attrs id="import-apply"' 'get attrs id="import-close"' 'get attrs id="import-changed-0"' \
+  'get attrs id="import-changed-1"' 'get attrs id="import-apply"' 'get attrs id="import-undo"' \
+  'get attrs id="undo-apply"'
+check "hevy.sh waits for Done to close the import before it opens the sample again" \
+  grep -qF 'wait absent id="import-preview" 10000' "$root/bound-calls"
 check "hevy.sh shoots at the largest text size, then restores the default" \
   only_calls "settings text-size" \
   "settings text-size accessibility-extra-extra-extra-large" "settings text-size large"
@@ -1184,6 +1194,21 @@ case_name="hevy.sh when the changed sample shows new records"
 run_hevy FAKE_HEVY_NEW=1 "$root/hevy-new"
 check "hevy.sh fails when a changed workout would be added as new" \
   grep -qF "The changed sample shows new records" "$output"
+
+case_name="hevy.sh when the sample opened again shows no summary"
+run_hevy FAKE_HEVY_NO_SUMMARY=1 "$root/hevy-no-summary"
+[[ "$hevy_status" != 0 ]] || fail "hevy.sh passed although the Hevy summary never came"
+check "hevy.sh fails with a clear message when the Hevy summary never comes" grep -qxF \
+  "svett://import?file=svett-hevy-sample.csv&kind=hevy did not show the Hevy summary within 60 seconds" "$output"
+check "hevy.sh never waits three minutes for the summary" \
+  test -z "$(grep -F 'wait id="hevy-summary" 180000' "$root/bound-calls")"
+
+case_name="hevy.sh when the sample opened again keeps the last import's result"
+run_hevy FAKE_HEVY_STALE=1 "$root/hevy-stale"
+[[ "$hevy_status" != 0 ]] || fail "hevy.sh passed although the link started no new preview"
+check "hevy.sh says the link left the last import's result on screen" grep -qxF \
+  "svett://import?file=svett-hevy-sample.csv&kind=hevy left the last import's result on screen instead of starting a new preview" \
+  "$output"
 
 case_name="hevy.sh when Undo leaves the new versions"
 run_hevy FAKE_HEVY_UNDO=1 "$root/hevy-undo"
