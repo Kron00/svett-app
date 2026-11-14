@@ -1,4 +1,4 @@
-import { Context, Data, Effect, Layer, Option } from "effect";
+import { Clock, Context, Data, Effect, Layer, Option } from "effect";
 
 import { Ids } from "../ids.ts";
 import {
@@ -12,7 +12,7 @@ import {
   ActivitySetId,
   type ActivityTrack,
   ActivityTrackId,
-  type EpochMillis,
+  EpochMillis,
   type ExerciseId,
   type RoutineId,
   type SetFields,
@@ -321,13 +321,15 @@ const makeActivityRepository = Effect.gen(function* () {
             return yield* new WorkoutInProgressError({ activityId: running.value });
           }
           const updatedAt = yield* currentTime;
+          // The start a person sees is the wall clock's. Only row versions take the logical clock.
+          const startedAt = EpochMillis.make(yield* Clock.currentTimeMillis);
           const id = ActivityId.make(yield* rowId(TABLES.activity, MADE_HERE));
           yield* insertRows(TABLES.activity, [
             {
               kind: "strength",
               status: "in_progress",
               routineId,
-              startedAt: updatedAt,
+              startedAt,
               durationS: DurationSeconds.make(0),
               title,
               notes: "",
@@ -566,7 +568,9 @@ const makeActivityRepository = Effect.gen(function* () {
           }
           return yield* updateRow(TABLES.activity, id, {
             status: "finished",
-            durationS: DurationSeconds.make(Math.max(0, (at - activity.startedAt) / 1000)),
+            durationS: DurationSeconds.make(
+              Math.max(0, ((yield* Clock.currentTimeMillis) - activity.startedAt) / 1000),
+            ),
           });
         }),
       ),

@@ -836,8 +836,15 @@ describe("Hevy import", () => {
       expect({ workouts: workouts(database), setFields: setFieldsByName(database) }).toEqual(
         sample,
       );
-      expect(await editedIn(batch)).not.toContain(true);
-      await undo(database, batch);
+      // Undo put the replaced rows back at a later time, so the first import's record reads as
+      // changed since that import, and its Undo takes it only when asked to.
+      const first = await transfers(database, (repository) => repository.previewUndo(batch));
+      await transfers(database, (repository) =>
+        repository.undoImport(
+          batch,
+          first.changes.filter(({ edited }) => edited).map(({ change }) => change.id),
+        ),
+      );
       expect(count(database, "activity")).toBe(0);
       expect(count(database, "activity_exercise")).toBe(0);
     });
