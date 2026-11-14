@@ -30,6 +30,8 @@ vi.mock("./chatgpt/ChatGPTRow", () => ({ ChatGPTRow: () => "chatgpt row" }));
 vi.mock("./PhoneChecksRow", () => ({ PhoneChecksRow: () => "phone checks row" }));
 vi.mock("./transfer/DataRow", () => ({ DataRow: () => "data row" }));
 vi.mock("./gallery/DesignGalleryRow", () => ({ DesignGalleryRow: () => "design gallery row" }));
+vi.mock("./cardio/RecordCardioRow", () => ({ RecordCardioRow: () => "record cardio row" }));
+vi.mock("./cardio/ManualCardioRow", () => ({ ManualCardioRow: () => "manual cardio row" }));
 vi.mock("./exercises/ExerciseLibraryRow", () => ({
   ExerciseLibraryRow: () => "exercise library row",
 }));
