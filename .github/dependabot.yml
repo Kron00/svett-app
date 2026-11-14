@@ -1,0 +1,50 @@
+version: 2
+
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      dependencies:
+        patterns: ["*"]
+    ignore:
+      # These move together in an Expo SDK upgrade. Dependabot still sends their patch releases.
+      - dependency-name: "expo"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+      - dependency-name: "expo-*"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+      - dependency-name: "@expo/*"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+      - dependency-name: "babel-preset-expo"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+      - dependency-name: "react"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+      - dependency-name: "@types/react"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+      - dependency-name: "react-native"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+      - dependency-name: "react-native-*"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+      - dependency-name: "@react-native/*"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+      # Each of these moves with its override in pnpm-workspace.yaml.
+      - dependency-name: "vite-plus"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+      - dependency-name: "@react-navigation/*"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+      # The major follows the Node version in .node-version.
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      actions:
+        patterns: ["*"]

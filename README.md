@@ -11,14 +11,44 @@ Two machines share the work.
 - A Linux machine runs the agents, package installs, lint, type checks and unit tests.
 - A Mac runs the native iOS build, the Metro dev server and the iPhone 16 Pro Max simulator.
 
-On the Linux machine, with Node 26 and pnpm 12:
+On the Linux machine, install Node 26 and pnpm 12. `.node-version` and the `packageManager` field in `package.json` pin the exact versions. Then install the packages:
 
 ```sh
 pnpm install
-pnpm lint
-pnpm typecheck
-pnpm test
 ```
+
+The app reads no environment variables, so there is no `.env` file to create.
+
+| Command          | What it does                                             |
+| ---------------- | -------------------------------------------------------- |
+| `pnpm lint`      | Lints every package.                                     |
+| `pnpm fmt`       | Formats every file. `pnpm fmt:check` only reports.       |
+| `pnpm typecheck` | Type checks every package.                               |
+| `pnpm test`      | Runs every package's tests.                              |
+| `pnpm icon`      | Renders `apps/mobile/assets/icon.png` from the SVG icon. |
+
+To prove that the app's JavaScript bundles without a Mac, run:
+
+```sh
+pnpm --filter @svett/mobile exec expo export --platform ios
+```
+
+### Run the tests
+
+`pnpm test` runs every package's tests. To run one package's tests, or one test file, use a filter:
+
+```sh
+pnpm --filter @svett/core test
+pnpm --filter @svett/core exec vp test run src/duration.test.ts
+```
+
+### Continuous integration
+
+GitHub Actions runs `.github/workflows/ci.yml` on every pull request and on every push to `main`. One job checks the format, lints, type checks, runs the tests and bundles the app. A second job compiles the app for the iOS Simulator on a macOS runner. A pull request into `main` needs both jobs to pass. The repo owner can bypass that rule.
+
+Dependabot checks for updates each week. It groups package updates into one pull request and GitHub Actions updates into another. `.github/dependabot.yml` holds the rules.
+
+### Build on the Mac
 
 On the Mac, with Xcode 27.2, CocoaPods, Node 26 and pnpm 12:
 
