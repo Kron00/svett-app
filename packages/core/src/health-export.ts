@@ -227,7 +227,7 @@ export class HealthExportReader {
     this.scanner.end();
     const order = this.workouts
       .map((workout, index) => ({ workout, index }))
-      .toSorted((a, b) => a.workout.startedAt - b.workout.startedAt);
+      .sort((a, b) => a.workout.startedAt - b.workout.startedAt);
     // The latest end among workouts up to each one, so a reading only looks back while one could still hold it.
     const latestEnd: Array<number> = [];
     for (const [position, { workout }] of order.entries()) {
@@ -253,7 +253,7 @@ export class HealthExportReader {
     for (const [position, { workout, index }] of order.entries()) {
       withHeart[index] = {
         ...workout,
-        heartRate: readings[position]!.toSorted((a, b) => a.recordedAt - b.recordedAt),
+        heartRate: readings[position]!.sort((a, b) => a.recordedAt - b.recordedAt),
       };
     }
     return { workouts: withHeart, skipped: this.skipped, isHealthExport: this.isHealthExport };

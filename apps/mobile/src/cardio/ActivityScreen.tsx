@@ -169,9 +169,7 @@ function Sources({
         <ListRow
           key="first"
           title={
-            activity.source === "svett"
-              ? "Logged in svett"
-              : `From ${sourceName(activity.source)}`
+            activity.source === "svett" ? "Logged in svett" : `From ${sourceName(activity.source)}`
           }
           value="First"
         />

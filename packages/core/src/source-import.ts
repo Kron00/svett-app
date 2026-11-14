@@ -27,7 +27,7 @@ import {
 import { TABLES } from "./table.ts";
 import type { TableKey, TableRows } from "./transfer.ts";
 
-export interface RoutePoint {
+export interface TimedRoutePoint {
   readonly recordedAt: EpochMillis;
   readonly latitude: number;
   readonly longitude: number;
@@ -52,7 +52,7 @@ export interface SourceWorkout {
   readonly durationS: DurationSeconds;
   readonly distanceM: number | null;
   readonly energyKcal: number | null;
-  readonly route: ReadonlyArray<RoutePoint>;
+  readonly route: ReadonlyArray<TimedRoutePoint>;
   readonly heartRate: ReadonlyArray<HeartRateReading>;
 }
 
@@ -93,7 +93,7 @@ const fingerprintOf = (workout: Omit<SourceWorkout, "fingerprint" | "title">) =>
   );
 
 /** Track points with a time. A point without one takes the time of the point before it. */
-const routeOf = (track: GpxTrack | null, fallback: number): Array<RoutePoint> => {
+const routeOf = (track: GpxTrack | null, fallback: number): Array<TimedRoutePoint> => {
   let last = fallback;
   return (track?.points ?? []).map((point) => {
     last = point.recordedAt ?? last;
@@ -106,7 +106,7 @@ const routeOf = (track: GpxTrack | null, fallback: number): Array<RoutePoint> =>
   });
 };
 
-const routeDistance = (route: ReadonlyArray<RoutePoint>) =>
+const routeDistance = (route: ReadonlyArray<TimedRoutePoint>) =>
   route.length < 2 ? null : pathLengthM(route);
 
 /** A Health workout, with its route when the export holds one. */
@@ -371,7 +371,13 @@ export const sourceActivityRows = (
     deletedAt: null,
     activityId,
     distanceM: workout.distanceM,
-    elevationGainM: elevationGainM(route.map((point) => point.altitudeM)),
+    elevationGainM: elevationGainM([
+      route.map((point) => ({
+        at: point.recordedAt,
+        altitudeM: point.altitudeM,
+        altitudeAccuracyM: null,
+      })),
+    ]),
     hideStartM: route.length > 0 ? DEFAULT_HIDE_M : 0,
     hideEndM: route.length > 0 ? DEFAULT_HIDE_M : 0,
   };
@@ -381,6 +387,7 @@ export const sourceActivityRows = (
     first !== undefined && last !== undefined && route.length > 1 && isCardio(workout.kind)
       ? splitsOf(
           {
+            activityId,
             kind: workout.kind as CardioKind,
             startedAt: first.recordedAt,
             segments: [
@@ -392,9 +399,11 @@ export const sourceActivityRows = (
                   latitude: point.latitude,
                   longitude: point.longitude,
                   altitudeM: point.altitudeM,
+                  altitudeAccuracyM: null,
                   accuracyM: null,
                 })),
                 distanceM: pathLengthM(route),
+                pending: null,
               },
             ],
           },
@@ -409,6 +418,8 @@ export const sourceActivityRows = (
     deletedAt: null,
     activityTrackId: trackId,
     kind: "location",
+    // An imported route is one stretch. Neither file says where a pause began.
+    segment: 0,
     ...point,
   }));
   const splitRows: Array<ActivitySample> = splits.map((split, index) => ({
