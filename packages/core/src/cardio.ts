@@ -194,7 +194,7 @@ export interface CardioSummary {
  * The finished recording, with any stretch still open ending at `end`. Its distance is
  * along the smoothed track, so it can differ a little from the distance shown live.
  */
-export const summarize = (recording: Recording, end: number): CardioSummary => {
+export const summarizeRecording = (recording: Recording, end: number): CardioSummary => {
   const tracks = tracksOf(recording);
   const splits = splitsOf(recording, end, SPLIT_M, tracks);
   const segments = tracks.map((track) => track.map(({ fix }) => fix));

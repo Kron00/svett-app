@@ -1,6 +1,6 @@
 import { Clock, Data, Effect, Semaphore } from "effect";
 
-import { cardioDraft, cardioTitle, summarize } from "./cardio.ts";
+import { cardioDraft, cardioTitle, summarizeRecording } from "./cardio.ts";
 import { Ids } from "./ids.ts";
 import {
   applyEvent,
@@ -174,7 +174,7 @@ export const makeRecorder = (ports: RecorderPorts) => {
         const id = yield* activities
           .create(
             cardioDraft(
-              summarize(recording, end),
+              summarizeRecording(recording, end),
               cardioTitle(recording.kind, ports.localHour(recording.startedAt)),
             ),
           )

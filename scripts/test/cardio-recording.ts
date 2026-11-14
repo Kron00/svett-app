@@ -14,7 +14,7 @@ import {
   Ids,
   type RecordingEvent,
   replay,
-  summarize,
+  summarizeRecording,
 } from "@svett/core";
 import { openNodeDatabase } from "@svett/core/node";
 import { Effect } from "effect";
@@ -74,7 +74,7 @@ export const saveRecording = async (path: string, events: ReadonlyArray<Recordin
   try {
     await Effect.runPromise(
       Effect.flatMap(Effect.service(ActivityRepository), (activities) =>
-        activities.create(cardioDraft(summarize(recording, end), "Morning run")),
+        activities.create(cardioDraft(summarizeRecording(recording, end), "Morning run")),
       ).pipe(Effect.provide(databaseLayer(driver, Ids.layerSeeded(1)))),
     );
   } finally {

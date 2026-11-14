@@ -11,7 +11,7 @@ import {
   elevationProfile,
   sharedTrack,
   splitsOf,
-  summarize,
+  summarizeRecording,
   trackParts,
 } from "./cardio.ts";
 import { distanceM, hideRouteEnds, pathLengthM, routeLengthM } from "./geo.ts";
@@ -99,7 +99,7 @@ describe("splitsOf", () => {
       { type: "resume", at: at(400) },
       ...moving(400, 777, 5.3),
     ])!;
-    const summary = summarize(recording, at(800));
+    const summary = summarizeRecording(recording, at(800));
     expect(sum(summary.splits.map((split) => split.distanceM))).toBeCloseTo(summary.distanceM, 6);
     expect(sum(summary.splits.map((split) => split.durationS))).toBeCloseTo(340 + 400, 6);
     expect(summary.durationS).toBeCloseTo(740, 6);
@@ -214,7 +214,7 @@ describe("a finished recording saved as an activity", () => {
     ),
     { type: "pause", at: at(301) },
   ])!;
-  const summary = summarize(recording, at(301));
+  const summary = summarizeRecording(recording, at(301));
 
   it("reads back with its route, splits, distance, climb and hidden ends", async () => {
     const database = openTestDatabase();
@@ -281,7 +281,7 @@ describe("a recording moved while paused", () => {
     ...Array.from({ length: 26 }, (_, index) => fix(600 + index, 1000 + index * 4, 100)),
     { type: "pause", at: at(625) },
   ])!;
-  const summary = summarize(recording, at(625));
+  const summary = summarizeRecording(recording, at(625));
 
   it("counts 200 m and no climb", () => {
     expect(summary.distanceM).toBeCloseTo(200, 0);
@@ -305,7 +305,7 @@ describe("sharedTrack", () => {
     ...Array.from({ length: 301 }, (_, index) => fix(index, index * 4, 20 + index / 10)),
     { type: "pause", at: at(301) },
   ])!;
-  const summary = summarize(recording, at(301));
+  const summary = summarizeRecording(recording, at(301));
 
   it("leaves out every position in the hidden start and end", async () => {
     const { track, samples } = await save(summary, 200);
@@ -343,11 +343,11 @@ describe("sharedTrack", () => {
 const fixes = (events: ReadonlyArray<RecordingEvent>): Fix[] =>
   events.flatMap((event) => (event.type === "fix" ? [event.fix] : []));
 
-describe("summarize", () => {
+describe("summarizeRecording", () => {
   it("keeps every reading, near where it was read, one list for each stretch", () => {
     const first = moving(0, 20, 4);
     const second = moving(30, 50, 4);
-    const summary = summarize(
+    const summary = summarizeRecording(
       replay([
         start,
         ...first,

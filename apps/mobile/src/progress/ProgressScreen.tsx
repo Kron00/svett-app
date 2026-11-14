@@ -274,10 +274,7 @@ export function ProgressScreen() {
         data={rows}
         keyExtractor={(row) => row.activity.id}
         renderItem={({ item }) => (
-          <HistoryRow
-            row={item}
-            onPress={() => openActivity(navigation, item.activity)}
-          />
+          <HistoryRow row={item} onPress={() => openActivity(navigation, item.activity)} />
         )}
         recycleItems
         estimatedItemSize={132}
