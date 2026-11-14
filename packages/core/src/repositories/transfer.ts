@@ -15,6 +15,7 @@ import { encodeSvettFile, exportFileName, type SvettFile } from "../svett-file.t
 import {
   columnOf,
   currentTime,
+  nextTime,
   insertRows,
   putRows,
   RowNotFoundError,
@@ -532,7 +533,7 @@ const makeTransferRepository = Effect.gen(function* () {
       run(
         Effect.gen(function* () {
           const local = yield* snapshot;
-          const { tables, duplicates } = inputOf(file).read(local, yield* currentTime);
+          const { tables, duplicates } = inputOf(file).read(local, yield* Effect.orDie(nextTime));
           return planImport(local, tables, duplicates);
         }),
       ),
