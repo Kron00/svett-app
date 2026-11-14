@@ -257,7 +257,9 @@ check_rows() {
 finish_workout() {
   tap 'id="finish-workout"'
   agent_device alert wait 5000 >/dev/null || fail "Finish asked nothing"
-  agent_device alert accept
+  # The confirmation is svett's own alert, which agent-device's alert accept cannot
+  # answer, so its button is pressed by its label like any other control.
+  tap 'label="Finish workout"'
   agent_device wait absent 'id="workout-bar"' 10000 >/dev/null ||
     fail "The workout bar still shows after Finish"
 }

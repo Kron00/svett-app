@@ -311,7 +311,7 @@ export function FinishWorkoutButton() {
             : `${left === 1 ? "1 set" : `${left} sets`} not marked done ${left === 1 ? "is" : "are"} left out.`,
           [
             { text: "Cancel", style: "cancel" },
-            { text: "Finish", isPreferred: true, onPress: finishNow },
+            { text: "Finish workout", isPreferred: true, onPress: finishNow },
           ],
         )
       }
