@@ -15,7 +15,7 @@ import {
 import { manualClock, openNodeDatabase } from "@svett/core/node";
 import { Effect, Layer, ManagedRuntime, Result } from "effect";
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 import { currentDatabase, switchOwner } from "../data/current";
 import { inTurn } from "../data/turns";
@@ -127,33 +127,39 @@ const appliedImports = (runtime: Runtime) =>
 
 let phone: Runtime;
 let account: Runtime;
-let source: Runtime;
+// The workout as the phone has it, and the file to import with a newer title for it.
+let older = "";
+let newer = "";
 
-beforeEach(async () => {
+beforeAll(async () => {
   Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
-  phone = openDatabase(1);
-  account = openDatabase(2);
-  source = openDatabase(3);
-  app.databases.set("anonymous", phone);
-  app.databases.set(ACCOUNT, account);
-  app.storage.clear();
-  switchOwner(ANONYMOUS);
-  // The file holds one workout, which the phone has under an older title.
+  const source = openDatabase(3);
   const id = await source.runPromise(
     Effect.flatMap(Effect.service(ActivityRepository), (activities) =>
       activities.create(workout("Legs")),
     ),
   );
-  const older = await transfers(source, (repository) => repository.exportFile);
-  await transfers(phone, (repository) => repository.applyImport(decode(older.text), []));
+  older = (await transfers(source, (repository) => repository.exportFile)).text;
   await source.runPromise(
     Effect.flatMap(Effect.service(ActivityRepository), (activities) =>
       activities.update(id, { title: "Leg day" }),
     ),
   );
-  app.fileText = (await transfers(source, (repository) => repository.exportFile)).text;
+  newer = (await transfers(source, (repository) => repository.exportFile)).text;
+  await source.dispose();
+}, 60_000);
+
+beforeEach(async () => {
+  phone = openDatabase(1);
+  account = openDatabase(2);
+  app.databases.set("anonymous", phone);
+  app.databases.set(ACCOUNT, account);
+  app.storage.clear();
+  switchOwner(ANONYMOUS);
+  await transfers(phone, (repository) => repository.applyImport(decode(older), []));
+  app.fileText = newer;
   app.route.params = { file: "export.json" };
-});
+}, 60_000);
 
 const rendered: Array<ReactTestRenderer> = [];
 
@@ -161,7 +167,7 @@ afterEach(async () => {
   await act(async () => {
     for (const tree of rendered.splice(0)) tree.unmount();
   });
-  await Promise.all([phone.dispose(), account.dispose(), source.dispose()]);
+  await Promise.all([phone.dispose(), account.dispose()]);
 });
 
 const decode = (text: string) => Result.getOrThrow(decodeSvettFile(text));
@@ -208,11 +214,16 @@ const signIn = () => act(() => switchOwner({ kind: "account", accountId: ACCOUNT
 describe("an import or undo across signing in", () => {
   it("writes nothing to either account when the account switches while the import waits for a move", async () => {
     const root = await render(<ImportPreviewScreen />, "import-apply");
-    let finishMove = () => {};
-    const move = inTurn(() => new Promise<void>((resolve) => (finishMove = resolve)));
+    const moving: { finish?: () => void } = {};
+    const move = inTurn(
+      () =>
+        new Promise<void>((resolve) => {
+          moving.finish = resolve;
+        }),
+    );
     await act(async () => press(root, "import-apply")());
     await signIn();
-    finishMove();
+    moving.finish?.();
     await move;
     await until(() => has(root, "import-refused"), "refusing the import");
     expect(texts(root)).toContain("Import failed");

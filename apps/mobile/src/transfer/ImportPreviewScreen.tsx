@@ -13,12 +13,7 @@ import { Option, Result } from "effect";
 import { useEffect, useState } from "react";
 import { ScrollView, View } from "react-native";
 
-import {
-  currentDatabase,
-  type OpenDatabase,
-  sameDatabase,
-  useCurrentDatabase,
-} from "../data/current";
+import { type OpenDatabase, sameDatabase, useCurrentDatabase } from "../data/current";
 import type { RootNavigation, RootStackParamList } from "../navigation";
 import { AppText } from "../ui/AppText";
 import { Button } from "../ui/Button";
@@ -53,13 +48,12 @@ const sourceOf = (params: RootStackParamList["ImportPreview"]): ImportFileSource
     : { uri: params.uri };
 
 /** Reads the file, then waits for Import. */
-async function preview(source: ImportFileSource | null): Promise<State> {
+async function preview(source: ImportFileSource | null, database: OpenDatabase): Promise<State> {
   if (source === null) return { kind: "refused", message: "No file was chosen." };
   const text = await readImportFile(source);
   const decoded = decodeSvettFile(text);
   if (Result.isFailure(decoded)) return { kind: "refused", message: decoded.failure.message };
   const file = decoded.success;
-  const database = currentDatabase();
   const plan = await withTransfers((transfers) => transfers.previewImport(file), database);
   return { kind: "ready", file, plan, database };
 }
@@ -164,7 +158,7 @@ export function ImportPreviewScreen() {
     let current = true;
     const show = (next: State) =>
       current && setState((shown) => (previewing(shown) ? next : shown));
-    preview(sourceOf({ uri, file: fileName })).then(show, (error: unknown) =>
+    preview(sourceOf({ uri, file: fileName }), { owner, handle }).then(show, (error: unknown) =>
       show({ kind: "refused", message: `The file did not open. ${String(error)}` }),
     );
     return () => {

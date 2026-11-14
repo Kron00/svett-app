@@ -12,12 +12,7 @@ import { Option, Schema } from "effect";
 import { useEffect, useState } from "react";
 import { ScrollView, View } from "react-native";
 
-import {
-  currentDatabase,
-  type OpenDatabase,
-  sameDatabase,
-  useCurrentDatabase,
-} from "../data/current";
+import { type OpenDatabase, sameDatabase, useCurrentDatabase } from "../data/current";
 import type { RootNavigation, RootStackParamList } from "../navigation";
 import { AppText } from "../ui/AppText";
 import { Button } from "../ui/Button";
@@ -139,7 +134,7 @@ export function UndoImportScreen() {
     const show = (next: State) =>
       current && setState((shown) => (previewing(shown) ? next : shown));
     const batchId = decodeBatchId(importBatchId);
-    const database = currentDatabase();
+    const database = { owner, handle };
     (Option.isSome(batchId)
       ? withTransfers((transfers) => transfers.previewUndo(batchId.value), database)
       : Promise.reject(new Error("This import does not exist."))
