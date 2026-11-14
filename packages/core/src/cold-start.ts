@@ -66,15 +66,17 @@ const ORIGIN_RULE = (origin: LaunchOrigin, prewarmed: boolean): string => {
 export interface ColdStart {
   readonly origin: LaunchOrigin;
   readonly prewarmed: boolean;
-  /** Milliseconds from the origin to the first frame that showed the routine list. */
+  /**
+   * Milliseconds from the origin to the first frame that showed the routine list, with nothing
+   * taken off, so work that finishes after the first screen still counts. The 2 second target
+   * judges this number.
+   */
   readonly shownMs: number;
   /**
-   * Milliseconds between the first screen and the Train tab opening. A person taps the tab, and
-   * the proof script sends a link, so this time is theirs, not svett's.
+   * Whether the launch opened straight into the Train tab. One that opened on another tab
+   * counts the time until someone opened Train, so the target does not judge it.
    */
-  readonly waitMs: number;
-  /** `shownMs` without `waitMs`: svett's own share, which the 2 second target judges. */
-  readonly ownMs: number;
+  readonly direct: boolean;
   /** Each recorded step, in milliseconds since the origin, earliest first. */
   readonly steps: ReadonlyArray<{ readonly step: LaunchStep; readonly ms: number }>;
 }
@@ -94,15 +96,13 @@ export const coldStart = (
   const since = (at: number) => Math.round(at - from);
   const screen = marks.get("screen");
   const train = marks.get("train");
-  const waitMs =
-    screen === undefined || train === undefined ? 0 : Math.max(0, Math.round(train - screen));
-  const shownMs = since(shown);
   return {
     origin,
     prewarmed,
-    shownMs,
-    waitMs,
-    ownMs: shownMs - waitMs,
+    shownMs: since(shown),
+    // The Train tab mounts with the first screen when the launch opens on it, so it records
+    // its step before the first frame does.
+    direct: train !== undefined && (screen === undefined || train <= screen),
     steps: LAUNCH_STEPS.flatMap((step) => {
       const at = marks.get(step);
       return at === undefined ? [] : [{ step, ms: since(at) }];
@@ -110,15 +110,19 @@ export const coldStart = (
   };
 };
 
+const JUDGED = (direct: boolean): string =>
+  direct
+    ? "The 2 second target judges this number, with nothing taken off."
+    : "This launch opened on another tab first, so the number includes the time until the " +
+      "Train tab opened, and the 2 second target does not judge it.";
+
 /**
- * One paragraph for the screen and the proof. It opens with "svett's own cold start: <n> ms",
- * and ends with "Steps since <origin>: <step> <ms>, ... ms." so scripts/sim/startup.sh can read
- * every step.
+ * One paragraph for the screen and the proof. It opens with "Cold start: <n> ms", and ends with
+ * "Steps since <origin>: <step> <ms>, ... ms." so scripts/sim/startup.sh can read every step.
  */
-export const coldStartText = ({ origin, prewarmed, waitMs, ownMs, steps }: ColdStart): string =>
-  `svett's own cold start: ${ownMs} ms. The 2 second target judges this number: from ` +
-  `${STEP_NAMES[origin]} to the first frame with the Train tab's routine list, less ${waitMs} ms ` +
-  `waiting for the Train tab, because a person opens that tab. ${ORIGIN_RULE(origin, prewarmed)} ` +
+export const coldStartText = ({ origin, prewarmed, shownMs, direct, steps }: ColdStart): string =>
+  `Cold start: ${shownMs} ms, from ${STEP_NAMES[origin]} to the first frame with the Train ` +
+  `tab's routine list. ${JUDGED(direct)} ${ORIGIN_RULE(origin, prewarmed)} ` +
   `Steps since ${STEP_NAMES[origin]}: ` +
   `${steps.map(({ step, ms }) => `${STEP_NAMES[step]} ${ms}`).join(", ")} ms.`;
 

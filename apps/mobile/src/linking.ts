@@ -1,4 +1,5 @@
 import type { LinkingOptions } from "@react-navigation/native";
+import { Linking, Settings } from "react-native";
 
 import type { RootStackParamList } from "./navigation";
 
@@ -12,9 +13,24 @@ import type { RootStackParamList } from "./navigation";
 // the same way, through svett://data, svett://import?file=<name> and
 // svett://imports/<id>/undo. scripts/sim/hevy.sh adds &kind=hevy for a Hevy CSV.
 // scripts/sim/tools.sh opens svett://settings/workout and svett://tools/plates?kg=100.
+//
+// The launch argument `-svettLink <link>` opens svett on that link's screen, as if the link had
+// launched it. scripts/sim/startup.sh launches with `-svettLink svett://train`, so the first
+// screen is the Train tab and the cold start it times has no wait for a later link in it.
+const launchLink = (value: unknown): string | null =>
+  typeof value === "string" && value.startsWith("svett://") ? value : null;
+
 export const linking: LinkingOptions<RootStackParamList> = {
   prefixes: ["svett://"],
   filter: (url) => !url.includes("expo-development-client"),
+  getInitialURL: () =>
+    launchLink(Settings.get("svettLink")) ??
+    // React Navigation's own default, which gives up after 150 ms because of
+    // https://github.com/facebook/react-native/issues/25675.
+    Promise.race([
+      Linking.getInitialURL(),
+      new Promise<undefined>((resolve) => setTimeout(resolve, 150)),
+    ]),
   config: {
     initialRouteName: "Tabs",
     screens: {

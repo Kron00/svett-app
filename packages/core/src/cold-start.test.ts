@@ -20,12 +20,12 @@ describe("coldStart", () => {
     ).toBeNull();
   });
 
-  it("times a launch from the process start, leaves out the wait for the Train tab, and lists steps by time", () => {
+  it("times a launch straight into the Train tab from the process start, and lists steps by time", () => {
     const start = coldStart(
       marks([
-        ["shown", 1500.6],
-        ["train", 1400],
-        ["queried", 1450],
+        ["shown", 900.6],
+        ["train", 480],
+        ["queried", 850],
         ["screen", 500],
         ["script", 210.4],
         ["process", 0],
@@ -43,9 +43,8 @@ describe("coldStart", () => {
     expect(start).toEqual({
       origin: "process",
       prewarmed: false,
-      shownMs: 1501,
-      waitMs: 900,
-      ownMs: 601,
+      shownMs: 901,
+      direct: true,
       steps: [
         { step: "process", ms: 0 },
         { step: "main", ms: 80 },
@@ -57,21 +56,41 @@ describe("coldStart", () => {
         { step: "opened", ms: 260 },
         { step: "migrated", ms: 270 },
         { step: "seeded", ms: 280 },
+        { step: "train", ms: 480 },
         { step: "screen", ms: 500 },
-        { step: "train", ms: 1400 },
-        { step: "queried", ms: 1450 },
-        { step: "shown", ms: 1501 },
+        { step: "queried", ms: 850 },
+        { step: "shown", ms: 901 },
       ],
     });
     expect(coldStartText(start!)).toBe(
-      "svett's own cold start: 601 ms. The 2 second target judges this number: from process " +
-        "start to the first frame with the Train tab's routine list, less 900 ms waiting for the " +
-        "Train tab, because a person opens that tab. Timed from the process start, because iOS " +
-        "did not prewarm this launch. Steps since process start: process start 0, main() 80, " +
-        "didFinishLaunching start 120, didFinishLaunching end 150, bundle start 190, JavaScript " +
-        "started 210, bundle end 240, database open 260, migrations checked 270, library checked " +
-        "280, first screen drawn 500, Train tab opened 1400, routines read 1450, routine list " +
-        "drawn 1501 ms.",
+      "Cold start: 901 ms, from process start to the first frame with the Train tab's routine " +
+        "list. The 2 second target judges this number, with nothing taken off. Timed from the " +
+        "process start, because iOS did not prewarm this launch. Steps since process start: " +
+        "process start 0, main() 80, didFinishLaunching start 120, didFinishLaunching end 150, " +
+        "bundle start 190, JavaScript started 210, bundle end 240, database open 260, " +
+        "migrations checked 270, library checked 280, Train tab opened 480, first screen drawn " +
+        "500, routines read 850, routine list drawn 901 ms.",
+    );
+  });
+
+  it("counts a slow database preparation that finishes after the first screen", () => {
+    const start = coldStart(
+      marks([
+        ["process", 0],
+        ["script", 200],
+        ["train", 290],
+        ["screen", 300],
+        ["opened", 1200],
+        ["migrated", 1700],
+        ["seeded", 2100],
+        ["queried", 2150],
+        ["shown", 2200],
+      ]),
+      false,
+    );
+    expect(start).toMatchObject({ shownMs: 2200, direct: true });
+    expect(coldStartText(start!)).toMatch(
+      /^Cold start: 2200 ms, .* judges this number, with nothing taken off\./,
     );
   });
 
@@ -81,18 +100,19 @@ describe("coldStart", () => {
         ["process", 0],
         ["main", 3_600_000],
         ["script", 3_600_300],
+        ["train", 3_600_450],
         ["screen", 3_600_500],
         ["shown", 3_600_700],
       ]),
       true,
     );
-    expect(start).toMatchObject({ origin: "main", prewarmed: true, shownMs: 700, ownMs: 700 });
+    expect(start).toMatchObject({ origin: "main", prewarmed: true, shownMs: 700, direct: true });
     expect(start?.steps[0]).toEqual({ step: "process", ms: -3_600_000 });
     expect(coldStartText(start!)).toContain(
-      "from main() to the first frame with the Train tab's routine list, less 0 ms waiting for " +
-        "the Train tab, because a person opens that tab. Timed from main(), because iOS " +
-        "prewarmed this launch and started the process before the tap. Steps since main(): " +
-        "process start -3600000, main() 0,",
+      "Cold start: 700 ms, from main() to the first frame with the Train tab's routine list. " +
+        "The 2 second target judges this number, with nothing taken off. Timed from main(), " +
+        "because iOS prewarmed this launch and started the process before the tap. Steps " +
+        "since main(): process start -3600000, main() 0,",
     );
   });
 
@@ -100,28 +120,35 @@ describe("coldStart", () => {
     const start = coldStart(
       marks([
         ["process", 0],
+        ["train", 400],
+        ["screen", 450],
         ["shown", 900],
       ]),
       true,
     );
-    expect(start).toMatchObject({ origin: "process", ownMs: 900 });
+    expect(start).toMatchObject({ origin: "process", shownMs: 900 });
     expect(coldStartText(start!)).toContain(
       "Timed from the process start, which overstates it, because iOS prewarmed this launch " +
         "and main() was not recorded.",
     );
   });
 
-  it("counts no wait when the Train tab opened before the first screen was drawn", () => {
+  it("counts the time until the Train tab opened on a launch that showed another tab first", () => {
     const start = coldStart(
       marks([
         ["process", 0],
-        ["train", 400],
-        ["screen", 450],
-        ["shown", 800],
+        ["screen", 500],
+        ["train", 1400],
+        ["shown", 1500],
       ]),
       false,
     );
-    expect(start).toMatchObject({ shownMs: 800, waitMs: 0, ownMs: 800 });
+    expect(start).toMatchObject({ shownMs: 1500, direct: false });
+    expect(coldStartText(start!)).toContain(
+      "Cold start: 1500 ms, from process start to the first frame with the Train tab's routine " +
+        "list. This launch opened on another tab first, so the number includes the time until " +
+        "the Train tab opened, and the 2 second target does not judge it.",
+    );
   });
 
   it("lists a leftover location task that the launch stopped", () => {

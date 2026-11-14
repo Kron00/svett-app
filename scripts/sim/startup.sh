@@ -5,18 +5,20 @@
 # Usage: scripts/sim/startup.sh [--release] [out-dir]
 #
 # At the largest text size it relaunches svett 5 times on the 300-workout
-# fixture with -svettTiming 1, opens the Train tab through svett://train each
-# time, and reads the cold start svett measured itself from the Train tab:
-# svett's own time, which the plan's 2 second target judges, and the time of
-# each step since the launch's origin. The origin is the process start, or
-# main() when iOS prewarmed the launch. It prints every step of every launch,
-# then the median of each over the launches that recorded it. The plan's
-# target is judged on a Release build only. SVETT_LAUNCHES sets the number of
-# launches.
+# fixture with -svettTiming 1 and -svettLink svett://train, so each launch opens
+# straight into the Train tab, and reads the cold start svett measured itself
+# from the Train tab. That is the time from the launch's origin to the first
+# frame with the routine list, with nothing taken off, and the plan's 2 second
+# target judges it. The origin is the process start, or main() when iOS
+# prewarmed the launch. It prints every step of every launch, then the median of
+# each over the launches that recorded it. The target is judged on a Release
+# build only. SVETT_LAUNCHES sets the number of launches.
 #
-# It reads the text of a build from main before this script too, whose steps
-# are fewer and timed from the process start, so the same script times svett
-# before and after a change.
+# A build from main before the launch marks ignores -svettLink and opens on its
+# first tab. The script then opens the Train tab through svett://train, and
+# reads that build's time from the process start to the routine list, which
+# includes the wait for the link, so the target does not judge it. A launch of
+# a newer build that did not open straight into the Train tab fails.
 #
 # It generates the fixture into out-dir with pnpm fixture and copies it into
 # the app's data container, as routines.sh does. SVETT_FIXTURE, the absolute
@@ -82,7 +84,8 @@ fi
 open_flags=(--relaunch)
 # Opening by bundle id alone shows the development client's launcher.
 [[ "$release" == true ]] || open_flags+=(--launch-url "$(dev_client_url "http://$metro")")
-open_flags+=(--launch-args=-svettFixture "--launch-args=$fixture" --launch-args=-svettTiming --launch-args=1)
+open_flags+=(--launch-args=-svettFixture "--launch-args=$fixture" --launch-args=-svettTiming --launch-args=1
+  --launch-args=-svettLink --launch-args=svett://train)
 
 # Leaves the simulator at the default text size, also when a step fails, and
 # frees its own session.
@@ -102,12 +105,15 @@ agent_device settings text-size accessibility-extra-extra-extra-large
 for ((n = 1; n <= launches; n++)); do
   agent_device open "$bundle_id" "${open_flags[@]}"
   agent_device wait "$train_tab" 120000 >/dev/null || fail "Launch $n: svett did not show its tabs"
-  agent_device open "$bundle_id" "svett://train"
-  agent_device wait 'id="routine-list"' 10000 >/dev/null || fail "Launch $n: the Train tab did not list the routines"
+  if ! agent_device wait 'id="routine-list"' 30000 >/dev/null; then
+    # Only a build from before -svettLink opens on another tab.
+    agent_device open "$bundle_id" "svett://train"
+    agent_device wait 'id="routine-list"' 10000 >/dev/null || fail "Launch $n: the Train tab did not list the routines"
+  fi
   # The time sits below the routines, off screen at the largest text size.
   agent_device is visible 'id="cold-start-timing"' >/dev/null 2>&1 ||
     agent_device scroll down --until 'id="cold-start-timing"' >/dev/null 2>&1 ||
-    fail "Launch $n: the Train tab did not show svett's own cold start time"
+    fail "Launch $n: the Train tab did not show the cold start time"
   agent_device get attrs 'id="cold-start-timing"' |
     node -e 'process.stdout.write(JSON.parse(require("fs").readFileSync(0, "utf8")).label ?? "")' \
       >"$out/launch-$n.txt"
@@ -127,10 +133,17 @@ node -e '
   const launches = [];
   for (let n = 1; n <= Number(count); n++) {
     const text = fs.readFileSync(`${out}/launch-${n}.txt`, "utf8");
-    const own = /^svett.s own cold start: (-?\d+) ms\./.exec(text);
+    // A build with the launch marks says "Cold start: <n> ms", one from main before them
+    // "Routine list drawn <n> ms after launch", after the Train link.
+    const current = /^Cold start: (\d+) ms, /.exec(text);
+    const older = /^svett.s own cold start: -?\d+ ms\. Routine list drawn (\d+) ms after launch,/.exec(text);
     const listed = /Steps since ([^:]+): (.*) ms\.$/.exec(text);
-    if (own === null || listed === null) {
-      console.error(`Launch ${n}: the Train tab shows "${text}", which is not svett\x27s own cold start time`);
+    if ((current === null && older === null) || listed === null) {
+      console.error(`Launch ${n}: the Train tab shows "${text}", which is not a cold start time`);
+      process.exit(1);
+    }
+    if (current !== null && text.includes("opened on another tab first")) {
+      console.error(`Launch ${n}: svett did not open straight into the Train tab, so its time includes the wait for it`);
       process.exit(1);
     }
     const steps = listed[2].split(", ").map((entry) => {
@@ -141,8 +154,9 @@ node -e '
       }
       return { name: step[1], ms: Number(step[2]) };
     });
-    launches.push({ own: Number(own[1]), origin: listed[1], steps });
+    launches.push({ ms: Number((current ?? older)[1]), linked: current === null, origin: listed[1], steps });
   }
+  const linked = launches.some((launch) => launch.linked);
   const origins = [...new Set(launches.map(({ origin }) => origin))];
   const names = [];
   for (const { steps } of launches) for (const { name } of steps) if (!names.includes(name)) names.push(name);
@@ -153,10 +167,16 @@ node -e '
   }).sort((a, b) => a.ms - b.ms);
   const lines = [
     `${launches.length} cold launches of a ${build} build, on the 300-workout fixture at the largest text size.`,
-    ...launches.map(({ own, origin, steps }, i) =>
-      `Launch ${i + 1}: svett\x27s own cold start ${own} ms, steps since ${origin}: ` +
+    linked
+      ? "This build opens on another tab, so each launch opened the Train tab through svett://train after the tabs showed, and its time includes that wait."
+      : "Each launch opened straight into the Train tab, and its time runs to the first frame with the routine list, with nothing taken off.",
+    ...launches.map(({ ms, origin, steps }, i) =>
+      `Launch ${i + 1}: cold start ${ms} ms, steps since ${origin}: ` +
       `${steps.map(({ name, ms }) => `${name} ${ms}`).join(", ")} ms.`),
-    `Median: svett\x27s own cold start ${median(launches.map(({ own }) => own))} ms, which the plan\x27s 2 second target judges.`,
+    `Median: cold start ${median(launches.map(({ ms }) => ms))} ms, ` +
+      (linked
+        ? "which the plan\x27s 2 second target does not judge, because it includes the wait for svett://train."
+        : "which the plan\x27s 2 second target judges."),
     `Median of each step since ${origins.length === 1 ? origins[0] : "each launch\x27s own origin"}: ${medians.map(({ name, ms, share }) => `${name} ${ms}${share}`).join(", ")} ms.`,
   ];
   fs.writeFileSync(`${out}/startup.txt`, `${lines.join("\n")}\n`);

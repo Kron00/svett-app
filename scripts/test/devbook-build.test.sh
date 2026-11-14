@@ -1718,7 +1718,7 @@ check "coach.sh --live says nothing was recorded" grep -qF "svett recorded no ex
 # routine unless FAKE_FORGETS is set. FAKE_NO_TARGETS starts a workout whose sets
 # are empty, and FAKE_LIBRARY names the picker's first result. It keeps the
 # screens a link opened in front of each other in stack, and writes the screen
-# under each new routine editor to editor-over. The Train tab shows svett's own
+# under each new routine editor to editor-over. The Train tab shows the
 # cold start time when the app was launched with -svettTiming 1, unless
 # FAKE_NO_TIMING is set. FAKE_TIMING_LABEL replaces its text.
 cat >"$fake/routines-device" <<'EOF'
@@ -1858,7 +1858,7 @@ case "$1" in
       printf '{"label": "%s, Quadriceps · Barbell", "rect": {"x": 0, "y": 200, "width": 440, "height": 80}}\n' \
         "${FAKE_LIBRARY:-Barbell Squat}"
     elif [[ "$3" == 'id="cold-start-timing"' ]]; then
-      label="svett's own cold start: 640 ms. Routine list drawn 1540 ms after launch, less 900 ms waiting for the Train tab."
+      label="Cold start: 1540 ms, from process start to the first frame with the Train tab's routine list. This launch opened on another tab first, so the number includes the time until the Train tab opened, and the 2 second target does not judge it."
       node -e 'console.log(JSON.stringify({ label: process.argv[1], rect: { x: 16, y: 800, width: 408, height: 120 } }))' \
         "${FAKE_TIMING_LABEL:-$label}"
     else
@@ -1904,7 +1904,7 @@ cold_start_lines=(
   "^agent-device's calls alone, against the running app: [0-9]+ ms$"
   "^The difference, an upper bound on svett's start-up that still includes the script's wait before it opens the Train tab: about -?[0-9]+ ms$"
 )
-fake_in_app="svett's own cold start: 640 ms. Routine list drawn 1540 ms after launch, less 900 ms waiting for the Train tab."
+fake_in_app="Cold start: 1540 ms, from process start to the first frame with the Train tab's routine list. This launch opened on another tab first, so the number includes the time until the Train tab opened, and the 2 second target does not judge it."
 
 # cold_start_says <file> <build>: the cold start's upper bound, the automation's
 # share, the difference, and the time the app measured itself, word for word as
@@ -1914,7 +1914,7 @@ cold_start_says() {
     sed -n 1p "$1" | grep -qE "^Cold start to the Train tab's routine list: [0-9]+ ms \($2, on the 300-workout fixture, an upper bound that includes agent-device's calls\)$" &&
     sed -n 2p "$1" | grep -qE "${cold_start_lines[0]}" &&
     sed -n 3p "$1" | grep -qE "${cold_start_lines[1]}" &&
-    [[ "$(sed -n 4p "$1")" == "Measured in the app, the number the plan's 2 second target is judged by: $fake_in_app" ]]
+    [[ "$(sed -n 4p "$1")" == "Measured in the app after the svett://train link, so startup.sh's time is the one the 2 second target judges: $fake_in_app" ]]
 }
 
 case_name="routines.sh Debug with SVETT_DEVICE_CMD"
@@ -2004,8 +2004,8 @@ case_name="routines.sh when the Train tab shows no cold start time"
 rm -rf "$root/routines-state"
 run_routines FAKE_NO_TIMING=1 "$root/routines-no-timing"
 check "routines.sh fails when svett shows no cold start time" test "$routines_status" -ne 0
-check "routines.sh says svett's own time is missing" \
-  grep -qxF "The Train tab did not show svett's own cold start time" "$output"
+check "routines.sh says the cold start time is missing" \
+  grep -qxF "The Train tab did not show the cold start time" "$output"
 check "routines.sh saves no cold start without svett's own time" \
   test ! -e "$root/routines-no-timing/cold-start.txt"
 
@@ -2032,13 +2032,15 @@ check "routines.sh names the result it found instead" \
 
 # Stands in for the bound command while startup.sh times cold launches. It keeps
 # the screen in front, the number of relaunches and whether the Train tab was
-# scrolled under $FAKE_STATE. The cold start time sits below the fold until a
-# scroll down reaches it, and shows only when svett was launched with
-# -svettTiming 1. Launch n reports svett's own time from the list 700 610 650
-# 620 630, main() at 70 + 2n, JavaScript at 200 + n and the routine list at
-# 900 ms past its own time. Only the first launch stops a leftover location
-# task. FAKE_TIMING_LABEL replaces every launch's text, and FAKE_NO_TIMING
-# hides it.
+# scrolled under $FAKE_STATE. A relaunch with -svettLink svett://train opens on
+# the Train tab, and any other on the first tab. The cold start time sits below
+# the fold until a scroll down reaches it, and shows only when svett was
+# launched with -svettTiming 1. Launch n reports a cold start from the list
+# 1600 1510 1550 1520 1530, main() at 70 + 2n and JavaScript at 200 + n. Its
+# database opens after the first screen. Only the first launch stops a leftover
+# location task. FAKE_TIMING_LABEL replaces every launch's text, FAKE_NO_TIMING
+# hides it, and FAKE_NO_LINK ignores -svettLink, as a build from main before the
+# launch marks does.
 cat >"$fake/startup-device" <<'EOF'
 #!/usr/bin/env bash
 echo "$*" >>"$FAKE_ROOT/bound-calls"
@@ -2061,10 +2063,10 @@ holds() {
   esac
 }
 label() {
-  local owns=(700 610 650 620 630) own leftover=""
-  own=${owns[$(((launch - 1) % 5))]}
+  local starts=(1600 1510 1550 1520 1530) ms leftover=""
+  ms=${starts[$(((launch - 1) % 5))]}
   [[ "$launch" != 1 ]] || leftover=", leftover location task stopped 1700"
-  echo "svett's own cold start: $own ms. The 2 second target judges this number: from process start to the first frame with the Train tab's routine list, less 900 ms waiting for the Train tab, because a person opens that tab. Timed from the process start, because iOS did not prewarm this launch. Steps since process start: process start 0, main() $((70 + launch * 2)), JavaScript started $((200 + launch)), routine list drawn $((own + 900))$leftover ms."
+  echo "Cold start: $ms ms, from process start to the first frame with the Train tab's routine list. The 2 second target judges this number, with nothing taken off. Timed from the process start, because iOS did not prewarm this launch. Steps since process start: process start 0, main() $((70 + launch * 2)), JavaScript started $((200 + launch)), Train tab opened 400, first screen drawn 420, database open 1100, routine list drawn $ms$leftover ms."
 }
 case "$1" in
   settings) ;;
@@ -2072,9 +2074,13 @@ case "$1" in
   open)
     case "$3" in
       --relaunch)
-        put screen tabs
         put launch $((launch + 1))
         rm -f "$s/scrolled"
+        if [[ "$*" == *"--launch-args=-svettLink --launch-args=svett://train"* && -z "${FAKE_NO_LINK:-}" ]]; then
+          put screen train
+        else
+          put screen tabs
+        fi
         if [[ "$*" == *"--launch-args=-svettTiming --launch-args=1"* ]]; then touch "$s/timing"; else rm -f "$s/timing"; fi ;;
       svett://train) put screen train ;;
       *) exit 1 ;;
@@ -2108,11 +2114,13 @@ run_startup() {
     "${vars[@]}" "$repo/scripts/sim/startup.sh" "$@" >"$output" 2>&1 || startup_status=$?
 }
 
-# startup_launches <times> <open>: the opens of that many relaunches, each followed by the Train link.
+# startup_launches <times> <open> [link]: the opens of that many relaunches, each
+# followed by the link when one is given.
 startup_launches() {
   local n
   for ((n = 1; n <= $1; n++)); do
-    printf '%s\n' "$2" "com.kron00.svett svett://train"
+    printf '%s\n' "$2"
+    [[ -z "${3:-}" ]] || printf '%s\n' "com.kron00.svett $3"
   done
 }
 
@@ -2120,21 +2128,24 @@ startup_report() {
   local build=$1
   cat <<EOF
 5 cold launches of a $build build, on the 300-workout fixture at the largest text size.
-Launch 1: svett's own cold start 700 ms, steps since process start: process start 0, main() 72, JavaScript started 201, routine list drawn 1600, leftover location task stopped 1700 ms.
-Launch 2: svett's own cold start 610 ms, steps since process start: process start 0, main() 74, JavaScript started 202, routine list drawn 1510 ms.
-Launch 3: svett's own cold start 650 ms, steps since process start: process start 0, main() 76, JavaScript started 203, routine list drawn 1550 ms.
-Launch 4: svett's own cold start 620 ms, steps since process start: process start 0, main() 78, JavaScript started 204, routine list drawn 1520 ms.
-Launch 5: svett's own cold start 630 ms, steps since process start: process start 0, main() 80, JavaScript started 205, routine list drawn 1530 ms.
-Median: svett's own cold start 630 ms, which the plan's 2 second target judges.
-Median of each step since process start: process start 0, main() 76, JavaScript started 203, routine list drawn 1530, leftover location task stopped 1700 (1 of 5 launches) ms.
+Each launch opened straight into the Train tab, and its time runs to the first frame with the routine list, with nothing taken off.
+Launch 1: cold start 1600 ms, steps since process start: process start 0, main() 72, JavaScript started 201, Train tab opened 400, first screen drawn 420, database open 1100, routine list drawn 1600, leftover location task stopped 1700 ms.
+Launch 2: cold start 1510 ms, steps since process start: process start 0, main() 74, JavaScript started 202, Train tab opened 400, first screen drawn 420, database open 1100, routine list drawn 1510 ms.
+Launch 3: cold start 1550 ms, steps since process start: process start 0, main() 76, JavaScript started 203, Train tab opened 400, first screen drawn 420, database open 1100, routine list drawn 1550 ms.
+Launch 4: cold start 1520 ms, steps since process start: process start 0, main() 78, JavaScript started 204, Train tab opened 400, first screen drawn 420, database open 1100, routine list drawn 1520 ms.
+Launch 5: cold start 1530 ms, steps since process start: process start 0, main() 80, JavaScript started 205, Train tab opened 400, first screen drawn 420, database open 1100, routine list drawn 1530 ms.
+Median: cold start 1530 ms, which the plan's 2 second target judges.
+Median of each step since process start: process start 0, main() 76, JavaScript started 203, Train tab opened 400, first screen drawn 420, database open 1100, routine list drawn 1530, leftover location task stopped 1700 (1 of 5 launches) ms.
 EOF
 }
+
+link_args="--launch-args=-svettLink --launch-args=svett://train"
 
 case_name="startup.sh Release with SVETT_DEVICE_CMD"
 run_startup --release "$root/startup"
 [[ "$startup_status" == 0 ]] || fail "startup.sh --release failed"
-mapfile -t release_launches < <(startup_launches 5 "com.kron00.svett --relaunch $fixture_args")
-check "startup.sh relaunches the installed app on the fixture with timing 5 times, opening the Train tab each time" \
+mapfile -t release_launches < <(startup_launches 5 "com.kron00.svett --relaunch $fixture_args $link_args")
+check "startup.sh relaunches the installed app on the fixture with timing straight into the Train tab 5 times, with no later link" \
   only_open "${release_launches[@]}"
 check "startup.sh copies the generated fixture into the app's data container" \
   grep -qxF "fake fixture" "$container_fixture"
@@ -2143,47 +2154,60 @@ check "startup.sh times at the largest text size, then restores the default" \
 check "startup.sh scrolls down to the time below the routines on every launch" \
   test "$(grep -cxF -- "$bound_prefix scroll down --until id=\"cold-start-timing\"" "$root/bound-calls")" -eq 5
 check "startup.sh saves each launch's text as the Train tab shows it" \
-  grep -qF "svett's own cold start: 650 ms. The 2 second target judges this number" "$root/startup/launch-3.txt"
+  grep -qF "Cold start: 1550 ms, from process start to the first frame" "$root/startup/launch-3.txt"
 check "startup.sh screenshots every launch" \
   only_calls "screenshot" "screenshot $root/startup/01-launch-1.png" "screenshot $root/startup/02-launch-2.png" \
   "screenshot $root/startup/03-launch-3.png" "screenshot $root/startup/04-launch-4.png" \
   "screenshot $root/startup/05-launch-5.png"
-check "startup.sh reports every step of every launch, then the median of svett's own time and of each step" \
+check "startup.sh reports every step of every launch, with a database open after the first screen inside the cold start, then the medians" \
   diff <(startup_report Release) "$root/startup/startup.txt"
-check "startup.sh prints the report" grep -qxF "Median: svett's own cold start 630 ms, which the plan's 2 second target judges." "$output"
+check "startup.sh prints the report" grep -qxF "Median: cold start 1530 ms, which the plan's 2 second target judges." "$output"
 check "startup.sh with SVETT_DEVICE_CMD calls neither simctl launch nor openurl" no_simctl_launch_or_openurl
 
 case_name="startup.sh Debug with SVETT_DEVICE_CMD"
 run_startup "$root/startup-debug"
 [[ "$startup_status" == 0 ]] || fail "startup.sh failed"
-mapfile -t debug_launches < <(startup_launches 5 "$debug_fixture_open")
-check "startup.sh Debug relaunches into the dev client on Metro" only_open "${debug_launches[@]}"
+mapfile -t debug_launches < <(startup_launches 5 "$debug_fixture_open $link_args")
+check "startup.sh Debug relaunches into the dev client on Metro, straight into the Train tab" only_open "${debug_launches[@]}"
 check "startup.sh says a Debug build's time is not the one the target judges" \
   grep -qxF "5 cold launches of a Debug, loaded from Metro, which the 2 second target does not judge build, on the 300-workout fixture at the largest text size." \
   "$root/startup-debug/startup.txt"
 
 case_name="startup.sh on a build from before the launch marks"
 main_label="svett's own cold start: 3367 ms. Routine list drawn 6014 ms after launch, less 2647 ms waiting for the Train tab. Steps since launch: JavaScript started 3018, database open 3287, first screen drawn 3354, routine list drawn 6014 ms."
-run_startup SVETT_LAUNCHES=3 SVETT_FIXTURE=/data/Documents/svett-fixture.db FAKE_TIMING_LABEL="$main_label" \
-  --release "$root/startup-main"
+run_startup SVETT_LAUNCHES=3 SVETT_FIXTURE=/data/Documents/svett-fixture.db FAKE_NO_LINK=1 \
+  FAKE_TIMING_LABEL="$main_label" --release "$root/startup-main"
 [[ "$startup_status" == 0 ]] || fail "startup.sh failed on the older text"
-given_fixture_args="--launch-args=-svettFixture --launch-args=/data/Documents/svett-fixture.db $timing_args"
-mapfile -t given_launches < <(startup_launches 3 "com.kron00.svett --relaunch $given_fixture_args")
-check "startup.sh relaunches SVETT_LAUNCHES times on SVETT_FIXTURE" only_open "${given_launches[@]}"
+given_fixture_args="--launch-args=-svettFixture --launch-args=/data/Documents/svett-fixture.db $timing_args $link_args"
+mapfile -t given_launches < <(startup_launches 3 "com.kron00.svett --relaunch $given_fixture_args" svett://train)
+check "startup.sh relaunches SVETT_LAUNCHES times on SVETT_FIXTURE, and opens the Train link when the build ignores -svettLink" \
+  only_open "${given_launches[@]}"
 check "startup.sh with SVETT_FIXTURE neither generates nor copies a fixture" \
   test ! -e "$container_fixture" -a ! -e "$root/startup-main/svett-fixture.db"
 check "startup.sh reads the steps of the older text, timed from the launch" \
   grep -qxF "Median of each step since launch: JavaScript started 3018, database open 3287, first screen drawn 3354, routine list drawn 6014 ms." \
   "$root/startup-main/startup.txt"
-check "startup.sh gives the median of the older text's own time" \
-  grep -qxF "Median: svett's own cold start 3367 ms, which the plan's 2 second target judges." "$root/startup-main/startup.txt"
+check "startup.sh takes the older build's time to the routine list with nothing taken off, and says the target does not judge it" \
+  grep -qxF "Median: cold start 6014 ms, which the plan's 2 second target does not judge, because it includes the wait for svett://train." \
+  "$root/startup-main/startup.txt"
+check "startup.sh says the older build opened the Train tab through the link" \
+  grep -qxF "This build opens on another tab, so each launch opened the Train tab through svett://train after the tabs showed, and its time includes that wait." \
+  "$root/startup-main/startup.txt"
+
+case_name="startup.sh when a launch did not open straight into the Train tab"
+indirect_label="Cold start: 2500 ms, from process start to the first frame with the Train tab's routine list. This launch opened on another tab first, so the number includes the time until the Train tab opened, and the 2 second target does not judge it. Timed from the process start, because iOS did not prewarm this launch. Steps since process start: process start 0, first screen drawn 420, Train tab opened 2400, routine list drawn 2500 ms."
+run_startup FAKE_TIMING_LABEL="$indirect_label" --release "$root/startup-indirect"
+check "startup.sh fails on a launch that opened on another tab" test "$startup_status" -ne 0
+check "startup.sh says the launch did not open straight into the Train tab" \
+  grep -qxF "Launch 1: svett did not open straight into the Train tab, so its time includes the wait for it" "$output"
+check "startup.sh saves no report for a launch that opened on another tab" test ! -e "$root/startup-indirect/startup.txt"
 
 case_name="startup.sh when the Train tab shows no cold start time"
 run_startup FAKE_NO_TIMING=1 --release "$root/startup-no-timing"
 check "startup.sh fails when svett shows no cold start time" test "$startup_status" -ne 0
 check "startup.sh says which launch showed no time" \
-  grep -qxF "Launch 1: the Train tab did not show svett's own cold start time" "$output"
-check "startup.sh saves no report without svett's own time" test ! -e "$root/startup-no-timing/startup.txt"
+  grep -qxF "Launch 1: the Train tab did not show the cold start time" "$output"
+check "startup.sh saves no report without a cold start time" test ! -e "$root/startup-no-timing/startup.txt"
 check "startup.sh restores the default text size after a failure" \
   only_calls "settings" "settings text-size accessibility-extra-extra-extra-large" "settings text-size large"
 
@@ -2191,7 +2215,7 @@ case_name="startup.sh when the cold start time is not svett's"
 run_startup FAKE_TIMING_LABEL="Loading" --release "$root/startup-bad-timing"
 check "startup.sh fails on a cold start text it cannot read" test "$startup_status" -ne 0
 check "startup.sh quotes the text it found" \
-  grep -qxF "Launch 1: the Train tab shows \"Loading\", which is not svett's own cold start time" "$output"
+  grep -qxF "Launch 1: the Train tab shows \"Loading\", which is not a cold start time" "$output"
 
 case_name="startup.sh with no launches"
 run_startup SVETT_LAUNCHES=0 --release "$root/startup-none"

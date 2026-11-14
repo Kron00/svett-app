@@ -28,10 +28,10 @@
 # it is an upper bound too. svett is launched with -svettTiming 1, so the Train
 # tab also shows the time svett measured itself, from the process start, or
 # main() when iOS prewarmed the launch, to the first frame with the routine list,
-# without the wait for the svett://train link, and each step on the way. That
-# in-app time is the number the plan's 2 second target is judged by, and only on
-# a Release build. All of it goes to cold-start.txt. startup.sh times it alone
-# over 5 launches.
+# and each step on the way. Here that time includes the wait for the
+# svett://train link, so the plan's 2 second target judges startup.sh's time
+# instead, which opens straight into the Train tab. All of it goes to
+# cold-start.txt.
 #
 # It opens screens through svett:// links and presses an element at the centre
 # of its frame, because agent-device 0.21.37 refuses a selector press inside
@@ -215,16 +215,16 @@ agent_device wait "$train_tab" 120000 >/dev/null || fail "svett did not show its
 link "svett://train"
 expect 'id="routine-list"' "The Train tab did not list the routines"
 overhead=$(($(now_ms) - started))
-bring 'id="cold-start-timing"' "The Train tab did not show svett's own cold start time"
+bring 'id="cold-start-timing"' "The Train tab did not show the cold start time"
 in_app=$(agent_device get attrs 'id="cold-start-timing"' |
   node -e 'process.stdout.write(JSON.parse(require("fs").readFileSync(0, "utf8")).label ?? "")')
-[[ "$in_app" == "svett's own cold start: "* ]] || fail "The cold start time on the Train tab reads \"$in_app\""
+[[ "$in_app" == "Cold start: "* ]] || fail "The cold start time on the Train tab reads \"$in_app\""
 build=$([[ "$release" == true ]] && echo Release || echo "Debug, loaded from Metro")
 {
   echo "Cold start to the Train tab's routine list: $cold_start ms ($build, on the 300-workout fixture, an upper bound that includes agent-device's calls)"
   echo "agent-device's calls alone, against the running app: $overhead ms"
   echo "The difference, an upper bound on svett's start-up that still includes the script's wait before it opens the Train tab: about $((cold_start - overhead)) ms"
-  echo "Measured in the app, the number the plan's 2 second target is judged by: $in_app"
+  echo "Measured in the app after the svett://train link, so startup.sh's time is the one the 2 second target judges: $in_app"
 } | tee "$out/cold-start.txt"
 screenshot train
 
