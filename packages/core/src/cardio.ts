@@ -264,7 +264,7 @@ export const routeLinesOf = (route: ReadonlyArray<LocationSample>): LocationSamp
     if (line === undefined) lines.set(sample.segment, [sample]);
     else line.push(sample);
   }
-  return [...lines.entries()].toSorted(([a], [b]) => a - b).map(([, line]) => line);
+  return [...lines.entries()].sort(([a], [b]) => a - b).map(([, line]) => line);
 };
 
 /** A saved track's samples, sorted by kind, in the order they were recorded. */
