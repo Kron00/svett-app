@@ -658,4 +658,35 @@ describe("sync", { timeout: 120_000 }, () => {
     expect(await a.rows()).toEqual(await b.rows());
     expect(await counts(a)).toEqual({ activities: 2, sets: 6 });
   });
+
+  it("keeps a workout reopened on one phone over another phone's edits to it, and brings it to both once finished", async () => {
+    const server = await startServer();
+    const a = openPhone(server, ALICE, 1);
+    const b = openPhone(server, ALICE, 2);
+    const id = await sharedLegDay(a, [b]);
+
+    await a.at(T0 + MINUTE);
+    await a.run(
+      Effect.flatMap(activities, (repository) => repository.update(id, { status: "in_progress" })),
+    );
+    const set = await firstSet(a, id);
+    await a.run(
+      Effect.flatMap(activities, (repository) => repository.updateWorkoutSet(set.id, { reps: 99 })),
+    );
+    const draft = await workoutRows(a.runtime, id);
+
+    await b.at(T0 + 2 * MINUTE);
+    await editFirstSet(b, id, 3);
+    await b.run(Effect.flatMap(activities, (repository) => repository.update(id, { title: "B" })));
+    await syncAll([a, b]);
+    expect(await workoutRows(a.runtime, id)).toEqual(draft);
+
+    await a.at(T0 + 3 * MINUTE);
+    await a.run(Effect.flatMap(activities, (repository) => repository.finishWorkout(id)));
+    await syncAll([a, b]);
+    expect(await a.rows()).toEqual(await b.rows());
+    const onB = Option.getOrThrow(await detail(b, id));
+    expect(onB.activity).toMatchObject({ title: "Legs", status: "finished" });
+    expect(onB.exercises[0]?.sets[0]?.reps).toBe(99);
+  });
 });

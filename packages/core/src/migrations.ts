@@ -195,20 +195,33 @@ const inDraft: Readonly<Record<string, (row: string) => string>> = {
       WHERE t.id = ${target}.activity_track_id AND a.status = 'in_progress')`,
 };
 
+/** Every table of a workout but the activity, and the rows of each under the workout `id`. */
+const workoutChildren = (id: string): ReadonlyArray<readonly [string, string]> => [
+  ["activity_exercise", `activity_id = ${id}`],
+  [
+    "activity_set",
+    `activity_exercise_id IN (SELECT id FROM activity_exercise WHERE activity_id = ${id})`,
+  ],
+  ["activity_track", `activity_id = ${id}`],
+  [
+    "activity_sample",
+    `activity_track_id IN (SELECT id FROM activity_track WHERE activity_id = ${id})`,
+  ],
+];
+
 /** Every row of the workout `id`, deleted ones too, as (table_name, row_id). */
 const workoutRows = (id: string) => `
   SELECT 'activity' AS table_name, id AS row_id FROM activity WHERE id = ${id}
-  UNION ALL SELECT 'activity_exercise', id FROM activity_exercise WHERE activity_id = ${id}
-  UNION ALL SELECT 'activity_set', id FROM activity_set
-    WHERE activity_exercise_id IN (SELECT id FROM activity_exercise WHERE activity_id = ${id})
-  UNION ALL SELECT 'activity_track', id FROM activity_track WHERE activity_id = ${id}
-  UNION ALL SELECT 'activity_sample', id FROM activity_sample
-    WHERE activity_track_id IN (SELECT id FROM activity_track WHERE activity_id = ${id})`;
+${workoutChildren(id)
+  .map(([table, where]) => `  UNION ALL SELECT '${table}', id FROM ${table} WHERE ${where}`)
+  .join("\n")}`;
 
 // Writes to a workout in progress queue nothing. Finishing it queues every row it has, the
 // ones written while it was in progress too, and a finished workout put back in progress
 // takes its rows out of the queue again. Discarding one sends nothing, since nothing of it
 // was queued. The rows a database already queued for a workout in progress leave the queue.
+// A pull leaves a workout in progress alone, so finishing gives each of its rows the finish
+// time, which is after every change the phone has seen, and the phone's copy wins everywhere.
 const localDrafts = `
 ${Object.keys(inDraft)
   .flatMap((table) => [
@@ -226,6 +239,13 @@ ${Object.entries(inDraft)
 CREATE TRIGGER activity_queue_update AFTER UPDATE ON activity
 WHEN (SELECT quiet FROM sync_state) = 0
 BEGIN
+${workoutChildren("NEW.id")
+  .map(
+    ([table, where]) =>
+      `  UPDATE ${table} SET updated_at = NEW.updated_at WHERE ${where}
+    AND OLD.status = 'in_progress' AND NEW.status <> 'in_progress';`,
+  )
+  .join("\n")}
   UPDATE sync_state SET mark = mark + 1;
   DELETE FROM sync_outbox WHERE (table_name, row_id) IN (${workoutRows("NEW.id")})
     AND (OLD.status = 'in_progress' OR NEW.status = 'in_progress');

@@ -6,6 +6,7 @@ import {
   checkSyncRow,
   deletedAboveOf,
   deletionMatters,
+  inDraftWorkout,
   isTooFarAhead,
   MAX_CLOCK_AHEAD_MS,
   MAX_SYNC_ROWS,
@@ -135,12 +136,35 @@ const makeSyncRepository = Effect.gen(function* () {
       (found) => found.length > 0,
     );
 
+  /** Writes `row` as given, over any copy here, and drops it from the queue. */
+  const save = (row: CheckedRow, encoded: Readonly<Record<string, unknown>>) =>
+    Effect.gen(function* () {
+      const target = tableOf(row.table);
+      const columns = target.keys.map(columnOf);
+      const values = encoded as Readonly<Record<string, SqlValue | undefined>>;
+      yield* sql.run(
+        `INSERT INTO ${row.table} (${columns.join(", ")}) VALUES (${columns.map(() => "?").join(", ")})
+         ON CONFLICT (id) DO UPDATE SET ${columns
+           .filter((column) => column !== "id")
+           .map((column) => `${column} = excluded.${column}`)
+           .join(", ")}`,
+        target.keys.map((key) => values[key] ?? null),
+      );
+      yield* forget(row.table, row.id);
+    });
+
   /**
    * Saves a pulled page and the cursor after it in one transaction, so a pull cut short
    * resumes from the last page it saved. The server's copy is the one every phone ends with,
    * so it replaces a row this phone has no unsent change to. A row with an unsent change
    * keeps it unless the server's copy wins the merge, and then the change is dropped, since it
-   * lost. Every row applied moves the clock past its time.
+   * lost. Every row applied, and every row passed over, moves the clock past its time.
+   *
+   * A workout in progress here, and every row under it, stays as it is here, whatever the
+   * queue holds and in whatever order its rows arrive. Finishing it gives each of its rows a
+   * time after every one passed over, so this phone's copy wins everywhere. A row the server
+   * has under it that this phone lacks, such as a set another phone added, is saved deleted,
+   * so finishing deletes it everywhere too.
    */
   const apply = (rows: ReadonlyArray<CheckedRow>, next: number) =>
     sql.transaction(
@@ -150,6 +174,17 @@ const makeSyncRepository = Effect.gen(function* () {
         let taken = 0;
         for (const row of rows) {
           newest = Math.max(newest, row.updatedAt);
+          const here = yield* lookup(row.table, row.id);
+          const encoded = row.encoded as Readonly<Record<string, unknown>>;
+          if (
+            (here !== undefined && (yield* inDraftWorkout(row.table, here, lookup))) ||
+            (yield* inDraftWorkout(row.table, encoded, lookup))
+          ) {
+            if (here === undefined) {
+              yield* save(row, { ...encoded, deletedAt: row.deletedAt ?? row.updatedAt });
+            }
+            continue;
+          }
           const local = (yield* storedRows(row.table, [row.id])).get(row.id);
           if (local?.changeId === row.changeId) continue;
           if (local !== undefined && (yield* isQueued(row.table, row.id))) {
@@ -158,18 +193,7 @@ const makeSyncRepository = Effect.gen(function* () {
               : null;
             if (mergeChange(local, row, deletedAbove) === "keep") continue;
           }
-          const target = tableOf(row.table);
-          const columns = target.keys.map(columnOf);
-          const encoded = row.encoded as Record<string, SqlValue | undefined>;
-          yield* sql.run(
-            `INSERT INTO ${row.table} (${columns.join(", ")}) VALUES (${columns.map(() => "?").join(", ")})
-             ON CONFLICT (id) DO UPDATE SET ${columns
-               .filter((column) => column !== "id")
-               .map((column) => `${column} = excluded.${column}`)
-               .join(", ")}`,
-            target.keys.map((key) => encoded[key] ?? null),
-          );
-          yield* forget(row.table, row.id);
+          yield* save(row, encoded);
           taken++;
         }
         yield* sql.run(

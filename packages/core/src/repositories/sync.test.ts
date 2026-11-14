@@ -19,6 +19,7 @@ import {
 import { decodeSvettFile, type SvettFile } from "../svett-file.ts";
 import {
   changeIdOf,
+  checkSyncRow,
   type CheckedRow,
   isTooFarAhead,
   type SyncedTable,
@@ -530,6 +531,155 @@ describe("a workout in progress", () => {
     const server = standIn(() => T0);
     expect(await on.run(syncOnce(server.api))).toEqual({ pushed: 0, held: 0, pulled: 0 });
     expect(server.pushes).toEqual([]);
+  });
+
+  /** The server's copies of `rows`, each changed by `patch` when it gives one for its ID. */
+  const serverCopies = (
+    rows: Sent,
+    patch: Readonly<Record<string, Readonly<Record<string, unknown>>>> = {},
+  ) =>
+    Effect.runPromise(
+      Effect.forEach(rows, ({ table, row }) => {
+        const id = (row as { id: string }).id;
+        return checkSyncRow(table, { ...(row as object), ...patch[id] });
+      }),
+    );
+
+  /** Every order of `items`. */
+  const orders = <A>(items: ReadonlyArray<A>): Array<ReadonlyArray<A>> =>
+    items.length <= 1
+      ? [items]
+      : items.flatMap((item, index) =>
+          orders(items.filter((_, other) => other !== index)).map((rest) => [item].concat(rest)),
+        );
+
+  const apply = (on: Phone, rows: ReadonlyArray<CheckedRow>, next: number) =>
+    on.run(Effect.flatMap(sync, (repository) => repository.apply(rows, next)));
+
+  /**
+   * A leg day the server already holds, put back in progress here a minute later with its
+   * first set changed to 99 reps. Gives its ID and the server's copies of its rows.
+   */
+  const reopenedLegDay = async () => {
+    const on = phone();
+    const id = await logLegDay(on);
+    const sent = await on.run(Effect.flatMap(sync, (repository) => repository.queued(undefined)));
+    await on.run(Effect.flatMap(sync, (repository) => repository.confirm(sent)));
+    const onServer = await workoutRows(on.runtime, id);
+    await on.at(T0 + MINUTE);
+    await on.run(
+      Effect.flatMap(activities, (repository) => repository.update(id, { status: "in_progress" })),
+    );
+    const set = await firstSet(on, id);
+    await on.run(
+      Effect.flatMap(activities, (repository) => repository.updateWorkoutSet(set.id, { reps: 99 })),
+    );
+    return { on, id, set, onServer };
+  };
+
+  it("changes nothing of a reopened workout when the server's older copy of it arrives", async () => {
+    const { on, id, set, onServer } = await reopenedLegDay();
+    const draft = await workoutRows(on.runtime, id);
+    expect(await apply(on, await serverCopies(onServer), 1)).toBe(0);
+    expect(await workoutRows(on.runtime, id)).toEqual(draft);
+    expect(draft[0]?.row).toMatchObject({ status: "in_progress" });
+    expect((await firstSet(on, id)).reps).toBe(99);
+    expect(await on.run(Effect.flatMap(sync, (repository) => repository.queuedCount))).toBe(0);
+
+    // Finished, every row of it goes up timed after the server's copies, so this one wins.
+    await on.run(Effect.flatMap(activities, (repository) => repository.finishWorkout(id)));
+    const queued = await on.run(
+      Effect.flatMap(sync, (repository) => repository.queued(undefined)),
+    );
+    expect(queued.map(({ id: rowId }) => rowId).toSorted()).toEqual(
+      onServer.map(({ row }) => (row as { id: string }).id).toSorted(),
+    );
+    const newestOnServer = Math.max(
+      ...onServer.map(({ row }) => (row as { updatedAt: number }).updatedAt),
+    );
+    for (const { row } of queued) {
+      expect((row as { updatedAt: number }).updatedAt).toBeGreaterThan(newestOnServer);
+    }
+    expect(queued.find(({ id: rowId }) => rowId === set.id)?.row).toMatchObject({ reps: 99 });
+    expect(queued.find(({ id: rowId }) => rowId === id)?.row).toMatchObject({
+      status: "finished",
+    });
+  });
+
+  it("keeps a workout in progress here whatever order its rows arrive in, in one page or several", async () => {
+    const addedSet = "0190a0b2-0000-7000-8000-0000000000d1";
+    for (const pages of ["one", "several"] as const) {
+      for (const order of orders(["activity", "set", "added set"] as const)) {
+        const { on, id, set, onServer } = await reopenedLegDay();
+        const draft = await workoutRows(on.runtime, id);
+        const later = EpochMillis.make(T0 + 2 * MINUTE);
+        const [activity, changedSet, added] = await serverCopies(
+          [
+            onServer[0] as Sent[number],
+            onServer.find(({ row }) => (row as { id: string }).id === set.id) as Sent[number],
+            {
+              table: "activity_set",
+              row: {
+                ...(onServer.find(({ row }) => (row as { id: string }).id === set.id)
+                  ?.row as object),
+                id: addedSet,
+                position: 9,
+              },
+            },
+          ],
+          {
+            [id]: { title: "Renamed elsewhere", updatedAt: later },
+            [set.id]: { reps: 3, updatedAt: later },
+            [addedSet]: { reps: 4, updatedAt: later },
+          },
+        );
+        const byName = { activity, set: changedSet, "added set": added };
+        const page = order.map((name) => byName[name] as CheckedRow);
+        if (pages === "one") await apply(on, page, 1);
+        else for (const [index, row] of page.entries()) await apply(on, [row], index + 1);
+
+        const now = await workoutRows(on.runtime, id);
+        expect(now.filter(({ row }) => (row as { id: string }).id !== addedSet)).toEqual(draft);
+        expect(now.find(({ row }) => (row as { id: string }).id === addedSet)?.row).toMatchObject(
+          { deletedAt: later },
+        );
+        expect(await on.run(Effect.flatMap(sync, (repository) => repository.queuedCount))).toBe(
+          0,
+        );
+
+        // Finished, it goes up as this phone has it, and the set added elsewhere goes deleted.
+        await on.run(Effect.flatMap(activities, (repository) => repository.finishWorkout(id)));
+        const queued = await on.run(
+          Effect.flatMap(sync, (repository) => repository.queued(undefined)),
+        );
+        const sentRow = (rowId: string) =>
+          queued.find(({ id: queuedId }) => queuedId === rowId)?.row as {
+            readonly updatedAt: number;
+          };
+        expect(sentRow(id)).toMatchObject({ title: "Legs", status: "finished" });
+        expect(sentRow(set.id)).toMatchObject({ reps: 99 });
+        expect(sentRow(addedSet)).toMatchObject({ deletedAt: later });
+        for (const rowId of [id, set.id, addedSet]) {
+          expect(sentRow(rowId).updatedAt).toBeGreaterThan(later);
+        }
+      }
+    }
+  });
+
+  it("keeps a workout started here, that the server has never seen, through a pull", async () => {
+    const on = phone();
+    const id = await on.run(startPushDay());
+    const draft = await workoutRows(on.runtime, id);
+    const elsewhere = phone(2);
+    const other = await logLegDay(elsewhere);
+    const page = await serverCopies(await workoutRows(elsewhere.runtime, other));
+    expect(await apply(on, page, 1)).toBe(page.length);
+    expect(await workoutRows(on.runtime, id)).toEqual(draft);
+    expect(await on.run(Effect.flatMap(sync, (repository) => repository.queuedCount))).toBe(0);
+    await on.run(Effect.flatMap(activities, (repository) => repository.finishWorkout(id)));
+    expect(await on.run(Effect.flatMap(sync, (repository) => repository.queuedCount))).toBe(
+      draft.length,
+    );
   });
 
   it("takes a finished workout put back in progress out of the queue until it is finished again", async () => {
