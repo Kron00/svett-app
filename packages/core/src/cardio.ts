@@ -4,9 +4,8 @@ import {
   type CardioKind,
   type Fix,
   type Recording,
-  recordedDistanceM,
-  segmentFixes,
   segmentTrack,
+  type TrackPoint,
 } from "./recording.ts";
 import type { ActivityDraft, SampleDraft } from "./repositories/activities.ts";
 import { MADE_HERE } from "./repositories/origin.ts";
@@ -29,16 +28,24 @@ interface Mark {
   readonly distanceM: number;
 }
 
-const marksOf = (segments: Recording["segments"], end: number): ReadonlyArray<Mark> => {
+type Tracks = ReadonlyArray<ReadonlyArray<TrackPoint>>;
+
+const tracksOf = (recording: Recording): Tracks => recording.segments.map(segmentTrack);
+
+const marksOf = (
+  segments: Recording["segments"],
+  tracks: Tracks,
+  end: number,
+): ReadonlyArray<Mark> => {
   const marks: Mark[] = [];
   let moving = 0;
   let distance = 0;
-  for (const segment of segments) {
+  for (const [index, segment] of segments.entries()) {
     const to = segment.to ?? end;
     let clock = segment.from;
     let travelled = 0;
     marks.push({ at: clock, movingMs: moving, distanceM: distance });
-    for (const { fix, alongM } of segmentTrack(segment)) {
+    for (const { fix, alongM } of tracks[index]!) {
       moving += fix.at - clock;
       clock = fix.at;
       travelled = alongM;
@@ -56,8 +63,13 @@ const marksOf = (segments: Recording["segments"], end: number): ReadonlyArray<Ma
  * between the readings either side of it. The last split holds whatever distance and
  * moving time are left, so the splits always add up to the whole recording.
  */
-export const splitsOf = (recording: Recording, end: number, everyM = SPLIT_M): Split[] => {
-  const marks = marksOf(recording.segments, end);
+export const splitsOf = (
+  recording: Recording,
+  end: number,
+  everyM = SPLIT_M,
+  tracks: Tracks = tracksOf(recording),
+): Split[] => {
+  const marks = marksOf(recording.segments, tracks, end);
   const splits: Split[] = [];
   let splitStart: Mark = marks[0]!;
   for (let index = 1; index < marks.length; index++) {
@@ -170,21 +182,28 @@ export interface CardioSummary {
   readonly durationS: number;
   readonly distanceM: number;
   readonly elevationGainM: number | null;
-  /** The readings kept, one list for each stretch between start or resume and pause. */
+  /**
+   * The readings kept, at their smoothed positions, one list for each stretch between
+   * start or resume and pause.
+   */
   readonly segments: ReadonlyArray<ReadonlyArray<Fix>>;
   readonly splits: ReadonlyArray<Split>;
 }
 
-/** The finished recording, with any stretch still open ending at `end`. */
+/**
+ * The finished recording, with any stretch still open ending at `end`. Its distance is
+ * along the smoothed track, so it can differ a little from the distance shown live.
+ */
 export const summarize = (recording: Recording, end: number): CardioSummary => {
-  const splits = splitsOf(recording, end);
-  const segments = recording.segments.map((segment) => segmentFixes(segment));
+  const tracks = tracksOf(recording);
+  const splits = splitsOf(recording, end, SPLIT_M, tracks);
+  const segments = tracks.map((track) => track.map(({ fix }) => fix));
   return {
     activityId: recording.activityId,
     kind: recording.kind,
     startedAt: recording.startedAt,
     durationS: splits.reduce((total, split) => total + split.durationS, 0),
-    distanceM: recordedDistanceM(recording),
+    distanceM: tracks.reduce((total, track) => total + (track.at(-1)?.alongM ?? 0), 0),
     elevationGainM: elevationGainM(segments),
     segments,
     splits,
