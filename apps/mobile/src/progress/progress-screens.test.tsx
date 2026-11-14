@@ -93,10 +93,23 @@ vi.mock("@react-navigation/native", async () => {
     useFocusEffect: (effect: () => () => void) => useEffect(effect, [effect]),
   };
 });
-vi.mock("../data/current", () => ({
-  appDatabase: () => app.runtime,
-  subscribeDatabase: () => () => undefined,
-}));
+vi.mock("../data/current", () => {
+  const database = {
+    owner: { kind: "anonymous" },
+    handle: {
+      target: { kind: "owner", owner: { kind: "anonymous" } },
+      get runtime() {
+        return app.runtime;
+      },
+    },
+  };
+  return {
+    appDatabase: () => app.runtime,
+    currentDatabase: () => database,
+    stillOpen: (open: unknown) => open === database,
+    subscribeDatabase: () => () => undefined,
+  };
+});
 
 // Twelve days after the fixture's last workout, like the day this was written.
 const NOW = new Date(2026, 10, 13, 12).getTime();

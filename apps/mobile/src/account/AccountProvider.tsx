@@ -2,16 +2,18 @@ import { ClerkProvider, useAuth } from "@clerk/expo";
 import { tokenCache } from "@clerk/expo/token-cache";
 import { type ReactNode, useEffect } from "react";
 
-import { ownerOf, switchOwner } from "../data/current";
+import { followSession } from "../data/current";
 import { CLERK_PUBLISHABLE_KEY } from "./config";
 import { resumeMove } from "./move";
 
-/** Opens the signed-in account's database, and the anonymous one when nobody is signed in. */
+/**
+ * Opens the signed-in account's database. A lapsed session keeps it open, and only Sign out
+ * on the Account screen opens the anonymous one.
+ */
 function OwnerFromSession() {
   const { isLoaded, userId } = useAuth();
   useEffect(() => {
-    if (!isLoaded) return;
-    switchOwner(ownerOf(userId));
+    if (isLoaded) followSession(userId);
   }, [isLoaded, userId]);
   return null;
 }

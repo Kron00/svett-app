@@ -4,6 +4,7 @@ import { Effect, Option, Schema } from "effect";
 import { useCallback, useState } from "react";
 
 import { appDatabase } from "../data/current";
+import { write } from "../data/store";
 
 export type Loaded<A> =
   | { readonly state: "loading" }
@@ -14,6 +15,11 @@ export type Loaded<A> =
 export const withExercises = <A, E>(
   body: (exercises: typeof ExerciseRepository.Service) => Effect.Effect<A, E>,
 ): Promise<A> => appDatabase().runPromise(Effect.flatMap(Effect.service(ExerciseRepository), body));
+
+/** Saves through the exercise repository, as every other write does. */
+export const changeExercises = <A, E>(
+  body: (exercises: typeof ExerciseRepository.Service) => Effect.Effect<A, E>,
+): Promise<A> => write(Effect.flatMap(Effect.service(ExerciseRepository), body));
 
 /** Loads on focus, so a screen shows what another screen saved before it came back. */
 function useOnFocus<A>(load: () => Promise<A>): Loaded<A> {

@@ -13,7 +13,14 @@ import {
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { ScrollView, View } from "react-native";
 
-import { ownerOf, switchOwner } from "../data/current";
+import {
+  movePending,
+  ownerOf,
+  sessionLapsed,
+  signedOut,
+  switchOwner,
+  useCurrentDatabase,
+} from "../data/current";
 import { AppText } from "../ui/AppText";
 import { Button } from "../ui/Button";
 import { EmptyState } from "../ui/EmptyState";
@@ -303,7 +310,9 @@ function SignedIn({ accountId }: { readonly accountId: string }) {
         disabled={signingOut}
         onPress={() => {
           setSigningOut(true);
-          signOut().finally(() => setSigningOut(false));
+          signOut()
+            .then(signedOut)
+            .finally(() => setSigningOut(false));
         }}
         testID="sign-out"
       />
@@ -311,8 +320,38 @@ function SignedIn({ accountId }: { readonly accountId: string }) {
   );
 }
 
+function Lapsed() {
+  return (
+    <Card testID="session-lapsed">
+      <Heading
+        title="Sign in again to sync"
+        message="Your sign-in ended, as it does every 7 days. This phone still shows your account's data and keeps everything you log. Sign in with the same email to sync again."
+      />
+      <Button
+        label="Sign out"
+        variant="destructive"
+        onPress={signedOut}
+        accessibilityHint="Closes this account's data, which stays on the phone for when you sign in again"
+        testID="lapsed-sign-out"
+      />
+    </Card>
+  );
+}
+
+function MoveUnfinished() {
+  return (
+    <Card testID="move-unfinished">
+      <Heading
+        title="Your data is moving into an account"
+        message="The move has not finished, so svett shows and saves nothing while nobody is signed in. Sign in to that account to finish it."
+      />
+    </Card>
+  );
+}
+
 function ClerkAccount() {
   const { isLoaded, userId } = useAuth();
+  const database = useCurrentDatabase();
   if (!isLoaded) {
     return (
       <Card testID="account-loading">
@@ -320,7 +359,14 @@ function ClerkAccount() {
       </Card>
     );
   }
-  return userId ? <SignedIn key={userId} accountId={userId} /> : <SignIn />;
+  if (userId) return <SignedIn key={userId} accountId={userId} />;
+  return (
+    <>
+      {sessionLapsed(database, userId) ? <Lapsed /> : null}
+      {movePending(database) ? <MoveUnfinished /> : null}
+      <SignIn />
+    </>
+  );
 }
 
 /** Sign in to a svett account, the move offer on the first sign-in, and sign out. */

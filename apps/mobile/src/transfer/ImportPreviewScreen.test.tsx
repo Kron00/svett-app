@@ -67,6 +67,7 @@ vi.mock("../data/current", () => {
   const database = {
     owner: { kind: "anonymous" },
     handle: {
+      target: { kind: "owner", owner: { kind: "anonymous" } },
       get runtime() {
         return app.runtime;
       },

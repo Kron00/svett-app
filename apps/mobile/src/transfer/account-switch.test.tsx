@@ -22,6 +22,7 @@ import { act, create, type ReactTestInstance, type ReactTestRenderer } from "rea
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 import { currentDatabase, switchOwner } from "../data/current";
+import { deletedWorkout, deleteWorkout, UNDO_SWITCHED, undoDelete } from "../progress/deleted";
 import { inTurn } from "../data/turns";
 import { DATABASE_SWITCHED } from "./files";
 import { ImportPreviewScreen } from "./ImportPreviewScreen";
@@ -40,6 +41,7 @@ const app = vi.hoisted(() => ({
 }));
 
 vi.mock("react-native", () => ({
+  AccessibilityInfo: { announceForAccessibility: () => {} },
   AppState: { addEventListener: () => ({ remove: () => {} }) },
   Pressable: "Pressable",
   ScrollView: "ScrollView",
@@ -79,7 +81,9 @@ vi.mock("../data/database", () => ({
   launchFixture: () => undefined,
   openDatabaseHandle: (target: { kind: string; owner?: { kind: string; accountId?: string } }) => ({
     target,
-    runtime: app.databases.get(target.owner?.accountId ?? target.owner?.kind ?? target.kind),
+    get runtime() {
+      return app.databases.get(target.owner?.accountId ?? target.owner?.kind ?? target.kind);
+    },
     close: async () => {},
   }),
 }));
@@ -437,6 +441,53 @@ describe("a Hevy import across signing in", () => {
     expect((await titles(account)).length).toBeGreaterThan(0);
     expect(await unmatched(account)).toEqual([]);
     expect(await unmatched(phone)).toEqual(unknown);
+    expect(await titles(phone)).toEqual(["Legs"]);
+  });
+});
+
+describe("Undo of a deleted workout across signing in", () => {
+  const legs = async (runtime: Runtime) => {
+    const [activity] = await runtime.runPromise(
+      Effect.flatMap(Effect.service(ActivityRepository), (activities) => activities.list()),
+    );
+    if (activity === undefined) throw new Error("no workout");
+    return { id: activity.id, title: activity.title };
+  };
+  const remove = (runtime: Runtime, id: Parameters<typeof deleteWorkout>[0]["id"]) =>
+    runtime.runPromise(
+      Effect.flatMap(Effect.service(ActivityRepository), (activities) => activities.remove(id)),
+    );
+
+  it("closes the offer when another account opens, and its Undo restores into neither", async () => {
+    // Both hold the same imported workout with the same ID, deleted in each.
+    await transfers(account, (repository) => repository.applyImport(decode(older), []));
+    const workout = await legs(phone);
+    await remove(phone, workout.id);
+    await signIn();
+    await deleteWorkout(workout);
+    const offer = deletedWorkout();
+    expect(offer?.title).toBe("Legs");
+
+    await act(() => switchOwner(ANONYMOUS));
+    expect(deletedWorkout()).toBeNull();
+    if (offer === null) throw new Error("no offer");
+    await expect(undoDelete(offer)).rejects.toThrow(UNDO_SWITCHED);
+    expect(await titles(phone)).toEqual([]);
+    expect(await titles(account)).toEqual([]);
+
+    await signIn();
+    expect(deletedWorkout()).toBeNull();
+    expect(await titles(account)).toEqual([]);
+  });
+
+  it("still brings the workout back in the account it was deleted from", async () => {
+    const workout = await legs(phone);
+    await deleteWorkout(workout);
+    const offer = deletedWorkout();
+    if (offer === null) throw new Error("no offer");
+    expect(await titles(phone)).toEqual([]);
+    await undoDelete(offer);
+    expect(deletedWorkout()).toBeNull();
     expect(await titles(phone)).toEqual(["Legs"]);
   });
 });

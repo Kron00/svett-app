@@ -91,8 +91,14 @@ vi.mock("../data/current", async () => {
       clock.layer,
     ),
   );
+  const database = {
+    owner: { kind: "anonymous" },
+    handle: { target: { kind: "owner", owner: { kind: "anonymous" } }, runtime },
+  };
   return {
     appDatabase: () => runtime,
+    currentDatabase: () => database,
+    stillOpen: (open: unknown) => open === database,
     subscribeDatabase: () => () => undefined,
   };
 });

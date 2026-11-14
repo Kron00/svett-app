@@ -1,7 +1,7 @@
 import type { Effect } from "effect";
 import { useEffect, useEffectEvent, useState, useSyncExternalStore } from "react";
 
-import { appDatabase, subscribeDatabase } from "./current";
+import { appDatabase, currentDatabase, type OpenDatabase, stillOpen, subscribeDatabase } from "./current";
 import type { AppServices } from "./database";
 
 let version = 0;
@@ -19,14 +19,33 @@ const subscribe = (listener: () => void) => {
   };
 };
 
-/** Runs a write, then has every screen that reads the database read it again. */
-export const write = async <A, E>(effect: Effect.Effect<A, E, AppServices>): Promise<A> => {
+export const SWITCHED_BEFORE_WRITE =
+  "Someone signed in or out before it was saved, so svett saved nothing to either account.";
+
+export const MOVE_UNFINISHED =
+  "This phone's data is still moving into an account, so svett cannot save anything until it finishes. Sign in to that account to go on.";
+
+/**
+ * Runs a write on `database`, the one the change was made for, then has every screen that
+ * reads the database read it again. It refuses once another database is open, and while a move
+ * leaves only an empty one in memory, which would lose the write when the app closes.
+ */
+export const writeTo = async <A, E>(
+  database: OpenDatabase,
+  effect: Effect.Effect<A, E, AppServices>,
+): Promise<A> => {
   try {
-    return await appDatabase().runPromise(effect);
+    if (!stillOpen(database)) throw new Error(SWITCHED_BEFORE_WRITE);
+    if (database.handle.target.kind === "empty") throw new Error(MOVE_UNFINISHED);
+    return await database.handle.runtime.runPromise(effect);
   } finally {
     changed();
   }
 };
+
+/** Runs a write on the open database, then has every screen read again. */
+export const write = <A, E>(effect: Effect.Effect<A, E, AppServices>): Promise<A> =>
+  writeTo(currentDatabase(), effect);
 
 export type Query<A> =
   | { readonly status: "loading" }
