@@ -138,16 +138,18 @@ describe("planImport", () => {
   });
 });
 
-describe("workouts in progress", () => {
-  const inProgress = (rows: ReturnType<typeof workout>) => ({
-    ...rows,
-    activity: rows.activity.map((top) => ({ ...top, status: "in_progress" })),
-  });
-  const finished = (rows: ReturnType<typeof workout>) => ({
-    ...rows,
-    activity: rows.activity.map((top) => ({ ...top, status: "finished" })),
-  });
+const withStatus = (rows: ReturnType<typeof workout>, status: string) => ({
+  ...rows,
+  activity: rows.activity.map((top) => ({ ...top, status })),
+});
+const inProgress = (rows: ReturnType<typeof workout>) => withStatus(rows, "in_progress");
+const finished = (rows: ReturnType<typeof workout>) => withStatus(rows, "finished");
 
+/** Every table, empty unless `rows` fills it. */
+const snapshot = (rows: Partial<Snapshot>) =>
+  ({ ...Object.fromEntries(TABLE_KEYS.map((key) => [key, []])), ...rows }) as Snapshot;
+
+describe("workouts in progress", () => {
   it("skips a workout in progress in the file and counts it, without adding it", () => {
     const plan = planImport({}, inProgress(workout("Legs")));
     expect(plan).toMatchObject({ added: [], changed: [], deleted: 0, skipped: 1 });
@@ -176,8 +178,6 @@ describe("workouts in progress", () => {
   });
 
   it("exports nothing of a workout in progress, deleted or not", () => {
-    const snapshot = (rows: Partial<Snapshot>) =>
-      ({ ...Object.fromEntries(TABLE_KEYS.map((key) => [key, []])), ...rows }) as Snapshot;
     const draft = inProgress(workout("Legs"));
     const discarded = {
       activity: [row("b", { status: "in_progress", deletedAt: 5 })],

@@ -29,9 +29,7 @@ vi.mock("./chatgpt/ChatGPTRow", () => ({ ChatGPTRow: () => "chatgpt row" }));
 vi.mock("./PhoneChecksRow", () => ({ PhoneChecksRow: () => "phone checks row" }));
 vi.mock("./transfer/DataRow", () => ({ DataRow: () => "data row" }));
 vi.mock("./gallery/DesignGalleryRow", () => ({ DesignGalleryRow: () => "design gallery row" }));
-vi.mock("./exercises/ExerciseLibraryRow", () => ({
-  ExerciseLibraryRow: () => "exercise library row",
-}));
+vi.mock("./routines/TrainScreen", () => ({ TrainScreen: () => "train screen" }));
 vi.mock("./ui/List", () => ({
   ListSection: ({ children }: { readonly children: ReactNode }) => children,
 }));
@@ -65,5 +63,7 @@ describe("TabNavigator", () => {
     );
     const progress = ofType(tree.root, "TabScreen").find((tab) => tab.props.name === "Progress");
     expect(progress?.findAll((node) => node.children.includes("progress screen"))).not.toEqual([]);
+    const train = ofType(tree.root, "TabScreen").find((tab) => tab.props.name === "Train");
+    expect(train?.findAll((node) => node.children.includes("train screen"))).not.toEqual([]);
   });
 });

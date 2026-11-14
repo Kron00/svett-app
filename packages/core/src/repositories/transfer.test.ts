@@ -339,12 +339,12 @@ const logged = (database: Database, title: string) =>
     ),
   );
 
-/** A copy of the file with every workout in it changed, as a file edited by hand. */
+/** The file with every workout in it changed, as a file edited by hand. */
 const withWorkouts = (file: SvettFile, fields: Record<string, unknown>): SvettFile => ({
   ...file,
   tables: {
     ...file.tables,
-    activity: (file.tables.activity ?? []).map((row) => ({ ...row, ...fields })),
+    activity: (file.tables.activity ?? []).map((row) => Object.assign(row, fields)),
   },
 });
 
@@ -380,9 +380,9 @@ describe("TransferRepository and a workout in progress", () => {
     expect(
       await transfer(phone, (repository) => repository.previewImport(backInProgress)),
     ).toMatchObject({ added: [], changed: [], deleted: 0, skipped: 1 });
-    expect(await transfer(phone, (repository) => repository.applyImport(backInProgress, []))).toEqual(
-      Option.none(),
-    );
+    expect(
+      await transfer(phone, (repository) => repository.applyImport(backInProgress, [])),
+    ).toEqual(Option.none());
     expect(
       await transfer(phone, (repository) => repository.previewImport(legsInProgress)),
     ).toMatchObject({ added: [], changed: [], skipped: 1 });
@@ -436,9 +436,9 @@ describe("TransferRepository and a workout in progress", () => {
 
     const preview = await transfer(phone, (repository) => repository.previewUndo(importBatchId));
     expect(preview.changes.map(({ edited }) => edited)).toEqual([false]);
-    expect(
-      await transfer(phone, (repository) => repository.undoImport(importBatchId, [])),
-    ).toEqual({ removed: 0, restored: 1, left: 0, kept: 0, discarded: 0 });
+    expect(await transfer(phone, (repository) => repository.undoImport(importBatchId, []))).toEqual(
+      { removed: 0, restored: 1, left: 0, kept: 0, discarded: 0 },
+    );
     expect(
       phone.database.prepare("SELECT title, status FROM activity WHERE deleted_at IS NULL").all(),
     ).toEqual([{ title: "Legs", status: "finished" }]);
@@ -602,6 +602,7 @@ describe("TransferRepository", () => {
       restored: 0,
       left: 0,
       kept: 0,
+      discarded: 0,
     });
     expect(liveRows(phone)["activity_set"]).toEqual([]);
   });
@@ -779,6 +780,7 @@ describe("TransferRepository", () => {
       restored: 0,
       left: 1,
       kept: 0,
+      discarded: 0,
     });
     expect(liveTitles(leave)).toEqual(["Chest"]);
 
@@ -829,6 +831,7 @@ describe("TransferRepository", () => {
       restored: 0,
       left: 1,
       kept: 0,
+      discarded: 0,
     });
     expect(workoutNow(leave)).toEqual({ notes: ["Felt strong"], reps: [6, 8] });
 
@@ -842,6 +845,7 @@ describe("TransferRepository", () => {
       restored: 1,
       left: 0,
       kept: 0,
+      discarded: 0,
     });
     expect(workoutNow(both)).toEqual({ notes: ["Felt strong"], reps: [5, 8] });
   });
@@ -962,6 +966,7 @@ describe("TransferRepository", () => {
       restored: 0,
       left: 0,
       kept: 1,
+      discarded: 0,
     });
     expect(liveTitles(phone)).toEqual(["Later push"]);
     expect(liveExercise(phone, "Landmine press")).toEqual([null]);
@@ -983,6 +988,7 @@ describe("TransferRepository", () => {
       restored: 0,
       left: 1,
       kept: 1,
+      discarded: 0,
     });
     expect(liveTitles(leave)).toEqual(["Push Day"]);
     expect(liveExercise(leave, "Landmine press")).toEqual([null]);
@@ -998,6 +1004,7 @@ describe("TransferRepository", () => {
       restored: 0,
       left: 0,
       kept: 0,
+      discarded: 0,
     });
     expect(liveTitles(both)).toEqual([]);
     expect(liveExercise(both, "Landmine press")).toHaveLength(1);
@@ -1031,6 +1038,7 @@ describe("TransferRepository", () => {
       restored: 0,
       left: 1,
       kept: 1,
+      discarded: 0,
     });
     expect(liveTitles(phone)).toEqual(["Push Day"]);
     expect(liveRows(phone)["activity_set"]).toHaveLength(2);

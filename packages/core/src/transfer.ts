@@ -371,7 +371,10 @@ export const planImport = (local: TableRows, incoming: TableRows): ImportPlan =>
   for (const item of groupItems(incoming, lookup).values()) {
     const summary = summarize(item);
     if (
-      isDraft(item.table, item.rows[item.table]?.find((row) => row.id === item.id)) ||
+      isDraft(
+        item.table,
+        item.rows[item.table]?.find((row) => row.id === item.id),
+      ) ||
       isDraft(item.table, here.get(item.table)?.get(item.id))
     ) {
       items.push({ status: "skipped", summary });

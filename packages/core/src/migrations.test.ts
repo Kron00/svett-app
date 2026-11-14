@@ -64,7 +64,7 @@ describe("migrate", () => {
 
   it("moves a database made by the first release to the current version", async () => {
     const { database, run } = open();
-    await run(migrate(MIGRATIONS.slice(0, 2)));
+    await run(migrate(MIGRATIONS.slice(0, 1)));
     database.exec(
       "INSERT INTO folder (id, updated_at, deleted_at, name, position) VALUES ('f', 1, NULL, 'Push', 0)",
     );
