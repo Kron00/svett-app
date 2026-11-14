@@ -22,10 +22,12 @@ export interface Comparison {
   readonly equal: boolean;
 }
 
+// Each file keeps its own version and sync queue, which are not data.
 const tablesOf = (database: DatabaseSync, schema: string) =>
   database
     .prepare(
-      `SELECT name FROM ${schema}.sqlite_schema WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name != 'schema_version' ORDER BY name`,
+      `SELECT name FROM ${schema}.sqlite_schema WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
+       AND name NOT IN ('schema_version', 'sync_outbox', 'sync_state') ORDER BY name`,
     )
     .all()
     .map((row) => String(row["name"]));
