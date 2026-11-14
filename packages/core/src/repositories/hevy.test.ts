@@ -8,7 +8,8 @@ import { DurationSeconds } from "../duration.ts";
 import { decodeHevyFile, type HevyFile, type ToInstant, wallTimeAsUtc } from "../hevy-file.ts";
 import { hevyExerciseId, hevyImport } from "../hevy-import.ts";
 import { importedId } from "../ids.ts";
-import { ActivityId, EpochMillis, type ImportBatchId } from "../schema.ts";
+import { ActivityId, EpochMillis, ExerciseId, type ImportBatchId } from "../schema.ts";
+import { addExercisesToWorkout, loadWorkoutLog, startEmptyWorkout } from "../start-workout.ts";
 import { openTestDatabase, pointersToDeleted, T0 } from "../test-database.ts";
 import { decodeSvettFile } from "../svett-file.ts";
 import { isNothingToImport } from "../transfer.ts";
@@ -707,6 +708,138 @@ describe("Hevy import", () => {
         activities: 3,
         sets: SAMPLE.sets,
       });
+    });
+  });
+
+  describe("and the logger", () => {
+    const CORE = hevy(
+      [
+        HEADER,
+        `"Core","9 Nov 2026, 12:00","9 Nov 2026, 12:30","","Pull Up",,"",0,"normal",,8,,,`,
+        `"Core","9 Nov 2026, 12:00","9 Nov 2026, 12:30","","Plank",,"",0,"normal",,,,60,`,
+      ].join("\n"),
+    );
+
+    /** Each live exercise's set fields, by its name. */
+    const setFieldsByName = (database: Database) =>
+      Object.fromEntries(
+        query(
+          database,
+          "SELECT e.name, ae.set_fields FROM activity_exercise ae JOIN exercise e ON e.id = ae.exercise_id WHERE ae.deleted_at IS NULL",
+        ).map((row) => [row["name"], row["set_fields"]]),
+      );
+
+    const exerciseIdOf = (database: Database, name: string) =>
+      ExerciseId.make(
+        String(query(database, "SELECT id FROM exercise WHERE name = ?", name)[0]?.["id"]),
+      );
+
+    it("logs each imported exercise by what its sets record, and starts it that way next time", async () => {
+      const { database } = await importSample();
+      await apply(database, CORE);
+      expect(setFieldsByName(database)).toEqual({
+        "Barbell Bench Press - Medium Grip": "weight_reps",
+        "Triceps Pushdown - Rope Attachment": "weight_reps",
+        "Landmine Press": "weight_reps",
+        "Barbell Deadlift": "weight_reps",
+        "Wide-Grip Lat Pulldown": "weight_reps",
+        "Leverage Iso Row": "weight_reps",
+        "Barbell Squat": "weight_reps",
+        "Seated Leg Curl": "weight_reps",
+        "Running, Treadmill": "distance_time",
+        Pullups: "reps",
+        Plank: "time",
+      });
+
+      const names = ["Barbell Squat", "Pullups", "Plank", "Running, Treadmill"];
+      const workout = Option.getOrThrow(
+        await database.runtime.runPromise(
+          Effect.gen(function* () {
+            const id = yield* startEmptyWorkout(18);
+            yield* addExercisesToWorkout(
+              id,
+              names.map((name) => exerciseIdOf(database, name)),
+            );
+            return yield* loadWorkoutLog;
+          }),
+        ),
+      );
+      expect(
+        workout.exercises.map(({ exercise, row, previous }) => [
+          exercise?.name,
+          row.setFields,
+          previous.map((set) =>
+            set === null
+              ? null
+              : [set.setType, set.weightKg, set.reps, set.durationS, set.distanceM].join(" "),
+          ),
+        ]),
+      ).toEqual([
+        [
+          "Barbell Squat",
+          "weight_reps",
+          ["warm_up 60 8  ", "normal 120 5  ", "normal 120 5  ", "normal 120 5  ", "drop 90 8  "],
+        ],
+        ["Pullups", "reps", ["normal  8  "]],
+        ["Plank", "time", ["normal   60 "]],
+        ["Running, Treadmill", "distance_time", ["normal   900 2000"]],
+      ]);
+    });
+
+    it("undoes a Hevy import whose journal was written before exercises had set fields", async () => {
+      const { database, batch } = await importSample();
+      const sample = { workouts: workouts(database), setFields: setFieldsByName(database) };
+      // New notes on the treadmill replace its exercise row, so the journal keeps that row.
+      const easier = hevy(sampleText("hevy-sample.csv").replace('"Cool down"', '"Easy pace"'));
+      const plan = await preview(database, easier);
+      expect(plan.changed.map(({ title }) => title)).toEqual(["Legs"]);
+      const taken = await apply(
+        database,
+        easier,
+        plan.changed.map(({ key }) => key),
+      );
+      // Each journal as svett wrote it then, with no set fields on the exercises it kept.
+      const stripped: Array<unknown> = [];
+      for (const change of query(database, "SELECT id, replaced FROM import_change")) {
+        if (change["replaced"] === null) continue;
+        const replaced = JSON.parse(String(change["replaced"])) as Record<
+          string,
+          Array<Record<string, unknown>>
+        >;
+        for (const row of replaced["activity_exercise"] ?? []) {
+          stripped.push(row["setFields"]);
+          delete row["setFields"];
+        }
+        database.database
+          .prepare("UPDATE import_change SET replaced = ? WHERE id = ?")
+          .run(JSON.stringify(replaced), String(change["id"]));
+      }
+      expect(stripped).toEqual(["distance_time"]);
+      expect(
+        query(database, "SELECT replaced FROM import_change WHERE replaced IS NOT NULL").some(
+          ({ replaced }) => String(replaced).includes("setFields"),
+        ),
+      ).toBe(false);
+
+      const editedIn = async (importBatchId: ImportBatchId) =>
+        (
+          await transfers(database, (repository) => repository.previewUndo(importBatchId))
+        ).changes.map(({ edited }) => edited);
+      expect(await editedIn(taken!.importBatchId)).toEqual([false]);
+      expect(await undo(database, taken!.importBatchId)).toEqual({
+        removed: 0,
+        restored: 1,
+        left: 0,
+        kept: 0,
+        discarded: 0,
+      });
+      expect({ workouts: workouts(database), setFields: setFieldsByName(database) }).toEqual(
+        sample,
+      );
+      expect(await editedIn(batch)).not.toContain(true);
+      await undo(database, batch);
+      expect(count(database, "activity")).toBe(0);
+      expect(count(database, "activity_exercise")).toBe(0);
     });
   });
 });
