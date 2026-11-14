@@ -14,7 +14,7 @@ private func fixture(_ name: String) throws -> [String: Any] {
 
 private func parse(_ body: String) -> [CoachEvent] {
     var parser = ResponsesStreamParser()
-    var events = body.split(separator: "\n", omittingEmptySubsequences: false).compactMap { parser.feed(String($0)) }
+    var events = ResponsesStreamParser.lines(of: body).compactMap { parser.feed(String($0)) }
     if let end = parser.end() { events.append(end) }
     return events
 }
@@ -173,6 +173,50 @@ struct CoachStreamTests {
         #expect((exchange["request"] as? [String: Any])?["instructions"] as? String == "Coach")
         let events = try #require(exchange["events"] as? [[String: Any]]).compactMap(CoachEvent.init(record:))
         #expect(events == [.text("Hi"), .done])
+    }
+
+    @Test func cancellingARequestMidStreamStopsItAndEndsItCancelled() async {
+        let words = (0..<40).map { "data: {\"type\":\"response.output_text.delta\",\"delta\":\"w\($0) \"}" }
+        let answer = (words + ["data: {\"type\":\"response.completed\"}"]).joined(separator: "\n")
+        let stub = StubResponses(answers: [(200, answer)], pause: .milliseconds(20))
+        let requests = CoachRequests(client: CoachClient(account: Harness(vault: signedIn).account, transport: stub))
+        let heard = Heard()
+        let (firstText, textArrived) = AsyncStream<Void>.makeStream()
+        let request = await requests.start("r1", body: Data(question.utf8)) { event in
+            heard.add(event)
+            if case .text = event { textArrived.yield() }
+        }
+        #expect(await requests.inFlight == 1)
+        var waiting = firstText.makeAsyncIterator()
+        _ = await waiting.next()
+        await requests.cancel("r1")
+        await request.value
+
+        let events = heard.events
+        #expect(events.last == .failed(code: "cancelled", status: nil))
+        #expect(events.filter(\.isEnd).count == 1)
+        #expect(!events.contains(.done))
+        #expect(events.count < words.count)
+        #expect(await requests.inFlight == 0)
+    }
+
+    @Test func aCancelThatArrivesBeforeItsRequestKeepsTheRequestFromBeingSent() async {
+        let stub = StubResponses(answers: [(200, "data: {\"type\":\"response.completed\"}")])
+        let requests = CoachRequests(client: CoachClient(account: Harness(vault: signedIn).account, transport: stub))
+        await requests.cancel("r2")
+        let heard = Heard()
+        await requests.start("r2", body: Data(question.utf8)) { heard.add($0) }.value
+        #expect(heard.events == [.failed(code: "cancelled", status: nil)])
+        #expect(stub.requests.isEmpty)
+    }
+
+    @Test func aFinishedRequestIsNoLongerInFlight() async {
+        let stub = StubResponses(answers: [(200, "data: {\"type\":\"response.completed\"}")])
+        let requests = CoachRequests(client: CoachClient(account: Harness(vault: signedIn).account, transport: stub))
+        let heard = Heard()
+        await requests.start("r3", body: Data(question.utf8)) { heard.add($0) }.value
+        #expect(heard.events == [.done])
+        #expect(await requests.inFlight == 0)
     }
 
     @Test func theStandInStartsOverAfterItsLastAnswer() async throws {

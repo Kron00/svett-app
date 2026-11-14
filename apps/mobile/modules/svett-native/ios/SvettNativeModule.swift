@@ -9,7 +9,7 @@ private let chatGPT = ChatGPTStub.make() ?? (
     account: ChatGPTAccount(transport: URLSessionTransport(), store: KeychainVaultStore()),
     signInPage: { $0 })
 @MainActor private let signInFlow = SignInFlow(account: chatGPT.account, signInPage: chatGPT.signInPage)
-private let coach = CoachLaunch.client(account: chatGPT.account)
+private let coach = CoachRequests(client: CoachLaunch.client(account: chatGPT.account))
 
 public class SvettNativeModule: Module {
     public func definition() -> ModuleDefinition {
@@ -73,11 +73,20 @@ public class SvettNativeModule: Module {
         // last is always `done` or `failed`. The access token stays here.
         AsyncFunction("sendCoachRequest") { (requestID: String, body: String, promise: Promise) in
             Task {
-                await coach.send(Data(body.utf8)) { [weak self] event in
+                let request = await coach.start(requestID, body: Data(body.utf8)) { [weak self] event in
                     var record = event.record
                     record["requestId"] = requestID
                     self?.sendEvent("onCoachEvent", record.mapValues { $0 as Any? })
                 }
+                await request.value
+                promise.resolve()
+            }
+        }
+
+        // Stops a coach request that is still streaming, when JavaScript no longer waits for it.
+        AsyncFunction("cancelCoachRequest") { (requestID: String, promise: Promise) in
+            Task {
+                await coach.cancel(requestID)
                 promise.resolve()
             }
         }

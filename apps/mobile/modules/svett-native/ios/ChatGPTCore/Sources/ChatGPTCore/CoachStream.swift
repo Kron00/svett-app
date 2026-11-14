@@ -13,7 +13,7 @@ enum CoachEvent: Equatable, Sendable {
     case toolCall(callID: String, name: String, namespace: String?, arguments: String)
     case done
     /// `code` is OpenAI's error code, `http<status>` for an error without one, or one of svett's own:
-    /// `interrupted`, `unreachable`, `badRequest`, or an `AccountProblem` code.
+    /// `interrupted`, `unreachable`, `badRequest`, `cancelled`, or an `AccountProblem` code.
     case failed(code: String, status: Int?)
 
     var isEnd: Bool {
@@ -122,6 +122,12 @@ struct ResponsesStreamParser {
         }
     }
 
+    /// The lines of a whole answer, split like URLSession's line reader splits a live one. Swift
+    /// reads CRLF as one Character, so splitting on "\n" alone would leave it whole.
+    static func lines(of body: String) -> [Substring] {
+        body.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline)
+    }
+
     /// The event for an answer that was not a stream, from its status and body.
     static func refusal(status: Int, body: String) -> CoachEvent {
         .failed(code: OpenAI.errorCode(in: Data(body.utf8)) ?? "http\(status)", status: status)
@@ -199,6 +205,7 @@ actor CoachClient {
         request.httpBody = sent
 
         do {
+            try Task.checkCancellation()
             let answer = try await transport.stream(request)
             status = answer.status
             var parser = ResponsesStreamParser()
@@ -208,6 +215,8 @@ actor CoachClient {
                 if status == 200, let event = parser.feed(line) { emit(event) }
             }
             raw = lines.joined(separator: "\n")
+            // A cancelled task's stream ends early without an error, and that is not OpenAI's answer.
+            try Task.checkCancellation()
             if status == 200 {
                 if let end = parser.end() { emit(end) }
             } else {
@@ -217,6 +226,53 @@ actor CoachClient {
             if !(events.last?.isEnd ?? false) { emit(.failed(code: Task.isCancelled ? "cancelled" : "unreachable", status: nil)) }
         }
         recorder?.record(request: object, status: status, body: raw, events: events)
+    }
+}
+
+/// The coach requests in flight, by the id JavaScript gave each, so JavaScript can cancel one.
+actor CoachRequests {
+    private let client: CoachClient
+    private var running: [String: (token: UUID, task: Task<Void, Never>)] = [:]
+    /// Ids cancelled before their request started, because the two calls can arrive in either order.
+    private var cancelledEarly: [String] = []
+
+    init(client: CoachClient) {
+        self.client = client
+    }
+
+    var inFlight: Int { running.count }
+
+    /// Starts one request and returns its task at once. `onEvent` hears each event, the last
+    /// `done` or `failed`.
+    func start(_ id: String, body: Data, onEvent: @escaping @Sendable (CoachEvent) -> Void) -> Task<Void, Never> {
+        if let early = cancelledEarly.firstIndex(of: id) {
+            cancelledEarly.remove(at: early)
+            onEvent(.failed(code: "cancelled", status: nil))
+            return Task {}
+        }
+        let token = UUID()
+        let client = client
+        let task = Task {
+            await client.send(body, onEvent: onEvent)
+            await self.forget(id, token: token)
+        }
+        running[id]?.task.cancel()
+        running[id] = (token, task)
+        return task
+    }
+
+    /// Cancels a request. Its stream stops and its last event is `failed` with `cancelled`.
+    func cancel(_ id: String) {
+        if let entry = running.removeValue(forKey: id) {
+            entry.task.cancel()
+        } else {
+            cancelledEarly.append(id)
+            if cancelledEarly.count > 32 { cancelledEarly.removeFirst() }
+        }
+    }
+
+    private func forget(_ id: String, token: UUID) {
+        if running[id]?.token == token { running[id] = nil }
     }
 }
 
@@ -290,7 +346,7 @@ final class StubResponses: StreamingTransport, @unchecked Sendable {
         let pause = self.pause
         let lines = AsyncThrowingStream<String, Error> { continuation in
             let feeding = Task {
-                for line in answer.body.split(separator: "\n", omittingEmptySubsequences: false) {
+                for line in ResponsesStreamParser.lines(of: answer.body) {
                     if pause > .zero, line.hasPrefix("data:") { try? await Task.sleep(for: pause) }
                     continuation.yield(String(line))
                 }

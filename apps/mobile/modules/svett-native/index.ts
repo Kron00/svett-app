@@ -36,6 +36,8 @@ declare class SvettNative extends NativeModule<SvettNativeEvents> {
    * `onCoachEvent` with this `requestId`, the last one `done` or `failed`.
    */
   sendCoachRequest(requestId: string, body: string): Promise<void>;
+  /** Stops the coach request with this `requestId`. Its last event is then `failed` with `cancelled`. */
+  cancelCoachRequest(requestId: string): Promise<void>;
 }
 
 export default requireNativeModule<SvettNative>("SvettNative");
