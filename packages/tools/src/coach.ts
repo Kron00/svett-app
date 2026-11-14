@@ -85,24 +85,35 @@ export interface ChatEntry {
   readonly id: string;
   readonly role: "user" | "assistant";
   readonly text: string;
+  /** What the answer read, or on a question that got no answer, what it read before it failed. */
   readonly sources: ReadonlyArray<string>;
 }
 
 export function chatEntries(messages: ReadonlyArray<CoachMessage>): ReadonlyArray<ChatEntry> {
   const entries: Array<ChatEntry> = [];
   let sources: Array<string> = [];
+  let unanswered: number | undefined;
+  const keepUnansweredReads = () => {
+    if (unanswered !== undefined && sources.length > 0) {
+      entries[unanswered] = { ...entries[unanswered]!, sources };
+    }
+    sources = [];
+  };
   for (const message of messages) {
     if (message.role === "tool") {
       const record = decodeToolRecord(message.content);
       if (Option.isSome(record)) sources.push(record.value.source);
     } else if (message.role === "user") {
-      sources = [];
+      keepUnansweredReads();
+      unanswered = entries.length;
       entries.push({ id: message.id, role: "user", text: message.content, sources: [] });
     } else {
       entries.push({ id: message.id, role: "assistant", text: message.content, sources });
       sources = [];
+      unanswered = undefined;
     }
   }
+  keepUnansweredReads();
   return entries;
 }
 

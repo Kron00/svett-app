@@ -11,6 +11,7 @@ import { Effect } from "effect";
 import { uuid } from "expo";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  AppState,
   KeyboardAvoidingView,
   Linking,
   ScrollView,
@@ -36,6 +37,8 @@ type Pending = {
   readonly draft: string;
 };
 
+const NO_SOURCES: ReadonlyArray<string> = [];
+
 const newConversation = () => ConversationId.make(uuid.v4());
 
 const loadEntries = (conversationId: ConversationId) =>
@@ -60,12 +63,26 @@ function readLine(sources: ReadonlyArray<string>) {
   return sources.length === 0 ? "Read none of your data" : `Read: ${sources.join(" · ")}`;
 }
 
-function Question({ text }: { readonly text: string }) {
+function Question({
+  text,
+  sources,
+}: {
+  readonly text: string;
+  readonly sources: ReadonlyArray<string>;
+}) {
   return (
-    <View className="max-w-[85%] self-end rounded-card bg-accent-fill px-4 py-2">
-      <AppText tone="onAccent" selectable>
-        {text}
-      </AppText>
+    <View className="max-w-[85%] gap-1 self-end">
+      <View className="rounded-card bg-accent-fill px-4 py-2">
+        <AppText tone="onAccent" selectable>
+          {text}
+        </AppText>
+      </View>
+      {/* A question that failed after reading data still says what it read. */}
+      {sources.length === 0 ? null : (
+        <AppText variant="footnote" tone="secondary" className="px-2">
+          {readLine(sources)}
+        </AppText>
+      )}
     </View>
   );
 }
@@ -123,16 +140,31 @@ export function CoachScreen() {
   const route = useRoute<CoachRoute>();
   const scroll = useRef<ScrollViewInstance>(null);
   const [status, setStatus] = useState<ChatGPTStatus>();
+  const [statusFailed, setStatusFailed] = useState(false);
+  // Asking again before ChatGPT's next status check would only hit the plan's limit again.
+  const [limited, setLimited] = useState(false);
   const [conversationId, setConversationId] = useState<ConversationId>();
   const [entries, setEntries] = useState<ReadonlyArray<ChatEntry>>([]);
   const [pending, setPending] = useState<Pending>();
   const [failure, setFailure] = useState<CoachFailure>();
 
-  useFocusEffect(
-    useCallback(() => {
-      chatGPTStatus().then(setStatus, () => setStatus(undefined));
-    }, []),
-  );
+  const checkStatus = useCallback(() => {
+    chatGPTStatus().then(
+      (next) => {
+        setStatus(next);
+        setStatusFailed(false);
+        setLimited(false);
+      },
+      () => setStatusFailed(true),
+    );
+  }, []);
+  useFocusEffect(checkStatus);
+  useEffect(() => {
+    const subscription = AppState.addEventListener("change", (state) => {
+      if (state === "active") checkStatus();
+    });
+    return () => subscription.remove();
+  }, [checkStatus]);
 
   useEffect(() => {
     latestConversation().then(
@@ -166,7 +198,10 @@ export function CoachScreen() {
             },
           }),
         );
-        if (outcome.type === "failed") setFailure(outcome.failure);
+        if (outcome.type === "failed") {
+          setFailure(outcome.failure);
+          if (outcome.failure.kind === "planLimit") setLimited(true);
+        }
       } catch (error) {
         setFailure({
           ...coachFailure("other"),
@@ -192,6 +227,20 @@ export function CoachScreen() {
   }, [linked, ready, pending, ask, navigation]);
 
   const openSettings = () => navigation.navigate("ChatGPT");
+
+  if (status === undefined && statusFailed) {
+    return (
+      <View
+        testID="coach-status-failed"
+        className="flex-1 justify-center gap-4 bg-background px-gutter"
+      >
+        <AppText tone="warning" selectable>
+          svett could not read your ChatGPT sign-in. Everything else in svett still works.
+        </AppText>
+        <Button label="Try again" variant="secondary" testID="coach-retry" onPress={checkStatus} />
+      </View>
+    );
+  }
 
   if (status === undefined || conversationId === undefined) {
     return (
@@ -252,14 +301,14 @@ export function CoachScreen() {
             disabled={pending !== undefined}
             onPress={() => {
               setEntries([]);
-              setFailure(undefined);
+              if (!limited) setFailure(undefined);
               setConversationId(newConversation());
             }}
           />
         )}
         {entries.map((entry, index) =>
           entry.role === "user" ? (
-            <Question key={entry.id} text={entry.text} />
+            <Question key={entry.id} text={entry.text} sources={entry.sources} />
           ) : (
             <Answer
               key={entry.id}
@@ -270,7 +319,7 @@ export function CoachScreen() {
         )}
         {pending === undefined ? null : (
           <View testID="coach-pending" className="gap-3 self-stretch">
-            <Question text={pending.question} />
+            <Question text={pending.question} sources={NO_SOURCES} />
             <View className="rounded-card bg-surface px-4 py-3">
               <AppText testID="coach-draft" tone={pending.draft === "" ? "secondary" : "label"}>
                 {pending.draft === "" ? "Reading your data…" : pending.draft}
@@ -287,7 +336,10 @@ export function CoachScreen() {
           <FailureNotice failure={failure} openSettings={openSettings} />
         )}
       </ScrollView>
-      <Composer busy={pending !== undefined || !ready} onSend={(question) => void ask(question)} />
+      <Composer
+        busy={pending !== undefined || !ready || limited}
+        onSend={(question) => void ask(question)}
+      />
     </KeyboardAvoidingView>
   );
 }

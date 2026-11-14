@@ -240,6 +240,42 @@ describe("when OpenAI answers with the plan's limit", () => {
     expect(outcome.sources).toEqual(['Exercise search "squat" (3 found)']);
   });
 
+  it("keeps what a question read before the limit when the chat loads again", async () => {
+    const { transport } = scripted((_, number) =>
+      number === 1 ? bestSquat.exchanges[0]!.events : [{ type: "failed", code: PLAN_LIMIT_CODE }],
+    );
+    const conversationId = newConversation();
+    await ask(transport, conversationId);
+    const shown = async () =>
+      chatEntries(
+        await run(
+          Effect.flatMap(Effect.service(CoachMessageRepository), (repo) =>
+            repo.conversation(conversationId),
+          ),
+        ),
+      ).map(({ role, text, sources }) => ({ role, text, sources }));
+    const failedQuestion = {
+      role: "user",
+      text: QUESTION,
+      sources: ['Exercise search "squat" (3 found)'],
+    };
+    expect(await shown()).toEqual([failedQuestion]);
+    const next = scripted(() => [{ type: "text", delta: "Hello." }, { type: "done" }]);
+    await run(
+      askCoach({
+        conversationId,
+        question: "Hi",
+        transport: next.transport,
+        offsetMinutes: OFFSET,
+      }),
+    );
+    expect(await shown()).toEqual([
+      failedQuestion,
+      { role: "user", text: "Hi", sources: [] },
+      { role: "assistant", text: "Hello.", sources: [] },
+    ]);
+  });
+
   it("matches the request the recording holds", async () => {
     const { transport, requests } = replay(planLimit);
     await ask(transport);
@@ -431,7 +467,12 @@ describe("a workout note that tries to give the coach orders", () => {
     );
     expect(messages.map((message) => message.role)).toEqual(["user", "tool"]);
     expect(chatEntries(messages)).toEqual([
-      { id: messages[0]!.id, role: "user", text: QUESTION, sources: [] },
+      {
+        id: messages[0]!.id,
+        role: "user",
+        text: QUESTION,
+        sources: ['Workout "Imported session" on 2021-01-15'],
+      },
     ]);
   });
 
