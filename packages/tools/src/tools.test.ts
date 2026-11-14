@@ -62,7 +62,7 @@ describe("the read tools", () => {
     expect(json["workouts"]).toHaveLength(3);
     expect(json["total"]).toBeGreaterThan(3);
     const days = json["workouts"].map((workout: { day: string }) => workout.day);
-    expect([...days].sort().reverse()).toEqual(days);
+    expect([...days].sort().toReversed()).toEqual(days);
     expect(source).toBe(`Workouts 2026-10-01 to 2026-10-31 (${json["total"]})`);
   });
 

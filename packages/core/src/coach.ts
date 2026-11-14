@@ -138,7 +138,7 @@ export function checkResponsesRequest(body: unknown): ReadonlyArray<string> {
     problems.push("input must list the whole chat");
   } else {
     const answered = new Set<unknown>();
-    for (const item of [...input].reverse()) {
+    for (const item of input.toReversed()) {
       if (!isRecord(item)) {
         problems.push("an input item is not an object");
         continue;
@@ -324,7 +324,7 @@ export function trimChat(
   if (starts.length === 0) return items;
   let kept = starts.at(-1)!;
   let size = items.slice(kept).reduce((total, item) => total + itemSize(item), 0);
-  for (const start of [...starts].reverse().slice(1)) {
+  for (const start of starts.toReversed().slice(1)) {
     const turn = items.slice(start, kept).reduce((total, item) => total + itemSize(item), 0);
     if (size + turn > budget) break;
     size += turn;

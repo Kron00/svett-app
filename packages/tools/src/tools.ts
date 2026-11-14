@@ -412,7 +412,7 @@ const bodyMeasurements = defineTool({
       const all = yield* (yield* MeasurementRepository).list(input.kind);
       const inRange = all
         .filter((measurement) => measurement.measuredAt >= start && measurement.measuredAt < end)
-        .reverse();
+        .toReversed();
       return {
         total: inRange.length,
         measurements: inRange.slice(0, input.limit ?? 30).map((measurement) => ({
