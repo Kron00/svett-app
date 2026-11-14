@@ -44,7 +44,7 @@ vi.mock("@clerk/expo", () => ({
 }));
 vi.mock("@clerk/expo/token-cache", () => ({ tokenCache: {} }));
 vi.mock("./config", () => ({ CLERK_PUBLISHABLE_KEY: "pk_test_svett" }));
-vi.mock("./move", () => ({ resumeMove: async () => {} }));
+vi.mock("./move", () => ({ resumeMove: async () => {}, finishLeavingAccount: async () => {} }));
 // Each owner's file is an in-memory SQLite database that outlives its handles, as a file would.
 vi.mock("../data/database", () => ({
   launchFixture: () => undefined,

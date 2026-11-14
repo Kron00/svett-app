@@ -628,7 +628,8 @@ export class FeedRows extends Context.Service<FeedRows, FeedRowsShape>()("svett/
           Effect.gen(function* () {
             const found = yield* visiblePost(viewer, id);
             const { owner, activityId } = found;
-            const target = comment === undefined ? undefined : yield* anchorOf(found, viewer, comment);
+            const target =
+              comment === undefined ? undefined : yield* anchorOf(found, viewer, comment);
             // A comment within the first page opens the first page, so the thread reads from
             // its start whenever it can.
             const before =

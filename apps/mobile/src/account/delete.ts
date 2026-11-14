@@ -11,8 +11,8 @@ import {
   startDeletion,
 } from "@svett/core";
 import { Effect } from "effect";
-import { getRandomValues } from "expo-crypto";
 
+import { secureRandomBytes } from "../data/database";
 import { forgetMoveJournal, storedMoveJournal, storeMoveJournal } from "./journal";
 import { finishLeavingAccount, leaveDeletedAccount } from "./move";
 import { resetSyncStatus, svettServer } from "./sync";
@@ -26,9 +26,7 @@ export const PENDING_DELETION =
 
 /** A new secret for one deletion, which only this phone knows. */
 const newReceipt = () =>
-  Array.from(getRandomValues(new Uint8Array(32)), (byte) =>
-    byte.toString(16).padStart(2, "0"),
-  ).join("");
+  Array.from(secureRandomBytes(32), (byte) => byte.toString(16).padStart(2, "0")).join("");
 
 const sentOf = (error: SocialFailed): DeletionSent => {
   const problem = socialProblemMessage(error);

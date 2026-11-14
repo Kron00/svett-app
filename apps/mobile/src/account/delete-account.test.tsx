@@ -74,9 +74,6 @@ vi.mock("react-native", () => ({
   useWindowDimensions: () => ({ width: 440, height: 956, scale: 3, fontScale: 1 }),
 }));
 vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
-vi.mock("expo-crypto", () => ({
-  getRandomValues: (bytes: Uint8Array<ArrayBuffer>) => globalThis.crypto.getRandomValues(bytes),
-}));
 vi.mock("expo-glass-effect", () => ({
   GlassView: "GlassView",
   isLiquidGlassAvailable: () => false,
@@ -112,6 +109,7 @@ vi.mock("./config", () => ({ CLERK_PUBLISHABLE_KEY: "pk_test_svett" }));
 // Each owner's file is an in-memory SQLite database that outlives its handles, as a file would.
 vi.mock("../data/database", () => ({
   launchFixture: () => undefined,
+  secureRandomBytes: (length: number) => globalThis.crypto.getRandomValues(new Uint8Array(length)),
   openDatabaseHandle: (target: { kind: string; owner?: { kind: string; accountId?: string } }) => ({
     target,
     get runtime() {
