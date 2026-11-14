@@ -44,3 +44,6 @@ export * from "./backup-files.ts";
 export * from "./sign-in.ts";
 export { copyDatabase, ownRowCount } from "./database-move.ts";
 export * from "./move-journal.ts";
+export * from "./sync.ts";
+export * from "./sync-api.ts";
+export * from "./repositories/sync.ts";

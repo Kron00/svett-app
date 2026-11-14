@@ -81,11 +81,65 @@ CREATE TABLE exercise_alias (${row}, source TEXT NOT NULL, name TEXT NOT NULL, e
 CREATE INDEX exercise_alias_name ON exercise_alias (source, name);
 `;
 
+// The tables migration 4 syncs, frozen as they were then. A table added later needs its own
+// triggers in its own migration.
+const syncedAtVersion4 = [
+  "import_batch",
+  "import_change",
+  "exercise",
+  "activity",
+  "activity_exercise",
+  "activity_set",
+  "activity_track",
+  "activity_sample",
+  "folder",
+  "routine",
+  "routine_exercise",
+  "routine_set",
+  "measurement",
+  "exercise_alias",
+];
+
+// Every write made on this phone queues its row, whichever code wrote it, unless sync is
+// applying rows from the server or the bundled exercise library is being seeded, which every
+// phone does for itself. A row queued again gets a new mark, so a confirmation of the copy
+// sent before leaves the newer change queued.
+const queueTrigger = (table: string, event: "INSERT" | "UPDATE") => `
+CREATE TRIGGER ${table}_queue_${event.toLowerCase()} AFTER ${event} ON ${table}
+WHEN (SELECT quiet FROM sync_state) = 0
+BEGIN
+  UPDATE sync_state SET mark = mark + 1;
+  -- The outer statement's conflict policy overrides one written here, so no OR REPLACE.
+  DELETE FROM sync_outbox WHERE table_name = '${table}' AND row_id = NEW.id;
+  INSERT INTO sync_outbox (table_name, row_id, mark)
+    VALUES ('${table}', NEW.id, (SELECT mark FROM sync_state));
+END;`;
+
+const sync = `
+CREATE TABLE sync_state (id INTEGER PRIMARY KEY NOT NULL, quiet INTEGER NOT NULL,
+  mark INTEGER NOT NULL, cursor INTEGER NOT NULL, newest_seen INTEGER NOT NULL) STRICT;
+INSERT INTO sync_state (id, quiet, mark, cursor, newest_seen) VALUES (1, 0, 0, 0, 0);
+CREATE TABLE sync_outbox (table_name TEXT NOT NULL, row_id TEXT NOT NULL, mark INTEGER NOT NULL,
+  PRIMARY KEY (table_name, row_id)) STRICT;
+CREATE INDEX sync_outbox_mark ON sync_outbox (mark);
+${syncedAtVersion4
+  .map(
+    (table) =>
+      `INSERT INTO sync_outbox (table_name, row_id, mark) SELECT '${table}', id, 0 FROM ${table}${
+        // Library rows still at the bundled time 0 are unedited.
+        table === "exercise" ? " WHERE source <> 'library' OR updated_at <> 0" : ""
+      };`,
+  )
+  .join("\n")}
+${syncedAtVersion4.flatMap((table) => [queueTrigger(table, "INSERT"), queueTrigger(table, "UPDATE")]).join("\n")}
+`;
+
 /** Applied in order and never edited once released. A change to the schema is a new migration. */
 export const MIGRATIONS: ReadonlyArray<Migration> = [
   { version: 1, name: "initial", sql: initial },
   { version: 2, name: "import changes", sql: importChanges },
   { version: 3, name: "exercise aliases", sql: exerciseAliases },
+  { version: 4, name: "sync", sql: sync },
 ];
 
 export class DatabaseTooNewError extends Data.TaggedError("DatabaseTooNewError")<{

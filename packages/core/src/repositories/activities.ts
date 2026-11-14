@@ -234,7 +234,13 @@ const makeActivityRepository = Effect.gen(function* () {
     counts: run(
       Effect.all({
         activities: countRows(TABLES.activity),
-        sets: countRows(TABLES.activitySet),
+        // Sync can leave a set edited on one phone under a workout another phone deleted.
+        // It goes with its workout.
+        sets: countRows(
+          TABLES.activitySet,
+          `activity_exercise_id IN (SELECT e.id FROM activity_exercise e JOIN activity a
+             ON a.id = e.activity_id WHERE e.deleted_at IS NULL AND a.deleted_at IS NULL)`,
+        ),
       }),
     ),
   };

@@ -1,4 +1,4 @@
-import { Clock, Data, Effect, Option, Schema } from "effect";
+import { Clock, Context, Data, Effect, Option, Schema } from "effect";
 
 import * as Model from "./schema.ts";
 import { Sql, type SqlError, type SqlValue } from "./sql.ts";
@@ -64,9 +64,29 @@ export class RowNotFoundError extends Data.TaggedError("RowNotFoundError")<{
   readonly id: string;
 }> {}
 
-export const currentTime = Effect.map(Clock.currentTimeMillis, (millis) =>
-  Model.EpochMillis.make(millis),
-);
+/**
+ * The newest `updatedAt` this database has taken from the server. Each database has its own,
+ * which sync raises as it applies rows.
+ */
+export class NewestSeen extends Context.Service<NewestSeen, { millis: number }>()(
+  "svett/NewestSeen",
+) {}
+
+/**
+ * The time a row written on this phone gets: the clock's, or just after the newest change
+ * sync has applied, whichever is later. A phone whose clock runs behind then still writes an
+ * edit that beats the copy it edited, as a hybrid logical clock does.
+ */
+export const nextRowTime = (clockMillis: number, newestSeen: number): number =>
+  Math.max(clockMillis, newestSeen + 1);
+
+export const currentTime = Effect.gen(function* () {
+  const millis = yield* Clock.currentTimeMillis;
+  const seen = yield* Effect.serviceOption(NewestSeen);
+  return Model.EpochMillis.make(
+    Option.isSome(seen) ? nextRowTime(millis, seen.value.millis) : millis,
+  );
+});
 
 const encode = <A extends RowBase>(target: Table<A>, row: A) =>
   Schema.encodeEffect(target.schema)(row).pipe(
