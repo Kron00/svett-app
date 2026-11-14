@@ -457,6 +457,55 @@ describe("importing from Apple Health and GPX", () => {
     expect(await counts(database)).toEqual({ activities: 4, sets: 9 });
   });
 
+  it("records corrections to two links on one activity as one change, and Undo puts both back", async () => {
+    const database = openTestDatabase();
+    const hevyId = await seedHevy(database);
+    const file = await health();
+    const strength = file.workouts.find((workout) => workout.kind === "strength")!;
+    const second: SourceWorkout = {
+      ...strength,
+      identity: SourceIdentity.make(`${strength.identity} again`),
+      heartRate: [],
+      fingerprint: Fingerprint.make("d".repeat(64)),
+    };
+    await importAll(database, { ...file, workouts: [strength, second] });
+    const linkedBefore = linkFingerprints(database);
+    expect(await heartOf(database, hevyId)).toEqual({ averageBpm: 112, maxBpm: 124 });
+
+    const corrected: SourceFile = {
+      ...file,
+      workouts: [
+        correctedStrength(file),
+        { ...second, fingerprint: Fingerprint.make("f".repeat(64)) },
+      ],
+    };
+    const plan = await planOf(database, corrected);
+    expect(plan.changed).toMatchObject([
+      { local: hevyId, linked: true },
+      { local: hevyId, linked: true },
+    ]);
+    const taken = Option.getOrThrow(
+      await importAll(database, corrected, {
+        take: plan.changed.map((item) => item.key),
+        keepBoth: [],
+      }),
+    );
+    expect(taken).toMatchObject({ added: 0, linked: 0, replaced: 2 });
+    expect(await heartOf(database, hevyId)).toEqual({ averageBpm: 122, maxBpm: 134 });
+    expect(linkFingerprints(database).toSorted()).toEqual(["e".repeat(64), "f".repeat(64)]);
+
+    const preview = await transfers(database, (repository) =>
+      repository.previewUndo(taken.importBatchId),
+    );
+    expect(preview.changes.map(({ edited }) => edited)).toEqual([false]);
+    expect(
+      await transfers(database, (repository) => repository.undoImport(taken.importBatchId, [])),
+    ).toEqual({ removed: 0, restored: 1, left: 0 });
+    expect(await heartOf(database, hevyId)).toEqual({ averageBpm: 112, maxBpm: 124 });
+    expect(linkFingerprints(database)).toEqual(linkedBefore);
+    expect(await counts(database)).toEqual({ activities: 1, sets: 9 });
+  });
+
   it("keeps the heart rate a Health link brought when a GPX ride is replaced by its renamed version", async () => {
     const database = openTestDatabase();
     const ride = await plainGpx();

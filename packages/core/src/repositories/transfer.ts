@@ -394,6 +394,27 @@ const withoutRows = (rows: TableRows, without: TableRows): TableRows => {
   ) as TableRows;
 };
 
+/** The rows of every part, one per table and ID, the last part's version first. */
+const unionRows = (...parts: ReadonlyArray<TableRows>): TableRows =>
+  Object.fromEntries(
+    TABLE_KEYS.flatMap((key) => {
+      const byId = new Map<string, AnyRow>();
+      for (const part of parts) for (const row of part[key] ?? []) byId.set(row.id, row);
+      return byId.size === 0 ? [] : [[key, [...byId.values()]]];
+    }),
+  ) as TableRows;
+
+/** The rows of `rows` that `among` also has, matched by table and ID, as `rows` has them. */
+const rowsIn = (rows: TableRows, among: TableRows): TableRows =>
+  withoutRows(rows, withoutRows(rows, among));
+
+/** One workout's write to an activity in a Health or GPX import. */
+interface ActivityWrite {
+  /** A new link, a new version of a link, or a new version of the activity's own source. */
+  readonly kind: "link" | "relink" | "replace";
+  readonly workout: SourceWorkout;
+}
+
 /**
  * What the other sources linked to an activity added to it, with any track their heart
  * rate is on, so a new version from the activity's own source leaves them in place.
@@ -533,58 +554,62 @@ const makeTransferRepository = Effect.gen(function* () {
             yield* recordChange(importBatchId, "added", item, summarize(item), rows, {});
           }
 
-          // Two workouts may overlap the same activity, so each activity gets one change.
-          const byActivity = new Map<ActivityId, Array<SourceWorkout>>();
-          for (const { match, workout } of links) {
-            byActivity.set(match.id, [...(byActivity.get(match.id) ?? []), workout]);
-          }
-          for (const [activityId, linked] of byActivity) {
-            const here = yield* journalRows({ [TABLES.activity.name]: [activityId] });
-            let after = here;
-            let written: TableRows = {};
-            for (const workout of linked) {
-              const added = linkRows(workout, { id: activityId, rows: after }, importBatchId, at);
-              yield* putAll(added);
-              after = mergeRows(after, added);
-              written = mergeRows(written, added);
-            }
-            // Linking only adds rows, so Undo removes them and the activity is as it was.
-            const item = activityItem(activityId, here);
-            yield* recordChange(importBatchId, "replaced", item, summarize(item), written, {});
-          }
-
+          // Every write to one activity is one change, holding what the activity had
+          // before the first and how the last left it. So a second write does not make the
+          // first look edited, and Undo puts back all of them.
+          const byActivity = new Map<ActivityId, Array<ActivityWrite>>();
+          const addWrite = (activityId: ActivityId, write: ActivityWrite) =>
+            byActivity.set(activityId, [...(byActivity.get(activityId) ?? []), write]);
+          for (const { match, workout } of links) addWrite(match.id, { kind: "link", workout });
           for (const { workout, local, linked } of taken) {
-            const before = yield* journalRows({}, { table: TABLES.activity.name, id: local });
-            if (linked) {
-              // A new version of a linked workout replaces only what its link added.
-              const old = linkContribution(before, workout);
-              const written = linkRows(
-                workout,
-                { id: local, rows: withoutRows(before, old) },
-                importBatchId,
-                at,
-              );
-              yield* putAll(written);
-              yield* deleteWithChildren(withoutRows(old, written), at);
-              const item = activityItem(local, before);
-              yield* recordChange(
-                importBatchId,
-                "replaced",
-                item,
-                summarizeItem(item),
-                written,
-                old,
-              );
-              continue;
+            addWrite(local, { kind: linked ? "relink" : "replace", workout });
+          }
+          for (const [activityId, writes] of byActivity) {
+            const root = { table: TABLES.activity.name, id: activityId };
+            const before = yield* journalRows({}, root);
+            let after = before;
+            let written: TableRows = {};
+            let replaced: TableRows = {};
+            for (const { kind, workout } of writes) {
+              if (kind === "link") {
+                // Linking only adds rows, so Undo removes them and the activity is as it was.
+                const added = linkRows(workout, { id: activityId, rows: after }, importBatchId, at);
+                yield* putAll(added);
+                written = unionRows(written, added);
+              } else if (kind === "relink") {
+                // A new version of a linked workout replaces only what its link added.
+                const old = linkContribution(after, workout);
+                const added = linkRows(
+                  workout,
+                  { id: activityId, rows: withoutRows(after, old) },
+                  importBatchId,
+                  at,
+                );
+                yield* putAll(added);
+                yield* deleteWithChildren(withoutRows(old, added), at);
+                written = unionRows(written, added);
+                replaced = unionRows(replaced, rowsIn(before, old));
+              } else {
+                const added = sourceActivityRows(workout, importBatchId, at);
+                yield* putAll(added);
+                yield* deleteWithChildren(
+                  withoutRows(after, unionRows(added, linkedContributions(after))),
+                  at,
+                );
+                written = unionRows(written, added);
+                replaced = unionRows(replaced, before);
+              }
+              after = yield* journalRows({}, root);
             }
-            const written = sourceActivityRows(workout, importBatchId, at);
-            yield* putAll(written);
-            yield* deleteWithChildren(
-              withoutRows(before, mergeRows(written, linkedContributions(before))),
-              at,
+            const item = activityItem(activityId, after);
+            yield* recordChange(
+              importBatchId,
+              "replaced",
+              item,
+              summarize(item),
+              written,
+              replaced,
             );
-            const item = activityItem(local, written);
-            yield* recordChange(importBatchId, "replaced", item, summarize(item), written, before);
           }
           return Option.some<SourceImportResult>({
             importBatchId,
