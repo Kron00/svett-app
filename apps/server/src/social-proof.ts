@@ -176,7 +176,10 @@ const CLERK_API = "https://api.clerk.com/v1";
  * Each user is found by email or created, gets one session, and a new token per request,
  * as Clerk's session tokens last a minute.
  */
-export const clerkTokens = (secretKey: string, emails: Record<ProofAccount, string>) => {
+export const clerkTokens = <Account extends string = ProofAccount>(
+  secretKey: string,
+  emails: Record<Account, string>,
+) => {
   const clerk = async (method: string, path: string, body?: unknown) => {
     const response = await fetch(`${CLERK_API}${path}`, {
       method,
@@ -193,8 +196,8 @@ export const clerkTokens = (secretKey: string, emails: Record<ProofAccount, stri
     }
     return answer;
   };
-  const sessions = new Map<ProofAccount, Promise<string>>();
-  const session = (account: ProofAccount) => {
+  const sessions = new Map<Account, Promise<string>>();
+  const session = (account: Account) => {
     const existing = sessions.get(account);
     if (existing !== undefined) return existing;
     const created = (async () => {
@@ -217,7 +220,7 @@ export const clerkTokens = (secretKey: string, emails: Record<ProofAccount, stri
     sessions.set(account, created);
     return created;
   };
-  return async (account: ProofAccount) => {
+  return async (account: Account) => {
     const { jwt } = (await clerk("POST", `/sessions/${await session(account)}/tokens`)) as {
       readonly jwt: string;
     };
