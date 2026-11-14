@@ -151,9 +151,9 @@ describe("reactNativeSteps", () => {
   });
 
   it("leaves out a time React Native did not record", () => {
-    expect(reactNativeSteps({ executeJavaScriptBundleEntryPointStart: 5, endTime: null }, 0)).toEqual(
-      [["bundle", 5]],
-    );
+    expect(
+      reactNativeSteps({ executeJavaScriptBundleEntryPointStart: 5, endTime: null }, 0),
+    ).toEqual([["bundle", 5]]);
     expect(reactNativeSteps(undefined, 0)).toEqual([]);
   });
 });
