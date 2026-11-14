@@ -132,7 +132,7 @@ function SetEditor({
   );
 }
 
-/** Edits one set of a past workout: its type, weight and reps. */
+/** Edits the type, weight and reps of one set in a past workout. */
 export function SetEditScreen({ route, navigation }: Props) {
   const ids = Option.getOrNull(parseIds(route.params));
   const query = useQuery(`set-${route.params.activityId}-${route.params.setId}`, () =>

@@ -21,7 +21,7 @@ const groupBy = <A, K>(items: ReadonlyArray<A>, key: (item: A) => K) => {
   return groups;
 };
 
-/** Where a page of history starts: after this activity, newest first. */
+/** A page of history starts after this activity, newest first. */
 export type HistoryCursor = Pick<Activity, "startedAt" | "id">;
 
 /** What the calendar and the streak need of every workout. */

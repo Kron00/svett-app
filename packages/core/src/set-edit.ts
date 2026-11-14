@@ -1,7 +1,7 @@
 import type { ActivitySet, SetType } from "./schema.ts";
 import { formatWeightKg } from "./set-format.ts";
 
-/** What the set edit screen holds: the keypad text of each field and the set type. */
+/** The set type and the keypad text of each field, as the set edit screen holds them. */
 export type SetEdit = {
   readonly setType: SetType;
   readonly weight: string;

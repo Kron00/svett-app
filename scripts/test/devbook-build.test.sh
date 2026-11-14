@@ -881,8 +881,8 @@ check "exercises.sh fails when the first result is not the library exercise" tes
 check "exercises.sh names the result it found instead" \
   grep -qxF 'The first result was not "Barbell Squat". Its label is "Barbell Squat Jump, Chest · Cable".' "$output"
 
-# A fixture with the rows history.sh reads: an older and a newest workout, one
-# deleted later still, and the newest workout's warm-up and first normal set.
+# A fixture with the rows history.sh reads. It has an older and a newest workout,
+# one deleted later still, and the newest workout's warm-up and first normal set.
 history_fixture="$root/history-fixture.db"
 cat >"$root/history-fixture.cjs" <<'EOF'
 const { DatabaseSync } = require("node:sqlite");

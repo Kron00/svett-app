@@ -143,7 +143,7 @@ type Saving =
   | { readonly status: "saved"; readonly title: string }
   | { readonly status: "failed"; readonly message: string };
 
-/** One past workout: its sets with record badges, its muscle split, and edit, save and delete. */
+/** One past workout with record badges and its muscle split. Sets open for editing, and it saves as a routine or deletes. */
 export function WorkoutScreen({ route, navigation }: Props) {
   const id = Option.getOrNull(parseActivityId(route.params.id));
   const query = useQuery(`workout-${route.params.id}`, () =>
