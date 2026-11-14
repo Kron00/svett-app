@@ -7,7 +7,7 @@ import { TabNavigator } from "./TabNavigator";
 
 type ScreenProps = {
   readonly name: string;
-  readonly component?: ComponentType<object>;
+  readonly component?: ComponentType<{ readonly navigation: object; readonly route: object }>;
   readonly children?: () => ReactNode;
   readonly options?: object | ((props: object) => object);
 };
