@@ -42,10 +42,11 @@ const addPlate = (unit: WeightUnit, gear: BarsAndPlates) =>
             Alert.alert("That plate was not added", problem ?? "Enter the plate's weight.");
             return;
           }
-          changeBarsAndPlates(unit, (gear) => ({
-            ...gear,
-            plates: sortPlates([...gear.plates, { weight, pairs: 1 }]),
-          }));
+          changeBarsAndPlates(unit, (saved) =>
+            plateSizeProblem(weight, saved.plates) === undefined
+              ? { ...saved, plates: sortPlates([...saved.plates, { weight, pairs: 1 }]) }
+              : saved,
+          );
         },
       },
     ],
