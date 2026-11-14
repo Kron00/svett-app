@@ -401,6 +401,7 @@ only_calls() {
 }
 
 debug_open="com.kron00.svett --relaunch --launch-url $local_dev_client_url"
+debug_front="com.kron00.svett --launch-url $local_dev_client_url"
 
 case_name="gallery.sh Debug with SVETT_DEVICE_CMD"
 FAKE_GALLERY_SCROLLS=2 sim_script gallery.sh "$root/gallery"
@@ -439,31 +440,83 @@ check "gallery.sh stops after 40 pages when the end marker never shows" \
 check "gallery.sh restores the default text size after a failure" \
   only_calls "settings" "settings text-size large" "settings text-size large"
 
-# Stands in for the bound command on Phone checks. Every element has the same
-# frame, the clipboard holds a report, no permission prompt shows, and the Apple
-# Health sheet shows only with FAKE_HEALTH_SHEET.
+# Stands in for the bound command on Phone checks. It tracks what is in front:
+# the Home Screen, or svett on its tab root, the You tab or Phone checks. Like the
+# iOS 27 simulator, a Debug open by bundle id alone leaves the Home Screen in
+# front. A Release open by bundle id, or a Debug open of the dev client URL,
+# brings svett back on the screen it left, or on its tab root with FAKE_RELOAD,
+# or not at all with FAKE_STAYS_HOME. A scroll or press while the Home Screen is
+# in front fails and is logged. Every element has the same frame, the clipboard
+# holds a report, no permission prompt shows, and the Apple Health sheet shows
+# only with FAKE_HEALTH_SHEET.
 cat >"$fake/checks-device" <<EOF
 #!/usr/bin/env bash
 echo "\$*" >>"$root/bound-calls"
-case "\$*" in
-  *" get attrs "*) echo '{"label": "Run", "rect": {"x": 20, "y": 300, "width": 120, "height": 40}}' ;;
-  *" clipboard read") echo "fake phone check report" ;;
+screen=\$(cat "$root/screen" 2>/dev/null || echo home)
+left=\$(cat "$root/svett-screen" 2>/dev/null || echo tabs)
+show() {
+  echo "\$1" >"$root/screen"
+  [[ "\$1" == home ]] || echo "\$1" >"$root/svett-screen"
+}
+refuse_on_home() {
+  [[ "\$screen" == home ]] || return 0
+  echo "\$*" >>"$root/home-screen-actions"
+  echo "fake device: \$* while the Home Screen is in front" >&2
+  exit 1
+}
+in_svett() { [[ "\$screen" != home ]]; }
+args=" \$* "
+case "\$args" in
+  *" home "* | *" open com.apple.springboard "*) show home ;;
+  *" open com.kron00.svett --relaunch "*) show tabs ;;
+  *" open com.kron00.svett "*)
+    if [[ -n "\${FAKE_STAYS_HOME:-}" ]] || [[ -z "\${FAKE_RELEASE:-}" && "\$args" != *" --launch-url "* ]]; then
+      :
+    elif [[ -n "\${FAKE_RELOAD:-}" ]]; then
+      show tabs
+    else
+      show "\$left"
+    fi ;;
+  *" scroll "*) refuse_on_home scroll ;;
+  *' press label="You, tab, 5 of 5" '*) refuse_on_home press You tab; show you ;;
+  *" press "*)
+    refuse_on_home press
+    [[ "\$screen" != you || "\$(cat "$root/last-attrs")" != *phone-checks-row* ]] || show checks ;;
+  *" get attrs "*)
+    echo "\$*" >"$root/last-attrs"
+    echo '{"label": "Run", "rect": {"x": 20, "y": 300, "width": 120, "height": 40}}' ;;
+  *' label="You, tab, 5 of 5" '*) in_svett ;;
+  *' id="phone-checks-row" '*) [[ "\$screen" == you ]] ;;
+  *' label="Turn On All" '*) [[ -n "\${FAKE_HEALTH_SHEET:-}" ]] ;;
+  *" is visible "* | *' wait id='*) [[ "\$screen" == checks ]] ;;
+  *" clipboard read "*) echo "fake phone check report" ;;
   *" alert wait "*) exit 1 ;;
-  *' wait label="Turn On All" '*) [[ -n "\${FAKE_HEALTH_SHEET:-}" ]] ;;
 esac
 EOF
 chmod +x "$fake/checks-device"
 
-# checks_sh [VAR=value...] [checks.sh args...]
-checks_sh() {
+# run_checks [VAR=value...] [checks.sh args...] leaves the exit status in checks_status.
+run_checks() {
   local -a vars=()
   while [[ "${1:-}" == *=* ]]; do
     vars+=("$1")
     shift
   done
-  rm -f "$root/simctl-calls" "$root/bound-calls"
+  rm -f "$root/simctl-calls" "$root/bound-calls" "$root/screen" "$root/svett-screen" "$root/home-screen-actions"
+  checks_status=0
   env PATH="$fake:$PATH" SVETT_DEVICE_CMD="checks-device --session 't3-test session' --device FAKE-UDID" \
-    "${vars[@]}" "$repo/scripts/sim/checks.sh" "$@" >"$output" 2>&1 || fail "checks.sh $* failed"
+    "${vars[@]}" "$repo/scripts/sim/checks.sh" "$@" >"$output" 2>&1 || checks_status=$?
+}
+
+# checks_sh [VAR=value...] [checks.sh args...]
+checks_sh() {
+  run_checks "$@"
+  [[ "$checks_status" == 0 ]] || fail "checks.sh $* failed"
+}
+
+never_acts_on_home_screen() {
+  [[ ! -e "$root/home-screen-actions" ]] ||
+    fail "checks.sh acted on the Home Screen: $(tr '\n' ';' <"$root/home-screen-actions")"
 }
 
 you_tab_press='press label="You, tab, 5 of 5"'
@@ -471,8 +524,9 @@ centre_press="press 80 320"
 
 case_name="checks.sh Debug with SVETT_DEVICE_CMD"
 checks_sh "$root/checks"
-check "checks.sh relaunches into the dev client, visits the Home Screen and comes back, and relaunches for the report" \
-  only_open "$debug_open" "$debug_open" com.apple.springboard com.kron00.svett com.kron00.svett "$debug_open"
+check "checks.sh never scrolls or presses while the Home Screen is in front" never_acts_on_home_screen
+check "checks.sh relaunches into the dev client, reopens it without a relaunch after each step that leaves svett, and relaunches for the report" \
+  only_open "$debug_open" "$debug_open" com.apple.springboard "$debug_front" "$debug_front" "$debug_front" "$debug_open"
 check "checks.sh presses tabs by selector and screen content only at an element's centre, which agent-device does not refuse on iOS 27" \
   only_calls "press" \
   "$you_tab_press" "$centre_press" "$centre_press" "$you_tab_press" "$centre_press" "$centre_press" \
@@ -501,10 +555,27 @@ check "checks.sh screenshots each check, the banner and the sign-in sheet" \
 check "checks.sh with SVETT_DEVICE_CMD calls neither simctl launch nor openurl" no_simctl_launch_or_openurl
 
 case_name="checks.sh Release with SVETT_DEVICE_CMD"
-checks_sh --release "$root/checks-release"
-check "checks.sh Release relaunches the installed app without Metro" \
+checks_sh FAKE_RELEASE=1 --release "$root/checks-release"
+check "checks.sh Release relaunches the installed app without Metro and reopens it by bundle id" \
   only_open "com.kron00.svett --relaunch" "com.kron00.svett --relaunch" com.apple.springboard \
-  com.kron00.svett com.kron00.svett "com.kron00.svett --relaunch"
+  com.kron00.svett com.kron00.svett com.kron00.svett "com.kron00.svett --relaunch"
+check "checks.sh Release never scrolls or presses while the Home Screen is in front" never_acts_on_home_screen
+
+case_name="checks.sh when the dev client reloads on its way back"
+checks_sh FAKE_RELOAD=1 "$root/checks-reload"
+check "checks.sh reopens Phone checks from the You tab before each check after svett comes back on its tab root" \
+  only_calls "get attrs" \
+  'get attrs id="phone-checks-row"' 'get attrs id="reset-checks"' 'get attrs id="phone-checks-row"' \
+  'get attrs id="check-run-notification"' 'get attrs id="phone-checks-row"' 'get attrs id="check-run-health"' \
+  'get attrs id="phone-checks-row"' 'get attrs id="check-run-location"' 'get attrs id="phone-checks-row"' \
+  'get attrs id="check-run-chatgpt"' 'get attrs id="phone-checks-row"' 'get attrs id="copy-report"'
+check "checks.sh still saves the report after reloads" grep -qxF "fake phone check report" "$root/checks-reload/report.txt"
+
+case_name="checks.sh when svett stays in the background"
+run_checks FAKE_STAYS_HOME=1 "$root/checks-home"
+check "checks.sh fails when svett does not come back" test "$checks_status" -ne 0
+check "checks.sh says svett did not come back" grep -qF "svett did not come back to the foreground" "$output"
+check "checks.sh does not scroll or press on the Home Screen when svett stays away" never_acts_on_home_screen
 
 case_name="checks.sh with the Apple Health sheet"
 checks_sh FAKE_HEALTH_SHEET=1 "$root/checks-health"
