@@ -13,6 +13,7 @@ import {
   encodeKeychainMark,
   encodePendingNotification,
   encodeStoredOutcome,
+  deliveredInFront,
   findNotification,
   formatReport,
   healthOutcome,
@@ -109,6 +110,19 @@ describe("notification check", () => {
       status: "waiting",
       detail:
         "Arrived at 15:00:10 UTC while svett was open. Run it again and leave svett before it is due.",
+    });
+  });
+
+  it("does not count a notification handed to svett outside the front as arrived while open", () => {
+    expect(deliveredInFront("background", s(10) / 1000)).toBeUndefined();
+    expect(deliveredInFront("inactive", s(10) / 1000)).toBeUndefined();
+    expect(deliveredInFront("active", s(10) / 1000)).toBe(s(10));
+  });
+
+  it("passes when it is in Notification Center, even if svett also heard it arrive", () => {
+    expect(judge({ inSvett: s(10), shown: s(10) }, s(25))).toEqual({
+      status: "passed",
+      detail: "Arrived at 15:00:10 UTC while svett was in the background.",
     });
   });
 

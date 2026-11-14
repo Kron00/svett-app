@@ -138,6 +138,12 @@ export type NotificationObservation =
 // milliseconds on Android. Below 1e11 it can only be seconds: as milliseconds it would be 1973.
 export const notificationDateMs = (date: number): number => (date < 1e11 ? date * 1000 : date);
 
+/** When a notification iOS handed to svett arrived, if svett was in front then. */
+export const deliveredInFront = (
+  appState: string | null | undefined,
+  date: number,
+): number | undefined => (appState === "active" ? notificationDateMs(date) : undefined);
+
 /** When iOS delivered the check's notification, by where svett found it. */
 export interface NotificationSightings {
   /** iOS handed it to svett because svett was in front. */
@@ -154,10 +160,12 @@ export function findNotification(
   sightings: NotificationSightings,
   now: number,
 ): NotificationObservation {
-  const inSvett = sightings.inSvett ?? pending.deliveredInSvett;
-  if (inSvett !== undefined) return { kind: "arrived", at: inSvett, whileOpen: true };
+  // Notification Center holds only what iOS showed while svett was away, so it outranks a
+  // listener event, which iOS can also send as svett leaves the front.
   if (sightings.shown !== undefined)
     return { kind: "arrived", at: sightings.shown, whileOpen: false };
+  const inSvett = sightings.inSvett ?? pending.deliveredInSvett;
+  if (inSvett !== undefined) return { kind: "arrived", at: inSvett, whileOpen: true };
   return now > pending.dueAt + NOTIFICATION_GRACE_MS
     ? { kind: "missing", dueAt: pending.dueAt }
     : { kind: "scheduled", dueAt: pending.dueAt };

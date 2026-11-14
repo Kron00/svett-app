@@ -1,4 +1,4 @@
-import { type AwayWindow, notificationDateMs } from "@svett/core";
+import { type AwayWindow, deliveredInFront } from "@svett/core";
 import type { LocationObject } from "expo-location";
 import * as Notifications from "expo-notifications";
 import * as TaskManager from "expo-task-manager";
@@ -41,8 +41,9 @@ export const notificationsInSvett = createStore<ReadonlyMap<string, number>>(new
 // saved with the pending check before the check can see it and forget that record. Otherwise
 // a restart would find neither and judge it not delivered.
 Notifications.addNotificationReceivedListener(async (notification) => {
+  const at = deliveredInFront(AppState.currentState, notification.date);
+  if (at === undefined) return;
   const id = notification.request.identifier;
-  const at = notificationDateMs(notification.date);
   const pending = await loadPendingNotification();
   if (pending?.id === id) {
     await savePendingNotification({ ...pending, deliveredInSvett: at }).catch(() => undefined);
