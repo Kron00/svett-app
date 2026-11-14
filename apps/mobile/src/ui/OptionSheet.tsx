@@ -62,6 +62,7 @@ export function OptionSheet<Value extends string>({
   options,
   isPresented,
   onDismiss,
+  action,
   testID,
   ...choice
 }: {
@@ -69,6 +70,8 @@ export function OptionSheet<Value extends string>({
   readonly options: ReadonlyArray<Option<Value>>;
   readonly isPresented: boolean;
   readonly onDismiss: () => void;
+  /** A destructive action under the options, such as removing what they describe. It closes the sheet. */
+  readonly action?: { readonly label: string; readonly onPress: () => void };
   readonly testID?: string;
 } & Choice<Value>) {
   const separator = useColor("separator");
@@ -137,6 +140,19 @@ export function OptionSheet<Value extends string>({
               {row}
             </Fragment>
           ))}
+          {action ? (
+            <View className="px-gutter pt-6">
+              <Button
+                label={action.label}
+                variant="destructive"
+                onPress={() => {
+                  onDismiss();
+                  action.onPress();
+                }}
+                testID={testID ? `${testID}-action` : undefined}
+              />
+            </View>
+          ) : null}
         </ScrollView>
       </View>
     </Modal>

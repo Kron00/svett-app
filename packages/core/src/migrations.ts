@@ -91,12 +91,27 @@ ALTER TABLE activity_set ADD COLUMN target_reps_min INTEGER;
 ALTER TABLE activity_set ADD COLUMN target_reps_max INTEGER;
 `;
 
+const has = (column: string) =>
+  `EXISTS (SELECT 1 FROM activity_set s WHERE s.activity_exercise_id = activity_exercise.id AND s.${column} IS NOT NULL)`;
+
+// An exercise logged before this records what its sets hold, as setFieldsFromSets decides.
+const setFields = `
+ALTER TABLE activity_exercise ADD COLUMN set_fields TEXT NOT NULL DEFAULT 'weight_reps';
+UPDATE activity_exercise SET set_fields = CASE
+  WHEN ${has("distance_m")} THEN CASE WHEN ${has("weight_kg")} THEN 'weight_distance' ELSE 'distance_time' END
+  WHEN ${has("duration_s")} THEN CASE WHEN ${has("weight_kg")} THEN 'weight_time' ELSE 'time' END
+  WHEN ${has("reps")} AND NOT ${has("weight_kg")} THEN 'reps'
+  ELSE 'weight_reps'
+END;
+`;
+
 /** Applied in order and never edited once released. A change to the schema is a new migration. */
 export const MIGRATIONS: ReadonlyArray<Migration> = [
   { version: 1, name: "initial", sql: initial },
   { version: 2, name: "import changes", sql: importChanges },
   { version: 3, name: "exercise aliases", sql: exerciseAliases },
   { version: 4, name: "workout in progress", sql: workoutInProgress },
+  { version: 5, name: "set fields", sql: setFields },
 ];
 
 export class DatabaseTooNewError extends Data.TaggedError("DatabaseTooNewError")<{

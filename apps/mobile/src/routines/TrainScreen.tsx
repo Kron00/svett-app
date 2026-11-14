@@ -16,6 +16,7 @@ import { Button } from "../ui/Button";
 import { EmptyState } from "../ui/EmptyState";
 import { IconButton } from "../ui/IconButton";
 import { ListRow, ListSection, SectionHeader } from "../ui/List";
+import { startEmpty } from "../workout/actions";
 import { type RoutineOverview, useRoutineOverview, withRoutines } from "./data";
 
 const folderPrompt = (title: string, name: string, onSave: (name: string) => void) =>
@@ -254,6 +255,20 @@ export function TrainScreen() {
             testID="workout-in-progress-row"
           />
         </ListSection>
+      ) : null}
+      {loaded.state === "ready" && loaded.value.inProgress === null ? (
+        <View className="px-gutter">
+          <Button
+            label="Start empty workout"
+            symbol="plus"
+            onPress={() =>
+              void startEmpty().then((started) => {
+                if (started === true) navigation.navigate("ActiveWorkout");
+              })
+            }
+            testID="start-empty-workout"
+          />
+        </View>
       ) : null}
       <View className="gap-3">
         <SectionHeader title="Routines" action={{ label: "New folder", onPress: newFolder }} />

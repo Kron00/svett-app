@@ -128,6 +128,17 @@ export const Activity = Schema.Struct({
 }).check(provenanceRule);
 export type Activity = typeof Activity.Type;
 
+/** What each set of an exercise records, such as weight and reps, or a time. */
+export const SetFields = Schema.Literals([
+  "weight_reps",
+  "reps",
+  "time",
+  "weight_time",
+  "distance_time",
+  "weight_distance",
+]);
+export type SetFields = typeof SetFields.Type;
+
 export const ActivityExercise = Schema.Struct({
   ...rowFields(ActivityExerciseId),
   activityId: ActivityId,
@@ -136,6 +147,7 @@ export const ActivityExercise = Schema.Struct({
   /** Exercises in one activity that share a group number form a superset. */
   supersetGroup: Schema.NullOr(NonNegativeInt),
   notes: Schema.String,
+  setFields: SetFields,
 });
 export type ActivityExercise = typeof ActivityExercise.Type;
 

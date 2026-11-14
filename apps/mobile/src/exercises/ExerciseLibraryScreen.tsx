@@ -1,4 +1,5 @@
 import {
+  ActivityExerciseId,
   addExercises,
   EQUIPMENT_LABEL,
   EQUIPMENT_OPTIONS,
@@ -6,6 +7,8 @@ import {
   exerciseFilterFromParams,
   exerciseFilterParams,
   exerciseSummary,
+  linkParam,
+  linkParams,
   MUSCLE_LABEL,
   MUSCLE_OPTIONS,
   searchExercises,
@@ -25,6 +28,8 @@ import { ListRow } from "../ui/List";
 import { OptionSheet } from "../ui/OptionSheet";
 import { SearchField } from "../ui/SearchField";
 import { changeDraft, currentDraft } from "../routines/draft";
+import { addExercises as addWorkoutExercises, replaceExercise } from "../workout/actions";
+import { currentWorkout } from "../workout/store";
 import { useExerciseList } from "./data";
 
 function Separator() {
@@ -62,13 +67,30 @@ const countText = (count: number) => `${count} ${count === 1 ? "exercise" : "exe
  */
 export function ExerciseLibraryScreen() {
   const navigation = useNavigation<RootNavigation>();
-  const route = useRoute<RouteProp<RootStackParamList, "Exercises" | "PickExercise">>();
+  const route =
+    useRoute<
+      RouteProp<
+        RootStackParamList,
+        "Exercises" | "PickExercise" | "AddWorkoutExercise" | "ReplaceWorkoutExercise"
+      >
+    >();
   const filter = exerciseFilterFromParams(route.params);
-  // Opened from the routine editor, a row adds its exercise to the routine and goes back.
-  const picking = route.name === "PickExercise" && currentDraft() !== null;
+  // Opened from the routine editor or the workout, a row adds its exercise there and goes back.
   const choose = (exercise: Exercise) => {
-    if (picking) {
+    const params = linkParams(route.params);
+    const replacing = linkParam(ActivityExerciseId, params["exercise"]);
+    if (route.name === "PickExercise" && currentDraft() !== null) {
       changeDraft((form) => addExercises(form, [exercise.id]));
+      navigation.goBack();
+    } else if (route.name === "AddWorkoutExercise" && currentWorkout() !== null) {
+      addWorkoutExercises([exercise.id]);
+      navigation.goBack();
+    } else if (
+      route.name === "ReplaceWorkoutExercise" &&
+      replacing !== null &&
+      currentWorkout() !== null
+    ) {
+      replaceExercise(replacing, exercise.id);
       navigation.goBack();
     } else {
       navigation.navigate("Exercise", { id: exercise.id });

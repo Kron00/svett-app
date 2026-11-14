@@ -41,6 +41,7 @@ import {
   tableKeyOf,
   type UndoEntry,
   undoSelection,
+  rawRowsByKey,
   withAddedFields,
   withoutDrafts,
   withRequired,
@@ -93,16 +94,33 @@ const byTableName = <A>(rows: Partial<Record<TableKey, ReadonlyArray<A>>>) =>
     TABLE_KEYS.flatMap((key) => (rows[key]?.length ? [[TABLES[key].name, rows[key]]] : [])),
   );
 
-/** Parses rows an import kept, by table name, with each table's schema. */
-const decodeRows = (rows: RowsByTable) =>
+/**
+ * Parses rows an import kept, by table name, with each table's schema. A field added since
+ * they were written comes from the rows beside them as they were before the import, which are
+ * the kept rows and the rows here the import did not write.
+ */
+const decodeRows = (rows: RowsByTable, here: TableRows, rowIds: RowIdsByTable) =>
   Effect.gen(function* () {
+    const unknown = Object.keys(rows).find((name) => tableKeyOf(name) === undefined);
+    if (unknown !== undefined) return yield* Effect.die(new Error(`Unknown table ${unknown}`));
+    const kept = rawRowsByKey(rows);
+    const beside = Object.fromEntries(
+      TABLE_KEYS.map((key) => {
+        const written = new Set<string>(rowIds[TABLES[key].name] ?? []);
+        return [
+          key,
+          [...(kept[key] ?? []), ...(here[key] ?? []).filter((row) => !written.has(row.id))],
+        ];
+      }),
+    );
+    const filled = withAddedFields(kept, beside);
     const decoded: Partial<Record<TableKey, ReadonlyArray<AnyRow>>> = {};
-    for (const [name, list] of Object.entries(rows)) {
-      const key = tableKeyOf(name);
-      if (key === undefined) return yield* Effect.die(new Error(`Unknown table ${name}`));
+    for (const key of TABLE_KEYS) {
+      const list = filled[key];
+      if (list === undefined) continue;
       const decode = Schema.decodeUnknownEffect(Schema.toType(TABLES[key].schema));
       decoded[key] = (yield* Effect.orDie(
-        Effect.forEach(list, (row) => decode(withAddedFields(key, row))),
+        Effect.forEach(list, (row) => decode(row)),
       )) as ReadonlyArray<AnyRow>;
     }
     return decoded as TableRows;
@@ -311,7 +329,7 @@ const undoSteps = (importBatchId: ImportBatchId) =>
       Effect.gen(function* () {
         const edited = yield* isEdited(change);
         const current = yield* journalRows(change.rowIds);
-        const before = yield* decodeRows(change.replaced ?? {});
+        const before = yield* decodeRows(change.replaced ?? {}, current, change.rowIds);
         const kept = new Set(
           TABLE_KEYS.flatMap((key) => (before[key] ?? []).map((row) => rowKey(key, row.id))),
         );

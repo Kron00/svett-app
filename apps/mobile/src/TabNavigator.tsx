@@ -13,6 +13,7 @@ import { TrainScreen } from "./routines/TrainScreen";
 import { type Tab, TABS } from "./tabs";
 import { DataRow } from "./transfer/DataRow";
 import { ListSection } from "./ui/List";
+import { WorkoutTabBar } from "./workout/WorkoutTabBar";
 
 const Tabs = createBottomTabNavigator<TabParamList>();
 const TabStack = createNativeStackNavigator();
@@ -56,7 +57,10 @@ function TabRoot({ tab }: { readonly tab: Tab }) {
 
 export function TabNavigator() {
   return (
-    <Tabs.Navigator screenOptions={{ headerShown: false }}>
+    <Tabs.Navigator
+      screenOptions={{ headerShown: false }}
+      tabBar={(props) => <WorkoutTabBar {...props} />}
+    >
       {TABS.map((tab) => (
         <Tabs.Screen
           key={tab.name}
