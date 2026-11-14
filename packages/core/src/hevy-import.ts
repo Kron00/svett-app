@@ -246,6 +246,7 @@ export const hevyImport = (file: HevyFile, keep: ReadonlySet<string> = new Set()
           supersetGroup: exercise.supersetGroup,
           notes: exercise.notes,
           setFields: setFieldsFromSets(exercise.sets) ?? "weight_reps",
+          restS: null,
         });
         exercise.sets.forEach((set, setPosition) =>
           add(built, "activitySet", {

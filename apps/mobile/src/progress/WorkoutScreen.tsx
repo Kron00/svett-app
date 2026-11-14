@@ -1,6 +1,7 @@
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import {
   ActivityId,
+  describeSet,
   formatVolumeKg,
   formatWeightKg,
   formatWorkoutDuration,
@@ -13,6 +14,7 @@ import {
   saveWorkoutAsRoutine,
   type WorkoutExercise,
   type WorkoutSet,
+  type WeightUnit,
   type WorkoutView,
 } from "@svett/core";
 import { Effect, Option, Schema } from "effect";
@@ -20,6 +22,7 @@ import { useLayoutEffect, useState } from "react";
 import { Pressable, ScrollView, View } from "react-native";
 
 import { useQuery, write } from "../data/store";
+import { useWorkoutSettings } from "../settings/store";
 import { useColor } from "../design/hooks";
 import { SET_TYPE_COLOR, SPORTS } from "../design/tokens";
 import type { RootStackParamList } from "../navigation";
@@ -47,14 +50,23 @@ function RecordBadge({ kind }: { readonly kind: RecordKind }) {
   );
 }
 
-function SetLine({ set, onPress }: { readonly set: WorkoutSet; readonly onPress: () => void }) {
+function SetLine({
+  set,
+  unit,
+  onPress,
+}: {
+  readonly set: WorkoutSet;
+  readonly unit: WeightUnit;
+  readonly onPress: () => void;
+}) {
   const badgeColor = useColor(SET_TYPE_COLOR[set.setType]);
   const records = set.records.map((kind) => `${RECORD_RULES[kind].label} record`);
+  const text = describeSet(set, unit);
   return (
     <Pressable
       testID={`set-${set.id}`}
       accessibilityRole="button"
-      accessibilityLabel={[set.badge.label, set.text, ...records].join(", ")}
+      accessibilityLabel={[set.badge.label, text, ...records].join(", ")}
       accessibilityHint="Edits the set"
       onPress={onPress}
       className="min-h-target flex-row items-center gap-3 py-2"
@@ -69,7 +81,7 @@ function SetLine({ set, onPress }: { readonly set: WorkoutSet; readonly onPress:
         {set.badge.text}
       </AppText>
       <View className="flex-1 gap-1">
-        <AppText numeric>{set.text}</AppText>
+        <AppText numeric>{text}</AppText>
         {set.records.length > 0 ? (
           <View className="flex-row flex-wrap gap-x-3 gap-y-1">
             {set.records.map((kind) => (
@@ -90,8 +102,14 @@ function ExerciseCard({
   readonly entry: WorkoutExercise;
   readonly onEditSet: (set: WorkoutSet) => void;
 }) {
+  const { unit } = useWorkoutSettings();
   return (
     <View className="mx-gutter gap-1 rounded-card bg-surface px-4 py-3">
+      {entry.superset !== null ? (
+        <AppText variant="subheadline" tone="accent">
+          {`Superset ${entry.superset.letter}`}
+        </AppText>
+      ) : null}
       <AppText variant="headline" accessibilityRole="header">
         {entry.name}
       </AppText>
@@ -101,7 +119,7 @@ function ExerciseCard({
         </AppText>
       ) : null}
       {entry.sets.map((set) => (
-        <SetLine key={set.id} set={set} onPress={() => onEditSet(set)} />
+        <SetLine key={set.id} set={set} unit={unit} onPress={() => onEditSet(set)} />
       ))}
     </View>
   );
@@ -146,6 +164,7 @@ type Saving =
 /** One past workout with record badges and its muscle split. Sets open for editing, and it saves as a routine or deletes. */
 export function WorkoutScreen({ route, navigation }: Props) {
   const id = Option.getOrNull(parseActivityId(route.params.id));
+  const { unit } = useWorkoutSettings();
   const query = useQuery(`workout-${route.params.id}`, () =>
     id === null
       ? Effect.succeed(Option.none())
@@ -207,7 +226,7 @@ export function WorkoutScreen({ route, navigation }: Props) {
           value={formatWorkoutDuration(activity.durationS)}
           symbol="clock"
         />
-        <StatTile label="Volume" value={formatVolumeKg(view.volumeKg)} symbol="scalemass" />
+        <StatTile label="Volume" value={formatVolumeKg(view.volumeKg, unit)} symbol="scalemass" />
         <StatTile label="Sets" value={String(view.setCount)} symbol="number" />
         <StatTile
           testID="workout-records"

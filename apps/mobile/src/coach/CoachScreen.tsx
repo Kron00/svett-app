@@ -9,7 +9,7 @@ import { askCoach, type ChatEntry, chatEntries } from "@svett/tools";
 import { type RouteProp, useFocusEffect, useNavigation, useRoute } from "@react-navigation/native";
 import { Effect } from "effect";
 import { uuid } from "expo";
-import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   AppState,
   KeyboardAvoidingView,
@@ -25,6 +25,7 @@ import type { CoachNavigation, CoachStackParamList } from "../navigation";
 import { AppText } from "../ui/AppText";
 import { Button } from "../ui/Button";
 import { EmptyState } from "../ui/EmptyState";
+import { NoticeScreen } from "../ui/NoticeScreen";
 import { Composer } from "./Composer";
 import { swiftTransport } from "./native";
 
@@ -135,31 +136,6 @@ function FailureNotice({
 }
 
 /** The Coach tab: a chat with the user's ChatGPT plan that answers from their own data. */
-/**
- * A state of the coach without a chat. It scrolls, as the tab's large title
- * needs its screen's first view to.
- */
-function CoachNotice({
-  testID,
-  className = "",
-  children,
-}: {
-  readonly testID: string;
-  readonly className?: string;
-  readonly children: ReactNode;
-}) {
-  return (
-    <ScrollView
-      testID={testID}
-      contentInsetAdjustmentBehavior="automatic"
-      className="flex-1 bg-background"
-      contentContainerClassName={`grow justify-center py-6 ${className}`}
-    >
-      {children}
-    </ScrollView>
-  );
-}
-
 export function CoachScreen() {
   const navigation = useNavigation<CoachNavigation>();
   const route = useRoute<CoachRoute>();
@@ -255,41 +231,41 @@ export function CoachScreen() {
 
   if (status === undefined && statusFailed) {
     return (
-      <CoachNotice testID="coach-status-failed" className="gap-4 px-gutter">
+      <NoticeScreen testID="coach-status-failed" className="gap-4 px-gutter">
         <AppText tone="warning" selectable>
           svett could not read your ChatGPT sign-in. Everything else in svett still works.
         </AppText>
         <Button label="Try again" variant="secondary" testID="coach-retry" onPress={checkStatus} />
-      </CoachNotice>
+      </NoticeScreen>
     );
   }
 
   if (status === undefined || conversationId === undefined) {
     return (
-      <CoachNotice testID="coach" className="items-center">
+      <NoticeScreen testID="coach" className="items-center">
         <AppText tone="secondary">Opening the coach…</AppText>
-      </CoachNotice>
+      </NoticeScreen>
     );
   }
 
   if (status.state === "signedOut") {
     return (
-      <CoachNotice testID="coach-signed-out">
+      <NoticeScreen testID="coach-signed-out">
         <EmptyState
           symbol="sparkles"
           title="Coach"
           message="The coach answers from your own training data and runs on your ChatGPT plan. Everything else in svett works without it."
           action={{ label: "Continue with ChatGPT", onPress: openSettings }}
         />
-      </CoachNotice>
+      </NoticeScreen>
     );
   }
 
   if (!status.planUsage) {
     return (
-      <CoachNotice testID="coach-plan-usage-off" className="gap-4 px-gutter">
+      <NoticeScreen testID="coach-plan-usage-off" className="gap-4 px-gutter">
         <FailureNotice failure={coachFailure("planUsageOff")} openSettings={openSettings} />
-      </CoachNotice>
+      </NoticeScreen>
     );
   }
 

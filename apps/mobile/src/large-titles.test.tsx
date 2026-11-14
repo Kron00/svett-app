@@ -87,6 +87,7 @@ vi.mock("./chatgpt/native", () => ({ chatGPTStatus: () => new Promise(() => {}) 
 vi.mock("./coach/native", () => ({ swiftTransport: {} }));
 vi.mock("expo-status-bar", () => ({ StatusBar: "StatusBar" }));
 vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
+vi.mock("expo-notifications", () => ({}));
 vi.mock("uniwind", () => ({ useCSSVariable: () => "#000000" }));
 vi.mock("./data/store", () => ({ useQuery: () => ({ status: "loading" }) }));
 vi.mock("./data/database", () => ({
@@ -171,7 +172,10 @@ describe("screens under a native large title", () => {
         "Exercises",
         "Gallery",
         "PickExercise",
+        "Plates",
         "ReplaceWorkoutExercise",
+        "WarmUp",
+        "WorkoutSettings",
         "HomeRoot",
         "TrainRoot",
         "ProgressRoot",

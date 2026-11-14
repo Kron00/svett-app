@@ -6,17 +6,22 @@ import {
   type ExerciseId,
   fieldPatch,
   type LoggedExercise,
+  leaveSuperset,
   moveItem,
   nextSet,
+  type PlannedSet,
   replaceWorkoutExercise,
   type SetColumn,
   type SetFields,
   type SetType,
   startEmptyWorkout,
+  supersetWithNext,
   toggleDone,
+  type DurationSeconds,
 } from "@svett/core";
 import { Effect } from "effect";
 
+import { skipRestTimer } from "./rest";
 import { changeSet, changeWorkout, currentWorkout, saveWorkout } from "./store";
 
 const withActivities = <A, E>(
@@ -110,6 +115,53 @@ export const typeValue = (set: ActivitySet, column: SetColumn, value: number | n
   );
 };
 
+/** Changes how long the rest timer runs after each set of an exercise. 0 turns it off. */
+export const setRestTime = (row: ActivityExerciseId, restS: DurationSeconds) =>
+  changeWorkout(
+    (log) => ({
+      ...log,
+      exercises: log.exercises.map((exercise) =>
+        exercise.row.id === row ? { ...exercise, row: { ...exercise.row, restS } } : exercise,
+      ),
+    }),
+    withActivities((activities) => activities.updateExercise(row, { restS })),
+  );
+
+/** Sets or clears a set's RPE. */
+export const setSetRpe = (set: ActivitySet, rpe: number | null) =>
+  changeSet(
+    set.id,
+    { rpe },
+    withActivities((activities) => activities.updateWorkoutSet(set.id, { rpe })),
+  );
+
+const groupExercises = async (change: typeof supersetWithNext, index: number) => {
+  const log = currentWorkout();
+  if (log === null) return;
+  const rows = log.exercises.map((exercise) => exercise.row);
+  const changes = change(rows, index);
+  if (changes.length === 0) return;
+  await saveWorkout(
+    withActivities((activities) =>
+      activities.groupExercises(
+        changes.map(({ index: at, supersetGroup }) => ({ id: rows[at]!.id, supersetGroup })),
+      ),
+    ),
+  );
+};
+
+/** Joins the exercise at `index`, and any superset it is in, with the next exercise. */
+export const supersetWithNextAt = (index: number): Promise<void> =>
+  groupExercises(supersetWithNext, index);
+
+/** Takes the exercise at `index` out of the superset it is in. */
+export const leaveSupersetAt = (index: number): Promise<void> =>
+  groupExercises(leaveSuperset, index);
+
+/** Puts warm-up sets before an exercise's first set, in place of its warm-ups still to do. */
+export const addWarmUpSets = (row: ActivityExerciseId, sets: ReadonlyArray<PlannedSet>) =>
+  saveWorkout(withActivities((activities) => activities.replaceWarmUpSets(row, sets)));
+
 export const renameWorkout = (title: string) => {
   const id = inProgress();
   if (id === null) return;
@@ -143,7 +195,7 @@ export type FinishResult =
   | { readonly finished: true }
   | { readonly finished: false; readonly problem: string };
 
-/** Finishes the workout in progress with its done sets, or says why it cannot. */
+/** Finishes the workout in progress with its done sets and ends its rest, or says why it cannot. */
 export const finish = async (): Promise<FinishResult> => {
   const id = inProgress();
   if (id === null) return { finished: false, problem: "No workout is in progress." };
@@ -156,18 +208,22 @@ export const finish = async (): Promise<FinishResult> => {
     ),
     true,
   );
+  if (result?.finished === true) await skipRestTimer();
   return result ?? { finished: false, problem: "The workout was not saved." };
 };
 
 /**
- * Discards the workout in progress. Nothing from it reaches history. False when the delete
- * fails, so the workout stays in progress and the screen shows why.
+ * Discards the workout in progress and ends its rest. Nothing from it reaches history. False
+ * when the delete fails, so the workout and its rest stay and the screen shows why.
  */
 export const discard = async (): Promise<boolean> => {
   const id = inProgress();
-  if (id === null) return true;
-  const removed = await saveWorkout(
-    withActivities((activities) => activities.remove(id)).pipe(Effect.as(true)),
-  );
-  return removed ?? false;
+  const removed =
+    id === null
+      ? true
+      : ((await saveWorkout(
+          withActivities((activities) => activities.remove(id)).pipe(Effect.as(true)),
+        )) ?? false);
+  if (removed) await skipRestTimer();
+  return removed;
 };

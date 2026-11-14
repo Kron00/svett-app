@@ -31,6 +31,7 @@ import {
 } from "../transfer.ts";
 import { type ActivityDraft, ActivityRepository } from "./activities.ts";
 import { ExerciseAliasRepository, ExerciseRepository } from "./exercises.ts";
+import { GearRepository } from "./gear.ts";
 import { MADE_HERE, type Origin } from "./origin.ts";
 import {
   CoachMessageRepository,
@@ -262,6 +263,10 @@ const fillEveryTable = async (database: Database) => {
         measuredAt: EpochMillis.make(T0 - 3_600_000),
         value: 81.4,
         origin: MADE_HERE,
+      });
+      yield* (yield* GearRepository).save("kg", {
+        plates: [{ weight: 20, pairs: 3 }],
+        bars: [{ name: "Safety squat bar", weight: 30 }],
       });
       const messageId = yield* coach.append({
         conversationId: ConversationId.make("01900000-0000-7000-8000-000000000001"),

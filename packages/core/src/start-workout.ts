@@ -15,6 +15,7 @@ import {
 } from "./repositories/activities.ts";
 import { ExerciseRepository } from "./repositories/exercises.ts";
 import { RoutineRepository } from "./repositories/routines.ts";
+import { DEFAULT_REST_S } from "./rest-timer.ts";
 import { workoutFromRoutine } from "./routine-plan.ts";
 import type {
   Activity,
@@ -44,7 +45,7 @@ const exercisesById = (ids: Iterable<ExerciseId>) =>
 /**
  * Starts a workout from a routine: its exercises in order, each set still to do and filled
  * in from the routine's target. Each exercise records what its targets hold, else what it
- * recorded last time. Fails with WorkoutInProgressError while another workout is in progress.
+ * recorded last time, and rests as the routine says, else as last time, else 1:30. Fails with WorkoutInProgressError while another workout is in progress.
  */
 export const startWorkoutFromRoutine = (id: RoutineId) =>
   Effect.gen(function* () {
@@ -65,6 +66,7 @@ export const startWorkoutFromRoutine = (id: RoutineId) =>
             previous: last.get(exercise.exerciseId)?.setFields ?? null,
             exercise: known.get(exercise.exerciseId) ?? null,
           }),
+          restS: exercise.restS ?? last.get(exercise.exerciseId)?.restS ?? DEFAULT_REST_S,
         }),
       ),
     });
@@ -95,6 +97,7 @@ export const addExercisesToWorkout = (activityId: ActivityId, ids: ReadonlyArray
       ids.map((exerciseId) => ({
         exerciseId,
         supersetGroup: null,
+        restS: last.get(exerciseId)?.restS ?? DEFAULT_REST_S,
         notes: "",
         setFields: chooseSetFields({
           planned: [],
