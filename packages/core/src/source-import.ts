@@ -2,7 +2,7 @@ import { Result } from "effect";
 
 import { activityTitle, DEFAULT_HIDE_M, elevationGainM, splitsOf } from "./cardio.ts";
 import { DurationSeconds } from "./duration.ts";
-import { pathLengthM } from "./geo.ts";
+import { distanceM, pathLengthM } from "./geo.ts";
 import { GpxError, type GpxTrack } from "./gpx.ts";
 import type { HealthWorkout } from "./health-export.ts";
 import { contentFingerprint, importedId } from "./ids.ts";
@@ -128,6 +128,15 @@ const stretchesOf = (route: ReadonlyArray<TimedRoutePoint>): Array<Array<TimedRo
     else stretches.push([point]);
   }
   return stretches;
+};
+
+/** How far along its stretch each point is, point to point, as `pathLengthM` measures it. */
+const alongOf = (stretch: ReadonlyArray<TimedRoutePoint>): Array<number> => {
+  let travelled = 0;
+  return stretch.map((point, index) => {
+    if (index > 0) travelled += distanceM(stretch[index - 1]!, point);
+    return travelled;
+  });
 };
 
 /** The length of each segment added up, or null when no segment has two points. */
@@ -535,8 +544,10 @@ export const sourceActivityRows = (
                 altitudeAccuracyM: null,
                 accuracyM: null,
               })),
+              alongM: alongOf(stretch),
               distanceM: pathLengthM(stretch),
-              pending: null,
+              pending: [],
+              stay: null,
             })),
           },
           last.recordedAt,
