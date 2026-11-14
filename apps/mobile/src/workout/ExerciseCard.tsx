@@ -13,7 +13,7 @@ import {
   setBadges,
   setValuesText,
 } from "@svett/core";
-import { useEffect, useRef } from "react";
+import { memo, useEffect, useRef } from "react";
 import { ActionSheetIOS, Alert, type HostInstance, View } from "react-native";
 
 import { useIsAccessibilityTextSize } from "../design/hooks";
@@ -115,8 +115,11 @@ function LoggedSetRow({
   );
 }
 
-/** One exercise of the workout: its name, tools, notes, and sets. */
-export function ExerciseCard({
+/**
+ * One exercise of the workout: its name, tools, notes, and sets. It is memoised, so a set
+ * marked done redraws only its own exercise.
+ */
+export const ExerciseCard = memo(function ExerciseCard({
   exercise,
   index,
   count,
@@ -133,8 +136,8 @@ export function ExerciseCard({
   readonly focus: Focus | null;
   readonly onFocus: (set: ActivitySet, column: SetColumn) => void;
   readonly onPressSetType: (set: ActivitySet) => void;
-  readonly onReplace: () => void;
-  readonly onLogBy: () => void;
+  readonly onReplace: (exercise: LoggedExercise) => void;
+  readonly onLogBy: (exercise: LoggedExercise) => void;
   readonly measure: (row: HostInstance) => void;
 }) {
   const stacked = useIsAccessibilityTextSize();
@@ -162,8 +165,8 @@ export function ExerciseCard({
         cancelButtonIndex: 3,
       },
       (chosen) => {
-        if (chosen === 0) onReplace();
-        if (chosen === 1) onLogBy();
+        if (chosen === 0) onReplace(exercise);
+        if (chosen === 1) onLogBy(exercise);
         if (chosen === 2) remove();
       },
     );
@@ -247,4 +250,4 @@ export function ExerciseCard({
       </View>
     </View>
   );
-}
+});

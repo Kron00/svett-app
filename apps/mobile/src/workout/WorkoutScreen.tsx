@@ -156,13 +156,21 @@ function Logger({ log, problem }: { readonly log: WorkoutLog; readonly problem: 
     typeValue(focused.exercise, focused.set, focus.column, entryValue(focus.column, text));
   };
 
-  const onFocus = (set: ActivitySet, column: SetColumn) =>
-    setFocus({
-      setId: set.id,
-      column,
-      text: entryText(column, columnValue(set, column)),
-      fresh: true,
-    });
+  const onFocus = useCallback(
+    (set: ActivitySet, column: SetColumn) =>
+      setFocus({
+        setId: set.id,
+        column,
+        text: entryText(column, columnValue(set, column)),
+        fresh: true,
+      }),
+    [],
+  );
+  const replace = useCallback(
+    (exercise: LoggedExercise) =>
+      navigation.navigate("ReplaceWorkoutExercise", { exercise: exercise.row.id }),
+    [navigation],
+  );
 
   const typeSheetSet = typeSheet === null ? null : findSet(log, typeSheet.id);
   const typeSheetTitle =
@@ -195,13 +203,14 @@ function Logger({ log, problem }: { readonly log: WorkoutLog; readonly problem: 
               exercise={exercise}
               index={index}
               count={log.exercises.length}
-              focus={focus}
+              // Only the exercise being typed into gets the focus, so the others stay memoised.
+              focus={
+                focus !== null && exercise.sets.some((set) => set.id === focus.setId) ? focus : null
+              }
               onFocus={onFocus}
               onPressSetType={setTypeSheet}
-              onReplace={() =>
-                navigation.navigate("ReplaceWorkoutExercise", { exercise: exercise.row.id })
-              }
-              onLogBy={() => setFieldsSheet(exercise)}
+              onReplace={replace}
+              onLogBy={setFieldsSheet}
               measure={measure}
             />
           ))}
