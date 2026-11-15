@@ -318,6 +318,8 @@ check "Release without SVETT_DEVICE_CMD launches with simctl" simctl_got "simctl
 check "the iOS 27 svett simulator gets the install, not the stock or iOS 26 one" \
   simctl_got "simctl install FAKE-UDID $release_app"
 check "no simctl call targets the stock or iOS 26 simulator" only_svett_ios27
+check "Release marks the first run seen, so it never covers the tabs a proof presses" \
+  simctl_got "simctl spawn FAKE-UDID defaults write com.kron00.svett svettFirstRunSeen -int 1"
 
 case_name="Release with SVETT_DEVICE_CMD"
 routed SVETT_DEVICE_CMD="$bound_cmd" --release b
@@ -330,6 +332,8 @@ case_name="Debug without SVETT_DEVICE_CMD"
 routed "$metro" b
 check "Debug without SVETT_DEVICE_CMD opens the dev client with simctl openurl" \
   simctl_got "simctl openurl FAKE-UDID $dev_client_url"
+check "Debug marks the first run seen too" \
+  simctl_got "simctl spawn FAKE-UDID defaults write com.kron00.svett svettFirstRunSeen -int 1"
 
 case_name="Debug with SVETT_DEVICE_CMD"
 routed SVETT_DEVICE_CMD="$bound_cmd" "$metro" b
@@ -5143,5 +5147,424 @@ run_safety FAKE_NO_CLERK=1 "$root/safety-no-clerk"
 check "safety.sh fails on a build without a Clerk key" test "$safety_status" -ne 0
 check "safety.sh says to build with the publishable key" \
   grep -qF "Build it with EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY set" "$output"
+
+# Stands in for agent-device in speed.sh. A screen shows its top element on a launch or
+# link. Import and the two times start below the screen, so only a scroll brings them up,
+# and Import then sits on the bottom edge until a drag lifts it. After a scroll or a drag
+# the screen glides: the next frame read differs, and a press before two reads agree, or
+# at the bottom edge, does nothing.
+cat >"$fake/speed-device" <<'EOF'
+#!/usr/bin/env bash
+s=$FAKE_STATE
+mkdir -p "$s"
+while [[ "$1" == --* ]]; do shift 2; done
+echo "$*" >>"$FAKE_ROOT/speed-calls"
+get() { cat "$s/$1" 2>/dev/null || echo "${2:-}"; }
+put() { echo "$2" >"$s/$1"; }
+screen=$(get screen none)
+top=$(get top 0)
+# y <selector>: the centre of the element on this screen, at this scroll.
+y() {
+  case "$screen:$1" in
+    *:'label="You, tab, 5 of 5"') [[ "$screen" != none ]] && echo 920 ;;
+    import:'id="hevy-summary"') ((top == 0)) && echo 160 ;;
+    import:'id="import-apply"') ((top == 1)) && { [[ -f "$s/lifted" ]] && echo 600 || echo 870; } ;;
+    done:'id="import-done"') echo 150 ;;
+    done:'id="import-timing"') ((top == 1)) && echo 500 ;;
+    coach:'id="coach-answer"') echo 200 ;;
+    coach:'id="coach-first-words-timing"') ((top == 1)) && echo 700 ;;
+    *) return 1 ;;
+  esac
+}
+label() {
+  case "$1" in
+    'id="import-timing"') echo "${FAKE_IMPORT_LABEL:-Read and previewed in 1200 ms, imported in 3400 ms}" ;;
+    'id="coach-first-words-timing"') echo "${FAKE_COACH_LABEL:-First words shown 12 ms after they arrived}" ;;
+    *) echo "" ;;
+  esac
+}
+glide() { touch "$s/glide"; }
+case "$1" in
+  settings) echo "$3" >>"$s/text-sizes" ;;
+  screenshot) touch "${@: -1}" ;;
+  open)
+    case "$3" in
+      --relaunch) put screen tabs; put top 0; rm -f "$s/lifted" "$s/glide"; echo "$*" >>"$s/launches"
+        { tail -1 "$s/text-sizes" 2>/dev/null || echo default; } >>"$s/size-at-launch" ;;
+      svett://import\?file=svett-speed-hevy.csv\&kind=hevy) put screen import; put top 0 ;;
+      svett://coach\?ask=*) [[ -n "${FAKE_NO_ANSWER:-}" ]] || { put screen coach; put top 0; } ;;
+      *) exit 1 ;;
+    esac ;;
+  wait) [[ "$2" =~ ^[0-9]+$ ]] || y "$2" >/dev/null ;;
+  is) y "$3" >/dev/null ;;
+  scroll)
+    [[ "$3" == --until ]] || exit 1
+    if [[ "$2" == down ]]; then top=1; else top=0; fi
+    put top "$top"
+    glide
+    y "$4" >/dev/null ;;
+  gesture) [[ "$2" == pan ]] && touch "$s/lifted" && glide ;;
+  get)
+    centre=$(y "$3") || exit 1
+    if [[ -f "$s/glide" ]]; then rm -f "$s/glide"; centre=$((centre + 40)); fi
+    node -e 'console.log(JSON.stringify({ label: process.argv[1], rect: { x: 20, y: Number(process.argv[2]) - 22, width: 400, height: 44 } }))' \
+      "$(label "$3")" "$centre" ;;
+  press)
+    centre=$(y 'id="import-apply"') || exit 0
+    [[ "$screen" == import && "$3" == "$centre" && ! -f "$s/glide" && "$centre" -le 840 ]] &&
+      { put screen done; put top 0; echo pressed >>"$s/presses"; }
+    # A press iOS ignores still succeeds, as it does on the simulator.
+    exit 0 ;;
+  *) exit 1 ;;
+esac
+EOF
+chmod +x "$fake/speed-device"
+
+# Stand-ins for the proof scripts speed.sh runs, which write what the real ones write.
+speed_scripts="$root/speed-scripts"
+mkdir -p "$speed_scripts"
+cat >"$speed_scripts/startup.sh" <<'EOF'
+#!/usr/bin/env bash
+echo "startup.sh $*" >>"$FAKE_ROOT/speed-subcalls"
+# The real scripts leave the simulator at the default text size.
+eval "$SVETT_DEVICE_CMD settings text-size large"
+out=${*: -1}
+mkdir -p "$out"
+printf '%s\n' "5 cold launches." "Launch 1: cold start 1500 ms." "Launch 2: cold start 1520 ms." \
+  "Launch 3: cold start 1530 ms." "Launch 4: cold start 1550 ms." "Launch 5: cold start 1600 ms." \
+  "Median: cold start ${FAKE_COLD_START:-1530} ms, which the plan's 2 second target judges." >"$out/startup.txt"
+EOF
+cat >"$speed_scripts/logger.sh" <<'EOF'
+#!/usr/bin/env bash
+echo "logger.sh $*" >>"$FAKE_ROOT/speed-subcalls"
+# The real scripts leave the simulator at the default text size.
+eval "$SVETT_DEVICE_CMD settings text-size large"
+[[ -z "${FAKE_LOGGER_FAILS:-}" ]] || { echo "Set 1 of exercise 1 does not read Set 1" >&2; exit 1; }
+out=${*: -1}
+mkdir -p "$out"
+echo "Marking a set done until the row showed it: 38 ms (Release, on the fixture database, timed in the app)" >"$out/set-done.txt"
+EOF
+cat >"$speed_scripts/history.sh" <<'EOF'
+#!/usr/bin/env bash
+echo "history.sh $*" >>"$FAKE_ROOT/speed-subcalls"
+# The real scripts leave the simulator at the default text size.
+eval "$SVETT_DEVICE_CMD settings text-size large"
+echo "The history list showed rows on all 214 screens down to the oldest workout"
+EOF
+chmod +x "$speed_scripts"/*.sh
+
+# run_speed [VAR=value...] [speed.sh args...] leaves the exit status in speed_status.
+run_speed() {
+  local -a vars=()
+  while [[ "${1:-}" == *=* ]]; do
+    vars+=("$1")
+    shift
+  done
+  rm -rf "$root/speed-state" "$root/speed-calls" "$root/speed-subcalls"
+  speed_status=0
+  env PATH="$fake:$PATH" FAKE_ROOT="$root" FAKE_STATE="$root/speed-state" SVETT_SPEED_SCRIPTS="$speed_scripts" \
+    SVETT_DEVICE_CMD="speed-device --session 't3-test session' --device FAKE-UDID" \
+    "${vars[@]}" "$repo/scripts/sim/speed.sh" "$@" >"$output" 2>&1 || speed_status=$?
+}
+
+speed_table() {
+  local build=$1
+  cat <<EOF
+| What | Target | Measured | Build | Device |
+| --- | --- | --- | --- | --- |
+| Cold start to a usable Train tab | Under 2 seconds | 1530 ms, the median of 5 launches, meets the target | $build | svett iPhone 16 Pro Max simulator, iOS 27.2 |
+| Marking a set done, until the row shows it | Under 100 milliseconds | 38 ms, meets the target | $build | svett iPhone 16 Pro Max simulator, iOS 27.2 |
+| History list of 300 workouts | No blank rows while scrolling | No blank rows on any of 214 screens | $build | svett iPhone 16 Pro Max simulator, iOS 27.2 |
+| Importing 300 workouts from a Hevy file | Under 10 seconds | 4600 ms: 1200 ms to read and preview, 3400 ms to import, meets the target | $build | svett iPhone 16 Pro Max simulator, iOS 27.2 |
+| First words of a coach answer | Shown as soon as OpenAI sends them, within 100 milliseconds | 12 ms from arriving to the frame that showed them, meets the target | $build | svett iPhone 16 Pro Max simulator, iOS 27.2 |
+EOF
+}
+
+case_name="speed.sh Release with SVETT_DEVICE_CMD"
+run_speed --release "$root/speed"
+[[ "$speed_status" == 0 ]] || fail "speed.sh --release failed"
+check "speed.sh writes the five targets as one table with the Release build and the simulator" \
+  diff <(speed_table Release) "$root/speed/speed.md"
+check "speed.sh runs startup.sh, logger.sh and history.sh on the Release build, each into its own folder" \
+  diff <(printf '%s\n' "startup.sh --release $root/speed/startup" "logger.sh --release $root/speed/logger" \
+    "history.sh --release $root/speed/history") "$root/speed-subcalls"
+check "speed.sh writes a 300-workout Hevy export for the import" \
+  test "$(grep -c '^"Push","' "$root/speed/hevy/svett-speed-hevy.csv")" -eq 2000
+check "speed.sh copies the export into the app's documents" \
+  cmp "$root/speed/hevy/svett-speed-hevy.csv" "$root/data container/Documents/svett-speed-hevy.csv"
+check "speed.sh imports on a new database with timing on, and asks the coach on the fixture with its stand-in" \
+  diff <(printf '%s\n' \
+    "open com.kron00.svett --relaunch --launch-args=-svettFixture --launch-args=$root/data container/Documents/svett-speed-hevy.db --launch-args=-svettTiming --launch-args=1" \
+    "open com.kron00.svett --relaunch --launch-args=-svettFixture --launch-args=$root/data container/Documents/svett-speed-coach.db --launch-args=-svettTiming --launch-args=1 --launch-args=-svettChatGPTStub --launch-args=signedIn --launch-args=-svettCoachStub --launch-args=$root/data container/Documents/coach-best-squat.json") \
+    "$root/speed-state/launches"
+check "speed.sh launches both at the largest text size, after the scripts before it restored the default" \
+  diff <(printf '%s\n' accessibility-extra-extra-extra-large accessibility-extra-extra-extra-large) \
+    "$root/speed-state/size-at-launch"
+check "speed.sh leaves the simulator at the default text size" \
+  test "$(tail -1 "$root/speed-state/text-sizes")" == large
+check "speed.sh presses Import once, after it lifted it off the bottom edge and the screen stopped" \
+  test "$(cat "$root/speed-state/presses")" == pressed
+check "speed.sh scrolls to the times below each result" \
+  grep -qxF 'scroll down --until id="coach-first-words-timing"' "$root/speed-calls"
+check "speed.sh saves what svett said about each time" \
+  grep -qxF "First words shown 12 ms after they arrived" "$root/speed/coach/first-words.txt"
+check "speed.sh screenshots the import and the answer" \
+  test -f "$root/speed/hevy/02-imported.png" -a -f "$root/speed/coach/01-answer.png"
+check "speed.sh prints the table" grep -qF "| Cold start to a usable Train tab | Under 2 seconds | 1530 ms" "$output"
+
+case_name="speed.sh Debug"
+run_speed "$root/speed-debug"
+[[ "$speed_status" == 0 ]] || fail "speed.sh failed on Debug"
+check "speed.sh runs the scripts on the Debug build" grep -qxF "startup.sh $root/speed-debug/startup" "$root/speed-subcalls"
+check "speed.sh says a Debug build is not judged" \
+  grep -qF "| Debug, loaded from Metro, not judged | svett iPhone 16 Pro Max simulator, iOS 27.2 |" "$root/speed-debug/speed.md"
+
+case_name="speed.sh when a step fails or misses its target"
+run_speed FAKE_LOGGER_FAILS=1 FAKE_COLD_START=2741 FAKE_NO_ANSWER=1 --release "$root/speed-failed"
+check "speed.sh fails when a step fails" test "$speed_status" -ne 0
+check "speed.sh still writes every other row" \
+  grep -qF "| Importing 300 workouts from a Hevy file | Under 10 seconds | 4600 ms" "$root/speed-failed/speed.md"
+check "speed.sh says which step was not measured and why" \
+  grep -qF "| Marking a set done, until the row shows it | Under 100 milliseconds | Not measured: logger.sh failed. See logger/logger.log |" \
+    "$root/speed-failed/speed.md"
+check "speed.sh keeps the failing script's own words in its log" \
+  grep -qxF "Set 1 of exercise 1 does not read Set 1" "$root/speed-failed/logger/logger.log"
+check "speed.sh says when the coach did not answer" \
+  grep -qF "| First words of a coach answer | Shown as soon as OpenAI sends them, within 100 milliseconds | Not measured: The coach did not answer. See coach/coach.log |" \
+    "$root/speed-failed/speed.md"
+check "speed.sh marks a time over its target" \
+  grep -qF "| 2741 ms, the median of 5 launches, over the target |" "$root/speed-failed/speed.md"
+
+case_name="the speed fake"
+speed_device() {
+  env FAKE_ROOT="$root" FAKE_STATE="$root/speed-state" "$fake/speed-device" \
+    --session 't3-test session' --device FAKE-UDID "$@" >/dev/null 2>&1
+}
+rm -rf "$root/speed-state"
+speed_device open com.kron00.svett --relaunch
+speed_device open com.kron00.svett 'svett://import?file=svett-speed-hevy.csv&kind=hevy'
+check "the fake keeps Import below the screen until a scroll" fails speed_device is visible 'id="import-apply"'
+speed_device scroll down --until 'id="import-apply"'
+speed_device press 20 870
+check "the fake ignores a press at the bottom edge" test ! -e "$root/speed-state/presses"
+speed_device gesture pan 20 600 0 -300 400
+speed_device press 20 600
+check "the fake ignores a press while the screen still glides" test ! -e "$root/speed-state/presses"
+
+# Stands in for agent-device in walkthrough.sh. A relaunch with -svettFirstRun show opens
+# the first run, whose Next starts below the screen at the largest text size and on its
+# bottom edge after a scroll. A press there, or while the screen glides after a scroll or
+# a drag, does nothing. Each link opens its screen, whose top element shows, and a
+# screenshot saves the name of the screen it shows. FAKE_MISSING names a screen that
+# never shows.
+cat >"$fake/walk-device" <<'EOF'
+#!/usr/bin/env bash
+s=$FAKE_STATE
+mkdir -p "$s"
+while [[ "$1" == --* ]]; do shift 2; done
+echo "$*" >>"$FAKE_ROOT/walk-calls"
+get() { cat "$s/$1" 2>/dev/null || echo "${2:-}"; }
+put() { echo "$2" >"$s/$1"; }
+screen=$(get screen none)
+top=$(get top 0)
+size=$(get size large)
+pages=(feed data account coach)
+page=$(get page 0)
+next_y() {
+  if [[ "$size" == large ]]; then echo 700
+  elif ((top == 0)); then return 1
+  elif [[ -f "$s/lifted" ]]; then echo 600
+  else echo 870
+  fi
+}
+# root <screen>: the top element each screen shows.
+root() {
+  case "$1" in
+    first-run) echo 'id="first-run"' ;;
+    home) echo 'id="social-signed-out"' ;;
+    you) echo 'id="tab-you"' ;;
+    exercises) echo 'id="exercise-library"' ;;
+    record) echo 'id="record-cardio"' ;;
+    routine) echo 'id="routine-detail"' ;;
+    workout) echo 'id="workout-detail"' ;;
+    exercise-chart) echo 'id="exercise-progress"' ;;
+    muscles) echo 'id="muscle-sets"' ;;
+    settings) echo 'id="workout-settings"' ;;
+    *) echo "id=\"$1\"" ;;
+  esac
+}
+# y <selector>: where the element's centre is on screen, or nothing when it is off it.
+y() {
+  [[ "$screen" == "${FAKE_MISSING:-}" ]] && return 1
+  case "$1" in
+    'label="Train, tab, 2 of 5"' | 'label="You, tab, 5 of 5"') [[ "$screen" != first-run && "$screen" != none ]] && echo 920 ;;
+    'id="first-run-next"') [[ "$screen" == first-run ]] && next_y ;;
+    "id=\"first-run-${pages[$page]:-none}\"") [[ "$screen" == first-run ]] && ((top == 0)) && echo 300 ;;
+    *) [[ "$(root "$screen")" == "$1" ]] && ((top == 0)) && echo 100 ;;
+  esac
+}
+# shows <selector>: the element, or one of a || fallback's, is on screen.
+shows() {
+  local one
+  while IFS= read -r one; do y "$one" >/dev/null && return 0; done < <(sed 's/ || /\n/g' <<<"$1")
+  return 1
+}
+go() { put screen "$1"; put top 0; rm -f "$s/lifted" "$s/glide"; }
+case "$1" in
+  settings) [[ "$2" == text-size ]] && put size "$3" && echo "$3" >>"$s/sizes" ;;
+  screenshot) echo "$screen" >"${@: -1}" ;;
+  record)
+    case "$2" in
+      start) [[ "$screen" != none && ! -f "$s/recording" ]] || exit 1; put recording "$3"; echo "start $3 $size" >>"$s/records" ;;
+      stop) [[ -f "$s/recording" ]] || exit 1; touch "$(get recording)"; rm -f "$s/recording"; echo stop >>"$s/records" ;;
+      *) exit 1 ;;
+    esac ;;
+  open)
+    case "$3" in
+      --relaunch)
+        echo "${*:2}" >>"$s/launches"
+        put page 0
+        if [[ "$*" == *"--launch-args=-svettFirstRun --launch-args=show"* ]]; then go first-run; else go home; fi ;;
+      svett://train) go train ;;
+      svett://routine/*) go routine ;;
+      svett://exercises) go exercises ;;
+      svett://record) go record ;;
+      svett://feed) go home ;;
+      svett://progress) go progress ;;
+      svett://workout/*) go workout ;;
+      svett://progress/exercise/*) go exercise-chart ;;
+      svett://calendar\?month=2026-10) go calendar ;;
+      svett://progress/muscles\?week=*) go muscles ;;
+      svett://progress/measurements\?*) go measurements ;;
+      svett://coach) go coach ;;
+      svett://chatgpt) go chatgpt ;;
+      svett://data) go data ;;
+      svett://settings/workout) go settings ;;
+      svett://account) go account ;;
+      *) exit 1 ;;
+    esac ;;
+  wait) [[ "$2" =~ ^[0-9]+$ ]] || shows "$2" ;;
+  is) shows "$3" ;;
+  scroll)
+    [[ "$3" == --until ]] || exit 1
+    if [[ "$2" == down ]]; then top=1; else top=0; fi
+    put top "$top"
+    touch "$s/glide"
+    shows "$4" ;;
+  gesture) [[ "$2" == pan ]] && touch "$s/lifted" "$s/glide" ;;
+  get)
+    centre=$(y "$3") || exit 1
+    if [[ -f "$s/glide" ]]; then rm -f "$s/glide"; centre=$((centre + 40)); fi
+    echo "{\"rect\":{\"x\":20,\"y\":$((centre - 22)),\"width\":400,\"height\":44}}" ;;
+  press)
+    if [[ "$2" == 'label="You, tab, 5 of 5"' ]]; then
+      [[ "$screen" != first-run ]] && go you
+    elif [[ "$screen" == first-run ]] && centre=$(next_y) && [[ "$3" == "$centre" && ! -f "$s/glide" ]] && ((centre <= 840)); then
+      if ((page == 3)); then go train; else put page $((page + 1)); put top 0; rm -f "$s/lifted"; fi
+    fi
+    exit 0 ;;
+  *) exit 1 ;;
+esac
+EOF
+chmod +x "$fake/walk-device"
+
+# run_walk [VAR=value...] [walkthrough.sh args...] leaves the exit status in walk_status.
+run_walk() {
+  local -a vars=()
+  while [[ "${1:-}" == *=* ]]; do
+    vars+=("$1")
+    shift
+  done
+  rm -rf "$root/walk-state" "$root/walk-calls" "$root/simctl-calls"
+  walk_status=0
+  env PATH="$fake:$PATH" FAKE_ROOT="$root" FAKE_STATE="$root/walk-state" \
+    SVETT_DEVICE_CMD="walk-device --session 't3-test session' --device FAKE-UDID" \
+    "${vars[@]}" "$repo/scripts/sim/walkthrough.sh" "$@" >"$output" 2>&1 || walk_status=$?
+}
+
+walk_stops=(train routine exercises record home progress workout exercise-chart calendar muscles
+  measurements coach chatgpt you data settings account)
+
+# walk_shots <pass>: each screenshot of a pass as "<file> <screen it shows>".
+walk_shots() {
+  local n=0 stop
+  for stop in first-run-feed first-run-data first-run-account first-run-coach "${walk_stops[@]}"; do
+    n=$((n + 1))
+    printf '%s-%02d-%s.png %s\n' "$1" "$n" "$stop" "$([[ "$stop" == first-run-* ]] && echo first-run || echo "$stop")"
+  done
+}
+
+shown_shots() {
+  local file
+  for file in "$root/walk/$1"-*.png; do
+    echo "${file##*/} $(cat "$file")"
+  done
+}
+
+walk_db="$root/data container/Documents/svett-walkthrough.db"
+walk_launch="com.kron00.svett --relaunch --launch-args=-svettFixture --launch-args=$walk_db --launch-args=-svettChatGPTStub --launch-args=signedIn --launch-args=-svettFirstRun --launch-args=show"
+
+# The fixture as far as walkthrough.sh reads it: the newest workout and the first routine.
+node -e '
+  const database = new (require("node:sqlite").DatabaseSync)(process.argv[1]);
+  database.exec(`CREATE TABLE activity (id TEXT, started_at INTEGER, deleted_at INTEGER);
+    CREATE TABLE routine (id TEXT, position INTEGER, deleted_at INTEGER);`);
+  const activity = database.prepare("INSERT INTO activity VALUES (?, ?, ?)");
+  for (const row of [["old", 1, null], ["newest", 3, null], ["deleted", 4, 9]]) activity.run(...row);
+  const routine = database.prepare("INSERT INTO routine VALUES (?, ?, ?)");
+  for (const row of [["second", 1, null], ["first", 0, null]]) routine.run(...row);
+' "$root/walk-fixture.db"
+
+case_name="walkthrough.sh Release with SVETT_DEVICE_CMD"
+run_walk FAKE_FIXTURE_DB="$root/walk-fixture.db" --release "$root/walk"
+[[ "$walk_status" == 0 ]] || fail "walkthrough.sh --release failed"
+check "walkthrough.sh relaunches on the fixture twice, with the ChatGPT stand-in and the first run" \
+  diff <(printf '%s\n' "$walk_launch" "$walk_launch") "$root/walk-state/launches"
+check "walkthrough.sh copies the fixture for svett to open" cmp "$root/walk-fixture.db" "$walk_db"
+check "walkthrough.sh records each pass after svett opened, at its text size, and stops each recording" \
+  diff <(printf '%s\n' "start $root/walk/default.mp4 large" stop \
+    "start $root/walk/largest.mp4 accessibility-extra-extra-extra-large" stop) "$root/walk-state/records"
+check "walkthrough.sh saves both videos" test -f "$root/walk/default.mp4" -a -f "$root/walk/largest.mp4"
+check "walkthrough.sh shoots the first run and every stop at the default text size, each on its own screen" \
+  diff <(walk_shots default) <(shown_shots default)
+check "walkthrough.sh shoots the first run and every stop at the largest text size, each on its own screen" \
+  diff <(walk_shots largest) <(shown_shots largest)
+check "walkthrough.sh opens the newest workout and the first routine of the fixture" \
+  grep -qxF "open com.kron00.svett svett://workout/newest" "$root/walk-calls"
+check "walkthrough.sh opens the first routine" grep -qxF "open com.kron00.svett svett://routine/first" "$root/walk-calls"
+check "walkthrough.sh reaches the first run's Next below the screen at the largest text size" \
+  grep -qxF 'scroll down --until id="first-run-next"' "$root/walk-calls"
+check "walkthrough.sh lifts Next off the bottom edge before it presses it" \
+  grep -qxF "gesture pan 20 600 0 -300 400" "$root/walk-calls"
+check "walkthrough.sh opens the You tab by its tab button" \
+  grep -qxF 'press label="You, tab, 5 of 5"' "$root/walk-calls"
+check "walkthrough.sh leaves the simulator at the default text size" \
+  test "$(tail -1 "$root/walk-state/sizes")" == large
+check "walkthrough.sh with SVETT_DEVICE_CMD calls neither simctl launch nor openurl" no_simctl_launch_or_openurl
+
+case_name="walkthrough.sh when a screen does not show"
+run_walk FAKE_FIXTURE_DB="$root/walk-fixture.db" FAKE_MISSING=calendar --release "$root/walk-missing"
+check "walkthrough.sh fails when a screen does not show" test "$walk_status" -ne 0
+check "walkthrough.sh names the screen" grep -qxF 'calendar did not show id="calendar"' "$output"
+check "walkthrough.sh shoots what showed instead" test -f "$root/walk-missing/default-13-calendar-missing.png"
+check "walkthrough.sh stops the recording when it fails" test "$(tail -1 "$root/walk-state/records")" == stop
+
+case_name="the walkthrough fake"
+walk_device() {
+  env FAKE_ROOT="$root" FAKE_STATE="$root/walk-state" "$fake/walk-device" \
+    --session 't3-test session' --device FAKE-UDID "$@" >/dev/null 2>&1
+}
+rm -rf "$root/walk-state"
+walk_device settings text-size accessibility-extra-extra-extra-large
+walk_device open com.kron00.svett --relaunch --launch-args=-svettFirstRun --launch-args=show
+check "the fake first run keeps Next below the screen at the largest text size" \
+  fails walk_device is visible 'id="first-run-next"'
+walk_device scroll down --until 'id="first-run-next"'
+walk_device press 220 870
+walk_device gesture pan 20 600 0 -300 400
+walk_device press 220 600
+check "the fake ignores presses at the bottom edge and while the screen glides" \
+  walk_device is visible 'id="first-run-next"'
+check "the fake still shows the first page" test "$(cat "$root/walk-state/page")" == 0
 
 echo "$passed passed"

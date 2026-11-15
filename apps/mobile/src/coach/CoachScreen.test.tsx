@@ -41,6 +41,8 @@ vi.mock("react-native", () => ({
   Linking: { openURL: () => Promise.resolve() },
   Pressable: "Pressable",
   ScrollView: "ScrollView",
+  // -svettTiming is off, so no proof timing shows.
+  Settings: { get: () => undefined },
   Text: "Text",
   TextInput: "TextInput",
   View: "View",

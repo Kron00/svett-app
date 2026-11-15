@@ -11,14 +11,20 @@ export function EmptyState({
   title,
   message,
   action,
+  testID,
 }: {
   readonly symbol: SymbolName;
   readonly title: string;
   readonly message: string;
-  readonly action?: { readonly label: string; readonly onPress: () => void };
+  readonly action?: {
+    readonly label: string;
+    readonly onPress: () => void;
+    readonly testID?: string;
+  };
+  readonly testID?: string;
 }) {
   return (
-    <View className="items-center gap-3 px-8 py-6">
+    <View testID={testID} className="items-center gap-3 px-8 py-6">
       <Icon name={symbol} color="tertiary-label" size={44} />
       <View className="items-center gap-1">
         <AppText variant="title3" accessibilityRole="header" className="text-center">
@@ -28,7 +34,9 @@ export function EmptyState({
           {message}
         </AppText>
       </View>
-      {action ? <Button label={action.label} onPress={action.onPress} /> : null}
+      {action ? (
+        <Button label={action.label} onPress={action.onPress} testID={action.testID} />
+      ) : null}
     </View>
   );
 }

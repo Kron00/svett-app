@@ -72,7 +72,11 @@ vi.mock("react-native", async () => {
     ({ children: _children, ...props }: { readonly children?: ReactNode }) =>
       element(type, props);
   return {
-    AccessibilityInfo: { announceForAccessibility: () => {} },
+    AccessibilityInfo: {
+      announceForAccessibility: () => {},
+      isReduceMotionEnabled: async () => false,
+      addEventListener: () => ({ remove: () => {} }),
+    },
     ActionSheetIOS: { showActionSheetWithOptions: () => {} },
     Alert: { alert: () => {} },
     KeyboardAvoidingView: "KeyboardAvoidingView",

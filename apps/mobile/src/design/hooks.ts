@@ -1,5 +1,6 @@
 import { DarkTheme, type Theme } from "@react-navigation/native";
-import { useWindowDimensions } from "react-native";
+import { useEffect, useState } from "react";
+import { AccessibilityInfo, useWindowDimensions } from "react-native";
 import { useCSSVariable } from "uniwind";
 
 import { ACCESSIBILITY_FONT_SCALE, type ColorToken } from "./tokens";
@@ -12,6 +13,21 @@ export function useColor(token: ColorToken): string {
 /** True at the five accessibility text sizes, where rows stack instead of sitting side by side. */
 export function useIsAccessibilityTextSize(): boolean {
   return useWindowDimensions().fontScale >= ACCESSIBILITY_FONT_SCALE;
+}
+
+/** True while Reduce Motion is on, so a scroll the app starts jumps instead of gliding. */
+export function useReduceMotion(): boolean {
+  const [reduce, setReduce] = useState(false);
+  useEffect(() => {
+    let live = true;
+    void AccessibilityInfo.isReduceMotionEnabled().then((enabled) => live && setReduce(enabled));
+    const subscription = AccessibilityInfo.addEventListener("reduceMotionChanged", setReduce);
+    return () => {
+      live = false;
+      subscription.remove();
+    };
+  }, []);
+  return reduce;
 }
 
 /** Symbols grow with the text beside them, up to twice their size. */

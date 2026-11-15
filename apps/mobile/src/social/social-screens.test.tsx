@@ -9,6 +9,7 @@ import {
   PeopleScreen,
 } from "./PeopleScreens";
 import { ProfileScreen } from "./ProfileScreens";
+import { unlabelledControls } from "../test-accessibility";
 
 type Answer = { readonly status: number; readonly body: unknown };
 type AlertButton = {
@@ -105,9 +106,12 @@ beforeEach(() => {
 
 const rendered: Array<ReactTestRenderer> = [];
 afterEach(async () => {
+  // Whatever state a test leaves a screen in, VoiceOver can use each of its controls.
+  const problems = rendered.flatMap((tree) => unlabelledControls(tree.root));
   await act(async () => {
     for (const tree of rendered.splice(0)) tree.unmount();
   });
+  expect(problems).toEqual([]);
   vi.unstubAllGlobals();
 });
 

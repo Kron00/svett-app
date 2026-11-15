@@ -32,6 +32,7 @@ import type { RootNavigation, RootStackParamList } from "../navigation";
 import { useWorkoutSettings } from "../settings/store";
 import { AppText } from "../ui/AppText";
 import { Button } from "../ui/Button";
+import { EmptyState } from "../ui/EmptyState";
 import { ListRow, ListSection } from "../ui/List";
 import { EntryField, Keypad } from "../ui/NumberEntry";
 import { SegmentedControl } from "../ui/SegmentedControl";
@@ -80,33 +81,51 @@ export function MeasurementsScreen() {
                   onSelect={(next) => setParams({ range: next })}
                 />
               </View>
-              <ChartCard
-                testID="chart-measurement"
-                title={MEASUREMENT_LABEL[kind]}
-                value={
-                  current === undefined ? null : formatMeasurement(kind, current.latest.value, unit)
-                }
-                detail={
-                  current === undefined
-                    ? "Not measured yet."
-                    : `On ${formatDay(current.latest.measuredAt)}${
-                        current.change === null
-                          ? "."
-                          : `, ${formatMeasurementChange(kind, current.change, unit)} since the one before.`
-                      }`
-                }
-                rule="Each point is one measurement."
-                points={measurementSeries(rows, kind, unit, rangeStart(range, now))}
-                format={shown}
-              />
-              <View className="px-gutter">
-                <Button
-                  label={`Add ${MEASUREMENT_LABEL[kind].toLowerCase()}`}
-                  symbol="plus"
-                  testID="add-measurement"
-                  onPress={() => setParams({ sheet: "open" })}
+              {rows.length === 0 ? (
+                <EmptyState
+                  testID="measurements-empty"
+                  symbol="ruler"
+                  title="No measurements yet"
+                  message="Add your body weight or a tape measurement, and each one shows on a chart here. Only you can see them."
+                  action={{
+                    label: `Add ${MEASUREMENT_LABEL[kind].toLowerCase()}`,
+                    testID: "add-measurement",
+                    onPress: () => setParams({ sheet: "open" }),
+                  }}
                 />
-              </View>
+              ) : (
+                <ChartCard
+                  testID="chart-measurement"
+                  title={MEASUREMENT_LABEL[kind]}
+                  value={
+                    current === undefined
+                      ? null
+                      : formatMeasurement(kind, current.latest.value, unit)
+                  }
+                  detail={
+                    current === undefined
+                      ? "Not measured yet."
+                      : `On ${formatDay(current.latest.measuredAt)}${
+                          current.change === null
+                            ? "."
+                            : `, ${formatMeasurementChange(kind, current.change, unit)} since the one before.`
+                        }`
+                  }
+                  rule="Each point is one measurement."
+                  points={measurementSeries(rows, kind, unit, rangeStart(range, now))}
+                  format={shown}
+                />
+              )}
+              {rows.length === 0 ? null : (
+                <View className="px-gutter">
+                  <Button
+                    label={`Add ${MEASUREMENT_LABEL[kind].toLowerCase()}`}
+                    symbol="plus"
+                    testID="add-measurement"
+                    onPress={() => setParams({ sheet: "open" })}
+                  />
+                </View>
+              )}
               <ListSection header="Measurements">
                 {MeasurementKinds.literals.map((each) => {
                   const entry = latest.get(each);

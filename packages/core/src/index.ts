@@ -43,6 +43,8 @@ export * from "./cardio-format.ts";
 export * from "./chatgpt.ts";
 export * from "./exercise-search.ts";
 export * from "./exercise-format.ts";
+export * from "./first-run.ts";
+export * from "./hevy-synthetic.ts";
 export * from "./performed-set.ts";
 export * from "./records.ts";
 export * from "./progress-dates.ts";

@@ -6,6 +6,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite
 import { FeedScreen } from "./FeedScreen";
 import { InboxScreen } from "./InboxScreen";
 import { PostScreen } from "./PostScreen";
+import { unlabelledControls } from "../test-accessibility";
 
 type Answer = { readonly status: number; readonly body: unknown };
 
@@ -107,9 +108,12 @@ beforeEach(() => {
 
 const rendered: Array<ReactTestRenderer> = [];
 afterEach(async () => {
+  // Whatever state a test leaves a screen in, VoiceOver can use each of its controls.
+  const problems = rendered.flatMap((tree) => unlabelledControls(tree.root));
   await act(async () => {
     for (const tree of rendered.splice(0)) tree.unmount();
   });
+  expect(problems).toEqual([]);
   vi.unstubAllGlobals();
 });
 

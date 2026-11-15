@@ -22,6 +22,8 @@ import {
 } from "./social/PeopleScreens";
 import { OwnProfileScreen, ProfileScreen } from "./social/ProfileScreens";
 import { useNavigationTheme } from "./design/hooks";
+import { FirstRunScreen } from "./first-run/FirstRunScreen";
+import { firstRunShown } from "./first-run/store";
 import { InboxScreen } from "./feed/InboxScreen";
 import { PostScreen } from "./feed/PostScreen";
 import { ExerciseDetailScreen } from "./exercises/ExerciseDetailScreen";
@@ -69,13 +71,17 @@ export default function App() {
         onReady={() => markLaunchOnNextFrame("screen")}
       >
         <StatusBar style="auto" />
-        <Stack.Navigator screenOptions={{ headerShown: false }}>
+        <Stack.Navigator
+          screenOptions={{ headerShown: false }}
+          initialRouteName={firstRunShown() ? "FirstRun" : "Tabs"}
+        >
           <Stack.Screen
             name="Tabs"
             component={TabNavigator}
             // A pushed screen's back button names the tab it came from, such as "Train".
             options={({ route }) => ({ title: getFocusedRouteNameFromRoute(route) ?? "Home" })}
           />
+          <Stack.Screen name="FirstRun" component={FirstRunScreen} />
           <Stack.Screen
             name="Gallery"
             component={GalleryScreen}

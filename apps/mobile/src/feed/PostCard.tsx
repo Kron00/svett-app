@@ -169,7 +169,7 @@ export function PostCard({ api, post }: { readonly api: SocialApi; readonly post
         accessibilityHint="Opens the post with its comments"
         onPress={open}
         testID={`post-open-${id}`}
-        className="gap-2"
+        className="min-h-target gap-2"
         style={({ pressed }) => ({ opacity: pressed ? 0.6 : 1 })}
       >
         <View className="gap-0.5">
