@@ -318,6 +318,8 @@ check "Release without SVETT_DEVICE_CMD launches with simctl" simctl_got "simctl
 check "the iOS 27 svett simulator gets the install, not the stock or iOS 26 one" \
   simctl_got "simctl install FAKE-UDID $release_app"
 check "no simctl call targets the stock or iOS 26 simulator" only_svett_ios27
+check "Release marks the first run seen, so it never covers the tabs a proof presses" \
+  simctl_got "simctl spawn FAKE-UDID defaults write com.kron00.svett svettFirstRunSeen -int 1"
 
 case_name="Release with SVETT_DEVICE_CMD"
 routed SVETT_DEVICE_CMD="$bound_cmd" --release b
@@ -330,6 +332,8 @@ case_name="Debug without SVETT_DEVICE_CMD"
 routed "$metro" b
 check "Debug without SVETT_DEVICE_CMD opens the dev client with simctl openurl" \
   simctl_got "simctl openurl FAKE-UDID $dev_client_url"
+check "Debug marks the first run seen too" \
+  simctl_got "simctl spawn FAKE-UDID defaults write com.kron00.svett svettFirstRunSeen -int 1"
 
 case_name="Debug with SVETT_DEVICE_CMD"
 routed SVETT_DEVICE_CMD="$bound_cmd" "$metro" b

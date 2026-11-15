@@ -10,6 +10,8 @@ export type TabParamList = { readonly [name in Exclude<Tab["name"], "Coach">]: u
 /** Link params are strings from outside. Each screen parses them with @svett/core. */
 export type RootStackParamList = {
   Tabs: NavigatorScreenParams<TabParamList> | undefined;
+  /** The pages a fresh install opens on, before the tabs. */
+  FirstRun: undefined;
   Gallery: { sheet?: "open" } | undefined;
   PhoneChecks: undefined;
   RecordCardio: undefined;

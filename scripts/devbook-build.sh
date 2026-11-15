@@ -154,6 +154,9 @@ open "$(xcode-select -p)/Applications/Simulator.app" --args -CurrentDeviceUDID "
   echo "Simulator did not open, so the build continues headless" >&2
 xcrun simctl terminate "$udid" "$bundle_id" 2>/dev/null || true
 xcrun simctl install "$udid" "$app_path"
+# A fresh install opens on svett's first-run pages, which would cover the tabs every proof
+# script presses. sim/walkthrough.sh launches with -svettFirstRun show to film them.
+xcrun simctl spawn "$udid" defaults write "$bundle_id" svettFirstRunSeen -int 1
 
 if [[ "$configuration" == Release ]]; then
   step "Launching the Release build"
