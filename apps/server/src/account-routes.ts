@@ -21,13 +21,14 @@ class OutdatedSync extends Data.TaggedError("OutdatedSync")<{}> {}
  * Refuses a push or pull from a phone that speaks an older sync API, or none, before it reads
  * or stores any rows, so that phone keeps its changes until svett is updated.
  */
-const currentSync = Effect.gen(function* () {
+export const currentSync = Effect.gen(function* () {
   const request = yield* HttpServerRequest.HttpServerRequest;
   const sent = Number(request.headers[SYNC_VERSION_HEADER] ?? Number.NaN);
   if (!Number.isInteger(sent) || sent < SYNC_PROTOCOL_VERSION) return yield* new OutdatedSync();
 });
 
-const outdatedSync = () =>
+/** Answers a phone on an older sync API that it must update. */
+export const outdatedSync = () =>
   Effect.succeed(
     HttpServerResponse.jsonUnsafe(
       { error: "update_required", message: "Update svett to sync." },

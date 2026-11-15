@@ -219,7 +219,7 @@ export const MIGRATIONS: Record<string, Effect.Effect<void, unknown, SqlClient>>
   // tokens are kept. A connection holds one access token and one refresh token at a time, so
   // deleting the row cuts the app off at once. The access log records each tool call, and the
   // proposals an app made wait here until the phone takes them.
-  "7_assistant": Effect.gen(function* () {
+  "8_assistant": Effect.gen(function* () {
     const sql = yield* SqlClient;
     yield* sql`
       create table oauth_client (

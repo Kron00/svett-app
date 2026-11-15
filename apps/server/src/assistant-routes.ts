@@ -1,6 +1,7 @@
 import { Data, Effect, Layer, Schema } from "effect";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 
+import { currentSync, outdatedSync } from "./account-routes.ts";
 import { AssistantRows } from "./assistant-rows.ts";
 import { route } from "./social-routes.ts";
 
@@ -16,14 +17,20 @@ const connections = route((account) =>
   }),
 );
 
-/** Revokes a connection. Its tokens stop working at once, so its next request answers 401. */
-const revoke = route((account) =>
-  Effect.gen(function* () {
-    const { connection } = yield* HttpRouter.schemaPathParams(ConnectionPath);
-    const revoked = yield* (yield* AssistantRows).revoke(account, connection);
-    if (!revoked) return yield* new ConnectionNotFound();
-    return { revoked: true };
-  }),
+/**
+ * Revokes a connection. Its tokens stop working at once, so its next request answers 401. It
+ * counts against the phone's own writes, never the app's `assistant` bucket, so a busy app
+ * cannot keep the person from revoking it.
+ */
+const revoke = route(
+  (account) =>
+    Effect.gen(function* () {
+      const { connection } = yield* HttpRouter.schemaPathParams(ConnectionPath);
+      const revoked = yield* (yield* AssistantRows).revoke(account, connection);
+      if (!revoked) return yield* new ConnectionNotFound();
+      return { revoked: true };
+    }),
+  "sync_push",
 ).pipe(
   Effect.catchTag("ConnectionNotFound", () =>
     Effect.succeed(
@@ -32,20 +39,27 @@ const revoke = route((account) =>
   ),
 );
 
-/** The proposals connected apps made, waiting for the phone to take them. */
+/**
+ * The proposals connected apps made, waiting for the phone to take them. The phone takes them
+ * with each sync, so a phone on an older sync API is refused as a sync is.
+ */
 const waiting = route((account) =>
   Effect.gen(function* () {
+    yield* currentSync;
     return { proposals: yield* (yield* AssistantRows).waitingProposals(account) };
   }),
-);
+).pipe(Effect.catchTag("OutdatedSync", outdatedSync));
 
 /** The phone holds these proposals now, so the server forgets them. */
-const received = route((account) =>
-  Effect.gen(function* () {
-    const { ids } = yield* HttpServerRequest.schemaBodyJson(Received);
-    return { received: yield* (yield* AssistantRows).proposalsReceived(account, ids) };
-  }),
-);
+const received = route(
+  (account) =>
+    Effect.gen(function* () {
+      yield* currentSync;
+      const { ids } = yield* HttpServerRequest.schemaBodyJson(Received);
+      return { received: yield* (yield* AssistantRows).proposalsReceived(account, ids) };
+    }),
+  "sync_push",
+).pipe(Effect.catchTag("OutdatedSync", outdatedSync));
 
 /** The routes the app uses for Connected apps and for taking proposals. */
 export const AssistantRoutes = Layer.mergeAll(

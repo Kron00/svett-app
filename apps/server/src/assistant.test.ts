@@ -19,6 +19,8 @@ import {
   type RateLimitGroup,
   receiveAssistantProposals,
   RoutineRepository,
+  SYNC_PROTOCOL_VERSION,
+  SYNC_VERSION_HEADER,
   syncOnce,
 } from "@svett/core";
 import { legDay, openTestDatabase } from "@svett/core/node";
@@ -854,6 +856,36 @@ describe("the connector's tools", () => {
     expect(await phone.runtime.runPromise(receiveAssistantProposals(api.assistantProposals))).toBe(
       0,
     );
+  });
+
+  it("refuses a phone on an older sync API the proposals, and keeps them for an updated one", async () => {
+    const server = await start();
+    const alice = account("alice");
+    const tokens = await connect(server, alice, ["svett.read", "svett.propose"]);
+    const answer = await callTool(
+      server,
+      tokens.access_token,
+      "propose_routine",
+      await pushDay(server, tokens.access_token),
+    );
+    expect(answer.body.result.isError).toBe(false);
+    const session = await issuer.sessionToken(alice);
+
+    const old = await send(server, "GET", "/v1/assistant-proposals", { token: session });
+    expect(old.status).toBe(426);
+    expect(old.body).toMatchObject({ error: "update_required" });
+    const oldReceipt = await send(server, "POST", "/v1/assistant-proposals/received", {
+      token: session,
+      json: { ids: [toolJson(answer).proposalId] },
+    });
+    expect(oldReceipt.status).toBe(426);
+
+    const current = await send(server, "GET", "/v1/assistant-proposals", {
+      token: session,
+      headers: { [SYNC_VERSION_HEADER]: String(SYNC_PROTOCOL_VERSION) },
+    });
+    expect(current.status).toBe(200);
+    expect(current.body.proposals).toHaveLength(1);
   });
 
   it("answers 401 to the next request after Revoke, and lists the connection no more", async () => {

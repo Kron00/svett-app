@@ -9,6 +9,7 @@ import type { AccountId } from "./database.ts";
 import { CommentPage, FeedPage, InboxPage, Likes, PostComment, PostThread } from "./feed.ts";
 import { ActivityView, FollowState, type SocialActivityId } from "./privacy.ts";
 import { rateLimitedMessage, retryAfterSeconds } from "./rate-limit.ts";
+import { SYNC_PROTOCOL_VERSION, SYNC_VERSION_HEADER } from "./sync.ts";
 import { tokenSubject } from "./sync-api.ts";
 import { usernamePrefix } from "./username.ts";
 
@@ -141,6 +142,7 @@ const SERVER_PROBLEMS = [
   "session_end_failed",
   "wrong_account",
   "connection_not_found",
+  "update_required",
 ] as const;
 
 export type SocialProblem =
@@ -195,6 +197,8 @@ export const socialProblemMessage = (failed: SocialFailed): string => {
       return "This phone is signed in to another account now.";
     case "connection_not_found":
       return "That app was already disconnected.";
+    case "update_required":
+      return "Update svett to take proposals from connected apps.";
     case "server":
       return "The svett server had a problem. Try again soon.";
   }
@@ -235,6 +239,8 @@ export const httpSocialApi = (options: HttpSocialOptions) => {
     path: string,
     body?: unknown,
     signedIn = true,
+    /** Sends the sync API version, for routes that refuse a phone on an older one. */
+    synced = false,
   ) =>
     Effect.gen(function* () {
       const token = signedIn
@@ -263,6 +269,7 @@ export const httpSocialApi = (options: HttpSocialOptions) => {
               signal: deadline.signal,
               headers: {
                 ...(token === undefined ? {} : { authorization: `Bearer ${token}` }),
+                ...(synced ? { [SYNC_VERSION_HEADER]: String(SYNC_PROTOCOL_VERSION) } : {}),
                 ...(body === undefined ? {} : { "content-type": "application/json" }),
               },
             })
@@ -409,9 +416,9 @@ export const httpSocialApi = (options: HttpSocialOptions) => {
       call(Revoked, "DELETE", `/v1/connections/${encodeURIComponent(connection)}`),
     /** Where the phone takes the proposals connected apps made. */
     assistantProposals: {
-      waiting: call(AssistantProposalList, "GET", "/v1/assistant-proposals"),
+      waiting: call(AssistantProposalList, "GET", "/v1/assistant-proposals", undefined, true, true),
       received: (ids: ReadonlyArray<string>) =>
-        call(ProposalsReceived, "POST", "/v1/assistant-proposals/received", { ids }),
+        call(ProposalsReceived, "POST", "/v1/assistant-proposals/received", { ids }, true, true),
     } satisfies AssistantProposalSource<SocialFailed>,
   };
 };

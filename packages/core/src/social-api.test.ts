@@ -4,6 +4,7 @@ import { describe, expect, it } from "vite-plus/test";
 import { AccountId } from "./database.ts";
 import { SocialActivityId } from "./privacy.ts";
 import { httpSocialApi, SocialFailed, socialProblemMessage } from "./social-api.ts";
+import { SYNC_PROTOCOL_VERSION, SYNC_VERSION_HEADER } from "./sync.ts";
 
 interface Sent {
   readonly url: string;
@@ -223,6 +224,36 @@ describe("httpSocialApi", () => {
     expect(sent).toEqual([]);
     await Effect.runPromise(api("user_alice").assistantProposals.received(["proposal-1"]));
     expect(sent).toEqual(["https://svett.test/v1/assistant-proposals/received"]);
+  });
+
+  it("sends the sync version with proposal requests alone, and reads 426 as update_required", async () => {
+    const versions: Array<string | undefined> = [];
+    const api = (status: number, body: unknown) =>
+      httpSocialApi({
+        server: "https://svett.test",
+        token: async () => "token-1",
+        fetch: async (_input, init) => {
+          versions.push(
+            (init?.headers as Record<string, string> | undefined)?.[SYNC_VERSION_HEADER],
+          );
+          return Response.json(body, { status });
+        },
+      });
+    await Effect.runPromise(api(200, { proposals: [] }).assistantProposals.waiting);
+    await Effect.runPromise(api(200, { received: 0 }).assistantProposals.received([]));
+    await Effect.runPromise(api(200, PROFILE).profile("anna"));
+    expect(versions).toEqual([
+      String(SYNC_PROTOCOL_VERSION),
+      String(SYNC_PROTOCOL_VERSION),
+      undefined,
+    ]);
+
+    const old = await failure(
+      api(426, { error: "update_required", message: "Update svett to sync." }).assistantProposals
+        .waiting,
+    );
+    expect(old.problem).toBe("update_required");
+    expect(socialProblemMessage(old)).toBe("Update svett to take proposals from connected apps.");
   });
 
   it("refuses an answer that does not match its schema", async () => {
