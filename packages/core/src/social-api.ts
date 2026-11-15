@@ -1,9 +1,16 @@
 import { Data, Effect, Option, Schema } from "effect";
 
+import {
+  type AssistantProposalSource,
+  AssistantProposalList,
+  ConnectionList,
+} from "./assistant.ts";
 import type { AccountId } from "./database.ts";
 import { CommentPage, FeedPage, InboxPage, Likes, PostComment, PostThread } from "./feed.ts";
 import { ActivityView, FollowState, type SocialActivityId } from "./privacy.ts";
 import { rateLimitedMessage, retryAfterSeconds } from "./rate-limit.ts";
+import { SYNC_PROTOCOL_VERSION, SYNC_VERSION_HEADER } from "./sync.ts";
+import { tokenSubject } from "./sync-api.ts";
 import { usernamePrefix } from "./username.ts";
 
 /** The signed-in account's own profile. `username` is null until they choose one. */
@@ -114,6 +121,8 @@ export const DeletionAnswer = Schema.Struct({ deleted: Schema.Boolean });
 export type DeletionAnswer = typeof DeletionAnswer.Type;
 
 const Done = Schema.Struct({});
+const Revoked = Schema.Struct({ revoked: Schema.Boolean });
+const ProposalsReceived = Schema.Struct({ received: Schema.Int });
 
 /** The error codes the server answers social requests with, beside sign-in's. */
 const SERVER_PROBLEMS = [
@@ -132,6 +141,8 @@ const SERVER_PROBLEMS = [
   "account_deleted",
   "session_end_failed",
   "wrong_account",
+  "connection_not_found",
+  "update_required",
 ] as const;
 
 export type SocialProblem =
@@ -184,6 +195,10 @@ export const socialProblemMessage = (failed: SocialFailed): string => {
       return "Your data is gone from svett, but signing you out everywhere did not finish. Try again.";
     case "wrong_account":
       return "This phone is signed in to another account now.";
+    case "connection_not_found":
+      return "That app was already disconnected.";
+    case "update_required":
+      return "Update svett to take proposals from connected apps.";
     case "server":
       return "The svett server had a problem. Try again soon.";
   }
@@ -194,6 +209,11 @@ export interface HttpSocialOptions {
   readonly server: string;
   /** The signed-in session's token, fetched fresh for each request. */
   readonly token: () => Promise<string | null>;
+  /**
+   * The account these requests are for. When set, a request whose token names another account
+   * is refused with `wrong_account` before anything is sent.
+   */
+  readonly accountId?: string;
   readonly fetch: typeof globalThis.fetch;
 }
 
@@ -219,6 +239,8 @@ export const httpSocialApi = (options: HttpSocialOptions) => {
     path: string,
     body?: unknown,
     signedIn = true,
+    /** Sends the sync API version, for routes that refuse a phone on an older one. */
+    synced = false,
   ) =>
     Effect.gen(function* () {
       const token = signedIn
@@ -228,6 +250,13 @@ export const httpSocialApi = (options: HttpSocialOptions) => {
           })
         : undefined;
       if (token === null) return yield* failed("signed_out", "Nobody is signed in.");
+      if (
+        token !== undefined &&
+        options.accountId !== undefined &&
+        tokenSubject(token) !== options.accountId
+      ) {
+        return yield* failed("wrong_account", "The session is for another account.");
+      }
       const response = yield* Effect.tryPromise({
         try: (interrupted) => {
           const deadline = new AbortController();
@@ -240,6 +269,7 @@ export const httpSocialApi = (options: HttpSocialOptions) => {
               signal: deadline.signal,
               headers: {
                 ...(token === undefined ? {} : { authorization: `Bearer ${token}` }),
+                ...(synced ? { [SYNC_VERSION_HEADER]: String(SYNC_PROTOCOL_VERSION) } : {}),
                 ...(body === undefined ? {} : { "content-type": "application/json" }),
               },
             })
@@ -379,6 +409,17 @@ export const httpSocialApi = (options: HttpSocialOptions) => {
     /** Whether the server deleted an account with this receipt. It needs no session. */
     deletionHappened: (receipt: string) =>
       call(DeletionAnswer, "GET", `/v1/deletions/${encodeURIComponent(receipt)}`, undefined, false),
+    /** The apps connected to the account, such as ChatGPT, for Connected apps. */
+    connections: () => call(ConnectionList, "GET", "/v1/connections"),
+    /** Cuts a connected app off. Its next request to svett is refused. */
+    revokeConnection: (connection: string) =>
+      call(Revoked, "DELETE", `/v1/connections/${encodeURIComponent(connection)}`),
+    /** Where the phone takes the proposals connected apps made. */
+    assistantProposals: {
+      waiting: call(AssistantProposalList, "GET", "/v1/assistant-proposals", undefined, true, true),
+      received: (ids: ReadonlyArray<string>) =>
+        call(ProposalsReceived, "POST", "/v1/assistant-proposals/received", { ids }, true, true),
+    } satisfies AssistantProposalSource<SocialFailed>,
   };
 };
 

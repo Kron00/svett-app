@@ -57,7 +57,7 @@ function LoggedSetRow({
   onPressSetType,
   onPressRpe,
   onSetDone,
-  measure,
+  onFocusedRow,
 }: {
   readonly exercise: LoggedExercise;
   readonly exerciseIndex: number;
@@ -70,20 +70,25 @@ function LoggedSetRow({
   readonly onPressSetType: (set: ActivitySet) => void;
   readonly onPressRpe: (set: ActivitySet) => void;
   readonly onSetDone: (exerciseIndex: number) => void;
-  readonly measure: (row: HostInstance) => void;
+  /** Takes the row of the set the keypad types into and its field, so the workout keeps them in view. */
+  readonly onFocusedRow: (row: HostInstance, field: HostInstance) => void;
 }) {
   const set = exercise.sets[index]!;
   const previous = exercise.previous[index] ?? null;
   const columns = SET_FIELD_COLUMNS[exercise.row.setFields];
   const row = useRef<HostInstance>(null);
+  const fieldBox = useRef<HostInstance>(null);
   const focused = focus?.setId === set.id;
+  const focusedColumn = focused ? focus.column : null;
 
   useEffect(() => {
     if (set.done) shownDone(set.id);
   }, [set.done, set.id]);
   useEffect(() => {
-    if (focused && row.current !== null) measure(row.current);
-  }, [focused, measure]);
+    if (focusedColumn !== null && row.current !== null && fieldBox.current !== null) {
+      onFocusedRow(row.current, fieldBox.current);
+    }
+  }, [focusedColumn, onFocusedRow]);
 
   const fields = columns.map((column) => {
     const shown =
@@ -108,7 +113,7 @@ function LoggedSetRow({
   };
 
   return (
-    <View ref={row}>
+    <View ref={row} testID={`workout-set-row-${exerciseIndex}-${index}`}>
       <SetRow
         setType={set.setType}
         normalSetNumber={badge.normal}
@@ -121,6 +126,7 @@ function LoggedSetRow({
         fields={logRpe ? [...fields, rpeField] : fields}
         done={set.done}
         focusedField={focused ? columns.indexOf(focus.column) : undefined}
+        focusedFieldRef={fieldBox}
         onPressSetType={() => onPressSetType(set)}
         onPressField={(field) =>
           field < columns.length ? onFocus(exercise, set, columns[field]!) : onPressRpe(set)
@@ -163,7 +169,7 @@ export const ExerciseCard = memo(function ExerciseCard({
   onReplace,
   onLogBy,
   onTool,
-  measure,
+  onFocusedRow,
 }: {
   readonly exercise: LoggedExercise;
   readonly index: number;
@@ -182,7 +188,8 @@ export const ExerciseCard = memo(function ExerciseCard({
   readonly onReplace: (exercise: LoggedExercise) => void;
   readonly onLogBy: (exercise: LoggedExercise) => void;
   readonly onTool: (exercise: LoggedExercise, index: number, tool: ExerciseTool) => void;
-  readonly measure: (row: HostInstance) => void;
+  /** Takes the row of the set the keypad types into and its field, so the workout keeps them in view. */
+  readonly onFocusedRow: (row: HostInstance, field: HostInstance) => void;
 }) {
   const stacked = useIsAccessibilityTextSize();
   const name = exercise.exercise?.name ?? "Deleted exercise";
@@ -301,7 +308,7 @@ export const ExerciseCard = memo(function ExerciseCard({
             onPressSetType={onPressSetType}
             onPressRpe={onPressRpe}
             onSetDone={onSetDone}
-            measure={measure}
+            onFocusedRow={onFocusedRow}
           />
         ))}
         <View className="flex-row px-3">

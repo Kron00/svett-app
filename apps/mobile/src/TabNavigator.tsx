@@ -4,6 +4,7 @@ import { SymbolView } from "expo-symbols";
 import { View } from "react-native";
 
 import { AccountRow } from "./account/AccountRow";
+import { ConnectedAppsRow } from "./assistant/ConnectedAppsRow";
 import { ChatGPTRow } from "./chatgpt/ChatGPTRow";
 import { CoachScreen } from "./coach/CoachScreen";
 import { FeedScreen } from "./feed/FeedScreen";
@@ -36,6 +37,7 @@ function TabContent({ tab }: { readonly tab: Tab }) {
             <AccountRow />
             <ProfileRow />
             <ChatGPTRow />
+            <ConnectedAppsRow />
             <DataRow />
             <WorkoutSettingsRow />
             <PhoneChecksRow />

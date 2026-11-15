@@ -113,8 +113,8 @@ function RowIcon({ symbol, color }: { readonly symbol: SymbolName; readonly colo
 }
 
 /**
- * One row of a list section. At accessibility text sizes the value moves under
- * the title, so neither is cut off.
+ * One row of a list section. At accessibility text sizes the icon moves above the title and the
+ * value under it, so the title gets the row's whole width and nothing is cut off.
  */
 export function ListRow({
   title,
@@ -127,24 +127,37 @@ export function ListRow({
 }: ListRowProps) {
   const stacked = useIsAccessibilityTextSize();
   const label = accessibilityLabel ?? [title, subtitle, value].filter(Boolean).join(", ");
-  const content = (
-    <View className="min-h-target flex-row items-center gap-3 px-gutter py-3">
-      {icon ? <RowIcon {...icon} /> : null}
-      <View className={stacked ? "flex-1 gap-1" : "flex-1 flex-row items-center gap-3"}>
-        <View className={stacked ? "" : "flex-1"}>
-          <AppText>{title}</AppText>
-          {subtitle ? (
-            <AppText variant="subheadline" tone="secondary">
-              {subtitle}
-            </AppText>
-          ) : null}
-        </View>
-        {value ? (
-          <AppText tone="secondary" className={stacked ? "" : "shrink text-right"}>
-            {value}
+  const iconView = icon ? <RowIcon {...icon} /> : null;
+  const text = (
+    <View className={stacked ? "self-stretch gap-1" : "flex-1 flex-row items-center gap-3"}>
+      <View className={stacked ? "" : "flex-1"}>
+        <AppText>{title}</AppText>
+        {subtitle ? (
+          <AppText variant="subheadline" tone="secondary">
+            {subtitle}
           </AppText>
         ) : null}
       </View>
+      {value ? (
+        <AppText tone="secondary" className={stacked ? "" : "shrink text-right"}>
+          {value}
+        </AppText>
+      ) : null}
+    </View>
+  );
+  const content = (
+    <View className="min-h-target flex-row items-center gap-3 px-gutter py-3">
+      {stacked ? (
+        <View className="flex-1 items-start gap-2">
+          {iconView}
+          {text}
+        </View>
+      ) : (
+        <>
+          {iconView}
+          {text}
+        </>
+      )}
       {trailing.type === "chevron" ? (
         <Icon name="chevron.right" color="tertiary-label" size={14} weight="semibold" />
       ) : null}

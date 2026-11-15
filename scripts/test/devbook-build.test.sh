@@ -2605,11 +2605,35 @@ check "startup.sh says what SVETT_LAUNCHES must be" \
 # the app's workouts in $FAKE_STATE and writes them to the database it was
 # launched on after every change, as the app saves each change. An element is
 # on screen only where the app shows it, and the exercises after the first and
-# the timing line sit below the fold until a scroll down reaches them. A press
-# acts on the element whose frame was read last. FAKE_LOSES_WORKOUT forgets the
-# workout when svett is killed, FAKE_DROPS_DONE forgets the last exercise's done
-# sets then, FAKE_KEEPS_UNDONE keeps the sets not done when it finishes, and
-# FAKE_NO_TIMING never times a set marked done.
+# the timing line sit below the fold until a scroll down reaches them. Elements
+# have frames on a 956 point screen. The first set's weight field starts at the
+# bottom edge. The open keypad covers the screen from y=524, with Next and Done
+# at its foot, and a running rest sits right above it, so a press there reaches
+# the keypad or the rest instead of the workout. A drag from inside the workout
+# brings the element it is for clear of them. agent-device starts its swipe low in
+# the workout to scroll, so while the keypad or the rest covers the workout's foot a
+# scroll lands on them and moves nothing, as on the Mac when only the rest ran at the
+# foot. The rest's Skip, at the foot of the screen without the keypad, ends it. Moving
+# an exercise leaves the workout at its top, with the exercises after the first below
+# the screen. Like agent-device, it still counts an element under the keypad or the
+# rest as on screen. The set being typed into stays on screen, because the
+# app scrolls it above them. After a scroll or a drag the next element read glides
+# for two reads. A press acts on the element whose frame was
+# read last, if it lands on its centre, so a press at a gliding frame misses.
+# Every set marked done starts a rest, and the first rest asks for notifications
+# with a system prompt that hides svett until alert accept answers it, unless
+# settings permission granted them ahead. FAKE_GRANT_FAILS refuses that grant.
+# FAKE_LAUNCH_PROMPT puts a system prompt over the first launch, and
+# FAKE_FIRST_LAUNCH_HANGS never shows the tabs on the first launch, with nothing
+# over svett, though a second launch would show them.
+# A drag faster than 100 points a second glides on and carries the element it was
+# for off the top of the screen, as on the Mac. FAKE_FLINGS overshoots the first
+# drag that way however slow it is, and leaves the second under the navigation bar.
+# The workout bar sits above the tabs with its foot below y=840, and a drag that starts
+# and lifts on it presses it and opens the workout.
+# FAKE_LOSES_WORKOUT forgets the workout when svett is killed, FAKE_DROPS_DONE
+# forgets the last exercise's done sets then, FAKE_KEEPS_UNDONE keeps the sets
+# not done when it finishes, and FAKE_NO_TIMING never times a set marked done.
 logger_bin="$root/logger-bin"
 mkdir -p "$logger_bin"
 cat >"$logger_bin/pnpm" <<'EOF'
@@ -2640,7 +2664,9 @@ const command = args.slice(4);
 const stateFile = `${process.env.FAKE_STATE}/state.json`;
 const state = fs.existsSync(stateFile)
   ? JSON.parse(fs.readFileSync(stateFile, "utf8"))
-  : { screen: "home", workouts: [], scrolled: [], kills: 0, timing: null };
+  : { screen: "home", workouts: [], scrolled: [], kills: 0, launches: 0, timing: null, permission: "undetermined",
+    prompt: null, rest: false, focus: null, low: null, panned: false, glide: null, flung: null, under: null,
+    overshoot: null, pans: 0, offset: 0 };
 const save = () => {
   fs.mkdirSync(process.env.FAKE_STATE, { recursive: true });
   fs.writeFileSync(stateFile, JSON.stringify(state));
@@ -2693,8 +2719,8 @@ const doneLabel = (exercise, index) => {
 // Every element on the current screen, by id or label, with its label.
 const elements = () => {
   const found = [];
-  const add = (id, label = "") => found.push({ id, label });
-  if (state.screen === "home") return found;
+  const add = (id, label = "", extra = {}) => found.push({ id, label, selected: false, role: null, ...extra });
+  if (state.screen === "home" || state.screen === "launching") return found;
   add(null, "Train, tab, 2 of 5");
   const workout = current();
   if (["tabs", "train"].includes(state.screen) && workout) add("workout-bar", `Workout in progress, ${workout.title}, 12:34`);
@@ -2715,16 +2741,23 @@ const elements = () => {
     add("workout-title", workout.title);
     // The bar's Finish item has no identifier, so the script can only find it by label.
     add("bar-finish", "Finish");
-    if (state.alert) add("alert-finish", "Finish workout");
+    // iOS nests an alert's button in containers with the same label.
+    if (state.alert) add("alert-finish", "Finish workout", { role: "button" });
     add("set-done-timing", state.timing === null ? "No set marked done yet" : `Set shown done in ${state.timing} ms`);
     workout.exercises.forEach((exercise, e) => {
-      add(`workout-exercise-${e}`, exercise.name);
+      // The header is the exercise's name as text, which is its label. FAKE_TIMED_HEADER
+      // adds a suffix to a timed exercise's header, as a label that said how it logs would.
+      add(`workout-exercise-${e}`, exercise.fields === "time" && process.env.FAKE_TIMED_HEADER
+        ? `${exercise.name}${process.env.FAKE_TIMED_HEADER}` : exercise.name);
       add(`move-exercise-down-${e}`);
       add(`add-workout-set-${e}`);
       exercise.sets.forEach((_, s) => {
         add(`workout-set-${e}-${s}`, doneLabel(exercise, s));
         add(`workout-set-${e}-${s}-type`);
-        for (const column of exercise.fields === "time" ? ["time"] : ["weight", "reps"]) add(`set-${e}-${s}-${column}`);
+        for (const column of exercise.fields === "time" ? ["time"] : ["weight", "reps"]) {
+          const focus = state.focus;
+          add(`set-${e}-${s}-${column}`, "", { selected: focus?.e === e && focus.s === s && focus.column === column });
+        }
         const last = previous(exercise, s);
         if (last !== null && last.weight !== null) add(null, `Previous, ${last.weight} kg × ${last.reps}`);
       });
@@ -2734,20 +2767,25 @@ const elements = () => {
       add("keypad-next");
       add("keypad-done");
     }
+    if (state.rest) { add("rest-timer"); add("rest-timer-skip", "Skip rest"); }
   }
   return found;
 };
 const parse = (selector) => ({
   id: /id="([^"]*)"/.exec(selector)?.[1] ?? null,
   label: /label="([^"]*)"/.exec(selector)?.[1] ?? null,
+  selected: /selected=true/.test(selector),
+  role: /role="([^"]*)"/.exec(selector)?.[1] ?? null,
 });
 const findOne = (selector) => {
   const wanted = parse(selector);
   return elements().find((element) =>
-    (wanted.id === null || element.id === wanted.id) && (wanted.label === null || element.label === wanted.label)) ?? null;
+    (wanted.id === null || element.id === wanted.id) && (wanted.label === null || element.label === wanted.label) &&
+    (!wanted.selected || element.selected) && (element.role === null || wanted.role === element.role)) ?? null;
 };
 // A || fallback finds the first of its elements on screen, else the first anywhere.
 const find = (selector) => {
+  if (state.prompt !== null) return null;
   const found = selector.split(" || ").map(findOne).filter((element) => element !== null);
   return found.find(visible) ?? found[0] ?? null;
 };
@@ -2755,59 +2793,198 @@ const find = (selector) => {
 const belowFold = (element) =>
   /^(workout-exercise|workout-set|set|move-exercise-down|add-workout-set)-[1-9]/.test(element.id ?? "") ||
   element.id === "set-done-timing" || element.id === "start-routine" || element.id === "routine-list";
-const visible = (element) => element !== null && (!belowFold(element) || state.scrolled.includes(element.id));
-const show = (screen) => { state.screen = screen; state.scrolled = []; state.focus = null; };
+const flung = (element) => state.flung !== null && state.flung === element.id;
+const visible = (element) => element !== null && !flung(element) &&
+  (!belowFold(element) || state.scrolled.includes(element.id) || inFocusedSet(element.id));
+
+// The screen is 956 points tall. The keypad covers it from y=524 down, with Next and Done at
+// its foot. A running rest sits right above the open keypad, or at the foot of the screen.
+// Above the keypad it keeps to one row. FAKE_REST_COVERS_SET plays the app before that fix,
+// whose full rest covered the set being typed into.
+const KEYPAD_TOP = 524;
+const KEY_ROWS = ["123", "456", "789", ".0<"];
+const KEY_COLUMNS = [16, 155, 294];
+const OLD_REST = process.env.FAKE_REST_COVERS_SET !== undefined;
+const REST_HEIGHT = 196;
+const COMPACT_REST_HEIGHT = 124;
+const restHeight = () => (state.focus && !OLD_REST ? COMPACT_REST_HEIGHT : REST_HEIGHT);
+// A press below this lands on the home indicator. On the Mac a press at y=880 still opened
+// the keypad on the first set's weight field.
+const HOME_INDICATOR = 900;
+const restTop = () => (state.focus ? KEYPAD_TOP : 956) - restHeight();
+// The top of what covers the workout: the open keypad and the running rest.
+const coverTop = () => Math.min(state.focus ? KEYPAD_TOP : 956, state.rest ? restTop() : 956);
+// The rest's Skip sits at its right end: at the foot of the screen, where its centre is
+// below the line other presses keep to, or above the open keypad.
+const skipFrame = () => state.focus
+  ? { x: 330, y: restTop() + 32, width: 94, height: 60 }
+  : { x: 276, y: 839, width: 134, height: 84 };
+const inside = (rect, x, y) => x >= rect.x && x < rect.x + rect.width && y >= rect.y && y < rect.y + rect.height;
+const keyFrame = (key) => {
+  const row = KEY_ROWS.findIndex((keys) => keys.includes(key));
+  return { x: KEY_COLUMNS[KEY_ROWS[row].indexOf(key)], y: KEYPAD_TOP + 12 + 75 * row, width: 130, height: 67 };
+};
+const fixed = {
+  "keypad-next": { x: 16, y: 836, width: 200, height: 88 },
+  "keypad-done": { x: 224, y: 836, width: 200, height: 88 },
+  "bar-finish": { x: 340, y: 62, width: 84, height: 44 },
+  "alert-finish": { x: 40, y: 480, width: 360, height: 50 },
+  // At the largest text size the bar stacks its title over its time, right above the tabs,
+  // so its foot reaches below the line presses keep to while its centre stays above it.
+  "workout-bar": { x: 16, y: 770, width: 408, height: 96 },
+  "exercise-result-0": { x: 0, y: 200, width: 440, height: 80 },
+};
+const inFocusedSet = (id) => state.focus !== null &&
+  new RegExp(`^(set|workout-set)-${state.focus.e}-${state.focus.s}(-|$)`).test(id ?? "");
+// Where a content element is. The first set's weight field starts at the foot of the screen.
+// The workout keeps the set being typed into right above the keypad, and above the rest once
+// it runs, with its weight on one line and its reps and done box on the next. A drag brings the element it was for, the next one read, to y=250. After a
+// scroll or a drag the next content element read is still gliding 40 and then 20 points below
+// where it stops, so a press at its first read lands beside it.
+const centreY = (id) => {
+  const glide = state.glide?.id === id ? 20 * Math.max(0, 2 - state.glide.reads) : 0;
+  if (state.low === id) return 880;
+  if (state.under === id) return 100 + glide;
+  if (state.panned) return 250 + glide;
+  if (inFocusedSet(id)) {
+    const first = /-weight$|-time$/.test(id);
+    if (OLD_REST) return (first ? 336 : 420) + glide;
+    return (state.rest ? restTop() : KEYPAD_TOP) - (first ? 140 : 56) + glide;
+  }
+  return 625 + glide;
+};
+const frame = (element) => {
+  const id = element.id ?? "";
+  const key = /^key-(\d)$/.exec(id);
+  if (key) return keyFrame(key[1]);
+  if (id === "rest-timer") return { x: 0, y: restTop(), width: 440, height: restHeight() };
+  if (id === "rest-timer-skip") return skipFrame();
+  return fixed[id] ?? { x: 16, y: centreY(id) - 25, width: 408, height: 50 };
+};
+const centre = (rect) => `${Math.round(rect.x + rect.width / 2)} ${Math.round(rect.y + rect.height / 2)}`;
+// At the largest text size the Legs workout with Plank is about 13 screens tall: each
+// exercise's header, notes and column titles take 410 points, each set stacks to 480, and
+// Add set takes 90. An element's place in it is measured from the workout's top, and
+// state.offset is the place at the top of the screen. agent-device swipes about 680 points
+// a pass, and gives up a scroll --until after 12 passes unless --max-passes says more.
+const PASS = 680;
+const SCREEN = 956;
+const contentY = (id) => {
+  const workout = current();
+  let y = 300;
+  for (const [e, exercise] of (workout?.exercises ?? []).entries()) {
+    if (id === `workout-exercise-${e}` || id === `move-exercise-down-${e}`) return y;
+    y += 410;
+    for (const s of exercise.sets.keys()) {
+      if (new RegExp(`^(set|workout-set)-${e}-${s}(-|$)`).test(id ?? "")) return y + 200;
+      y += 480;
+    }
+    if (id === `add-workout-set-${e}`) return y;
+    y += 90;
+  }
+  return y + 300;
+};
+// The exercise headers on screen, for the snapshot.
+const headersShown = () => elements().filter((element) => /^workout-exercise-/.test(element.id ?? "") &&
+  contentY(element.id) >= state.offset && contentY(element.id) < state.offset + SCREEN).map((element) => element.label);
+const show = (screen) => {
+  state.offset = 0;
+  state.screen = screen; state.scrolled = []; state.focus = null; state.low = null; state.panned = false;
+  state.glide = null; state.flung = null; state.under = null; state.overshoot = null;
+};
 const startWorkout = (title, exercises) => {
   state.workouts.push({ title, status: "in_progress", exercises });
   show("workout");
 };
-const press = () => {
+const typeKey = (digit) => {
+  const workout = current();
+  const focus = state.focus;
+  focus.text = (focus.fresh ? "" : focus.text) + digit;
+  focus.fresh = false;
+  const digits = focus.text.padStart(6, "0");
+  workout.exercises[focus.e].sets[focus.s][focus.column] = focus.column === "time"
+    ? Number(digits.slice(0, 2)) * 3600 + Number(digits.slice(2, 4)) * 60 + Number(digits.slice(4))
+    : Number(focus.text);
+};
+// What a press at the point reaches: nothing under a system prompt or on the home indicator,
+// the keypad's key or button under it, nothing on the rest timer, and else the element whose
+// frame was read last, if the point is still its centre.
+const press = (x, y) => {
+  if (state.prompt !== null || y > HOME_INDICATOR) return;
+  if (state.screen === "workout" && state.focus) {
+    if (y >= KEYPAD_TOP) {
+      for (const digit of "0123456789") {
+        const rect = keyFrame(digit);
+        if (inside(rect, x, y)) return typeKey(digit);
+      }
+      if (y >= 836 && x < 220) state.focus = { ...state.focus, column: "reps", text: "", fresh: true };
+      else if (y >= 836) state.focus = null;
+      return;
+    }
+  }
+  if (state.screen === "workout" && state.rest && y >= restTop() && y < restTop() + restHeight()) {
+    if (inside(skipFrame(), x, y)) state.rest = false;
+    return;
+  }
+  if (state.alert && state.target !== "alert-finish") return;
   const target = state.target;
+  if (target === null || centre(frame({ id: target })) !== `${x} ${y}`) return;
+  act(target);
+};
+const act = (target) => {
   const workout = current();
   const at = (pattern) => pattern.exec(target)?.slice(1).map(Number) ?? null;
   let m;
   if (target === "workout-bar") show("workout");
-  else if (target === "start-routine")
+  else if (target === "start-routine") {
     startWorkout("Legs", ROUTINE.map(([name, min, max]) => ({ name, fields: "weight_reps", sets: [0, 1, 2].map(() => set("normal", min, max)) })));
-  else if (target === "start-empty-workout") startWorkout("Evening workout", []);
+    state.low = "set-0-0-weight";
+  } else if (target === "start-empty-workout") startWorkout("Evening workout", []);
   else if (target === "exercise-result-0") {
     const name = process.env.FAKE_LIBRARY ?? LIBRARY[state.query];
     const last = lastSets(name);
     workout.exercises.push({ name, fields: name === "Plank" ? "time" : "weight_reps",
       sets: (last ?? [set("normal", null, null), set("normal", null, null), set("normal", null, null)]).map((other) => set(other.type, null, null)) });
     show("workout");
-  } else if ((m = at(/^workout-set-(\d+)-(\d+)-type$/))) { state.sheet = m; show("sheet"); }
-  else if (target === "set-type-sheet-failure") {
+  } else if ((m = at(/^workout-set-(\d+)-(\d+)-type$/))) {
+    state.sheet = m;
+    const focus = state.focus;
+    show("sheet");
+    state.focus = focus;
+  } else if (target === "set-type-sheet-failure") {
     workout.exercises[state.sheet[0]].sets[state.sheet[1]].type = "failure";
+    const focus = state.focus;
     show("workout");
+    state.focus = focus;
   } else if ((m = at(/^workout-set-(\d+)-(\d+)$/))) {
     const exercise = workout.exercises[m[0]];
     const one = exercise.sets[m[1]];
     if (!one.done) {
       const last = previous(exercise, m[1]);
       if (last !== null) for (const key of ["weight", "reps", "time"]) one[key] ??= last[key];
+      // Every set marked done starts a rest, and the first rest asks for notifications. A rest
+      // appearing over the open keypad scrolls the set being typed into up above it.
+      if (!state.rest && state.focus && !OLD_REST) state.glide = { id: `workout-set-${m[0]}-${m[1]}`, reads: 0 };
+      state.rest = true;
+      if (state.permission === "undetermined") state.prompt = "notifications";
     }
     one.done = !one.done;
     if (process.env.FAKE_NO_TIMING === undefined) state.timing = 12;
   } else if ((m = /^set-(\d+)-(\d+)-(\w+)$/.exec(target))) {
     state.focus = { e: Number(m[1]), s: Number(m[2]), column: m[3], text: "", fresh: true };
-  } else if ((m = /^key-(\d)$/.exec(target))) {
-    const focus = state.focus;
-    focus.text = (focus.fresh ? "" : focus.text) + m[1];
-    focus.fresh = false;
-    const digits = focus.text.padStart(6, "0");
-    workout.exercises[focus.e].sets[focus.s][focus.column] = focus.column === "time"
-      ? Number(digits.slice(0, 2)) * 3600 + Number(digits.slice(2, 4)) * 60 + Number(digits.slice(4))
-      : Number(focus.text);
-  } else if (target === "keypad-next") state.focus = { ...state.focus, column: "reps", text: "", fresh: true };
-  else if (target === "keypad-done") state.focus = null;
-  else if ((m = at(/^add-workout-set-(\d+)$/))) {
+    state.low = null;
+    state.panned = false;
+    state.under = null;
+  } else if ((m = at(/^add-workout-set-(\d+)$/))) {
     const sets = workout.exercises[m[0]].sets;
     sets.push({ ...sets.at(-1), done: false, min: null, max: null });
   } else if ((m = at(/^move-exercise-down-(\d+)$/))) {
     const [moved] = workout.exercises.splice(m[0], 1);
     workout.exercises.splice(m[0] + 1, 0, moved);
     state.scrolled = [];
+    state.offset = 0;
+    if (state.focus?.e === m[0]) state.focus.e += 1;
+    else if (state.focus?.e === m[0] + 1) state.focus.e -= 1;
   } else if (target === "bar-finish") state.alert = true;
   else if (target === "alert-finish") {
     state.alert = false;
@@ -2817,13 +2994,24 @@ const press = () => {
       workout.exercises = workout.exercises.filter((exercise) => exercise.sets.length > 0);
     }
     workout.status = "finished";
+    state.rest = false;
     show("tabs");
-  } else process.exit(1);
+  }
 };
 const fail = () => process.exit(1);
 switch (command[0]) {
-  case "settings":
   case "screenshot":
+    break;
+  case "snapshot":
+    console.log(JSON.stringify({ screen: state.screen, prompt: state.prompt, elements: elements().length,
+      keypad: state.focus !== null, rest: state.rest, scrolled: state.scrolled,
+      ...(state.screen === "workout" ? { headers: headersShown() } : {}) }));
+    break;
+  case "settings":
+    if (command[1] === "permission") {
+      if (process.env.FAKE_GRANT_FAILS) { console.error("Operation not permitted"); fail(); }
+      if (command[2] === "grant" && command[3] === "notifications") state.permission = "granted";
+    }
     break;
   case "open": {
     const url = command[2];
@@ -2836,7 +3024,15 @@ switch (command[0]) {
         if (process.env.FAKE_LOSES_WORKOUT) state.workouts = state.workouts.filter((workout) => workout.status !== "in_progress");
         if (process.env.FAKE_DROPS_DONE) for (const one of current()?.exercises.at(-1).sets ?? []) one.done = false;
       }
+      state.launches += 1;
+      state.alert = false;
+      state.prompt = null;
       show("tabs");
+      // A rest still running comes back, and asks for notifications if nobody answered yet.
+      state.rest = state.rest && current() !== null;
+      if (state.rest && state.permission === "undetermined") state.prompt = "notifications";
+      if (state.launches === 1 && process.env.FAKE_LAUNCH_PROMPT) state.prompt = "launch";
+      if (state.launches === 1 && process.env.FAKE_FIRST_LAUNCH_HANGS) state.screen = "launching";
     } else if (url === "svett://train") show("train");
     else if (url === "svett://routine/legs-routine") show("routine");
     else if (url.startsWith("svett://train/workout/exercises?q=")) {
@@ -2855,24 +3051,94 @@ switch (command[0]) {
     break;
   case "scroll": {
     const element = find(command[3]);
-    if (element === null || (command[1] === "up" && !visible(element))) fail();
+    if (element === null || (command[1] === "up" && !visible(element) && !flung(element))) fail();
+    if (state.screen === "workout" && coverTop() < 956 && !visible(element)) fail();
+    if (state.screen === "workout" && command[1] === "down" && !visible(element)) {
+      const at = command.indexOf("--max-passes");
+      const limit = at === -1 ? 12 : Number(command[at + 1]);
+      const passes = Math.ceil(Math.max(0, contentY(element.id) - state.offset - 700) / PASS);
+      if (passes > limit) {
+        state.offset += limit * PASS;
+        save();
+        console.error(`Error: ${command[3]} was not visible after ${limit} scroll down passes`);
+        fail();
+      }
+      state.offset = Math.max(state.offset, contentY(element.id) - 300);
+    }
     state.scrolled.push(element.id);
+    state.low = null;
+    state.panned = false;
+    state.flung = null;
+    state.under = null;
+    state.overshoot = null;
+    state.glide = { id: null, reads: 0 };
+    break;
+  }
+  case "gesture": {
+    // A drag moves the workout only from inside it: below the navigation bar, above the
+    // keypad and the rest timer. agent-device reports it on stdout.
+    const y = Number(command[3]);
+    const bottom = coverTop();
+    // The workout bar is a button that never scrolls, so a drag that starts and lifts on
+    // it presses it, as on the Mac.
+    const bar = fixed["workout-bar"];
+    const [fromX, toY] = [Number(command[2]), y + Number(command[5])];
+    if (state.prompt === null && ["tabs", "train"].includes(state.screen) && current() &&
+      inside(bar, fromX, y) && inside(bar, fromX + Number(command[4]), toY)) act("workout-bar");
+    if (state.prompt === null && state.screen === "workout" && y > 110 && y < bottom) {
+      state.panned = true;
+      state.offset = Math.max(0, state.offset - Number(command[5]));
+      state.low = null;
+      state.flung = null;
+      state.under = null;
+      state.glide = { id: null, reads: 0 };
+      // A drag faster than 100 points a second leaves the workout gliding on when the finger
+      // lifts, and on the Mac that carried the field it was for off the top of the screen.
+      // FAKE_FLINGS overshoots the first drag that way however slow it is, and the second
+      // under the navigation bar.
+      state.pans += 1;
+      const fast = Math.abs(Number(command[5])) / Number(command[6] ?? 500) > 0.1;
+      state.overshoot = fast || (process.env.FAKE_FLINGS && state.pans === 1) ? "off"
+        : process.env.FAKE_FLINGS && state.pans === 2 ? "under" : null;
+    }
+    console.log(`Panned (${command[2]}, ${command[3]}) by (${command[4]}, ${command[5]})`);
     break;
   }
   case "get": {
     const element = find(command[2]);
-    if (element === null) fail();
+    if (element === null || flung(element)) fail();
     state.target = element.id;
-    console.log(JSON.stringify({ label: element.label, rect: { x: 16, y: 600, width: 408, height: 50 } }));
+    // The first element read after a drag is the one it was for.
+    if (state.glide !== null && state.glide.id === null && !/^(key-|rest-timer)/.test(element.id)) {
+      state.glide.id = element.id;
+      if (state.overshoot === "off") {
+        state.flung = element.id;
+        state.overshoot = null;
+        save();
+        fail();
+      }
+      if (state.overshoot === "under") state.under = element.id;
+      state.overshoot = null;
+    }
+    const rect = frame(element);
+    if (state.glide?.id === element.id) state.glide.reads += 1;
+    console.log(JSON.stringify({ label: element.label, rect }));
     break;
   }
-  case "press":
-    press();
+  case "press": {
+    // A press at a point must get two numbers, as agent-device would demand.
+    if (!/^\d+ \d+$/.test(`${command[1]} ${command[2]}`)) fail();
+    press(Number(command[1]), Number(command[2]));
     break;
+  }
   case "alert":
-    if (command[1] === "wait" && !state.alert) fail();
-    // svett's own alerts have no button agent-device's alert accept can find.
-    if (command[1] === "accept") fail();
+    if (command[1] === "wait" && state.prompt === null && !state.alert) fail();
+    // agent-device answers system prompts only. svett's own alerts have no button it can find.
+    if (command[1] === "accept") {
+      if (state.prompt === null) fail();
+      if (state.prompt === "notifications") state.permission = "granted";
+      state.prompt = null;
+    }
     break;
   default:
     fail();
@@ -2882,6 +3148,7 @@ EOF
 chmod +x "$logger_bin/pnpm" "$fake/logger-device"
 
 # run_logger [VAR=value...] [logger.sh args...] leaves the exit status in logger_status.
+# It runs $logger_script when that is set.
 run_logger() {
   local -a vars=()
   while [[ "${1:-}" == *=* ]]; do
@@ -2893,7 +3160,57 @@ run_logger() {
   logger_status=0
   env PATH="$logger_bin:$fake:$PATH" FAKE_ROOT="$root" FAKE_STATE="$root/logger-state" \
     SVETT_DEVICE_CMD="logger-device --session 't3-test session' --device FAKE-UDID" \
-    "${vars[@]}" "$repo/scripts/sim/logger.sh" "$@" >"$output" 2>&1 || logger_status=$?
+    "${vars[@]}" "${logger_script:-$repo/scripts/sim/logger.sh}" "$@" >"$output" 2>&1 || logger_status=$?
+}
+
+# logger_from <call> <expected call>...: the bound command calls from the first
+# that is exactly <call> through the next press are exactly these, without the prefix.
+logger_from() {
+  local calls expected
+  calls=$(sed "s/^$bound_prefix //" "$root/bound-calls" |
+    awk -v first="$1" '$0 == first { on = 1 } on { print } on && /^press / { exit }')
+  expected=$(printf '%s\n' "$@")
+  [[ "$calls" == "$expected" ]] || {
+    { echo "bound command calls from $1:"; echo "$calls"; } >>"$output"
+    fail "the bound command did not get exactly these calls: $expected"
+  }
+}
+
+# logger_between <first> <last> <expected call>...: the bound command calls from the
+# first that is exactly <first> through the next that is exactly <last> are exactly
+# these, without the prefix.
+logger_between() {
+  local calls expected
+  calls=$(sed "s/^$bound_prefix //" "$root/bound-calls" |
+    awk -v first="$1" -v last="$2" '$0 == first { on = 1 } on { print } on && $0 == last { exit }')
+  shift 2
+  expected=$(printf '%s\n' "$@")
+  [[ "$calls" == "$expected" ]] || {
+    { echo "bound command calls:"; echo "$calls"; } >>"$output"
+    fail "the bound command did not get exactly these calls: $expected"
+  }
+}
+
+# logger_pans_slow checks every drag moves at most 50 points a second.
+logger_pans_slow() {
+  grep -qE "^$bound_prefix gesture pan " "$root/bound-calls" &&
+    ! grep -E "^$bound_prefix gesture pan " "$root/bound-calls" |
+    awk '{ by = $(NF - 1) < 0 ? -$(NF - 1) : $(NF - 1) } by * 20 > $NF { found = 1 } END { exit !found }'
+}
+
+# logger_still_after_relaunch checks the bound command got no scroll and no drag after
+# the last launch.
+logger_still_after_relaunch() {
+  ! awk -v launch="$bound_prefix open com.kron00.svett --relaunch" \
+    'index($0, launch) == 1 { moved = 0 } /^--session .* (scroll|gesture) / { moved = 1 } END { exit !moved }' \
+    "$root/bound-calls"
+}
+
+# logger_presses_clear checks every press point sits above y=840, but the keypad's Done
+# and the rest's Skip at the foot of the screen.
+logger_presses_clear() {
+  ! grep -E "^$bound_prefix press " "$root/bound-calls" |
+    awk '$NF > 840 && !($(NF - 1) == 324 && $NF == 880) && !($(NF - 1) == 343 && $NF == 881) { found = 1 } END { exit !found }'
 }
 
 logger_db="$root/data container/Documents/svett-logger.db"
@@ -2909,24 +3226,67 @@ run_logger "$root/logger"
 check "logger.sh launches on the copied fixture with timing, kills svett, and launches it again" \
   only_open "$debug_open $logger_args" "com.kron00.svett svett://train" "${logger_links[@]}" \
   "$debug_open $logger_args" "${empty_links[@]}"
+check "logger.sh presses the workout bar where it sits after the kill, without a scroll or a drag" \
+  logger_between 'wait id="workout-bar" 10000' 'press 220 818' 'wait id="workout-bar" 10000' \
+  "screenshot $root/logger/05-restored-bar.png" 'is visible id="key-1"' 'is visible id="rest-timer-skip"' \
+  'wait id="workout-bar" 5000' 'get attrs id="workout-bar"' 'wait 250' 'get attrs id="workout-bar"' 'press 220 818'
 check "logger.sh kills svett mid-workout with simctl" \
   simctl_got "simctl terminate FAKE-UDID com.kron00.svett"
 check "logger.sh never launches or opens a link with simctl" no_simctl_launch_or_openurl
-check "logger.sh shoots at the largest text size, then restores the default" \
-  only_calls "settings" "settings text-size accessibility-extra-extra-extra-large" "settings text-size large"
-check "logger.sh types each set on the keypad, one press at each key's centre, with Next to the reps" \
-  only_calls 'get attrs id="(set-[0-9]+-[0-9]+-|key-|keypad-)' \
-  'get attrs id="set-0-0-weight"' 'get attrs id="key-1"' 'get attrs id="key-0"' 'get attrs id="key-0"' \
-  'get attrs id="keypad-next"' 'get attrs id="key-5"' 'get attrs id="keypad-done"' \
-  'get attrs id="set-0-1-weight"' 'get attrs id="key-1"' 'get attrs id="key-0"' 'get attrs id="key-0"' \
-  'get attrs id="keypad-next"' 'get attrs id="key-5"' 'get attrs id="keypad-done"' \
-  'get attrs id="set-0-2-weight"' 'get attrs id="key-1"' 'get attrs id="key-0"' 'get attrs id="key-0"' \
-  'get attrs id="keypad-next"' 'get attrs id="key-4"' 'get attrs id="keypad-done"' \
-  'get attrs id="set-0-0-weight"' 'get attrs id="key-8"' 'get attrs id="key-0"' 'get attrs id="keypad-done"' \
-  'get attrs id="set-5-0-time"' 'get attrs id="key-1"' 'get attrs id="key-0"' 'get attrs id="key-0"' \
-  'get attrs id="keypad-done"'
+check "logger.sh grants notifications ahead, and shoots at the largest text size, then restores the default" \
+  only_calls "settings" "settings permission grant notifications" \
+  "settings text-size accessibility-extra-extra-extra-large" "settings text-size large"
+check "logger.sh types each set by pressing its weight, then its reps, and waits until each is selected" \
+  only_calls 'wait id="set-[0-9]' \
+  'wait id="set-0-0-weight" selected=true 3000' 'wait id="set-0-0-reps" selected=true 3000' \
+  'wait id="set-0-1-weight" selected=true 3000' 'wait id="set-0-1-reps" selected=true 3000' \
+  'wait id="set-0-2-weight" selected=true 3000' 'wait id="set-0-2-reps" selected=true 3000' \
+  'wait id="set-0-0-weight" selected=true 3000' 'wait id="set-5-0-time" selected=true 3000'
+check "logger.sh never reads or presses the keypad's Next" \
+  test -z "$(grep -E 'keypad-next' "$root/bound-calls")"
+check "logger.sh closes the keypad with Done after Move down, Romanian Deadlift's weight and Plank's set" \
+  test "$(grep -cxF -e "$bound_prefix press 324 880" "$root/bound-calls")" = 3
+check "logger.sh closes the keypad and skips the rest right after Move down, before it scrolls to exercise 2" \
+  logger_between 'get attrs id="move-exercise-down-0"' \
+  'scroll down --until id="workout-exercise-1" --max-passes 60' \
+  'get attrs id="move-exercise-down-0"' "wait 250" 'get attrs id="move-exercise-down-0"' "press 220 250" \
+  'is visible id="key-1"' 'get attrs id="keypad-done"' "press 324 880" 'wait absent id="key-1" 5000' \
+  'is visible id="rest-timer-skip"' 'get attrs id="rest-timer-skip"' "press 343 881" \
+  'wait absent id="rest-timer" 5000' 'is visible id="workout-exercise-1"' \
+  'scroll up --until id="workout-exercise-1" --max-passes 60' \
+  'scroll down --until id="workout-exercise-1" --max-passes 60'
+check "logger.sh scrolls up to 60 passes to reach Plank, the sixth exercise of the 13 screen workout" \
+  bound_got "$bound_prefix scroll down --until id=\"workout-exercise-5\" --max-passes 60"
+check "logger.sh lists no exercise headers when every exercise check passes" \
+  test ! -e "$root/logger/exercises.txt"
+check "logger.sh reads exercise 2 only once its frame shows clear of the rest" \
+  bound_got "$bound_prefix get attrs id=\"workout-exercise-1\""
+check "logger.sh drags the first set's weight field up from the bottom edge just far enough before it presses it" \
+  bound_got "$bound_prefix gesture pan 20 820 0 -81 1620"
+check "logger.sh drags a set up from under the keypad and the rest, from just above them" \
+  bound_got "$bound_prefix gesture pan 20 370 0 -276 5520"
+check "logger.sh drags no faster than 50 points a second, so the workout stops where the finger lifts" \
+  logger_pans_slow
+check "logger.sh checks each set it typed and marked done where it shows, above the keypad and the rest" \
+  grep -qxF "Set 1 of exercise 1 shows above the keypad and the rest timer, from y=235 to y=369" "$output"
+check "logger.sh checks the second and the failure set the same way" \
+  test "$(grep -cE '^Set [23] of exercise 1 shows above the keypad and the rest timer, from y=235 to y=369$' "$output")" = 2
+check "logger.sh reads the first set marked done where it is, without a scroll" \
+  test -z "$(grep -E 'scroll .*id="workout-set-0-0"' "$root/bound-calls")"
+check "logger.sh reads the first set's frame only once it stops moving as the rest appears" \
+  test "$(sed -n '/wait id="workout-set-0-0" label="Set 1, 100 kg, 5 reps, Done" 5000$/,/get attrs id="set-0-0-weight"$/p' \
+    "$root/bound-calls" | grep -c 'get attrs id="workout-set-0-0"$')" = 4
+check "logger.sh skips the rest before the order check, before Plank's set is checked, and before the empty workout's set is checked" \
+  test "$(grep -cxF -e "$bound_prefix press 343 881" "$root/bound-calls")" = 3
+check "logger.sh presses nothing at the bottom edge but the keypad's Done and the rest's Skip" logger_presses_clear
+check "logger.sh presses Start workout only once two reads agree after the scroll that found it" \
+  logger_from 'scroll down --until id="start-routine" --max-passes 60' 'is visible id="key-1"' 'is visible id="rest-timer"' \
+  'get attrs id="start-routine"' "wait 250" 'get attrs id="start-routine"' "wait 250" \
+  'get attrs id="start-routine"' "wait 250" 'get attrs id="start-routine"' "press 220 625"
+check "logger.sh leaves the first rest's prompt alone when notifications were granted ahead" \
+  only_calls "alert" "alert wait 3000" "alert wait 5000" "alert wait 5000"
 check "logger.sh scrolls down to a set below the fold before it checks it" \
-  bound_got "--session t3-test session --device FAKE-UDID scroll down --until id=\"workout-set-1-0\" label=\"Set 1, 100 kg, 5 reps, Done\""
+  bound_got "--session t3-test session --device FAKE-UDID scroll down --until id=\"workout-set-1-0\" label=\"Set 1, 100 kg, 5 reps, Done\" --max-passes 60"
 check "logger.sh finds the restored Legs in the database exactly as logged" \
   diff "$root/logger/restored-expected.txt" "$root/logger/restored.txt"
 check "logger.sh finds the finished Legs in the database with only its done sets" \
@@ -2952,19 +3312,203 @@ check "logger.sh Release launches the installed app on the fixture without Metro
 check "logger.sh Release says the time came from a Release build" \
   grep -qF "(Release, on the fixture database, timed in the app)" "$root/logger-release/set-done.txt"
 
+case_name="logger.sh when notifications cannot be granted ahead"
+run_logger FAKE_GRANT_FAILS=1 "$root/logger-ungranted"
+[[ "$logger_status" == 0 ]] || fail "logger.sh failed when it could not grant notifications ahead"
+check "logger.sh says it answers the prompt instead" \
+  grep -qxF "Could not grant notifications ahead, so the first set marked done answers the prompt" "$output"
+check "logger.sh answers the notification prompt right after the first set marked done" \
+  only_calls "alert" "alert wait 3000" "alert accept" "alert wait 5000" "alert wait 5000"
+check "logger.sh still finds the restored Legs in the database exactly as logged" \
+  diff "$root/logger-ungranted/restored-expected.txt" "$root/logger-ungranted/restored.txt"
+
+case_name="logger.sh when a system prompt covers the first launch"
+run_logger FAKE_LAUNCH_PROMPT=1 "$root/logger-prompt"
+[[ "$logger_status" == 0 ]] || fail "logger.sh failed with a prompt over the first launch"
+check "logger.sh keeps the screen of a launch that showed no tabs" \
+  bound_got "$bound_prefix screenshot $root/logger-prompt/launch-1.png"
+check "logger.sh answers the prompt and goes on without launching again" \
+  grep -qxF "Answered a system prompt over svett after launch 1" "$output"
+check "logger.sh launches only as often as without the prompt" \
+  only_open "$debug_open $logger_args" "com.kron00.svett svett://train" "${logger_links[@]}" \
+  "$debug_open $logger_args" "${empty_links[@]}"
+
+case_name="logger.sh when the first launch hangs with nothing over svett"
+run_logger FAKE_FIRST_LAUNCH_HANGS=1 "$root/logger-hangs"
+check "logger.sh fails when a launch hangs with no system prompt to explain it" test "$logger_status" -ne 0
+check "logger.sh keeps the screen of the launch that hung" \
+  bound_got "$bound_prefix screenshot $root/logger-hangs/launch-1.png"
+check "logger.sh keeps the elements of the launch that hung" test -s "$root/logger-hangs/launch-1.txt"
+check "logger.sh names the saved files of the launch that hung" \
+  grep -qxF "svett hung on launch 1 with no system prompt over it. See $root/logger-hangs/launch-1.png and $root/logger-hangs/launch-1.txt" "$output"
+check "logger.sh does not hide the hang behind a second launch" only_open "$debug_open $logger_args"
+
+case_name="logger.sh when a drag overshoots"
+run_logger FAKE_FLINGS=1 "$root/logger-flings"
+[[ "$logger_status" == 0 ]] || fail "logger.sh failed when a drag overshot"
+check "logger.sh brings back a field a drag carried off screen, before it presses it" \
+  logger_from 'gesture pan 20 820 0 -81 1620' 'is visible id="key-1"' 'is visible id="rest-timer"' \
+  'get attrs id="set-0-0-weight"' 'is visible id="set-0-0-weight"' 'scroll up --until id="set-0-0-weight" --max-passes 60' \
+  'get attrs id="set-0-0-weight"' "wait 250" 'get attrs id="set-0-0-weight"' "wait 250" \
+  'get attrs id="set-0-0-weight"' "wait 250" 'get attrs id="set-0-0-weight"' "press 220 625"
+check "logger.sh drags a field a drag left under the navigation bar back down before it presses it" \
+  bound_got "$bound_prefix gesture pan 20 150 0 71 1420"
+check "logger.sh still finds the restored Legs in the database exactly as logged after the overshoots" \
+  diff "$root/logger-flings/restored-expected.txt" "$root/logger-flings/restored.txt"
+
+case_name="logger.sh when the rest covers the set being typed into"
+run_logger FAKE_REST_COVERS_SET=1 "$root/logger-covered"
+check "logger.sh fails when the set marked done does not show above the keypad and the rest" \
+  test "$logger_status" -ne 0
+check "logger.sh says where the set was and what was clear" \
+  grep -qxF "Set 1 of exercise 1 is not whole on screen above the keypad and the rest timer. It reaches from y=311 to y=445, and only y=130 to y=318 is clear" "$output"
+check "logger.sh shoots the screen with the set under the rest" \
+  only_calls "screenshot $root/logger-covered/failure" "screenshot $root/logger-covered/failure.png"
+check "logger.sh saves the elements of the workout with the set under the rest" \
+  grep -qF '"screen":"workout"' "$root/logger-covered/failure.txt"
+
+case_name="logger.sh as 0f0a516 ran it, reading exercise 2 with the keypad open"
+# A copy of the repo whose logger.sh never closes the keypad, as 0f0a516's did not.
+old_repo="$root/logger-open-keypad-repo"
+mkdir -p "$old_repo/scripts/sim"
+for entry in "$repo"/* "$repo"/.[!.]*; do
+  [[ "${entry##*/}" == scripts ]] || ln -s "$entry" "$old_repo/"
+done
+for entry in "$repo"/scripts/*; do
+  [[ "${entry##*/}" == sim ]] || ln -s "$entry" "$old_repo/scripts/"
+done
+for entry in "$repo"/scripts/sim/*; do
+  [[ "${entry##*/}" == logger.sh ]] || ln -s "$entry" "$old_repo/scripts/sim/"
+done
+sed -E 's/^( *)close_keypad$/\1:/' "$repo/scripts/sim/logger.sh" >"$old_repo/scripts/sim/logger.sh"
+chmod +x "$old_repo/scripts/sim/logger.sh"
+check "the copy leaves out every close of the keypad" \
+  test -z "$(grep -E '^ *close_keypad$' "$old_repo/scripts/sim/logger.sh")"
+logger_script="$old_repo/scripts/sim/logger.sh" run_logger "$root/logger-open-keypad"
+check "logger.sh fails when it reads exercise 2 with the keypad and the rest over the screen's middle" \
+  test "$logger_status" -ne 0
+check "logger.sh fails as it did on the Mac" \
+  grep -qxF "Exercise 2 of the workout is not Barbell Squat" "$output"
+check "a scroll down to exercise 2 lands on the keypad and finds nothing" \
+  bound_got "$bound_prefix scroll down --until id=\"workout-exercise-1\" --max-passes 60"
+check "logger.sh keeps the screen with the keypad still open" \
+  grep -qF '"screen":"workout"' "$root/logger-open-keypad/failure.txt"
+
+case_name="logger.sh as f7668d0 ran it, closing the keypad but leaving the rest at the foot"
+# The same copy, now with logger.sh closing the keypad but never skipping the rest, as
+# f7668d0's did not. On the Mac it then failed with the workout at its top, the rest
+# over the foot of the screen and exercise 2 below it.
+sed -E 's/^( *)skip_rest$/\1:/' "$repo/scripts/sim/logger.sh" >"$old_repo/scripts/sim/logger.sh"
+check "the copy never skips the rest" test -z "$(grep -E '^ *skip_rest$' "$old_repo/scripts/sim/logger.sh")"
+logger_script="$old_repo/scripts/sim/logger.sh" run_logger "$root/logger-rest-left"
+check "logger.sh fails when it reads exercise 2 with the rest over the foot of the screen" \
+  test "$logger_status" -ne 0
+check "logger.sh fails at the same step as on the Mac" \
+  grep -qxF "Exercise 2 of the workout is not Barbell Squat" "$output"
+check "logger.sh closed the keypad after Move down, as f7668d0 did" \
+  bound_got "$bound_prefix press 324 880"
+check "a scroll down to exercise 2 starts on the rest and finds nothing" \
+  bound_got "$bound_prefix scroll down --until id=\"workout-exercise-1\" --max-passes 60"
+check "the failure shows the workout at its top, the keypad closed and the rest running, as failure.txt on the Mac did" \
+  grep -qF '"keypad":false,"rest":true,"scrolled":[]' "$root/logger-rest-left/failure.txt"
+
+case_name="logger.sh as 9c9a89e ran it, scrolling at most agent-device's 12 passes"
+# The same copy, now with bring's scrolls left at agent-device's default of 12 passes, as
+# 9c9a89e's were. On the Mac they stopped at Standing Calf Raises, short of Plank, the
+# sixth exercise of the 13 screen workout.
+sed -E '/^bring\(\) \{/,/^\}/ s/ --max-passes "\$max_passes"//' "$repo/scripts/sim/logger.sh" \
+  >"$old_repo/scripts/sim/logger.sh"
+check "the copy's bring scrolls without --max-passes" \
+  test -z "$(sed -n '/^bring() {/,/^}/p' "$old_repo/scripts/sim/logger.sh" | grep -e --max-passes)"
+logger_script="$old_repo/scripts/sim/logger.sh" run_logger "$root/logger-12-passes"
+check "logger.sh fails when 12 passes do not reach Plank" test "$logger_status" -ne 0
+check "logger.sh fails at the same step as on the Mac" \
+  grep -qxF "Exercise 6 of the workout is not Plank" "$output"
+check "logger.sh says Plank's header never came on screen" \
+  grep -qxF "Its header, workout-exercise-5, never came on screen" "$output"
+check "logger.sh says what the scroll down said" \
+  grep -qxF 'The scroll down to it said: Error: id="workout-exercise-5" was not visible after 12 scroll down passes' "$output"
+check "the failure shows Standing Calf Raises and no Plank, as failure.txt on the Mac did" \
+  grep -qF '"headers":["Standing Calf Raises"]' "$root/logger-12-passes/failure.txt"
+check "logger.sh lists every exercise header a scroll reaches, Plank sixth" \
+  diff - "$root/logger-12-passes/exercises.txt" <<'LIST'
+The workout's exercise headers, as far as a scroll reaches:
+Exercise 1, workout-exercise-0: "Romanian Deadlift"
+Exercise 2, workout-exercise-1: "Barbell Squat"
+Exercise 3, workout-exercise-2: "Leg Press"
+Exercise 4, workout-exercise-3: "Lying Leg Curls"
+Exercise 5, workout-exercise-4: "Standing Calf Raises"
+Exercise 6, workout-exercise-5: "Plank"
+No workout-exercise-6 within reach, so the workout shows 6 exercises
+LIST
+check "logger.sh prints the list with the failure" \
+  grep -qxF 'Exercise 6, workout-exercise-5: "Plank"' "$output"
+check "logger.sh presses nothing while it lists the headers" \
+  test -z "$(sed -n "/^$bound_prefix snapshot\$/,\$p" "$root/bound-calls" | grep -E "^$bound_prefix (press|gesture|alert accept)")"
+
+case_name="logger.sh as f25f34a ran it, dragging the workout bar clear of the bottom edge"
+# The same copy, now reaching the workout bar after the kill through see and tap, which
+# scroll and drag, and with bring taking any element, as f25f34a's did. At the largest
+# text size the bar's foot sits below y=840, so the drag to lift it started on the bar
+# and pressed it. On the Mac that opened the workout, and the bar was gone.
+sed -E -e '/^outside_list\(\) \{/,/^\}/ s/return 0/return 1/' \
+  -e "s/^expect ('id=\"workout-bar\"')/see \\1/" \
+  -e "s/^press_fixed ('id=\"workout-bar\"').*/tap \\1/" \
+  "$repo/scripts/sim/logger.sh" >"$old_repo/scripts/sim/logger.sh"
+check "the copy sees and taps the workout bar after the kill" \
+  grep -qxF "tap 'id=\"workout-bar\"'" "$old_repo/scripts/sim/logger.sh"
+logger_script="$old_repo/scripts/sim/logger.sh" run_logger "$root/logger-bar-drag"
+check "logger.sh fails when it drags for the workout bar" test "$logger_status" -ne 0
+check "logger.sh fails as it did on the Mac" \
+  grep -qxF 'id="workout-bar" went off screen after a drag and never came back' "$output"
+check "the drag to lift the bar starts on the bar" \
+  bound_got "$bound_prefix gesture pan 20 820 0 -42 840"
+check "the failure shows the workout the drag opened, as failure.png on the Mac did" \
+  grep -qF '"screen":"workout"' "$root/logger-bar-drag/failure.txt"
+
+case_name="logger.sh when a step taps the workout bar through bring"
+# A copy that taps the bar through ready, which brings and drags, with bring's refusal kept.
+sed -E "s/^press_fixed ('id=\"workout-bar\"').*/tap \\1/" "$repo/scripts/sim/logger.sh" \
+  >"$old_repo/scripts/sim/logger.sh"
+logger_script="$old_repo/scripts/sim/logger.sh" run_logger "$root/logger-bar-bring"
+check "logger.sh fails when bring is asked for the workout bar" test "$logger_status" -ne 0
+check "logger.sh says the bar sits outside the scrolling workout" \
+  grep -qxF 'id="workout-bar" sits outside the scrolling workout, so no scroll or drag can bring it. Press it with press_fixed' "$output"
+check "logger.sh neither scrolls nor drags after the second launch" logger_still_after_relaunch
+
+case_name="logger.sh when a timed exercise's header reads more than its name"
+run_logger FAKE_TIMED_HEADER=", by time" "$root/logger-header"
+check "logger.sh fails when Plank's header is not exactly Plank" test "$logger_status" -ne 0
+check "logger.sh names the check that failed" \
+  grep -qxF "Exercise 6 of the workout is not Plank" "$output"
+check "logger.sh says what the header reads instead" \
+  grep -qxF 'Its header, workout-exercise-5, reads "Plank, by time"' "$output"
+check "logger.sh lists the headers with the one that reads more" \
+  grep -qxF 'Exercise 6, workout-exercise-5: "Plank, by time"' "$root/logger-header/exercises.txt"
+
 case_name="logger.sh when the workout does not survive the kill"
 run_logger FAKE_LOSES_WORKOUT=1 "$root/logger-loses"
 check "logger.sh fails when the workout is gone after the kill" test "$logger_status" -ne 0
 check "logger.sh says the workout did not come back" \
   grep -qxF "The workout in progress did not show above the tabs after the kill" "$output"
+check "logger.sh neither scrolls nor drags for the missing workout bar" logger_still_after_relaunch
 check "logger.sh restores the default text size after a failure" \
-  only_calls "settings" "settings text-size accessibility-extra-extra-extra-large" "settings text-size large"
+  only_calls "settings" "settings permission grant notifications" \
+  "settings text-size accessibility-extra-extra-extra-large" "settings text-size large"
+check "logger.sh shoots the screen at the failing check" \
+  only_calls "screenshot $root/logger-loses/failure" "screenshot $root/logger-loses/failure.png"
+check "logger.sh saves the screen's elements at the failing check" \
+  grep -qF '"screen":"tabs"' "$root/logger-loses/failure.txt"
+check "logger.sh says where the screen at the failure is" \
+  grep -qxF "The screen at the failure is in $root/logger-loses/failure.png and $root/logger-loses/failure.txt" "$output"
 
 case_name="logger.sh when a done set does not survive the kill"
 run_logger FAKE_DROPS_DONE=1 "$root/logger-drops"
 check "logger.sh fails when a set comes back not done" test "$logger_status" -ne 0
 check "logger.sh names the set that came back wrong" \
   grep -qxF 'Set 1 of exercise 6 does not read "Set 1, 60 seconds, Done"' "$output"
+check "logger.sh keeps the screen of the workout where the set came back wrong" \
+  grep -qF '"screen":"workout"' "$root/logger-drops/failure.txt"
 
 case_name="logger.sh when finishing keeps the sets not done"
 run_logger FAKE_KEEPS_UNDONE=1 "$root/logger-undone"
@@ -5143,5 +5687,184 @@ run_safety FAKE_NO_CLERK=1 "$root/safety-no-clerk"
 check "safety.sh fails on a build without a Clerk key" test "$safety_status" -ne 0
 check "safety.sh says to build with the publishable key" \
   grep -qF "Build it with EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY set" "$output"
+
+# Stands in for the bound command while connected-apps.sh revokes the stand-in
+# connection. It keeps the screen in front, what came on screen since, whether
+# svett's confirmation is up and whether the connection was revoked, as files under
+# $FAKE_STATE. The You tab's Connected apps row and every part of the connection
+# start below the fold, so only a scroll finds them. Revoke sits at the bottom edge
+# until a drag moves it up. FAKE_NO_STUB launches without the stand-in, and
+# FAKE_REVOKE_IGNORED makes Revoke access do nothing, and FAKE_NO_RECENT
+# leaves the access log out. alert accept is refused, as
+# agent-device refuses it for svett's own alert.
+cat >"$fake/apps-device" <<'EOF'
+#!/usr/bin/env bash
+echo "$*" >>"$FAKE_ROOT/bound-calls"
+state=$FAKE_STATE
+mkdir -p "$state"
+get() { cat "$state/$1" 2>/dev/null || echo "$2"; }
+put() { echo "$2" >"$state/$1"; }
+has() { [[ -e "$state/$1" ]]; }
+screen=$(get screen home)
+args=" $* "
+selector() { sed -E 's/^.* (is visible|--until|get attrs|get text|wait) (.*) $/\2/; s/ [0-9]+ $//' <<<"$args"; }
+# The elements the screen in front holds, one per line.
+elements() {
+  case $screen in
+    you) echo 'id="connected-apps-row"' ;;
+    apps)
+      if ! has stub; then return; fi
+      if has revoked; then
+        echo 'id="connected-apps-empty"'
+      else
+        printf '%s\n' 'id="connection-stand-in-chatgpt"' \
+          'id="connection-stand-in-chatgpt-access"' 'id="connection-stand-in-chatgpt-read"' \
+          'id="revoke-stand-in-chatgpt"'
+        [[ -n "${FAKE_NO_RECENT:-}" ]] ||
+          printf '%s\n' 'id="connection-stand-in-chatgpt-recent-title"' \
+            'id="connection-stand-in-chatgpt-recent-0"'
+      fi ;;
+  esac
+  if has alert; then echo 'label="Revoke access"'; fi
+}
+holds() { elements | grep -qxF -- "$1"; }
+seen() { grep -qxF -- "$1" "$state/seen" 2>/dev/null; }
+case "$args" in
+  *" open com.kron00.svett --relaunch "*)
+    rm -f "$state/revoked" "$state/alert" "$state/seen" "$state/stub" "$state/dragged"
+    [[ -n "${FAKE_NO_STUB:-}" || "$args" != *" --launch-args=-svettConnectionsStub --launch-args=one "* ]] ||
+      touch "$state/stub"
+    put screen tabs ;;
+  *" open com.kron00.svett svett://connected-apps "*)
+    rm -f "$state/seen"
+    put screen apps ;;
+  *' wait label="You, tab, 5 of 5" selected=true '*) [[ "$screen" == you ]] ;;
+  *' wait label="You, tab, 5 of 5" '*) [[ "$screen" != home ]] ;;
+  *' press label="You, tab, 5 of 5" '*) rm -f "$state/seen"; put screen you ;;
+  *' wait id="connected-apps-screen" '*) [[ "$screen" == apps ]] ;;
+  *" alert wait "*) has alert ;;
+  *" alert accept "* | *" alert dismiss "*) echo "agent-device answers system alerts only" >&2; exit 1 ;;
+  *" is visible "*)
+    target=$(selector)
+    holds "$target" && { seen "$target" || [[ "$target" == 'label="Revoke access"' ]]; } ;;
+  *" scroll "*" --until "*)
+    target=$(selector)
+    holds "$target" || exit 1
+    echo "$target" >>"$state/seen" ;;
+  *" get text "*)
+    target=$(selector)
+    holds "$target" && seen "$target" || exit 1
+    case $target in
+      *-access*) echo "${FAKE_ACCESS:-Read your training and propose routines and programs}" ;;
+      *-read*) echo "Last read your data on Fri, 13 Nov 2026, 18:05" ;;
+      *-recent-title*) echo "Recent access" ;;
+      *-recent-0*) echo "Listed workouts, Fri, 13 Nov 2026, 18:05" ;;
+    esac ;;
+  *" get attrs "*)
+    target=$(selector)
+    holds "$target" || exit 1
+    echo "$target" >"$state/target"
+    case $target in
+      'label="Revoke access"') echo '{"rect": {"x": 40, "y": 476, "width": 360, "height": 48}}' ;;
+      'id="revoke-stand-in-chatgpt"')
+        if has dragged; then y=556; else y=856; fi
+        echo "{\"rect\": {\"x\": 16, \"y\": $y, \"width\": 408, \"height\": 48}}" ;;
+      *) echo '{"rect": {"x": 16, "y": 300, "width": 408, "height": 48}}' ;;
+    esac ;;
+  *" gesture pan "*) touch "$state/dragged" ;;
+  *" press "[0-9]*)
+    case $(get target none) in
+      'id="revoke-stand-in-chatgpt"') touch "$state/alert" ;;
+      'label="Revoke access"')
+        rm -f "$state/alert"
+        [[ -n "${FAKE_REVOKE_IGNORED:-}" ]] || touch "$state/revoked" ;;
+      *) exit 1 ;;
+    esac ;;
+esac
+EOF
+chmod +x "$fake/apps-device"
+
+# run_apps [VAR=value...] [connected-apps.sh args...] leaves the exit status in apps_status.
+run_apps() {
+  local -a vars=()
+  while [[ "${1:-}" == *=* ]]; do
+    vars+=("$1")
+    shift
+  done
+  rm -rf "$root/simctl-calls" "$root/bound-calls" "$root/apps-state"
+  apps_status=0
+  env PATH="$fake:$PATH" FAKE_ROOT="$root" FAKE_STATE="$root/apps-state" \
+    SVETT_DEVICE_CMD="apps-device --session 't3-test session' --device FAKE-UDID" \
+    "${vars[@]}" "$repo/scripts/sim/connected-apps.sh" "$@" >"$output" 2>&1 || apps_status=$?
+}
+
+apps_launch="com.kron00.svett --relaunch --launch-args=-svettConnectionsStub --launch-args=one"
+
+case_name="connected-apps.sh Debug with SVETT_DEVICE_CMD"
+run_apps "$root/connected-apps"
+[[ "$apps_status" == 0 ]] || fail "connected-apps.sh failed"
+check "connected-apps.sh relaunches with the stand-in into the dev client, then opens Connected apps" \
+  only_open "$apps_launch --launch-url $local_dev_client_url" "com.kron00.svett svett://connected-apps"
+check "connected-apps.sh shoots at the largest text size, then restores the default" \
+  only_calls "settings" "$largest_text" "settings text-size large"
+check "connected-apps.sh scrolls to the You tab's row and to every part of the connection" \
+  only_calls "scroll" \
+  'scroll down --until id="connected-apps-row"' \
+  'scroll down --until id="connection-stand-in-chatgpt"' \
+  'scroll down --until id="connection-stand-in-chatgpt-access"' \
+  'scroll down --until id="connection-stand-in-chatgpt-read"' \
+  'scroll down --until id="connection-stand-in-chatgpt-recent-title"' \
+  'scroll down --until id="connection-stand-in-chatgpt-recent-0"' \
+  'scroll down --until id="revoke-stand-in-chatgpt"' \
+  'scroll down --until id="connected-apps-empty"' \
+  'scroll down --until id="connection-stand-in-chatgpt"' \
+  'scroll up --until id="connection-stand-in-chatgpt"'
+check "connected-apps.sh drags Revoke clear of the bottom edge before it presses it" \
+  only_calls "press|gesture" 'press label="You, tab, 5 of 5"' "gesture pan 20 600 0 -300 400" \
+  "press 220 580" "press 220 500"
+check "connected-apps.sh answers svett's own confirmation by its button, never alert accept" \
+  bash -c '! grep -qF "alert accept" "$1"' _ "$root/bound-calls"
+check "connected-apps.sh screenshots each step" \
+  only_calls "screenshot" \
+  "screenshot $root/connected-apps/01-you-tab.png" "screenshot $root/connected-apps/02-connection.png" \
+  "screenshot $root/connected-apps/03-confirm.png" "screenshot $root/connected-apps/04-revoked.png"
+check "connected-apps.sh with SVETT_DEVICE_CMD never calls simctl" test ! -e "$root/simctl-calls"
+
+case_name="connected-apps.sh Release with SVETT_DEVICE_CMD"
+run_apps --release "$root/connected-apps-release"
+[[ "$apps_status" == 0 ]] || fail "connected-apps.sh --release failed"
+check "connected-apps.sh Release relaunches the installed app with the stand-in and no Metro" \
+  only_open "$apps_launch" "com.kron00.svett svett://connected-apps"
+
+case_name="connected-apps.sh when svett launches without the stand-in"
+run_apps FAKE_NO_STUB=1 "$root/connected-apps-no-stub"
+check "connected-apps.sh fails when the stand-in connection never shows" test "$apps_status" -ne 0
+check "connected-apps.sh says the connection is missing" \
+  grep -qxF "The stand-in ChatGPT connection did not show." "$output"
+check "connected-apps.sh restores the default text size after a failure" \
+  only_calls "settings" "$largest_text" "settings text-size large"
+
+case_name="connected-apps.sh when the connection says it may do something else"
+run_apps FAKE_ACCESS="Read your training" "$root/connected-apps-access"
+check "connected-apps.sh fails when the connection's access is wrong" test "$apps_status" -ne 0
+check "connected-apps.sh shows what the connection said" \
+  grep -qF 'but it shows "Read your training"' "$output"
+
+case_name="connected-apps.sh when the connection shows no recent access"
+run_apps FAKE_NO_RECENT=1 "$root/connected-apps-no-recent"
+check "connected-apps.sh fails when Recent access never shows" test "$apps_status" -ne 0
+check "connected-apps.sh says Recent access is missing" \
+  grep -qxF 'id="connection-stand-in-chatgpt-recent-title" did not show.' "$output"
+
+case_name="connected-apps.sh when Revoke access does nothing"
+run_apps FAKE_REVOKE_IGNORED=1 "$root/connected-apps-ignored"
+check "connected-apps.sh fails when the connection is still there after Revoke" test "$apps_status" -ne 0
+check "connected-apps.sh says the list did not empty" \
+  grep -qxF "The list without the revoked connection did not show." "$output"
+check "connected-apps.sh shoots nothing after the failed revoke" \
+  only_calls "screenshot" \
+  "screenshot $root/connected-apps-ignored/01-you-tab.png" \
+  "screenshot $root/connected-apps-ignored/02-connection.png" \
+  "screenshot $root/connected-apps-ignored/03-confirm.png"
 
 echo "$passed passed"

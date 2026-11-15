@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import { PgClient } from "@effect/sql-pg";
 import {
   type AccountId,
@@ -131,7 +133,23 @@ export interface SafetyShape {
     account: AccountId,
     effect: Effect.Effect<A, E, R>,
   ) => Effect.Effect<A, E | SqlError, R>;
+  /**
+   * Takes a token of `group` for a caller with no account, by the network address it came
+   * from, in a transaction of its own. Only a hash of the address is kept.
+   */
+  readonly limitAddress: (
+    address: string,
+    group: RateLimitGroup,
+  ) => Effect.Effect<void, RateLimited | SqlError>;
+  /**
+   * Forgets the buckets of addresses that asked nothing since `beforeMillis`, which have long
+   * filled again. Gives back how many it forgot.
+   */
+  readonly forgetAddresses: (beforeMillis: number) => Effect.Effect<number, SqlError>;
 }
+
+/** Address buckets share the rate limit table, under keys no account ID can take. */
+const ADDRESS_KEY = "address:";
 
 export class Safety extends Context.Service<Safety, SafetyShape>()("svett/server/Safety") {
   /** `limits` replaces the limits of the groups it names, as tests do to reach one quickly. */
@@ -144,7 +162,7 @@ export class Safety extends Context.Service<Safety, SafetyShape>()("svett/server
         const sql = yield* PgClient.PgClient;
         const ledger = yield* DeletionLedger;
 
-        const take = (account: AccountId, group: RateLimitGroup) =>
+        const take = (account: string, group: RateLimitGroup) =>
           Effect.gen(function* () {
             const limit = limits[group] ?? RATE_LIMITS[group];
             const now = yield* Clock.currentTimeMillis;
@@ -201,6 +219,19 @@ export class Safety extends Context.Service<Safety, SafetyShape>()("svett/server
               .pipe(Effect.flatMap((exit) => exit)),
           exclusively: (account, effect) =>
             sql.withTransaction(Effect.andThen(lockAlone(sql, account), effect)),
+          limitAddress: (address, group) =>
+            sql.withTransaction(
+              take(`${ADDRESS_KEY}${createHash("sha256").update(address).digest("hex")}`, group),
+            ),
+          forgetAddresses: (beforeMillis) =>
+            Effect.map(
+              sql`
+                delete from rate_limit
+                where starts_with(account_id, ${ADDRESS_KEY}) and at_ms < ${beforeMillis}
+                returning 1
+              `,
+              (rows) => rows.length,
+            ),
         });
       }),
     );

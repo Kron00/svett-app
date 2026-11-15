@@ -4,7 +4,7 @@ import { DurationSeconds } from "./duration.ts";
 import { contentFingerprint } from "./ids.ts";
 import { ActivityRepository } from "./repositories/activities.ts";
 import { ExerciseRepository } from "./repositories/exercises.ts";
-import { ProposalRepository } from "./repositories/records.ts";
+import { type ProposalDraft, ProposalRepository } from "./repositories/records.ts";
 import { type AppliedRows, RoutineRepository } from "./repositories/routines.ts";
 import { endPosition } from "./routine-plan.ts";
 import {
@@ -15,6 +15,7 @@ import {
   FolderId,
   type Proposal,
   type ProposalId,
+  type ProposalOrigin,
   type ProposalStatus,
   RoutineId,
   SetType,
@@ -176,16 +177,23 @@ const findProposal = (id: ProposalId) =>
     return { proposal: found.value, payload: yield* loadPayload(found.value) };
   });
 
+/** The proposal row's fields for a plan not applied yet. */
+export const proposalDraft = (
+  plan: ProposalPlan,
+  origin: ProposalOrigin,
+  coachMessageId: CoachMessageId | null,
+): ProposalDraft => ({
+  origin,
+  kind: plan.kind,
+  title: planTitle(plan),
+  payload: encodePayload({ plan, applied: null }),
+  coachMessageId,
+});
+
 /** Stores a plan as a pending proposal from the coach, linked to the message that asked for it. */
 export const createProposal = (plan: ProposalPlan, coachMessageId: CoachMessageId | null) =>
   Effect.flatMap(Effect.service(ProposalRepository), (proposals) =>
-    proposals.create({
-      origin: "coach",
-      kind: plan.kind,
-      title: planTitle(plan),
-      payload: encodePayload({ plan, applied: null }),
-      coachMessageId,
-    }),
+    proposals.create(proposalDraft(plan, "coach", coachMessageId)),
   );
 
 export const proposalView = (id: ProposalId) =>

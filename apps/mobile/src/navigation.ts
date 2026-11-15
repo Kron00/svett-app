@@ -66,6 +66,7 @@ export type RootStackParamList = {
   /** Units, RPE, and your plates and bars. */
   WorkoutSettings: undefined;
   Account: undefined;
+  ConnectedApps: undefined;
   OwnProfile: undefined;
   /** `username` fills in the field, for links such as svett://profile/edit?username=anna. */
   EditProfile: { username?: string } | undefined;

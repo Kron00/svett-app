@@ -7,6 +7,8 @@ export const RateLimitGroup = Schema.Literals([
   "follows",
   "search",
   "sync_push",
+  "assistant",
+  "client_register",
 ]);
 export type RateLimitGroup = typeof RateLimitGroup.Type;
 
@@ -30,6 +32,11 @@ export const RATE_LIMITS: Readonly<Record<RateLimitGroup, RateLimit>> = {
   follows: { capacity: 30, perSecond: 1 / 30 },
   search: { capacity: 60, perSecond: 1 },
   sync_push: { capacity: 120, perSecond: 2 },
+  // Each tool call from a connected assistant reads the account's whole copy, so a chat's
+  // burst of calls goes through and a script that loops is slowed to one call a second.
+  assistant: { capacity: 30, perSecond: 1 },
+  // Per address, not per account. An app registers once each time someone adds svett to it.
+  client_register: { capacity: 10, perSecond: 1 / 360 },
 };
 
 /** A bucket as stored: how many tokens it held at `atMillis`. */

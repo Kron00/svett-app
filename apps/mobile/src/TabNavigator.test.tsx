@@ -30,6 +30,7 @@ vi.mock("./account/AccountRow", () => ({ AccountRow: () => "account row" }));
 vi.mock("./coach/CoachScreen", () => ({ CoachScreen: () => "coach screen" }));
 vi.mock("./social/ProfileRow", () => ({ ProfileRow: () => "profile row" }));
 vi.mock("./chatgpt/ChatGPTRow", () => ({ ChatGPTRow: () => "chatgpt row" }));
+vi.mock("./assistant/ConnectedAppsRow", () => ({ ConnectedAppsRow: () => "connected apps row" }));
 vi.mock("./PhoneChecksRow", () => ({ PhoneChecksRow: () => "phone checks row" }));
 vi.mock("./transfer/DataRow", () => ({ DataRow: () => "data row" }));
 vi.mock("./tools/WorkoutSettingsRow", () => ({
