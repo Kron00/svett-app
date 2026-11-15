@@ -15,6 +15,9 @@ import type { RootStackParamList } from "./navigation";
 // scripts/sim/health.sh uses svett://health-import?file=<name> and
 // svett://manual?kind=...&duration=..., which fills manual entry's fields.
 // scripts/sim/tools.sh opens svett://settings/workout and svett://tools/plates?kg=100.
+// scripts/sim/social.sh opens svett://profile, svett://profile/edit?username=<name>,
+// svett://people?q=<prefix>, svett://people/<name>, svett://people/<name>/followers and
+// svett://profile/requests.
 //
 // The launch argument `-svettLink <link>` opens svett on that link's screen, as if the link had
 // launched it. scripts/sim/startup.sh launches with `-svettLink svett://train`, so the first
@@ -75,6 +78,12 @@ export const linking: LinkingOptions<RootStackParamList> = {
       WorkoutSettings: "settings/workout",
       HealthImport: "health-import",
       ManualCardio: "manual",
+      EditProfile: "profile/edit",
+      FollowRequests: "profile/requests",
+      OwnProfile: "profile",
+      Connections: "people/:username/:list",
+      Profile: "people/:username",
+      People: "people",
     },
   },
 };

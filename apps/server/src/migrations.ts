@@ -66,4 +66,49 @@ export const MIGRATIONS: Record<string, Effect.Effect<void, unknown, SqlClient>>
       );
     }
   }),
+  // Usernames are unique whatever their case, so the lower-case form carries the index that
+  // keeps them apart and serves searches by prefix. A follow is requested until the account
+  // followed approves it, or following at once when that profile is public. Each follow has
+  // its own ID, so an answer to a request reaches that request alone, even after its
+  // username passes to another account.
+  "4_social": Effect.gen(function* () {
+    const sql = yield* SqlClient;
+    yield* sql`
+      create table profile (
+        account_id text primary key,
+        username text not null,
+        username_key text not null,
+        private boolean not null,
+        updated_at timestamptz not null default now()
+      )
+    `;
+    yield* sql`create unique index profile_username_key on profile (username_key text_pattern_ops)`;
+    yield* sql`
+      create table follow (
+        id text not null default gen_random_uuid()::text,
+        follower_id text not null,
+        followee_id text not null,
+        state text not null,
+        created_at timestamptz not null default now(),
+        primary key (follower_id, followee_id)
+      )
+    `;
+    yield* sql`create unique index follow_id on follow (id)`;
+    yield* sql`create index follow_followee on follow (followee_id, state)`;
+  }),
+  // Another account names an activity by a random ID minted here the first time anyone is
+  // shown it. An activity's own ID can come from its start time, as an imported workout's
+  // does, so it never leaves the server for anyone but its owner.
+  "5_activity_social": Effect.gen(function* () {
+    const sql = yield* SqlClient;
+    yield* sql`
+      create table activity_social (
+        account_id text not null,
+        activity_id text not null,
+        social_id text not null default gen_random_uuid()::text,
+        primary key (account_id, activity_id)
+      )
+    `;
+    yield* sql`create unique index activity_social_id on activity_social (social_id)`;
+  }),
 };

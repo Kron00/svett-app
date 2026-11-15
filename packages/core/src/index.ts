@@ -77,3 +77,7 @@ export * from "./health-export.ts";
 export * from "./source-import.ts";
 export * from "./source-file.ts";
 export * from "./manual-entry.ts";
+export * from "./privacy.ts";
+export * from "./username.ts";
+export * from "./social-api.ts";
+export * from "./social-format.ts";
