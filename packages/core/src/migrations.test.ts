@@ -14,6 +14,16 @@ const NEXT: Migration = {
   sql: "ALTER TABLE activity ADD COLUMN place TEXT; CREATE TABLE gym (id TEXT PRIMARY KEY NOT NULL) STRICT;",
 };
 
+// Tables only this phone uses, which never sync or export.
+const SYNC_BOOKKEEPING = [
+  "schema_version",
+  "sync_aside",
+  "sync_outbox",
+  "sync_restore",
+  "sync_state",
+  "sync_unsent_deletion",
+];
+
 const open = () => {
   const { database, driver } = openNodeDatabase();
   const layer = Layer.merge(Sql.layer(driver), manualClock(0).layer);
@@ -33,7 +43,7 @@ describe("migrate", () => {
     const { database, run } = open();
     expect(await run(migrate())).toEqual(Exit.succeed({ from: 0, to: MIGRATIONS.length }));
     expect(tableNames(database)).toEqual(
-      [...Object.values(TABLES).map((table) => table.name), "schema_version"].toSorted(),
+      [...Object.values(TABLES).map((table) => table.name), ...SYNC_BOOKKEEPING].toSorted(),
     );
   });
 
@@ -71,9 +81,13 @@ describe("migrate", () => {
     );
     expect(await run(migrate())).toEqual(Exit.succeed({ from: 1, to: MIGRATIONS.length }));
     expect(tableNames(database)).toEqual(
-      [...Object.values(TABLES).map((table) => table.name), "schema_version"].toSorted(),
+      [...Object.values(TABLES).map((table) => table.name), ...SYNC_BOOKKEEPING].toSorted(),
     );
     expect(database.prepare("SELECT name FROM folder").all()).toEqual([{ name: "Push" }]);
+    // Rows made before sync existed upload at the first sync.
+    expect(database.prepare("SELECT table_name, row_id FROM sync_outbox").all()).toEqual([
+      { table_name: "folder", row_id: "f" },
+    ]);
   });
 
   it("does nothing when the database is already current", async () => {
@@ -190,6 +204,43 @@ describe("migrate", () => {
       empty: "weight_reps",
     });
   });
+  it.each([8, 9])(
+    "keeps a workout in progress out of the sync queue of a database at version %i that holds one",
+    async (version) => {
+      const { database, run } = open();
+      await run(migrate(MIGRATIONS.slice(0, version)));
+      for (const [id, status] of [
+        ["draft", "in_progress"],
+        ["done", "finished"],
+      ]) {
+        database.exec(
+          `INSERT INTO activity (id, updated_at, kind, started_at, duration_s, title, notes, source, status)
+           VALUES ('${id}', 1, 'strength', 1, 60, 'Push', '', 'svett', '${status}');
+           INSERT INTO activity_exercise (id, updated_at, activity_id, exercise_id, position, notes)
+           VALUES ('${id}-e', 1, '${id}', 'x', 0, '');
+           INSERT INTO activity_set (id, updated_at, activity_exercise_id, position, set_type, reps)
+           VALUES ('${id}-s', 1, '${id}-e', 0, 'normal', 5);
+           INSERT INTO activity_track (id, updated_at, activity_id, hide_start_m, hide_end_m)
+           VALUES ('${id}-t', 1, '${id}', 0, 0);
+           INSERT INTO activity_sample (id, updated_at, activity_track_id, recorded_at, kind)
+           VALUES ('${id}-p', 1, '${id}-t', 1, 'location')`,
+        );
+      }
+      const queued = () =>
+        database
+          .prepare("SELECT row_id FROM sync_outbox ORDER BY row_id")
+          .all()
+          .map((row) => row["row_id"]);
+      const done = ["done", "done-e", "done-p", "done-s", "done-t"];
+      await run(migrate());
+      expect(queued()).toEqual(done);
+
+      database.exec("UPDATE activity_set SET reps = 6 WHERE id = 'draft-s'");
+      expect(queued()).toEqual(done);
+      database.exec("UPDATE activity SET status = 'finished' WHERE id = 'draft'");
+      expect(queued()).toEqual([...done, "draft", "draft-e", "draft-p", "draft-s", "draft-t"]);
+    },
+  );
 
   it("puts every location sample saved before routes had stretches into the first one", async () => {
     const { database, run } = open();

@@ -14,16 +14,18 @@ metro=${SVETT_METRO:-localhost:8081}
 
 # Prints the UDID of the available iOS 27 simulator whose name is exactly $1.
 # A literal prefix match keeps "iPhone 16 Pro Max" and "svett iPhone 16 Pro Max" apart.
+# awk reads the whole list: stopping at the match could cut off simctl mid-write,
+# and pipefail would then fail the caller.
 simulator_udid() {
   xcrun simctl list devices available | awk -v name="$1" '
     /^-- / { ios27 = ($0 ~ /^-- iOS 27\./); next }
-    ios27 {
+    ios27 && !found {
       line = $0
       sub(/^ +/, "", line)
       if (index(line, name " (") == 1) {
         rest = substr(line, length(name) + 3)
         print substr(rest, 1, index(rest, ")") - 1)
-        exit
+        found = 1
       }
     }'
 }

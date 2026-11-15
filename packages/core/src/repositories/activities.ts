@@ -1,4 +1,4 @@
-import { Context, Data, Effect, Layer, Option } from "effect";
+import { Clock, Context, Data, Effect, Layer, Option } from "effect";
 
 import { Ids } from "../ids.ts";
 import {
@@ -12,7 +12,7 @@ import {
   ActivitySetId,
   type ActivityTrack,
   ActivityTrackId,
-  type EpochMillis,
+  EpochMillis,
   type ExerciseId,
   type RoutineId,
   type SetFields,
@@ -26,6 +26,7 @@ import {
   restoreRows,
   RowNotFoundError,
   selectById,
+  selectRowsWithDeleted,
   selectRows,
   softDeleteRows,
   TABLES,
@@ -40,6 +41,7 @@ import {
   setsForFields,
 } from "../logger.ts";
 import { MADE_HERE, type Origin, provenance, rowId } from "./origin.ts";
+import { draftVersion, settleKeptAside } from "./sync-rows.ts";
 
 type Draft<A, Parent extends string = never> = Omit<
   A,
@@ -332,13 +334,15 @@ const makeActivityRepository = Effect.gen(function* () {
             return yield* new WorkoutInProgressError({ activityId: running.value });
           }
           const updatedAt = yield* currentTime;
+          // The start a person sees is the wall clock's. Only row versions take the logical clock.
+          const startedAt = EpochMillis.make(yield* Clock.currentTimeMillis);
           const id = ActivityId.make(yield* rowId(TABLES.activity, MADE_HERE));
           yield* insertRows(TABLES.activity, [
             {
               kind: "strength",
               status: "in_progress",
               routineId,
-              startedAt: updatedAt,
+              startedAt,
               durationS: DurationSeconds.make(0),
               title,
               notes: "",
@@ -543,6 +547,7 @@ const makeActivityRepository = Effect.gen(function* () {
       sql.transaction(
         Effect.gen(function* () {
           const activity = yield* inProgressActivity(id);
+          const draft = yield* draftVersion(id);
           const exercises = yield* liveExercises(id);
           const sets = yield* selectRows(TABLES.activitySet, childrenOf.sets, [id], "position, id");
           const plan = finishPlan(
@@ -575,10 +580,15 @@ const makeActivityRepository = Effect.gen(function* () {
               yield* updateRow(TABLES.activityExercise, exercise.id, { position });
             }
           }
-          return yield* updateRow(TABLES.activity, id, {
+          const finished = yield* updateRow(TABLES.activity, id, {
             status: "finished",
-            durationS: DurationSeconds.make(Math.max(0, (at - activity.startedAt) / 1000)),
+            durationS: DurationSeconds.make(
+              Math.max(0, ((yield* Clock.currentTimeMillis) - activity.startedAt) / 1000),
+            ),
           });
+          yield* settleKeptAside(id, { finished: draft });
+          const [settled] = yield* selectRowsWithDeleted(TABLES.activity, "id = ?", [id]);
+          return settled ?? finished;
         }),
       ),
     );
@@ -625,9 +635,10 @@ const makeActivityRepository = Effect.gen(function* () {
           TABLES.activityExercise,
           childrenOf.exercises,
           [id],
-          "position",
+          "position, id",
         );
-        const sets = yield* selectRows(TABLES.activitySet, childrenOf.sets, [id], "position");
+        // Two phones can each add a set at the same position, and both show them in one order.
+        const sets = yield* selectRows(TABLES.activitySet, childrenOf.sets, [id], "position, id");
         const [track] = yield* selectRows(TABLES.activityTrack, childrenOf.tracks, [id]);
         return Option.some<ActivityDetail>({
           activity: activity.value,
@@ -664,6 +675,8 @@ const makeActivityRepository = Effect.gen(function* () {
       sql.transaction(
         Effect.gen(function* () {
           const at = yield* currentTime;
+          const before = yield* selectById(TABLES.activity, id);
+          const discarded = Option.isSome(before) && before.value.status === "in_progress";
           const removed = yield* softDeleteRows(TABLES.activity, "id = ?", [id], at);
           if (removed === 0) return yield* new RowNotFoundError({ table: "activity", id });
           yield* softDeleteRows(TABLES.activitySet, childrenOf.sets, [id], at);
@@ -671,6 +684,7 @@ const makeActivityRepository = Effect.gen(function* () {
           yield* softDeleteRows(TABLES.activitySample, childrenOf.samples, [id], at);
           yield* softDeleteRows(TABLES.activityTrack, childrenOf.tracks, [id], at);
           yield* softDeleteRows(TABLES.activitySource, childrenOf.sources, [id], at);
+          if (discarded) yield* settleKeptAside(id, "discarded");
         }),
       ),
     );
@@ -784,9 +798,17 @@ const makeActivityRepository = Effect.gen(function* () {
       run(
         sql.transaction(
           Effect.gen(function* () {
+            const before = yield* selectById(TABLES.activity, id);
+            const draft =
+              Option.isSome(before) && before.value.status === "in_progress"
+                ? yield* draftVersion(id)
+                : undefined;
             const next = yield* updateRow(TABLES.activity, id, patch);
             if (next.status === "in_progress") yield* noOtherInProgress(id);
-            return next;
+            if (draft === undefined || next.status === "in_progress") return next;
+            yield* settleKeptAside(id, { finished: draft });
+            const [settled] = yield* selectRowsWithDeleted(TABLES.activity, "id = ?", [id]);
+            return settled ?? next;
           }),
         ),
       ),
