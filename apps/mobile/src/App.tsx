@@ -6,8 +6,13 @@ import { StatusBar } from "expo-status-bar";
 
 import { AccountProvider } from "./account/AccountProvider";
 import { AccountScreen } from "./account/AccountScreen";
+import { ActivityScreen } from "./cardio/ActivityScreen";
+import { ManualCardioScreen } from "./cardio/ManualCardioScreen";
+import { RecordScreen } from "./cardio/RecordScreen";
 import { ChatGPTScreen } from "./chatgpt/ChatGPTScreen";
+import { ProposalScreen } from "./coach/ProposalScreen";
 import { PhoneChecksScreen } from "./checks/PhoneChecksScreen";
+import { markLaunchOnNextFrame } from "./data/launch-timing";
 import {
   ConnectionsScreen,
   EditProfileScreen,
@@ -22,6 +27,7 @@ import { ExerciseDetailScreen } from "./exercises/ExerciseDetailScreen";
 import { EditExerciseScreen, NewExerciseScreen } from "./exercises/ExerciseFormScreen";
 import { ExerciseLibraryScreen, NewExerciseButton } from "./exercises/ExerciseLibraryScreen";
 import { GalleryScreen } from "./gallery/GalleryScreen";
+import { HealthImportScreen } from "./health/HealthImportScreen";
 import { linking } from "./linking";
 import type { RootStackParamList } from "./navigation";
 import { ExerciseProgressScreen } from "./progress/ExerciseProgressScreen";
@@ -31,17 +37,36 @@ import { MuscleSetsScreen } from "./progress/MuscleSetsScreen";
 import { CalendarScreen } from "./progress/CalendarScreen";
 import { SetEditScreen } from "./progress/SetEditScreen";
 import { WorkoutScreen } from "./progress/WorkoutScreen";
+import { RoutineDetailScreen } from "./routines/RoutineDetailScreen";
+import { EditRoutineScreen, NewRoutineScreen } from "./routines/RoutineEditorScreen";
+import { SetTargetScreen } from "./routines/SetTargetScreen";
 import { TabNavigator } from "./TabNavigator";
 import { DataScreen } from "./transfer/DataScreen";
 import { ImportPreviewScreen } from "./transfer/ImportPreviewScreen";
 import { UndoImportScreen } from "./transfer/UndoImportScreen";
+import { restoreRestTimer } from "./workout/rest";
+import { currentWorkout, reloadWorkout, workoutState } from "./workout/store";
+import { PlatesScreen } from "./tools/PlatesScreen";
+import { WarmUpScreen } from "./tools/WarmUpScreen";
+import { WorkoutSettingsScreen } from "./tools/WorkoutSettingsScreen";
+import { WorkoutScreen as ActiveWorkoutScreen } from "./workout/WorkoutScreen";
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
+
+// A workout left in progress, even by an app that was killed, shows above the tabs at launch,
+// with the rest that was running. A workout that could not be read leaves the rest as kept.
+void reloadWorkout().then(() => {
+  if (workoutState().status === "ready") void restoreRestTimer(currentWorkout());
+});
 
 export default function App() {
   return (
     <AccountProvider>
-      <NavigationContainer theme={useNavigationTheme()} linking={linking}>
+      <NavigationContainer
+        theme={useNavigationTheme()}
+        linking={linking}
+        onReady={() => markLaunchOnNextFrame("screen")}
+      >
         <StatusBar style="auto" />
         <Stack.Navigator screenOptions={{ headerShown: false }}>
           <Stack.Screen
@@ -56,9 +81,24 @@ export default function App() {
             options={{ headerShown: true, title: "Design gallery", headerLargeTitle: true }}
           />
           <Stack.Screen
+            name="RecordCardio"
+            component={RecordScreen}
+            options={{ headerShown: true, title: "Record" }}
+          />
+          <Stack.Screen
+            name="Activity"
+            component={ActivityScreen}
+            options={{ headerShown: true, title: "" }}
+          />
+          <Stack.Screen
             name="ChatGPT"
             component={ChatGPTScreen}
             options={{ headerShown: true, title: "ChatGPT" }}
+          />
+          <Stack.Screen
+            name="Proposal"
+            component={ProposalScreen}
+            options={{ headerShown: true, title: "Coach proposal" }}
           />
           <Stack.Screen
             name="Account"
@@ -148,6 +188,65 @@ export default function App() {
             options={{ headerShown: true, title: "Edit exercise" }}
           />
           <Stack.Screen
+            name="PickExercise"
+            component={ExerciseLibraryScreen}
+            options={{ headerShown: true, title: "Add exercise", headerLargeTitle: true }}
+          />
+          <Stack.Screen
+            name="Routine"
+            component={RoutineDetailScreen}
+            options={{ headerShown: true, title: "" }}
+          />
+          <Stack.Screen
+            name="NewRoutine"
+            component={NewRoutineScreen}
+            options={{ headerShown: true, title: "New routine" }}
+          />
+          <Stack.Screen
+            name="EditRoutine"
+            component={EditRoutineScreen}
+            options={{ headerShown: true, title: "Edit routine" }}
+          />
+          <Stack.Screen
+            name="SetTarget"
+            component={SetTargetScreen}
+            options={({ route }) => ({
+              headerShown: true,
+              presentation: "modal",
+              title: `Set ${Number(route.params.set) + 1}`,
+            })}
+          />
+          <Stack.Screen
+            name="ActiveWorkout"
+            component={ActiveWorkoutScreen}
+            options={{ headerShown: true, title: "Workout" }}
+          />
+          <Stack.Screen
+            name="AddWorkoutExercise"
+            component={ExerciseLibraryScreen}
+            options={{ headerShown: true, title: "Add exercise", headerLargeTitle: true }}
+          />
+          <Stack.Screen
+            name="ReplaceWorkoutExercise"
+            component={ExerciseLibraryScreen}
+            options={{ headerShown: true, title: "Replace exercise", headerLargeTitle: true }}
+          />
+          <Stack.Screen
+            name="WarmUp"
+            component={WarmUpScreen}
+            options={{ headerShown: true, title: "Warm-up sets", headerLargeTitle: true }}
+          />
+          <Stack.Screen
+            name="Plates"
+            component={PlatesScreen}
+            options={{ headerShown: true, title: "Plate calculator", headerLargeTitle: true }}
+          />
+          <Stack.Screen
+            name="WorkoutSettings"
+            component={WorkoutSettingsScreen}
+            options={{ headerShown: true, title: "Units and plates", headerLargeTitle: true }}
+          />
+          <Stack.Screen
             name="PhoneChecks"
             component={PhoneChecksScreen}
             options={{ headerShown: true, title: "Phone checks" }}
@@ -196,6 +295,16 @@ export default function App() {
             name="ImportPreview"
             component={ImportPreviewScreen}
             options={{ headerShown: true, title: "Import" }}
+          />
+          <Stack.Screen
+            name="HealthImport"
+            component={HealthImportScreen}
+            options={{ headerShown: true, title: "Import workouts" }}
+          />
+          <Stack.Screen
+            name="ManualCardio"
+            component={ManualCardioScreen}
+            options={{ headerShown: true, title: "Add cardio" }}
           />
           <Stack.Screen
             name="UndoImport"

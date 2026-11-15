@@ -76,4 +76,20 @@ describe("setEditPatch", () => {
       patch: { setType: "normal", weightKg: 10, reps: null },
     });
   });
+
+  it("opens a set in pounds and stores a weight typed in pounds as kilograms", () => {
+    expect(setEditFrom(lifted, "lb").weight).toBe("181.88");
+    expect(setEditPatch({ setType: "normal", weight: "185", reps: "8" }, lifted, "lb")).toEqual({
+      ok: true,
+      patch: { setType: "normal", weightKg: 185 * 0.45359237, reps: 8 },
+    });
+  });
+
+  it("keeps the stored kilograms when a weight shown in pounds is saved unchanged", () => {
+    const edit = { ...setEditFrom(lifted, "lb"), reps: "9" };
+    expect(setEditPatch(edit, lifted, "lb")).toEqual({
+      ok: true,
+      patch: { setType: "normal", weightKg: 82.5, reps: 9 },
+    });
+  });
 });

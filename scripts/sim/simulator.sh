@@ -14,16 +14,18 @@ metro=${SVETT_METRO:-localhost:8081}
 
 # Prints the UDID of the available iOS 27 simulator whose name is exactly $1.
 # A literal prefix match keeps "iPhone 16 Pro Max" and "svett iPhone 16 Pro Max" apart.
+# awk reads the whole list: stopping at the match could cut off simctl mid-write,
+# and pipefail would then fail the caller.
 simulator_udid() {
   xcrun simctl list devices available | awk -v name="$1" '
     /^-- / { ios27 = ($0 ~ /^-- iOS 27\./); next }
-    ios27 {
+    ios27 && !found {
       line = $0
       sub(/^ +/, "", line)
       if (index(line, name " (") == 1) {
         rest = substr(line, length(name) + 3)
         print substr(rest, 1, index(rest, ")") - 1)
-        exit
+        found = 1
       }
     }'
 }
@@ -65,4 +67,22 @@ agent_device() {
   else
     npx --yes agent-device@0.21.37 "$@" --platform ios --udid "$udid" --session svett-proof
   fi
+}
+
+# The Train tab draws Start empty workout, or the workout in progress, in the
+# same render as its routine list, at the top of the screen. At the largest text
+# size the list starts below the screen, where agent-device's wait and is
+# visible cannot see it. The routine list and the cold start time, which shows
+# only once the list was drawn, cover a Train tab already scrolled down.
+train_loaded='id="start-empty-workout" || id="workout-in-progress-row" || id="routine-list" || id="cold-start-timing"'
+
+# train_routines <timeout ms>: waits until the Train tab has loaded its routines
+# without moving the screen, so a cold start's own marks stay as they are. Then
+# it scrolls until the routine list is on screen. It fails when either never
+# happens.
+train_routines() {
+  agent_device wait "$train_loaded" "$1" >/dev/null 2>&1 || return 1
+  agent_device is visible 'id="routine-list"' >/dev/null 2>&1 ||
+    agent_device scroll down --until 'id="routine-list"' >/dev/null 2>&1 ||
+    agent_device scroll up --until 'id="routine-list"' >/dev/null 2>&1
 }

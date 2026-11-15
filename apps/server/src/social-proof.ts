@@ -14,6 +14,8 @@
  */
 import { randomUUID } from "node:crypto";
 
+import { SYNC_PROTOCOL_VERSION, SYNC_VERSION_HEADER } from "@svett/core";
+
 export type ProofAccount = "owner" | "follower";
 
 export interface SocialProofOptions {
@@ -42,6 +44,7 @@ export const socialProof = async (options: SocialProofOptions) => {
       method,
       headers: {
         authorization: `Bearer ${await options.token(as)}`,
+        [SYNC_VERSION_HEADER]: String(SYNC_PROTOCOL_VERSION),
         ...(body === undefined ? {} : { "content-type": "application/json" }),
       },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
@@ -77,6 +80,8 @@ export const socialProof = async (options: SocialProofOptions) => {
     updatedAt: now(),
     deletedAt: null,
     kind: "strength",
+    status: "finished",
+    routineId: null,
     startedAt,
     durationS: 3600,
     title,

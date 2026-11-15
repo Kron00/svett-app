@@ -454,7 +454,7 @@ const onlyWorkout = async (runtime: Runtime) => {
   return { id: activity.id, title: activity.title };
 };
 
-const remove = (runtime: Runtime, id: Parameters<typeof deleteWorkout>[0]["id"]) =>
+const remove = (runtime: Runtime, id: Parameters<typeof deleteWorkout>[1]["id"]) =>
   runtime.runPromise(
     Effect.flatMap(Effect.service(ActivityRepository), (activities) => activities.remove(id)),
   );
@@ -466,7 +466,7 @@ describe("Undo of a deleted workout across signing in", () => {
     const legs = await onlyWorkout(phone);
     await remove(phone, legs.id);
     await signIn();
-    await deleteWorkout(legs);
+    await deleteWorkout(currentDatabase(), legs);
     const offer = deletedWorkout();
     expect(offer?.title).toBe("Legs");
 
@@ -484,7 +484,7 @@ describe("Undo of a deleted workout across signing in", () => {
 
   it("still brings the workout back in the account it was deleted from", async () => {
     const legs = await onlyWorkout(phone);
-    await deleteWorkout(legs);
+    await deleteWorkout(currentDatabase(), legs);
     const offer = deletedWorkout();
     if (offer === null) throw new Error("no offer");
     expect(await titles(phone)).toEqual([]);

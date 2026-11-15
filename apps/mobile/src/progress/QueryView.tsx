@@ -1,17 +1,21 @@
 import type { ReactNode } from "react";
 import { View } from "react-native";
 
+import type { OpenDatabase } from "../data/current";
 import type { QueryState } from "../data/useQuery";
 import { AppText } from "../ui/AppText";
 import { EmptyState } from "../ui/EmptyState";
 
-/** A screen's content once its query is ready, or what it shows while loading or after a failure. */
+/**
+ * A screen's content once its query is ready, with the database it was read from, or what it
+ * shows while loading or after a failure.
+ */
 export function QueryView<A>({
   state,
   children,
 }: {
   readonly state: QueryState<A>;
-  readonly children: (value: A) => ReactNode;
+  readonly children: (value: A, database: OpenDatabase) => ReactNode;
 }) {
   switch (state.status) {
     case "loading":
@@ -34,6 +38,6 @@ export function QueryView<A>({
         </View>
       );
     case "ready":
-      return children(state.value);
+      return children(state.value, state.database);
   }
 }

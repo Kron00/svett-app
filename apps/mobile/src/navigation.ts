@@ -1,16 +1,22 @@
-import type { NavigatorScreenParams } from "@react-navigation/native";
+import type { CompositeNavigationProp, NavigatorScreenParams } from "@react-navigation/native";
 import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
 
 import type { Tab } from "./tabs";
 
-export type TabParamList = { readonly [name in Tab["name"]]: undefined };
+export type TabParamList = { readonly [name in Exclude<Tab["name"], "Coach">]: undefined } & {
+  readonly Coach: NavigatorScreenParams<CoachStackParamList> | undefined;
+};
 
 /** Link params are strings from outside. Each screen parses them with @svett/core. */
 export type RootStackParamList = {
   Tabs: NavigatorScreenParams<TabParamList> | undefined;
   Gallery: { sheet?: "open" } | undefined;
   PhoneChecks: undefined;
+  RecordCardio: undefined;
+  Activity: { id: string };
   ChatGPT: undefined;
+  /** A coach proposal's preview, with Apply and Undo. */
+  Proposal: { id: string };
   Exercises: { q?: string; muscle?: string; equipment?: string } | undefined;
   Exercise: { id: string };
   NewExercise:
@@ -34,6 +40,31 @@ export type RootStackParamList = {
    */
   ImportPreview: { uri?: string; file?: string; kind?: "svett" | "hevy" };
   UndoImport: { importBatchId: string };
+  /** `uri` is a picked file. `file` names a file in svett's documents, for svett://health-import links. */
+  HealthImport: { uri?: string; file?: string };
+  /** Each field can come from a svett://manual link, for the simulator proof. */
+  ManualCardio:
+    | { kind?: string; start?: string; duration?: string; distance?: string; notes?: string }
+    | undefined;
+  Routine: { id: string };
+  NewRoutine: { title?: string; folder?: string } | undefined;
+  EditRoutine: { id: string };
+  /** The exercise library choosing exercises for the routine being edited. */
+  PickExercise: { q?: string; muscle?: string; equipment?: string } | undefined;
+  /** Exercise and set by their place in the routine being edited, from 0. */
+  SetTarget: { exercise: string; set: string };
+  /** The workout in progress. */
+  ActiveWorkout: undefined;
+  /** The exercise library choosing exercises to add to the workout in progress. */
+  AddWorkoutExercise: { q?: string; muscle?: string; equipment?: string } | undefined;
+  /** The exercise library choosing the exercise that takes the place of `exercise`, a workout exercise's ID. */
+  ReplaceWorkoutExercise: { exercise: string; q?: string; muscle?: string; equipment?: string };
+  /** Warm-up sets for `exercise`, a workout exercise's ID. */
+  WarmUp: { exercise: string };
+  /** The plate calculator, opened on `kg` kilograms when given. */
+  Plates: { kg?: string } | undefined;
+  /** Units, RPE, and your plates and bars. */
+  WorkoutSettings: undefined;
   Account: undefined;
   OwnProfile: undefined;
   /** `username` fills in the field, for links such as svett://profile/edit?username=anna. */
@@ -50,3 +81,14 @@ export type RootStackParamList = {
 };
 
 export type RootNavigation = NativeStackNavigationProp<RootStackParamList>;
+
+/** The Coach tab's own stack. */
+export type CoachStackParamList = {
+  /** `ask` is a question svett://coach?ask=... sends as soon as the coach is ready. */
+  CoachRoot: { ask?: string | undefined } | undefined;
+};
+
+export type CoachNavigation = CompositeNavigationProp<
+  NativeStackNavigationProp<CoachStackParamList, "CoachRoot">,
+  RootNavigation
+>;

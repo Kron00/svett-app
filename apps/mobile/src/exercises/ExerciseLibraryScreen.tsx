@@ -1,10 +1,14 @@
 import {
+  ActivityExerciseId,
+  addExercises,
   EQUIPMENT_LABEL,
   EQUIPMENT_OPTIONS,
   type Exercise,
   exerciseFilterFromParams,
   exerciseFilterParams,
   exerciseSummary,
+  linkParam,
+  linkParams,
   MUSCLE_LABEL,
   MUSCLE_OPTIONS,
   searchExercises,
@@ -23,6 +27,9 @@ import { Icon } from "../ui/Icon";
 import { ListRow } from "../ui/List";
 import { OptionSheet } from "../ui/OptionSheet";
 import { SearchField } from "../ui/SearchField";
+import { changeDraft, currentDraft } from "../routines/draft";
+import { addExercises as addWorkoutExercises, replaceExercise } from "../workout/actions";
+import { currentWorkout } from "../workout/store";
 import { useExerciseList } from "./data";
 
 function Separator() {
@@ -60,8 +67,35 @@ const countText = (count: number) => `${count} ${count === 1 ? "exercise" : "exe
  */
 export function ExerciseLibraryScreen() {
   const navigation = useNavigation<RootNavigation>();
-  const params = useRoute<RouteProp<RootStackParamList, "Exercises">>().params;
-  const filter = exerciseFilterFromParams(params);
+  const route =
+    useRoute<
+      RouteProp<
+        RootStackParamList,
+        "Exercises" | "PickExercise" | "AddWorkoutExercise" | "ReplaceWorkoutExercise"
+      >
+    >();
+  const filter = exerciseFilterFromParams(route.params);
+  // Opened from the routine editor or the workout, a row adds its exercise there and goes back.
+  const choose = (exercise: Exercise) => {
+    const params = linkParams(route.params);
+    const replacing = linkParam(ActivityExerciseId, params["exercise"]);
+    if (route.name === "PickExercise" && currentDraft() !== null) {
+      changeDraft((form) => addExercises(form, [exercise.id]));
+      navigation.goBack();
+    } else if (route.name === "AddWorkoutExercise" && currentWorkout() !== null) {
+      addWorkoutExercises([exercise.id]);
+      navigation.goBack();
+    } else if (
+      route.name === "ReplaceWorkoutExercise" &&
+      replacing !== null &&
+      currentWorkout() !== null
+    ) {
+      replaceExercise(replacing, exercise.id);
+      navigation.goBack();
+    } else {
+      navigation.navigate("Exercise", { id: exercise.id });
+    }
+  };
   const loaded = useExerciseList();
   const [picker, setPicker] = useState<"muscle" | "equipment" | null>(null);
 
@@ -161,8 +195,9 @@ export function ExerciseLibraryScreen() {
     );
 
   return (
-    <View testID="exercise-library" className="flex-1 bg-background">
+    <>
       <LegendList
+        testID="exercise-library"
         data={results}
         keyExtractor={(exercise) => exercise.id}
         estimatedItemSize={64}
@@ -178,10 +213,7 @@ export function ExerciseLibraryScreen() {
             title={item.name}
             subtitle={exerciseSummary(item)}
             value={item.source === "svett" ? "Custom" : undefined}
-            trailing={{
-              type: "chevron",
-              onPress: () => navigation.navigate("Exercise", { id: item.id }),
-            }}
+            trailing={{ type: "chevron", onPress: () => choose(item) }}
             testID={`exercise-result-${index}`}
           />
         )}
@@ -208,6 +240,6 @@ export function ExerciseLibraryScreen() {
         onDismiss={() => setPicker(null)}
         testID="equipment-options"
       />
-    </View>
+    </>
   );
 }

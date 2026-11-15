@@ -8,10 +8,20 @@ import {
   type Snapshot,
   TABLE_KEYS,
   type TableRows,
+  withAddedFields,
 } from "./transfer.ts";
 
-/** Raised by every change to the file's shape. An older svett refuses a newer file. */
-export const SVETT_FILE_VERSION = 1;
+/**
+ * Raised by every change to the file's shape. An older svett refuses a newer file. Version 2
+ * added a workout's status and routine and a set's done mark and target, version 3 an
+ * exercise's set fields, version 4 its rest time, version 5 your plates and bars,
+ * version 6 a location sample's segment, and version 7 a workout's linked sources and
+ * workouts from GPX files. An older file reads with the values its rows had then, an
+ * exercise's set fields come from its sets, it has no rest time, it leaves your plates and
+ * bars as they are, a location sample is in segment 0, its route's only stretch, and a
+ * workout has no linked sources.
+ */
+export const SVETT_FILE_VERSION = 7;
 
 export interface SvettFile {
   readonly version: number;
@@ -89,6 +99,9 @@ export const decodeSvettFile = (text: string): Result.Result<SvettFile, SvettFil
     );
   }
 
+  const filled = withAddedFields(
+    Object.fromEntries(TABLE_KEYS.map((key) => [key, tables[TABLES[key].name] ?? []])),
+  );
   const parsed: Partial<Record<(typeof TABLE_KEYS)[number], Array<AnyRow>>> = {};
   let rows = 0;
   for (const key of TABLE_KEYS) {
@@ -96,7 +109,7 @@ export const decodeSvettFile = (text: string): Result.Result<SvettFile, SvettFil
     const decode = Schema.decodeUnknownExit(Schema.toType(TABLES[key].schema));
     const seen = new Set<string>();
     const kept: Array<AnyRow> = [];
-    for (const [index, raw] of (tables[name] ?? []).entries()) {
+    for (const [index, raw] of (filled[key] ?? []).entries()) {
       const row = decode(raw);
       if (Exit.isFailure(row)) {
         return Result.fail(

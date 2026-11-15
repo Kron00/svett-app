@@ -13,6 +13,7 @@ import {
   isNothingToImport,
   type PossibleDuplicate,
   recordsLabel,
+  skippedLabel,
   suggestExercises,
   type SvettFile,
   type ToInstant,
@@ -30,6 +31,7 @@ import { ListRow, ListSection } from "../ui/List";
 import {
   changeAliases,
   changeTransfers,
+  databaseKey,
   DATABASE_SWITCHED,
   type ImportFileSource,
   readImportFile,
@@ -77,19 +79,6 @@ const previewing = (state: State) =>
 /** The data a match screen or plan was read from, if it shows one. */
 const readFrom = (state: State) =>
   state.kind === "matching" || state.kind === "ready" ? state.database : undefined;
-
-// Each open database gets its own key, so a match screen or plan read from other data starts
-// over instead of keeping choices made for it.
-const databaseKeys = new WeakMap<object, string>();
-let nextKey = 0;
-const keyOf = ({ handle }: OpenDatabase) => {
-  let key = databaseKeys.get(handle);
-  if (key === undefined) {
-    key = String(nextKey++);
-    databaseKeys.set(handle, key);
-  }
-  return key;
-};
 
 /** Hevy writes the phone's clock time with no zone, so svett reads it in this phone's zone. */
 const phoneClock: ToInstant = (time) =>
@@ -226,6 +215,16 @@ function Plan({
   return (
     <>
       <FileSummary loaded={loaded} />
+      {current.skipped === 0 ? null : (
+        <AppText
+          variant="subheadline"
+          tone="secondary"
+          className="px-gutter"
+          testID="import-skipped"
+        >
+          {skippedLabel(current.skipped)}
+        </AppText>
+      )}
       {isNothingToImport(current) ? (
         <View testID="import-nothing-new">
           <EmptyState
@@ -432,7 +431,7 @@ export function ImportPreviewScreen() {
       ) : null}
       {state.kind === "matching" && !stale ? (
         <HevyMatch
-          key={keyOf(state.database)}
+          key={databaseKey(state.database)}
           names={state.names}
           exercises={state.exercises}
           onContinue={(choices) => matched(state.file, state.database, choices)}
@@ -440,7 +439,7 @@ export function ImportPreviewScreen() {
       ) : null}
       {state.kind === "ready" && !stale ? (
         <Plan
-          key={keyOf(state.database)}
+          key={databaseKey(state.database)}
           loaded={state.loaded}
           plan={state.plan}
           onToggleDuplicate={(key) =>

@@ -30,8 +30,10 @@ const SETS = `
   FROM activity_set s
   JOIN activity_exercise e ON e.id = s.activity_exercise_id
   JOIN activity a ON a.id = e.activity_id`;
+// A workout in progress, and a set not marked done, are not history yet.
 const LIVE = `
-  WHERE s.deleted_at IS NULL AND e.deleted_at IS NULL AND a.deleted_at IS NULL`;
+  WHERE s.deleted_at IS NULL AND e.deleted_at IS NULL AND a.deleted_at IS NULL
+    AND a.status = 'finished' AND s.done = 1`;
 
 const makeProgressRepository = Effect.gen(function* () {
   const sql = yield* Sql;

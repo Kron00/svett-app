@@ -2,6 +2,7 @@ import { libraryExerciseId } from "./exercise-library.ts";
 import { HEVY_LIBRARY, equipmentFromName } from "./hevy-exercises.ts";
 import type { HevyFile, HevyWorkout } from "./hevy-file.ts";
 import { canonicalJson, contentFingerprint, importedId } from "./ids.ts";
+import { setFieldsFromSets } from "./logger.ts";
 import { type EpochMillis, ExerciseId } from "./schema.ts";
 import { TABLES } from "./table.ts";
 import type {
@@ -134,8 +135,10 @@ const overlaps = (aStart: number, aEnd: number, bStart: number, bEnd: number) =>
  * Following the plan's repeat rules, these new workouts are possible duplicates: a second one
  * with the same start as another in the file, one with a new start and the same exercises and
  * sets as one here, and one whose time overlaps a workout here from another source. Each is
- * imported only when its key is in `keep`. A kept second workout's identity adds its place in
- * the file, so the two get different IDs.
+ * imported only when its key is in `keep`. A kept second workout's identity adds its number
+ * among the workouts that share its start, #1 for the second, so the two get different IDs and
+ * keep them when Hevy writes newer workouts above them. One edited in Hevy since takes a number
+ * no workout here holds, so it asks again and never replaces another workout at that start.
  *
  * A custom exercise an earlier import made, and Undo or you deleted, comes back with any
  * workout taken from the file that uses it.
@@ -161,7 +164,10 @@ export const hevyImport = (file: HevyFile, keep: ReadonlySet<string> = new Set()
       list.push(row);
       setsOf.set(String(row["activityExerciseId"]), list);
     }
-    const liveActivities = local.activity.filter((row) => row.deletedAt === null);
+    // A workout in progress is a draft on this phone, so a Hevy workout never repeats it.
+    const liveActivities = local.activity.filter(
+      (row) => row.deletedAt === null && row["status"] === "finished",
+    );
     const sameSets = new Map<string, AnyRow>();
     for (const row of liveActivities) {
       if (row["kind"] !== "strength") continue;
@@ -177,12 +183,43 @@ export const hevyImport = (file: HevyFile, keep: ReadonlySet<string> = new Set()
     );
     const usedNew = new Map<string, { cardio: boolean }>();
 
+    // Earlier versions numbered a second workout at a start by its place in the whole file.
+    const numberedHere = new Map<string, Array<AnyRow>>();
+    for (const row of local.activity) {
+      const sourceId = row["source"] === "hevy" ? String(row["sourceId"]) : "";
+      const mark = sourceId.lastIndexOf("#");
+      if (mark < 0) continue;
+      const start = sourceId.slice(0, mark);
+      numberedHere.set(start, [...(numberedHere.get(start) ?? []), row]);
+    }
+    const claimed = new Set<string>();
+    const taken = (identity: string) =>
+      claimed.has(identity) || activities.has(importedId(TABLES.activity.name, "hevy", identity));
+    /**
+     * The identity of the workout numbered `number` among those that share its start: its
+     * workout here with the same Hevy content, whatever number it was given, or else the first
+     * number from its own that no workout here holds.
+     */
+    const twinIdentity = (workout: HevyWorkout, number: number) => {
+      const same = (numberedHere.get(workout.start) ?? []).find(
+        (row) =>
+          row["fingerprint"] === workout.fingerprint && !claimed.has(String(row["sourceId"])),
+      );
+      if (same !== undefined) return String(same["sourceId"]);
+      let free = number;
+      while (taken(`${workout.start}#${free}`)) free += 1;
+      return `${workout.start}#${free}`;
+    };
+
     const firstAt = new Map<string, { id: string; workout: HevyWorkout }>();
+    const sharingStart = new Map<string, number>();
     for (const workout of file.workouts) {
       const first = firstAt.get(workout.start);
-      let identity = workout.start;
+      const number = sharingStart.get(workout.start) ?? 0;
+      sharingStart.set(workout.start, number + 1);
+      const identity = number === 0 ? workout.start : twinIdentity(workout, number);
+      claimed.add(identity);
       if (first !== undefined) {
-        identity = `${workout.start}#${workout.position}`;
         const id = importedId(TABLES.activity.name, "hevy", identity);
         const key = `hevy/${identity}`;
         // One kept on an earlier import is a workout here like any other.
@@ -241,6 +278,8 @@ export const hevyImport = (file: HevyFile, keep: ReadonlySet<string> = new Set()
           position,
           supersetGroup: exercise.supersetGroup,
           notes: exercise.notes,
+          setFields: setFieldsFromSets(exercise.sets) ?? "weight_reps",
+          restS: null,
         });
         exercise.sets.forEach((set, setPosition) =>
           add(built, "activitySet", {
@@ -254,6 +293,9 @@ export const hevyImport = (file: HevyFile, keep: ReadonlySet<string> = new Set()
             activityExerciseId: exerciseRowId,
             position: setPosition,
             ...set,
+            done: true,
+            targetRepsMin: null,
+            targetRepsMax: null,
           }),
         );
       });
@@ -303,6 +345,8 @@ export const hevyImport = (file: HevyFile, keep: ReadonlySet<string> = new Set()
         sourceId: identity,
         fingerprint: workout.fingerprint,
         importBatchId: here?.["importBatchId"] ?? null,
+        status: "finished",
+        routineId: null,
       });
       const builtIds = new Set(
         [...(built.activityExercise ?? []), ...(built.activitySet ?? [])].map((row) => row.id),

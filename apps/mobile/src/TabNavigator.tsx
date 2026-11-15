@@ -5,7 +5,7 @@ import { View } from "react-native";
 
 import { AccountRow } from "./account/AccountRow";
 import { ChatGPTRow } from "./chatgpt/ChatGPTRow";
-import { ExerciseLibraryRow } from "./exercises/ExerciseLibraryRow";
+import { CoachScreen } from "./coach/CoachScreen";
 import { FeedScreen } from "./feed/FeedScreen";
 import { DesignGalleryRow } from "./gallery/DesignGalleryRow";
 import type { TabParamList } from "./navigation";
@@ -13,9 +13,12 @@ import { PhoneChecksRow } from "./PhoneChecksRow";
 import { PlaceholderScreen } from "./PlaceholderScreen";
 import { ProfileRow } from "./social/ProfileRow";
 import { ProgressScreen } from "./progress/ProgressScreen";
+import { TrainScreen } from "./routines/TrainScreen";
 import { type Tab, TABS } from "./tabs";
+import { WorkoutSettingsRow } from "./tools/WorkoutSettingsRow";
 import { DataRow } from "./transfer/DataRow";
 import { ListSection } from "./ui/List";
+import { WorkoutTabBar } from "./workout/WorkoutTabBar";
 
 const Tabs = createBottomTabNavigator<TabParamList>();
 const TabStack = createNativeStackNavigator();
@@ -23,15 +26,10 @@ const TabStack = createNativeStackNavigator();
 function TabContent({ tab }: { readonly tab: Tab }) {
   if (tab.name === "Progress") return <ProgressScreen />;
   if (tab.name === "Home") return <FeedScreen />;
+  if (tab.name === "Coach") return <CoachScreen />;
+  if (tab.name === "Train") return <TrainScreen />;
   return (
     <PlaceholderScreen tab={tab}>
-      {tab.name === "Train" ? (
-        <View className="mt-6 self-stretch">
-          <ListSection>
-            <ExerciseLibraryRow />
-          </ListSection>
-        </View>
-      ) : null}
       {tab.name === "You" ? (
         <View className="mt-6 self-stretch">
           <ListSection>
@@ -39,6 +37,7 @@ function TabContent({ tab }: { readonly tab: Tab }) {
             <ProfileRow />
             <ChatGPTRow />
             <DataRow />
+            <WorkoutSettingsRow />
             <PhoneChecksRow />
             <DesignGalleryRow />
           </ListSection>
@@ -68,7 +67,10 @@ function TabRoot({ tab }: { readonly tab: Tab }) {
 
 export function TabNavigator() {
   return (
-    <Tabs.Navigator screenOptions={{ headerShown: false }}>
+    <Tabs.Navigator
+      screenOptions={{ headerShown: false }}
+      tabBar={(props) => <WorkoutTabBar {...props} />}
+    >
       {TABS.map((tab) => (
         <Tabs.Screen
           key={tab.name}
