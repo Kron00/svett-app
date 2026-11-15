@@ -11,6 +11,7 @@ import {
   restLabel,
   restLeft,
   type RestTimer,
+  revealDistance,
   RPE_OPTIONS,
   rpeFromChoice,
   SET_FIELDS_OPTIONS,
@@ -20,9 +21,11 @@ import {
   supersetPlaces,
   type WorkoutLog,
 } from "@svett/core";
+import { useHeaderHeight } from "@react-navigation/elements";
 import { useFocusEffect, useNavigation } from "@react-navigation/native";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Alert, type HostInstance, ScrollView, type ScrollViewInstance, View } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import type { RootNavigation } from "../navigation";
 import { AppText } from "../ui/AppText";
@@ -72,7 +75,7 @@ function Timing() {
 }
 
 /** The running rest, counting down each second. It goes when it reaches zero. */
-function Rest({ timer, atBottom }: { readonly timer: RestTimer; readonly atBottom: boolean }) {
+function Rest({ timer, keypad }: { readonly timer: RestTimer; readonly keypad: boolean }) {
   const [now, setNow] = useState(Date.now);
   useEffect(() => {
     const tick = setInterval(() => setNow(Date.now()), 250);
@@ -87,11 +90,11 @@ function Rest({ timer, atBottom }: { readonly timer: RestTimer; readonly atBotto
       left={formatDuration(DurationSeconds.make(left))}
       leftLabel={left === 0 ? "no time" : restLabel(left)}
       progress={timer.totalS === 0 ? 0 : left / timer.totalS}
-      adjustSeconds={REST_ADJUST_S}
       onLess={() => adjustRestTimer(-REST_ADJUST_S)}
       onMore={() => adjustRestTimer(REST_ADJUST_S)}
       onSkip={skipRestTimer}
-      atBottom={atBottom}
+      atBottom={!keypad}
+      compact={keypad}
       testID="rest-timer"
     />
   );
@@ -180,16 +183,55 @@ function Logger({
   });
   const scroll = useRef<ScrollViewInstance>(null);
   const content = useRef<HostInstance>(null);
-
-  // Keeps the row being typed into above the keypad.
-  const measure = useCallback((row: HostInstance) => {
-    if (content.current === null) return;
-    row.measureLayout(content.current, (_x, y) =>
-      scroll.current?.scrollTo({ y: Math.max(0, y - 120), animated: true }),
-    );
-  }, []);
+  const focusedRow = useRef<HostInstance>(null);
+  const headerHeight = useHeaderHeight();
+  const safeBottom = useSafeAreaInsets().bottom;
 
   const focus = liveFocus(log, focusState, failures)?.focus ?? null;
+
+  // The rest timer and the keypad cover the bottom of the workout. Their height counts only once
+  // they were laid out together as they show now, so a set is never placed above an old height.
+  const coverKey = `${rest !== null}/${focus !== null}`;
+  const [cover, setCover] = useState({ key: "false/false", height: 0 });
+  const covered = coverKey === "false/false" ? 0 : cover.key === coverKey ? cover.height : null;
+  // iOS already keeps the home indicator's strip clear, and the cover reaches over it.
+  const inset = Math.max(0, (covered ?? cover.height) - safeBottom);
+
+  // Scrolls the set being typed into until it shows whole between the navigation bar and what
+  // covers the workout. It reads every position on screen, so it holds at any scroll.
+  const reveal = useCallback(
+    (row: HostInstance, coveredHeight: number) => {
+      const list = scroll.current;
+      const inner = content.current;
+      if (list === null || inner === null) return;
+      list.measureInWindow((_x, listTop, _width, listHeight) =>
+        inner.measureInWindow((_innerX, contentTop) =>
+          row.measureLayout(inner, (_rowX, rowY, _rowWidth, rowHeight) => {
+            const top = contentTop + rowY;
+            const by = revealDistance(
+              { top, bottom: top + rowHeight },
+              {
+                top: Math.max(headerHeight, listTop),
+                bottom: listTop + listHeight - coveredHeight,
+              },
+            );
+            if (by !== 0) list.scrollTo({ y: listTop - contentTop + by, animated: true });
+          }),
+        ),
+      );
+    },
+    [headerHeight],
+  );
+  const onFocusedRow = useCallback((row: HostInstance) => {
+    focusedRow.current = row;
+  }, []);
+  const focusedSet = focus?.setId ?? null;
+  // Runs as the keypad opens, as it moves to another set, and as the rest timer comes or goes.
+  useEffect(() => {
+    if (focusedSet === null || covered === null || focusedRow.current === null) return;
+    reveal(focusedRow.current, covered);
+  }, [focusedSet, covered, reveal]);
+
   const press = (key: KeypadKey) => {
     const typed = pressKey(log, focus, key, failures);
     if (typed === null) return;
@@ -267,6 +309,9 @@ function Logger({
         ref={scroll}
         testID="workout"
         contentInsetAdjustmentBehavior="automatic"
+        // The last sets can scroll up above what covers the workout.
+        contentInset={{ bottom: inset }}
+        scrollIndicatorInsets={{ bottom: inset }}
         keyboardDismissMode="interactive"
         keyboardShouldPersistTaps="handled"
         className="flex-1 bg-background"
@@ -299,7 +344,7 @@ function Logger({
               onReplace={replace}
               onLogBy={setFieldsSheet}
               onTool={onTool}
-              measure={measure}
+              onFocusedRow={onFocusedRow}
             />
           ))}
           {log.exercises.length === 0 ? (
@@ -326,29 +371,37 @@ function Logger({
           {showTiming() ? <Timing /> : null}
         </View>
       </ScrollView>
-      {/* The rest stays in view above the keypad, as the next set is typed. */}
-      {rest !== null ? <Rest timer={rest} atBottom={focus === null} /> : null}
-      {focus !== null ? (
+      {coverKey === "false/false" ? null : (
         <View
-          className="gap-2 border-t border-separator bg-surface px-gutter pt-3 pb-8"
-          testID="keypad"
+          className="absolute inset-x-0 bottom-0"
+          onLayout={(event) => setCover({ key: coverKey, height: event.nativeEvent.layout.height })}
+          testID="workout-cover"
         >
-          <Keypad onKey={press} limits={columnEntry(focus.column, focus.unit)} />
-          <View className="flex-row gap-2">
-            <View className="flex-1">
-              <Button
-                label="Next"
-                variant="secondary"
-                onPress={() => setFocus(nextField(log, focus))}
-                testID="keypad-next"
-              />
+          {/* The rest stays in view above the keypad, as the next set is typed. */}
+          {rest !== null ? <Rest timer={rest} keypad={focus !== null} /> : null}
+          {focus !== null ? (
+            <View
+              className="gap-2 border-t border-separator bg-surface px-gutter pt-3 pb-8"
+              testID="keypad"
+            >
+              <Keypad onKey={press} limits={columnEntry(focus.column, focus.unit)} />
+              <View className="flex-row gap-2">
+                <View className="flex-1">
+                  <Button
+                    label="Next"
+                    variant="secondary"
+                    onPress={() => setFocus(nextField(log, focus))}
+                    testID="keypad-next"
+                  />
+                </View>
+                <View className="flex-1">
+                  <Button label="Done" onPress={() => setFocus(null)} testID="keypad-done" />
+                </View>
+              </View>
             </View>
-            <View className="flex-1">
-              <Button label="Done" onPress={() => setFocus(null)} testID="keypad-done" />
-            </View>
-          </View>
+          ) : null}
         </View>
-      ) : null}
+      )}
       <OptionSheet
         title={typeSheetTitle}
         mode="single"

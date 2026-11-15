@@ -57,7 +57,7 @@ function LoggedSetRow({
   onPressSetType,
   onPressRpe,
   onSetDone,
-  measure,
+  onFocusedRow,
 }: {
   readonly exercise: LoggedExercise;
   readonly exerciseIndex: number;
@@ -70,7 +70,8 @@ function LoggedSetRow({
   readonly onPressSetType: (set: ActivitySet) => void;
   readonly onPressRpe: (set: ActivitySet) => void;
   readonly onSetDone: (exerciseIndex: number) => void;
-  readonly measure: (row: HostInstance) => void;
+  /** Takes the row of the set the keypad types into, so the workout keeps it in view. */
+  readonly onFocusedRow: (row: HostInstance) => void;
 }) {
   const set = exercise.sets[index]!;
   const previous = exercise.previous[index] ?? null;
@@ -82,8 +83,8 @@ function LoggedSetRow({
     if (set.done) shownDone(set.id);
   }, [set.done, set.id]);
   useEffect(() => {
-    if (focused && row.current !== null) measure(row.current);
-  }, [focused, measure]);
+    if (focused && row.current !== null) onFocusedRow(row.current);
+  }, [focused, onFocusedRow]);
 
   const fields = columns.map((column) => {
     const shown =
@@ -108,7 +109,7 @@ function LoggedSetRow({
   };
 
   return (
-    <View ref={row}>
+    <View ref={row} testID={`workout-set-row-${exerciseIndex}-${index}`}>
       <SetRow
         setType={set.setType}
         normalSetNumber={badge.normal}
@@ -163,7 +164,7 @@ export const ExerciseCard = memo(function ExerciseCard({
   onReplace,
   onLogBy,
   onTool,
-  measure,
+  onFocusedRow,
 }: {
   readonly exercise: LoggedExercise;
   readonly index: number;
@@ -182,7 +183,8 @@ export const ExerciseCard = memo(function ExerciseCard({
   readonly onReplace: (exercise: LoggedExercise) => void;
   readonly onLogBy: (exercise: LoggedExercise) => void;
   readonly onTool: (exercise: LoggedExercise, index: number, tool: ExerciseTool) => void;
-  readonly measure: (row: HostInstance) => void;
+  /** Takes the row of the set the keypad types into, so the workout keeps it in view. */
+  readonly onFocusedRow: (row: HostInstance) => void;
 }) {
   const stacked = useIsAccessibilityTextSize();
   const name = exercise.exercise?.name ?? "Deleted exercise";
@@ -301,7 +303,7 @@ export const ExerciseCard = memo(function ExerciseCard({
             onPressSetType={onPressSetType}
             onPressRpe={onPressRpe}
             onSetDone={onSetDone}
-            measure={measure}
+            onFocusedRow={onFocusedRow}
           />
         ))}
         <View className="flex-row px-3">

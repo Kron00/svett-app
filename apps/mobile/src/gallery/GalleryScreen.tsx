@@ -504,10 +504,23 @@ export function GalleryScreen() {
           left="1:23"
           leftLabel="1 minute 23 seconds"
           progress={83 / 90}
-          adjustSeconds={15}
           onLess={noop}
           onMore={noop}
           onSkip={noop}
+        />
+      </Section>
+
+      <Section id="rest-timer-compact" title="Rest timer above the keypad">
+        <RestTimerBar
+          left="1:23"
+          leftLabel="1 minute 23 seconds"
+          progress={83 / 90}
+          onLess={noop}
+          onMore={noop}
+          onSkip={noop}
+          atBottom={false}
+          compact
+          testID="gallery-rest-compact"
         />
       </Section>
 
