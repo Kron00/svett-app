@@ -82,7 +82,11 @@ vi.mock("@react-navigation/native", async () => {
 vi.mock("react-native", async () => {
   const { createElement: element } = await import("react");
   return {
-    AccessibilityInfo: { announceForAccessibility: () => {} },
+    AccessibilityInfo: {
+      announceForAccessibility: () => {},
+      isReduceMotionEnabled: async () => false,
+      addEventListener: () => ({ remove: () => {} }),
+    },
     ActionSheetIOS: { showActionSheetWithOptions: () => {} },
     Alert: { alert: () => {} },
     AppState: { currentState: "active", addEventListener: () => ({ remove: () => {} }) },

@@ -24,6 +24,7 @@ import { useFocusEffect, useNavigation } from "@react-navigation/native";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Alert, type HostInstance, ScrollView, type ScrollViewInstance, View } from "react-native";
 
+import { useReduceMotion } from "../design/hooks";
 import type { RootNavigation } from "../navigation";
 import { AppText } from "../ui/AppText";
 import { Button } from "../ui/Button";
@@ -181,13 +182,17 @@ function Logger({
   const scroll = useRef<ScrollViewInstance>(null);
   const content = useRef<HostInstance>(null);
 
+  const reduceMotion = useReduceMotion();
   // Keeps the row being typed into above the keypad.
-  const measure = useCallback((row: HostInstance) => {
-    if (content.current === null) return;
-    row.measureLayout(content.current, (_x, y) =>
-      scroll.current?.scrollTo({ y: Math.max(0, y - 120), animated: true }),
-    );
-  }, []);
+  const measure = useCallback(
+    (row: HostInstance) => {
+      if (content.current === null) return;
+      row.measureLayout(content.current, (_x, y) =>
+        scroll.current?.scrollTo({ y: Math.max(0, y - 120), animated: !reduceMotion }),
+      );
+    },
+    [reduceMotion],
+  );
 
   const focus = liveFocus(log, focusState, failures)?.focus ?? null;
   const press = (key: KeypadKey) => {
