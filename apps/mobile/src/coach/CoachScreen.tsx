@@ -28,8 +28,10 @@ import { AppText } from "../ui/AppText";
 import { Button } from "../ui/Button";
 import { EmptyState } from "../ui/EmptyState";
 import { NoticeScreen } from "../ui/NoticeScreen";
+import { showTiming } from "../workout/timing";
 import { Composer } from "./Composer";
 import { swiftTransport } from "./native";
+import { firstWordsArrived, firstWordsShown, useFirstWordsTiming } from "./timing";
 import { ProposalCard } from "./ProposalCard";
 
 type CoachRoute = RouteProp<CoachStackParamList, "CoachRoot">;
@@ -164,6 +166,18 @@ function FailureNotice({
  * new one. Nothing of the previous owner's shows, and an answer still arriving for them changes
  * nothing here.
  */
+/** With `-svettTiming 1`, how long the last answer's first words took to show. */
+function FirstWordsTiming() {
+  const timing = useFirstWordsTiming();
+  return (
+    <AppText variant="footnote" tone="secondary" testID="coach-first-words-timing">
+      {timing === null
+        ? "No answer shown yet"
+        : `First words shown ${Math.round(timing)} ms after they arrived`}
+    </AppText>
+  );
+}
+
 /** The question an empty chat offers, so a first answer is one tap away. */
 const WEEK_QUESTION = "How did my training go this week?";
 
@@ -235,7 +249,11 @@ function Coach() {
               transport: swiftTransport,
               offsetMinutes: -new Date().getTimezoneOffset(),
               hooks: {
-                onText: (delta) => setPending((now) => now && { ...now, draft: now.draft + delta }),
+                onText: (delta) =>
+                  setPending((now) => {
+                    if (now?.draft === "") firstWordsArrived();
+                    return now && { ...now, draft: now.draft + delta };
+                  }),
                 onRead: (source) =>
                   setPending((now) => now && { ...now, reads: [...now.reads, source], draft: "" }),
               },
@@ -271,6 +289,11 @@ function Coach() {
   }, [linked, ready, pending, ask, navigation]);
 
   const openSettings = () => navigation.navigate("ChatGPT");
+
+  const drafting = pending !== undefined && pending.draft !== "";
+  useEffect(() => {
+    if (drafting) firstWordsShown();
+  }, [drafting]);
 
   if (status === undefined && statusFailed) {
     return (
@@ -380,6 +403,7 @@ function Coach() {
         {failure === undefined ? null : (
           <FailureNotice failure={failure} openSettings={openSettings} />
         )}
+        {showTiming() ? <FirstWordsTiming /> : null}
       </ScrollView>
       {/* Only the composer avoids the keyboard. Its padding shrinks the scroll view above it. */}
       <KeyboardAvoidingView behavior="padding" className="bg-background">

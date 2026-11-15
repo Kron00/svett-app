@@ -24,6 +24,8 @@ vi.mock("react-native", () => ({
   AppState: { addEventListener: () => ({ remove: () => {} }) },
   Pressable: "Pressable",
   ScrollView: "ScrollView",
+  // -svettTiming is off, so no proof timing shows.
+  Settings: { get: () => undefined },
   Switch: "Switch",
   Text: "Text",
   TextInput: "TextInput",

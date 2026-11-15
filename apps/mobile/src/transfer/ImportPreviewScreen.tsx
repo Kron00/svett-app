@@ -28,6 +28,7 @@ import { AppText } from "../ui/AppText";
 import { Button } from "../ui/Button";
 import { EmptyState } from "../ui/EmptyState";
 import { ListRow, ListSection } from "../ui/List";
+import { showTiming } from "../workout/timing";
 import {
   changeAliases,
   changeTransfers,
@@ -333,6 +334,12 @@ export function ImportPreviewScreen() {
   const state: State = shown.params === params ? shown.state : { kind: "reading" };
   const setState = (next: State) => show({ params, state: next });
   const { owner, handle } = useCurrentDatabase();
+  // The plan's speed target: 300 Hevy workouts import in under 10 seconds. Launching with
+  // `-svettTiming 1` shows how long reading and previewing the file took, and the import.
+  const [timing, setTiming] = useState<{
+    readonly previewMs: number | null;
+    readonly importMs: number | null;
+  }>({ previewMs: null, importMs: null });
 
   // Reads the file again for whoever is signed in. A preview made for someone else never shows.
   useEffect(() => {
@@ -342,8 +349,12 @@ export function ImportPreviewScreen() {
       show((before) =>
         before.params === params && !previewing(before.state) ? before : { params, state: next },
       );
+    const started = performance.now();
     preview(sourceOf(params), params.kind ?? "svett", { owner, handle }).then(
-      replace,
+      (next) => {
+        if (current) setTiming({ previewMs: performance.now() - started, importMs: null });
+        replace(next);
+      },
       (error: unknown) =>
         replace({ kind: "refused", message: `The file did not open. ${String(error)}` }),
     );
@@ -396,9 +407,13 @@ export function ImportPreviewScreen() {
     take: ReadonlyArray<string>,
   ) => {
     setState({ kind: "importing" });
+    const started = performance.now();
     changeTransfers(database, (transfers) =>
       transfers.applyImport(inputOf(loaded, keep), take),
-    ).then((result) => setState({ kind: "imported", result }), fail);
+    ).then((result) => {
+      setTiming((before) => ({ ...before, importMs: performance.now() - started }));
+      setState({ kind: "imported", result });
+    }, fail);
   };
 
   const done = () => (navigation.canGoBack() ? navigation.goBack() : navigation.navigate("Tabs"));
@@ -456,6 +471,11 @@ export function ImportPreviewScreen() {
           <AppText tone="secondary" testID="import-outcome">
             {importOutcome(Option.getOrElse(state.result, () => ({ added: 0, replaced: 0 })))}
           </AppText>
+          {showTiming() && timing.previewMs !== null && timing.importMs !== null ? (
+            <AppText variant="footnote" tone="secondary" testID="import-timing">
+              {`Read and previewed in ${Math.round(timing.previewMs)} ms, imported in ${Math.round(timing.importMs)} ms`}
+            </AppText>
+          ) : null}
           <View className="flex-row flex-wrap gap-3">
             <Button label="Done" testID="import-close" onPress={done} />
             {Option.match(state.result, {
