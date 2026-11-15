@@ -415,6 +415,9 @@ const token = Effect.gen(function* () {
         Effect.catchTag("AccountDeleted", () =>
           Effect.succeed(oauthError("invalid_grant", "The svett account was deleted.")),
         ),
+        Effect.catchTag("ClientGone", () =>
+          Effect.succeed(oauthError("invalid_client", "Unknown client.", 401)),
+        ),
       );
   }
   if (grantType === "refresh_token") {

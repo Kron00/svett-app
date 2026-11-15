@@ -10,7 +10,7 @@ import {
   ProposalPlan,
   scopeText,
 } from "@svett/core";
-import { Context, Effect, Layer, Option, Schema } from "effect";
+import { Context, Data, Effect, Layer, Option, Schema } from "effect";
 import type { SqlError } from "effect/sql/SqlError";
 
 /** How long each kind of secret lasts. A refresh token's time starts again at each refresh. */
@@ -32,6 +32,9 @@ export const newSecret = (kind: "code" | "at" | "rt") =>
 
 /** The only form of a code or token the database keeps. */
 export const secretHash = (secret: string) => createHash("sha256").update(secret).digest("hex");
+
+/** The client was removed, by the day's cleanup, after the token endpoint read it. */
+export class ClientGone extends Data.TaggedError("ClientGone")<{}> {}
 
 export interface OAuthClient {
   readonly id: string;
@@ -94,7 +97,7 @@ export interface AssistantRowsShape {
     code: AuthorizationCode,
     client: OAuthClient,
     nowMillis: number,
-  ) => Effect.Effect<Tokens, SqlError>;
+  ) => Effect.Effect<Tokens, SqlError | ClientGone>;
   /** The account a refresh token belongs to, while it is valid for the client. */
   readonly refreshOwner: (
     refreshToken: string,
@@ -281,10 +284,12 @@ export class AssistantRows extends Context.Service<AssistantRows, AssistantRowsS
         connect: (code, client, nowMillis) =>
           Effect.gen(function* () {
             const tokens = newTokens(nowMillis);
-            yield* sql`
+            const marked = yield* sql<{ readonly id: string }>`
               update oauth_client set connected_ms = coalesce(connected_ms, ${nowMillis})
               where id = ${client.id}
+              returning id
             `;
+            if (marked.length === 0) return yield* new ClientGone();
             yield* sql`
               delete from assistant_connection
               where account_id = ${code.accountId} and client_id = ${client.id}

@@ -22,7 +22,7 @@ import {
   syncOnce,
 } from "@svett/core";
 import { legDay, openTestDatabase } from "@svett/core/node";
-import { Deferred, Effect, Fiber, Layer, ManagedRuntime, Option, Redacted } from "effect";
+import { Deferred, Effect, Exit, Fiber, Layer, ManagedRuntime, Option, Redacted } from "effect";
 import { HttpRouter, HttpServer } from "effect/http";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 
@@ -547,6 +547,36 @@ describe("the connector's sign-in", () => {
     expect(removed).toBe(0);
     const traded = await exchange(server, clientId, Option.getOrThrow(code));
     expect(traded.status).toBe(200);
+  });
+
+  it("connects nothing when the app is removed after the token endpoint read it", async () => {
+    const server = await start();
+    const alice = account("alice");
+    const clientId = await registerChatGPT(server);
+    const client = Option.getOrThrow(
+      await server.runtime.runPromise(
+        Effect.flatMap(Effect.service(AssistantRows), (rows) => rows.client(clientId)),
+      ),
+    );
+    await query(server.url, "delete from oauth_client");
+    const exit = await server.runtime.runPromiseExit(
+      Effect.flatMap(Effect.service(AssistantRows), (rows) =>
+        rows.connect(
+          {
+            clientId,
+            accountId: alice as AccountId,
+            redirectUri: CHATGPT_REDIRECT,
+            codeChallenge: pkceChallenge(VERIFIER),
+            scopes: ["svett.read"],
+            expiresMs: Date.now() + 60_000,
+          },
+          client,
+          Date.now(),
+        ),
+      ),
+    );
+    expect(Exit.isFailure(exit) && JSON.stringify(exit.cause).includes("ClientGone")).toBe(true);
+    expect(await query(server.url, "select 1 from assistant_connection")).toEqual([]);
   });
 
   it("shows read and propose as separate choices, neither ticked, on the consent page", async () => {
