@@ -19,7 +19,8 @@ jobs:
   check:
     name: Lint, type check and test
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # The shell tests drive the proof scripts' fake devices end to end and take about 14 minutes.
+    timeout-minutes: 25
     steps:
       - name: Checkout
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
