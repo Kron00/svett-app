@@ -254,7 +254,11 @@ The scroll down to it said: $(tail -n 1 <<<"$said")"
 # label_of <selector> [what is missing]: prints the element's label once it is ready.
 label_of() {
   local attrs
-  ready "$@" >&2
+  # Reading a label needs the element on screen, not clear of the bottom edge: only a
+  # press there misses. The workout's last line, the set-done timing, can never scroll
+  # above the edge, because the list ends there.
+  clear_screen >&2
+  bring "$@" >&2
   attrs=$(agent_device get attrs "$1") || fail "$1 is not on screen"
   node -e 'console.log(JSON.parse(process.argv[1]).label ?? "")' "$attrs"
 }
