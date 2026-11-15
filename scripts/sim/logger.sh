@@ -13,9 +13,10 @@
 #      100 kg for 5 twice, a set changed to a failure set for 4, and one added
 #      set that copies it. After it marks each typed set done, it checks the set
 #      the way a person sees it, without a scroll: the row reads its values and
-#      shows whole above the keypad and the rest timer. It moves Barbell Squat below Romanian Deadlift, types
-#      80 kg into Romanian Deadlift's first set without marking it done, adds
-#      Plank through the exercise picker and logs it for 1:00.
+#      shows whole above the keypad and the rest timer. It moves Barbell Squat
+#      below Romanian Deadlift, types 80 kg into Romanian Deadlift's first set
+#      without marking it done, adds Plank through the exercise picker and logs it
+#      for 1:00.
 #   2. It kills svett with simctl terminate, launches it again, opens the
 #      workout from the bar above the tabs, and checks every set and value came
 #      back. It reads the database file and checks the same rows are there.
@@ -42,10 +43,12 @@
 # its whole frame shows where nothing covers the workout: below the navigation
 # bar, and above the bottom edge, the open keypad and the running rest. An
 # element outside that space is dragged into it, slowly and only as far as it
-# needs. So it never presses the keypad's Next and Done, which sit at the bottom
-# edge. It moves to a set's reps
-# by pressing the field, and leaves the keypad open. It types only once the field
-# it pressed is selected with the keypad open.
+# needs. A check reads an element only once it shows there too. It moves to a
+# set's reps by pressing the field, and leaves the keypad open while a step
+# types. It types only once the field it pressed is selected with the keypad
+# open. When a step stops typing it closes the keypad with Done, as a person
+# does, because the keypad and the rest above it cover the middle of the screen,
+# where agent-device swipes to scroll. It never presses the keypad's Next.
 #
 # When svett's tabs do not show within 120 seconds of a launch, it saves a
 # screenshot and the screen's elements as launch-<n>.png and launch-<n>.txt. It
@@ -83,6 +86,9 @@ train_tab='label="Train, tab, 2 of 5"'
 safe_bottom=${SVETT_SAFE_BOTTOM:-840}
 # Below the workout's navigation bar, where a drag moves the workout.
 safe_top=${SVETT_SAFE_TOP:-130}
+# A press lower than this lands on the home indicator itself. On the Mac a press at
+# y=880 still opened the keypad on the first set's weight field.
+home_indicator=${SVETT_HOME_INDICATOR:-900}
 
 if command -v fnm >/dev/null; then
   eval "$(fnm env --shell bash)"
@@ -410,13 +416,32 @@ shown_set() {
   echo "$name shows above the keypad and the rest timer, from y=$top to y=$bottom"
 }
 
+# close_keypad: presses the keypad's Done when the keypad is open, and waits until it
+# is gone. Done sits at the keypad's foot and never moves with the workout, with its
+# centre below the line other presses keep to but above the home indicator.
+close_keypad() {
+  local point
+  agent_device is visible 'id="key-1"' >/dev/null 2>&1 || return 0
+  point=$(centre_of 'id="keypad-done"') || fail "The open keypad has no Done on screen"
+  ((${point#* } <= home_indicator)) || fail "The keypad's Done sits on the home indicator, at y=${point#* }"
+  agent_device press "${point% *}" "${point#* }"
+  agent_device wait absent 'id="key-1"' 5000 >/dev/null 2>&1 || fail "Done did not close the keypad"
+}
+
+# see <selector> <what is missing>: brings the element on screen and then whole into
+# the space nothing covers, so a check reads only what a person can see.
+see() {
+  bring "$1" "$2"
+  clear_point "$1" >/dev/null
+}
+
 # expect_set <exercise> <set> <label>: the set's done box reads its values and state.
 expect_set() {
-  bring "id=\"workout-set-$1-$2\" label=\"$3\"" "Set $(($2 + 1)) of exercise $(($1 + 1)) does not read \"$3\""
+  see "id=\"workout-set-$1-$2\" label=\"$3\"" "Set $(($2 + 1)) of exercise $(($1 + 1)) does not read \"$3\""
 }
 
 expect_exercise() {
-  bring "id=\"workout-exercise-$1\" label=\"$2\"" "Exercise $(($1 + 1)) of the workout is not $2"
+  see "id=\"workout-exercise-$1\" label=\"$2\"" "Exercise $(($1 + 1)) of the workout is not $2"
 }
 
 # Checks the picker's first result is the exercise named $1, then presses it.
@@ -461,6 +486,7 @@ check_rows() {
 }
 
 finish_workout() {
+  close_keypad
   # Finish is a native bar item, which carries its label but no identifier.
   tap_bar 'label="Finish"'
   agent_device alert wait 5000 >/dev/null || fail "Finish asked nothing"
@@ -510,16 +536,19 @@ expect_set 0 3 "Failure set, 100 kg, 4 reps, Done"
 screenshot squat-logged
 
 tap 'id="move-exercise-down-0"'
+close_keypad
 expect_exercise 1 "Barbell Squat"
 expect_exercise 0 "Romanian Deadlift"
 type_into set-0-0-weight "the weight of Romanian Deadlift's first set" 80
 expect_set 0 0 "Set 1, 80 kg, 6 to 10 reps, To do"
+close_keypad
 
 add_exercise plank Plank
 expect_exercise 5 "Plank"
 type_into set-5-0-time "the time of Plank's first set" 100
 mark_done 5 0
 expect_set 5 0 "Set 1, 60 seconds, Done"
+close_keypad
 screenshot before-kill
 
 xcrun simctl terminate "$udid" "$bundle_id"
@@ -571,7 +600,7 @@ title=$(label_of 'id="workout-title"')
 [[ "$title" == *" workout" ]] || fail "The empty workout is called \"$title\""
 add_exercise "barbell squat" "Barbell Squat"
 expect_exercise 0 "Barbell Squat"
-bring 'label="Previous, 100 kg × 5"' "The first set does not show last time's 100 kg × 5"
+see 'label="Previous, 100 kg × 5"' "The first set does not show last time's 100 kg × 5"
 mark_done 0 0
 expect_set 0 0 "Set 1, 100 kg, 5 reps, Done"
 timing=$(label_of 'id="set-done-timing"')

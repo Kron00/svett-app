@@ -2609,8 +2609,12 @@ check "startup.sh says what SVETT_LAUNCHES must be" \
 # bottom edge. The open keypad covers the screen from y=524, with Next and Done
 # at its foot, and a running rest sits right above it, so a press there reaches
 # the keypad or the rest instead of the workout. A drag from inside the workout
-# brings the element it is for clear of them. After a scroll or a drag the next
-# element read glides for two reads. A press acts on the element whose frame was
+# brings the element it is for clear of them. agent-device swipes in the middle of
+# the screen to scroll, so while the keypad and the rest reach above y=478 a scroll
+# lands on them and moves nothing. Like agent-device, it still counts an element
+# under them as on screen. The set being typed into stays on screen, because the
+# app scrolls it above them. After a scroll or a drag the next element read glides
+# for two reads. A press acts on the element whose frame was
 # read last, if it lands on its centre, so a press at a gliding frame misses.
 # Every set marked done starts a rest, and the first rest asks for notifications
 # with a system prompt that hides svett until alert accept answers it, unless
@@ -2782,7 +2786,7 @@ const belowFold = (element) =>
   element.id === "set-done-timing" || element.id === "start-routine" || element.id === "routine-list";
 const flung = (element) => state.flung !== null && state.flung === element.id;
 const visible = (element) => element !== null && !flung(element) &&
-  (!belowFold(element) || state.scrolled.includes(element.id));
+  (!belowFold(element) || state.scrolled.includes(element.id) || inFocusedSet(element.id));
 
 // The screen is 956 points tall. The keypad covers it from y=524 down, with Next and Done at
 // its foot. A running rest sits right above the open keypad, or at the foot of the screen.
@@ -2799,6 +2803,10 @@ const restHeight = () => (state.focus && !OLD_REST ? COMPACT_REST_HEIGHT : REST_
 // the keypad on the first set's weight field.
 const HOME_INDICATOR = 900;
 const restTop = () => (state.focus ? KEYPAD_TOP : 956) - restHeight();
+// The top of what covers the workout: the open keypad and the running rest.
+const coverTop = () => Math.min(state.focus ? KEYPAD_TOP : 956, state.rest ? restTop() : 956);
+// Where agent-device swipes to scroll.
+const SCREEN_MIDDLE = 478;
 const keyFrame = (key) => {
   const row = KEY_ROWS.findIndex((keys) => keys.includes(key));
   return { x: KEY_COLUMNS[KEY_ROWS[row].indexOf(key)], y: KEYPAD_TOP + 12 + 75 * row, width: 130, height: 67 };
@@ -2996,6 +3004,7 @@ switch (command[0]) {
   case "scroll": {
     const element = find(command[3]);
     if (element === null || (command[1] === "up" && !visible(element) && !flung(element))) fail();
+    if (state.screen === "workout" && coverTop() <= SCREEN_MIDDLE && !visible(element)) fail();
     state.scrolled.push(element.id);
     state.low = null;
     state.panned = false;
@@ -3009,7 +3018,7 @@ switch (command[0]) {
     // A drag moves the workout only from inside it: below the navigation bar, above the
     // keypad and the rest timer. agent-device reports it on stdout.
     const y = Number(command[3]);
-    const bottom = Math.min(956, state.focus ? KEYPAD_TOP : 956, state.rest ? restTop() : 956);
+    const bottom = coverTop();
     if (state.prompt === null && state.screen === "workout" && y > 110 && y < bottom) {
       state.panned = true;
       state.low = null;
@@ -3072,6 +3081,7 @@ EOF
 chmod +x "$logger_bin/pnpm" "$fake/logger-device"
 
 # run_logger [VAR=value...] [logger.sh args...] leaves the exit status in logger_status.
+# It runs $logger_script when that is set.
 run_logger() {
   local -a vars=()
   while [[ "${1:-}" == *=* ]]; do
@@ -3083,7 +3093,7 @@ run_logger() {
   logger_status=0
   env PATH="$logger_bin:$fake:$PATH" FAKE_ROOT="$root" FAKE_STATE="$root/logger-state" \
     SVETT_DEVICE_CMD="logger-device --session 't3-test session' --device FAKE-UDID" \
-    "${vars[@]}" "$repo/scripts/sim/logger.sh" "$@" >"$output" 2>&1 || logger_status=$?
+    "${vars[@]}" "${logger_script:-$repo/scripts/sim/logger.sh}" "$@" >"$output" 2>&1 || logger_status=$?
 }
 
 # logger_from <call> <expected call>...: the bound command calls from the first
@@ -3099,6 +3109,21 @@ logger_from() {
   }
 }
 
+# logger_between <first> <last> <expected call>...: the bound command calls from the
+# first that is exactly <first> through the next that is exactly <last> are exactly
+# these, without the prefix.
+logger_between() {
+  local calls expected
+  calls=$(sed "s/^$bound_prefix //" "$root/bound-calls" |
+    awk -v first="$1" -v last="$2" '$0 == first { on = 1 } on { print } on && $0 == last { exit }')
+  shift 2
+  expected=$(printf '%s\n' "$@")
+  [[ "$calls" == "$expected" ]] || {
+    { echo "bound command calls:"; echo "$calls"; } >>"$output"
+    fail "the bound command did not get exactly these calls: $expected"
+  }
+}
+
 # logger_pans_slow checks every drag moves at most 50 points a second.
 logger_pans_slow() {
   grep -qE "^$bound_prefix gesture pan " "$root/bound-calls" &&
@@ -3106,9 +3131,11 @@ logger_pans_slow() {
     awk '{ by = $(NF - 1) < 0 ? -$(NF - 1) : $(NF - 1) } by * 20 > $NF { found = 1 } END { exit !found }'
 }
 
-# logger_presses_clear checks every press point sits above y=840.
+# logger_presses_clear checks every press point sits above y=840, but the keypad's Done
+# at its foot.
 logger_presses_clear() {
-  ! grep -E "^$bound_prefix press " "$root/bound-calls" | awk '$NF > 840 { found = 1 } END { exit !found }'
+  ! grep -E "^$bound_prefix press " "$root/bound-calls" |
+    awk '$NF > 840 && !($(NF - 1) == 324 && $NF == 880) { found = 1 } END { exit !found }'
 }
 
 logger_db="$root/data container/Documents/svett-logger.db"
@@ -3136,8 +3163,20 @@ check "logger.sh types each set by pressing its weight, then its reps, and waits
   'wait id="set-0-1-weight" selected=true 3000' 'wait id="set-0-1-reps" selected=true 3000' \
   'wait id="set-0-2-weight" selected=true 3000' 'wait id="set-0-2-reps" selected=true 3000' \
   'wait id="set-0-0-weight" selected=true 3000' 'wait id="set-5-0-time" selected=true 3000'
-check "logger.sh never reads or presses the keypad's Next and Done at the bottom edge" \
-  test -z "$(grep -E 'keypad-(next|done)' "$root/bound-calls")"
+check "logger.sh never reads or presses the keypad's Next" \
+  test -z "$(grep -E 'keypad-next' "$root/bound-calls")"
+check "logger.sh closes the keypad with Done after Move down, Romanian Deadlift's weight and Plank's set" \
+  test "$(grep -cxF -e "$bound_prefix press 324 880" "$root/bound-calls")" = 3
+check "logger.sh closes the keypad right after Move down, before it scrolls to exercise 2" \
+  logger_between 'get attrs id="move-exercise-down-0"' \
+  'scroll down --until id="workout-exercise-1" label="Barbell Squat"' \
+  'get attrs id="move-exercise-down-0"' "wait 250" 'get attrs id="move-exercise-down-0"' "press 220 250" \
+  'is visible id="key-1"' 'get attrs id="keypad-done"' "press 324 880" 'wait absent id="key-1" 5000' \
+  'is visible id="workout-exercise-1" label="Barbell Squat"' \
+  'scroll up --until id="workout-exercise-1" label="Barbell Squat"' \
+  'scroll down --until id="workout-exercise-1" label="Barbell Squat"'
+check "logger.sh reads exercise 2 only once its frame shows clear of the rest" \
+  bound_got "$bound_prefix get attrs id=\"workout-exercise-1\" label=\"Barbell Squat\""
 check "logger.sh drags the first set's weight field up from the bottom edge just far enough before it presses it" \
   bound_got "$bound_prefix gesture pan 20 820 0 -81 1620"
 check "logger.sh drags a set up from under the keypad and the rest, from just above them" \
@@ -3153,7 +3192,7 @@ check "logger.sh reads the first set marked done where it is, without a scroll" 
 check "logger.sh reads the first set's frame only once it stops moving as the rest appears" \
   test "$(sed -n '/wait id="workout-set-0-0" label="Set 1, 100 kg, 5 reps, Done" 5000$/,/get attrs id="set-0-0-weight"$/p' \
     "$root/bound-calls" | grep -c 'get attrs id="workout-set-0-0"$')" = 4
-check "logger.sh presses nothing at the bottom edge" logger_presses_clear
+check "logger.sh presses nothing at the bottom edge but the keypad's Done" logger_presses_clear
 check "logger.sh presses Start workout only once two reads agree after the scroll that found it" \
   logger_from 'scroll down --until id="start-routine"' 'is visible id="key-1"' 'is visible id="rest-timer"' \
   'get attrs id="start-routine"' "wait 250" 'get attrs id="start-routine"' "wait 250" \
@@ -3241,6 +3280,33 @@ check "logger.sh shoots the screen with the set under the rest" \
   only_calls "screenshot $root/logger-covered/failure" "screenshot $root/logger-covered/failure.png"
 check "logger.sh saves the elements of the workout with the set under the rest" \
   grep -qF '"screen":"workout"' "$root/logger-covered/failure.txt"
+
+case_name="logger.sh as 0f0a516 ran it, reading exercise 2 with the keypad open"
+# A copy of the repo whose logger.sh never closes the keypad, as 0f0a516's did not.
+old_repo="$root/logger-open-keypad-repo"
+mkdir -p "$old_repo/scripts/sim"
+for entry in "$repo"/* "$repo"/.[!.]*; do
+  [[ "${entry##*/}" == scripts ]] || ln -s "$entry" "$old_repo/"
+done
+for entry in "$repo"/scripts/*; do
+  [[ "${entry##*/}" == sim ]] || ln -s "$entry" "$old_repo/scripts/"
+done
+for entry in "$repo"/scripts/sim/*; do
+  [[ "${entry##*/}" == logger.sh ]] || ln -s "$entry" "$old_repo/scripts/sim/"
+done
+sed -E 's/^( *)close_keypad$/\1:/' "$repo/scripts/sim/logger.sh" >"$old_repo/scripts/sim/logger.sh"
+chmod +x "$old_repo/scripts/sim/logger.sh"
+check "the copy leaves out every close of the keypad" \
+  test -z "$(grep -E '^ *close_keypad$' "$old_repo/scripts/sim/logger.sh")"
+logger_script="$old_repo/scripts/sim/logger.sh" run_logger "$root/logger-open-keypad"
+check "logger.sh fails when it reads exercise 2 with the keypad and the rest over the screen's middle" \
+  test "$logger_status" -ne 0
+check "logger.sh fails as it did on the Mac" \
+  grep -qxF "Exercise 2 of the workout is not Barbell Squat" "$output"
+check "a scroll down to exercise 2 lands on the keypad and finds nothing" \
+  bound_got "$bound_prefix scroll down --until id=\"workout-exercise-1\" label=\"Barbell Squat\""
+check "logger.sh keeps the screen with the keypad still open" \
+  grep -qF '"screen":"workout"' "$root/logger-open-keypad/failure.txt"
 
 case_name="logger.sh when the workout does not survive the kill"
 run_logger FAKE_LOSES_WORKOUT=1 "$root/logger-loses"
