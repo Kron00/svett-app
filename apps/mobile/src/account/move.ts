@@ -6,7 +6,11 @@ import {
   copyDatabase,
   databaseFileName,
   type DatabaseOwner,
+  finishLeave,
   finishMove,
+  type LeaveSteps,
+  leaveAccount,
+  leavingAccount,
   type MoveCounts,
   type MoveSteps,
   ownRowCount,
@@ -23,10 +27,11 @@ import {
   dataChanged,
   reopenDatabase,
   sameOwner,
+  switchOwner,
 } from "../data/current";
 import { type DatabaseRuntime, openDatabaseHandle } from "../data/database";
 import { inTurn } from "../data/turns";
-import { storedMoveJournal, storeMoveJournal } from "./journal";
+import { forgetMoveJournal, storedMoveJournal, storeMoveJournal } from "./journal";
 
 /** Runs `use` on the database of `owner`, sharing the open one when it is that owner's. */
 const withDatabase = async <A>(
@@ -55,10 +60,10 @@ const copyInto = (account: AccountId) =>
     );
   });
 
-const deleteAnonymous = async () => {
+const deleteDatabaseOf = async (owner: DatabaseOwner) => {
   // SQLite refuses to delete a file that is still open.
   await databasesClosed();
-  const name = databaseFileName(ANONYMOUS);
+  const name = databaseFileName(owner);
   // Deleting a file that is gone fails, and a crash may have deleted it already. Opening it
   // first leaves an empty one to delete.
   await (await openDatabaseAsync(name)).closeAsync();
@@ -73,8 +78,57 @@ const steps: MoveSteps<unknown> = {
       reopenDatabase();
     }),
   copyInto: (account) => Effect.tryPromise(() => copyInto(account)),
-  deleteAnonymous: Effect.tryPromise(deleteAnonymous),
+  deleteAnonymous: Effect.tryPromise(() => deleteDatabaseOf(ANONYMOUS)),
 };
+
+const copyOut = (account: AccountId) =>
+  withDatabase({ kind: "account", accountId: account }, async (from) => {
+    const rows = await sqlOf(from);
+    return withDatabase(ANONYMOUS, (to) =>
+      to.runPromise(Effect.flatMap(Effect.service(Sql), (into) => copyDatabase(rows, into))),
+    );
+  });
+
+const leaveSteps: LeaveSteps<unknown> = {
+  read: Effect.sync(storedMoveJournal),
+  record: (journal) =>
+    Effect.sync(() => {
+      storeMoveJournal(journal);
+      reopenDatabase();
+    }),
+  forget: Effect.sync(() => {
+    forgetMoveJournal();
+    reopenDatabase();
+  }),
+  copyToAnonymous: (account) => Effect.tryPromise(() => copyOut(account)),
+  deleteAccountData: (account) =>
+    Effect.tryPromise(() => deleteDatabaseOf({ kind: "account", accountId: account })),
+};
+
+/**
+ * Opens the phone's own database in place of a deleted account's, so its file is closed. The
+ * database of another account signed in now stays open.
+ */
+const closeDeleted = (account: AccountId) => {
+  if (sameOwner(currentDatabase().owner, { kind: "account", accountId: account })) {
+    switchOwner(ANONYMOUS);
+  }
+};
+
+/**
+ * Takes a deleted account's data off the phone, once the server deleted the account. With
+ * `keep` the account's rows join the phone's own data, with no account. Without it they are
+ * erased.
+ */
+export const leaveDeletedAccount = (account: AccountId, keep: boolean) =>
+  inTurn(async () => {
+    try {
+      closeDeleted(account);
+      await Effect.runPromise(leaveAccount(leaveSteps, account, keep));
+    } finally {
+      dataChanged();
+    }
+  });
 
 /**
  * What the phone's own data holds, when svett should offer to move it now. Undefined when it
@@ -118,12 +172,30 @@ export const moveIntoAccount = (account: AccountId) =>
 /** Finishes a move a crash cut short, into the account it named, whoever is signed in now. */
 export const resumeMove = () =>
   inTurn(async () => {
-    if (!anonymousDataLocked(storedMoveJournal())) return;
+    const journal = storedMoveJournal();
+    if (leavingAccount(journal) !== undefined || !anonymousDataLocked(journal)) return;
     try {
       await Effect.runPromise(finishMove(steps));
     } finally {
       dataChanged();
     }
+  });
+
+/**
+ * Finishes taking a deleted account's data off the phone, as the person chose, after a crash
+ * part way. Gives back that account, or undefined when nothing was left to do.
+ */
+export const finishLeavingAccount = () =>
+  inTurn(async () => {
+    const account = leavingAccount(storedMoveJournal());
+    if (account === undefined) return undefined;
+    try {
+      closeDeleted(account);
+      await Effect.runPromise(finishLeave(leaveSteps));
+    } finally {
+      dataChanged();
+    }
+    return account;
   });
 
 /** The account starts empty, and the phone's own data stays for when nobody is signed in. */

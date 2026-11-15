@@ -6,10 +6,12 @@ import { View } from "react-native";
 import { AccountRow } from "./account/AccountRow";
 import { ChatGPTRow } from "./chatgpt/ChatGPTRow";
 import { CoachScreen } from "./coach/CoachScreen";
+import { FeedScreen } from "./feed/FeedScreen";
 import { DesignGalleryRow } from "./gallery/DesignGalleryRow";
 import type { TabParamList } from "./navigation";
 import { PhoneChecksRow } from "./PhoneChecksRow";
 import { PlaceholderScreen } from "./PlaceholderScreen";
+import { ProfileRow } from "./social/ProfileRow";
 import { ProgressScreen } from "./progress/ProgressScreen";
 import { TrainScreen } from "./routines/TrainScreen";
 import { type Tab, TABS } from "./tabs";
@@ -23,6 +25,7 @@ const TabStack = createNativeStackNavigator();
 
 function TabContent({ tab }: { readonly tab: Tab }) {
   if (tab.name === "Progress") return <ProgressScreen />;
+  if (tab.name === "Home") return <FeedScreen />;
   if (tab.name === "Coach") return <CoachScreen />;
   if (tab.name === "Train") return <TrainScreen />;
   return (
@@ -31,6 +34,7 @@ function TabContent({ tab }: { readonly tab: Tab }) {
         <View className="mt-6 self-stretch">
           <ListSection>
             <AccountRow />
+            <ProfileRow />
             <ChatGPTRow />
             <DataRow />
             <WorkoutSettingsRow />

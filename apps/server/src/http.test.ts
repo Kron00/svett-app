@@ -48,6 +48,7 @@ const serve = (url: Redacted.Redacted, backupDir: string, clerk: ClerkConfigShap
       backupDir,
       backupKeep: 14,
       backupCron: "0 3 * * *",
+      newDeletionLedger: false,
     }),
   );
   const services = Layer.mergeAll(
@@ -98,7 +99,7 @@ describe("GET /health", { timeout: 60_000 }, () => {
           backup: new Date(backup.takenAt).toISOString(),
           checkedAt: expect.any(String),
           restored: true,
-          tables: 3,
+          tables: 14,
         },
       },
     });

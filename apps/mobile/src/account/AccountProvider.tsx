@@ -6,6 +6,7 @@ import { AppState } from "react-native";
 import { followSession, ownerOf, subscribeDatabase } from "../data/current";
 import { subscribeWrites } from "../data/store";
 import { CLERK_PUBLISHABLE_KEY } from "./config";
+import { finishPendingDeletion } from "./delete";
 import { resumeMove } from "./move";
 import { resetSyncStatus, syncNow } from "./sync";
 
@@ -22,6 +23,29 @@ function OwnerFromSession() {
   useEffect(() => {
     if (isLoaded) followSession(userId);
   }, [isLoaded, userId]);
+  return null;
+}
+
+/**
+ * Finishes a deletion of an account that a crash or a lost answer cut short, as the person
+ * chose when they asked for it, at launch and whenever someone signs in. Only a session of
+ * that account sends it again. One that fails again stays saved for the next try.
+ */
+function FinishDeletion() {
+  const { isLoaded, userId } = useAuth();
+  return isLoaded ? <FinishDeletionOnce key={userId ?? ""} /> : null;
+}
+
+function FinishDeletionOnce() {
+  const { userId, getToken, signOut } = useAuth();
+  const signedIn = useEffectEvent(() => userId);
+  const token = useEffectEvent(() => getToken());
+  const forget = useEffectEvent(async (account: string) => {
+    if (userId === account) await signOut();
+  });
+  useEffect(() => {
+    finishPendingDeletion({ signedIn, token, signOut: forget }).catch(() => undefined);
+  }, []);
   return null;
 }
 
@@ -78,6 +102,7 @@ export function AccountProvider({ children }: { readonly children: ReactNode }) 
   return (
     <ClerkProvider publishableKey={CLERK_PUBLISHABLE_KEY} tokenCache={tokenCache}>
       <OwnerFromSession />
+      <FinishDeletion />
       <SyncWhileSignedIn />
       {children}
     </ClerkProvider>

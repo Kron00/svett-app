@@ -58,6 +58,9 @@ const makeRuntime = (database: Promise<SQLiteDatabase>, onStep: OnOpenStep) =>
 
 export type DatabaseRuntime = ReturnType<typeof makeRuntime>;
 
+/** `length` random bytes from the system's secure source, as row IDs use. */
+export const secureRandomBytes = (length: number) => getRandomValues(new Uint8Array(length));
+
 /** The database for `target`, migrated and seeded, with every repository over it. */
 export const openDatabase = (
   target: DatabaseTarget,

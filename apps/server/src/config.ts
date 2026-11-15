@@ -9,6 +9,11 @@ export interface ServerConfigShape {
   readonly backupKeep: number;
   /** When the nightly backup runs, as a cron expression in UTC. */
   readonly backupCron: string;
+  /**
+   * NEW_DELETION_LEDGER=true says every account the database holds should exist, so a server
+   * may make a new deletion ledger for a database that holds accounts when the file is lost.
+   */
+  readonly newDeletionLedger: boolean;
 }
 
 export class ServerConfig extends Context.Service<ServerConfig, ServerConfigShape>()(
@@ -23,6 +28,9 @@ export class ServerConfig extends Context.Service<ServerConfig, ServerConfigShap
         backupDir: yield* Config.String("BACKUP_DIR").pipe(Config.withDefault("/backups")),
         backupKeep: yield* Config.Int("BACKUP_KEEP").pipe(Config.withDefault(14)),
         backupCron: yield* Config.String("BACKUP_CRON").pipe(Config.withDefault("0 3 * * *")),
+        newDeletionLedger: yield* Config.Boolean("NEW_DELETION_LEDGER").pipe(
+          Config.withDefault(false),
+        ),
       });
     }),
   );

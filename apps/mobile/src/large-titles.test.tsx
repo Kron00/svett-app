@@ -120,6 +120,7 @@ vi.mock("expo-task-manager", () => ({
   isTaskRegisteredAsync: async () => false,
 }));
 vi.mock("expo-maps", () => ({ AppleMaps: { View: "AppleMapsView" } }));
+vi.mock("react-native-svg", () => ({ default: "Svg", Polyline: "Polyline" }));
 vi.mock("expo-file-system", () => ({
   Paths: { document: "/documents" },
   File: class {
@@ -319,6 +320,7 @@ describe("screens under a native large title", () => {
         "Data",
         "Exercises",
         "Gallery",
+        "Inbox",
         "PickExercise",
         "Plates",
         "ReplaceWorkoutExercise",

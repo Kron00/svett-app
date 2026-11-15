@@ -1,0 +1,385 @@
+import { Data, Effect, Option, Schema } from "effect";
+
+import type { AccountId } from "./database.ts";
+import { CommentPage, FeedPage, InboxPage, Likes, PostComment, PostThread } from "./feed.ts";
+import { ActivityView, FollowState, type SocialActivityId } from "./privacy.ts";
+import { rateLimitedMessage, retryAfterSeconds } from "./rate-limit.ts";
+import { usernamePrefix } from "./username.ts";
+
+/** The signed-in account's own profile. `username` is null until they choose one. */
+export const OwnProfile = Schema.Struct({
+  username: Schema.NullOr(Schema.String),
+  private: Schema.Boolean,
+  followers: Schema.Int,
+  following: Schema.Int,
+  /** Follow requests waiting for an answer. */
+  requests: Schema.Int,
+});
+export type OwnProfile = typeof OwnProfile.Type;
+
+/** Another account in a list, with where the signed-in account's follow of it stands. */
+export const ProfileSummary = Schema.Struct({
+  username: Schema.String,
+  private: Schema.Boolean,
+  follow: FollowState,
+});
+export type ProfileSummary = typeof ProfileSummary.Type;
+
+export const ProfileList = Schema.Struct({ profiles: Schema.Array(ProfileSummary) });
+export type ProfileList = typeof ProfileList.Type;
+
+/**
+ * One page of a profile's followers or follows, by username. `next` asks for the page after
+ * it, and is null on the last page.
+ */
+export const ProfilePage = Schema.Struct({
+  profiles: Schema.Array(ProfileSummary),
+  next: Schema.NullOr(Schema.String),
+});
+export type ProfilePage = typeof ProfilePage.Type;
+
+/**
+ * Someone waiting for the signed-in account to approve their follow. Approve and Decline
+ * name the request by `id`, never by username, so a stale answer never reaches whoever
+ * holds the username now.
+ */
+export const FollowRequest = Schema.Struct({
+  id: Schema.String,
+  username: Schema.String,
+  private: Schema.Boolean,
+  follow: FollowState,
+});
+export type FollowRequest = typeof FollowRequest.Type;
+
+export const FollowRequestList = Schema.Struct({ requests: Schema.Array(FollowRequest) });
+export type FollowRequestList = typeof FollowRequestList.Type;
+
+/**
+ * A profile and the first page of the activities the privacy rule lets the signed-in account
+ * see. Another account's shared activities come newest first by when each was shared, as the
+ * feed orders them. Your own profile lists every activity of yours, newest first by its start.
+ */
+export const ProfileView = Schema.Struct({
+  username: Schema.String,
+  private: Schema.Boolean,
+  self: Schema.Boolean,
+  followers: Schema.Int,
+  following: Schema.Int,
+  follow: FollowState,
+  /** The owner follows the signed-in account. */
+  followsYou: Schema.Boolean,
+  activities: Schema.Array(ActivityView),
+  /** Asks `profileActivities` for the activities after these. Null when there are no more. */
+  next: Schema.NullOr(Schema.String),
+});
+export type ProfileView = typeof ProfileView.Type;
+
+/** A page of a profile's activities after a cursor, ordered as ProfileView orders them. */
+export const ActivityPage = Schema.Struct({
+  activities: Schema.Array(ActivityView),
+  next: Schema.NullOr(Schema.String),
+});
+export type ActivityPage = typeof ActivityPage.Type;
+
+export const FollowResult = Schema.Struct({ follow: FollowState });
+export type FollowResult = typeof FollowResult.Type;
+
+/**
+ * An account the signed-in account blocked. Unblock names the block by `id`, never by
+ * username, so it never reaches whoever holds the username now.
+ */
+export const Block = Schema.Struct({ id: Schema.String, username: Schema.String });
+export type Block = typeof Block.Type;
+
+/** One page of blocks, by username. `next` asks for the page after it, and is null on the last. */
+export const BlockPage = Schema.Struct({
+  blocks: Schema.Array(Block),
+  next: Schema.NullOr(Schema.String),
+});
+export type BlockPage = typeof BlockPage.Type;
+
+/** The server deleted the account and ended its sessions. */
+export const AccountDeleted = Schema.Struct({ deleted: Schema.Literal(true) });
+export type AccountDeleted = typeof AccountDeleted.Type;
+
+/**
+ * A secret the phone makes for one deletion and sends with it. The deletion ends the session,
+ * so the phone asks with the receipt alone whether the deletion happened. It goes in a path,
+ * and the server's router takes path parameters of at most 100 characters.
+ */
+export const DeletionReceipt = Schema.String.check(Schema.isPattern(/^[A-Za-z0-9_-]{43,100}$/));
+
+/** Whether the server deleted an account with the receipt the phone asked about. */
+export const DeletionAnswer = Schema.Struct({ deleted: Schema.Boolean });
+export type DeletionAnswer = typeof DeletionAnswer.Type;
+
+const Done = Schema.Struct({});
+
+/** The error codes the server answers social requests with, beside sign-in's. */
+const SERVER_PROBLEMS = [
+  "not_found",
+  "username_taken",
+  "invalid_username",
+  "username_required",
+  "cannot_follow_self",
+  "request_not_found",
+  "post_not_found",
+  "invalid_comment",
+  "invalid_cursor",
+  "cannot_block_self",
+  "block_not_found",
+  "rate_limited",
+  "account_deleted",
+  "session_end_failed",
+  "wrong_account",
+] as const;
+
+export type SocialProblem =
+  | (typeof SERVER_PROBLEMS)[number]
+  | "offline"
+  | "signed_out"
+  | "sign_in_unavailable"
+  | "server";
+
+export class SocialFailed extends Data.TaggedError("SocialFailed")<{
+  readonly problem: SocialProblem;
+  readonly message: string;
+}> {}
+
+export const socialProblemMessage = (failed: SocialFailed): string => {
+  switch (failed.problem) {
+    case "offline":
+      return "Cannot reach svett. Check the connection and try again.";
+    case "signed_out":
+      return "Sign in again to see profiles.";
+    case "sign_in_unavailable":
+      return "The svett server has no sign-in set up yet, so profiles are unavailable.";
+    case "not_found":
+      return "Nobody has that username.";
+    case "username_taken":
+      return "Someone already has that username.";
+    case "invalid_username":
+      return failed.message;
+    case "username_required":
+      return "Choose a username before you follow anyone.";
+    case "cannot_follow_self":
+      return "You cannot follow yourself.";
+    case "request_not_found":
+      return "That request was already answered or taken back.";
+    case "post_not_found":
+      return "This post is not here. It may be deleted, or no longer shared with you.";
+    case "invalid_comment":
+      return failed.message;
+    case "invalid_cursor":
+      return "The feed changed while you scrolled. Pull to refresh.";
+    case "cannot_block_self":
+      return "You cannot block yourself.";
+    case "block_not_found":
+      return "That account is no longer blocked.";
+    case "rate_limited":
+      return failed.message;
+    case "account_deleted":
+      return "This svett account was deleted.";
+    case "session_end_failed":
+      return "Your data is gone from svett, but signing you out everywhere did not finish. Try again.";
+    case "wrong_account":
+      return "This phone is signed in to another account now.";
+    case "server":
+      return "The svett server had a problem. Try again soon.";
+  }
+};
+
+export interface HttpSocialOptions {
+  /** Such as https://svett-app.jservers.net, with no trailing slash. */
+  readonly server: string;
+  /** The signed-in session's token, fetched fresh for each request. */
+  readonly token: () => Promise<string | null>;
+  readonly fetch: typeof globalThis.fetch;
+}
+
+const REQUEST_TIMEOUT_MS = 30_000;
+
+const failed = (problem: SocialProblem, message: string) => new SocialFailed({ problem, message });
+
+const ErrorBody = Schema.Struct({ error: Schema.String, message: Schema.optional(Schema.String) });
+
+const isServerProblem = (code: string): code is (typeof SERVER_PROBLEMS)[number] =>
+  (SERVER_PROBLEMS as ReadonlyArray<string>).includes(code);
+
+const at = (username: string) => `/v1/profiles/${encodeURIComponent(username)}`;
+const postAt = (id: string) => `/v1/posts/${encodeURIComponent(id)}`;
+const page = (after: string | undefined) =>
+  after === undefined ? "" : `?after=${encodeURIComponent(after)}`;
+
+/** Profiles, follows and follow requests on the svett server. Answers pass their schemas. */
+export const httpSocialApi = (options: HttpSocialOptions) => {
+  const call = <A>(
+    schema: Schema.Codec<A, unknown>,
+    method: "GET" | "PUT" | "POST" | "DELETE",
+    path: string,
+    body?: unknown,
+    signedIn = true,
+  ) =>
+    Effect.gen(function* () {
+      const token = signedIn
+        ? yield* Effect.tryPromise({
+            try: options.token,
+            catch: () => failed("offline", "Could not read the session."),
+          })
+        : undefined;
+      if (token === null) return yield* failed("signed_out", "Nobody is signed in.");
+      const response = yield* Effect.tryPromise({
+        try: (interrupted) => {
+          const deadline = new AbortController();
+          const timer = setTimeout(() => deadline.abort(), REQUEST_TIMEOUT_MS);
+          interrupted.addEventListener("abort", () => deadline.abort());
+          return options
+            .fetch(`${options.server}${path}`, {
+              method,
+              body: body === undefined ? null : JSON.stringify(body),
+              signal: deadline.signal,
+              headers: {
+                ...(token === undefined ? {} : { authorization: `Bearer ${token}` }),
+                ...(body === undefined ? {} : { "content-type": "application/json" }),
+              },
+            })
+            .finally(() => clearTimeout(timer));
+        },
+        catch: () => failed("offline", "Could not reach the svett server."),
+      });
+      // A proxy in front of the server can answer these without JSON.
+      if (response.status === 401) return yield* failed("signed_out", "The session has ended.");
+      if (response.status === 503) {
+        return yield* failed("sign_in_unavailable", "Sign-in is not set up on the server yet.");
+      }
+      if (response.status === 429) {
+        return yield* failed(
+          "rate_limited",
+          rateLimitedMessage(retryAfterSeconds(response.headers.get("retry-after"))),
+        );
+      }
+      if (response.status === 410) return yield* failed("account_deleted", "Account deleted.");
+      const answer: unknown = yield* Effect.tryPromise({
+        try: () => response.json(),
+        catch: () => failed("server", `The server answered ${response.status} without JSON.`),
+      });
+      if (!response.ok) {
+        const error = Schema.decodeUnknownOption(ErrorBody)(answer);
+        if (Option.isSome(error) && isServerProblem(error.value.error)) {
+          return yield* failed(error.value.error, error.value.message ?? error.value.error);
+        }
+        return yield* failed("server", `The server answered ${response.status}.`);
+      }
+      return yield* Schema.decodeUnknownEffect(schema)(answer).pipe(
+        Effect.mapError((issue) => failed("server", `Unexpected answer. ${issue.message}`)),
+      );
+    });
+
+  return {
+    ownProfile: () => call(OwnProfile, "GET", "/v1/profile"),
+    saveProfile: (profile: { readonly username: string; readonly private: boolean }) =>
+      call(OwnProfile, "PUT", "/v1/profile", profile),
+    /** Profiles whose username starts with `text`. Text no username could start with finds none. */
+    search: (text: string) => {
+      const prefix = usernamePrefix(text);
+      return prefix === undefined
+        ? Effect.succeed<ProfileList>({ profiles: [] })
+        : call(ProfileList, "GET", `/v1/profiles?prefix=${encodeURIComponent(prefix)}`);
+    },
+    profile: (username: string) => call(ProfileView, "GET", at(username)),
+    /** The profile's activities after `cursor`, a `next` from the profile or a page before. */
+    profileActivities: (username: string, cursor?: string) =>
+      call(
+        ActivityPage,
+        "GET",
+        cursor === undefined
+          ? `${at(username)}/activities`
+          : `${at(username)}/activities?cursor=${encodeURIComponent(cursor)}`,
+      ),
+    follow: (username: string) => call(FollowResult, "PUT", `${at(username)}/follow`),
+    unfollow: (username: string) => call(FollowResult, "DELETE", `${at(username)}/follow`),
+    /** A page of the profile's followers, after the page whose `next` is `after`. */
+    followers: (username: string, after?: string) =>
+      call(ProfilePage, "GET", `${at(username)}/followers${page(after)}`),
+    /** A page of the accounts the profile follows, after the page whose `next` is `after`. */
+    following: (username: string, after?: string) =>
+      call(ProfilePage, "GET", `${at(username)}/following${page(after)}`),
+    /** Another account's activity by its social ID, when the privacy rule lets you see it. */
+    activity: (id: SocialActivityId) =>
+      call(ActivityView, "GET", `/v1/activities/${encodeURIComponent(id)}`),
+    requests: () => call(FollowRequestList, "GET", "/v1/follow-requests"),
+    /** Approves the request with this `FollowRequest.id`. */
+    approve: (request: string) =>
+      call(Done, "PUT", `/v1/follow-requests/${encodeURIComponent(request)}`),
+    /** Declines the request with this `FollowRequest.id`. */
+    decline: (request: string) =>
+      call(Done, "DELETE", `/v1/follow-requests/${encodeURIComponent(request)}`),
+    /**
+     * Your shared posts and those of the accounts you follow, newest first by when each was
+     * shared, after `cursor`.
+     */
+    feed: (cursor?: string) =>
+      call(
+        FeedPage,
+        "GET",
+        cursor === undefined ? "/v1/feed" : `/v1/feed?cursor=${encodeURIComponent(cursor)}`,
+      ),
+    /**
+     * A post by its social ID, with its first page of comments, or with the page that holds
+     * `comment` when it is still there.
+     */
+    post: (id: string, comment?: string) =>
+      call(
+        PostThread,
+        "GET",
+        comment === undefined ? postAt(id) : `${postAt(id)}?comment=${encodeURIComponent(comment)}`,
+      ),
+    /** The page of a post's comments after a `later` cursor, or before an `earlier` one. */
+    comments: (id: string, from: { readonly later: string } | { readonly earlier: string }) =>
+      call(
+        CommentPage,
+        "GET",
+        "later" in from
+          ? `${postAt(id)}/comments?after=${encodeURIComponent(from.later)}`
+          : `${postAt(id)}/comments?before=${encodeURIComponent(from.earlier)}`,
+      ),
+    like: (id: string) => call(Likes, "PUT", `${postAt(id)}/like`),
+    unlike: (id: string) => call(Likes, "DELETE", `${postAt(id)}/like`),
+    comment: (id: string, body: string) =>
+      call(PostComment, "POST", `${postAt(id)}/comments`, { body }),
+    deleteComment: (id: string, commentId: string) =>
+      call(Done, "DELETE", `${postAt(id)}/comments/${encodeURIComponent(commentId)}`),
+    inbox: (cursor?: string) =>
+      call(
+        InboxPage,
+        "GET",
+        cursor === undefined ? "/v1/inbox" : `/v1/inbox?cursor=${encodeURIComponent(cursor)}`,
+      ),
+    /** Marks every inbox item up to `until` read. */
+    markInboxRead: (until: number) => call(Done, "PUT", "/v1/inbox/read", { until }),
+    /**
+     * Blocks the account with this username. Neither sees the other any more, and any follow
+     * between them, either way, ends.
+     */
+    block: (username: string) => call(Done, "PUT", `${at(username)}/block`),
+    /** A page of the accounts you blocked, after the page whose `next` is `after`. */
+    blocks: (after?: string) => call(BlockPage, "GET", `/v1/blocks${page(after)}`),
+    /** Ends the block with this `Block.id`. */
+    unblock: (block: string) => call(Done, "DELETE", `/v1/blocks/${encodeURIComponent(block)}`),
+    /** Ends this account's follow of the signed-in account, without blocking it. */
+    removeFollower: (username: string) =>
+      call(Done, "DELETE", `/v1/followers/${encodeURIComponent(username)}`),
+    /**
+     * Deletes the signed-in account, every row it has on the server, and every session. The
+     * server refuses with `wrong_account` when the session is not `account`'s. `receipt` is the
+     * deletion's `DeletionReceipt`, which `deletionHappened` asks about later.
+     */
+    deleteAccount: (account: AccountId, receipt: string) =>
+      call(AccountDeleted, "DELETE", "/v1/me", { account, receipt }),
+    /** Whether the server deleted an account with this receipt. It needs no session. */
+    deletionHappened: (receipt: string) =>
+      call(DeletionAnswer, "GET", `/v1/deletions/${encodeURIComponent(receipt)}`, undefined, false),
+  };
+};
+
+export type SocialApi = ReturnType<typeof httpSocialApi>;

@@ -601,6 +601,14 @@ describe("syncStatusMessage", () => {
       { kind: "failed", problem: "update_required", queued: 2 },
       "Update svett to sync. Everything stays on this phone meanwhile.",
     ],
+    [
+      { kind: "failed", problem: "account_deleted", queued: 4 },
+      "This account was deleted, so svett keeps nothing more from this phone.",
+    ],
+    [
+      { kind: "failed", problem: "rate_limited", queued: 1 },
+      "svett got a lot of changes at once. 1 change waits on this phone, and sync tries again soon.",
+    ],
   ] as const)("describes %o", (status, message) => {
     expect(syncStatusMessage(status)).toBe(message);
   });

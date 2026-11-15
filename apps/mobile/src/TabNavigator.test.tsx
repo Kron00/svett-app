@@ -25,8 +25,10 @@ vi.mock("@react-navigation/native-stack", () => ({
 vi.mock("react-native", () => ({ ScrollView: "ScrollView", Text: "Text", View: "View" }));
 vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 vi.mock("./progress/ProgressScreen", () => ({ ProgressScreen: () => "progress screen" }));
+vi.mock("./feed/FeedScreen", () => ({ FeedScreen: () => "feed screen" }));
 vi.mock("./account/AccountRow", () => ({ AccountRow: () => "account row" }));
 vi.mock("./coach/CoachScreen", () => ({ CoachScreen: () => "coach screen" }));
+vi.mock("./social/ProfileRow", () => ({ ProfileRow: () => "profile row" }));
 vi.mock("./chatgpt/ChatGPTRow", () => ({ ChatGPTRow: () => "chatgpt row" }));
 vi.mock("./PhoneChecksRow", () => ({ PhoneChecksRow: () => "phone checks row" }));
 vi.mock("./transfer/DataRow", () => ({ DataRow: () => "data row" }));
@@ -69,6 +71,8 @@ describe("TabNavigator", () => {
     );
     const progress = ofType(tree.root, "TabScreen").find((tab) => tab.props.name === "Progress");
     expect(progress?.findAll((node) => node.children.includes("progress screen"))).not.toEqual([]);
+    const home = ofType(tree.root, "TabScreen").find((tab) => tab.props.name === "Home");
+    expect(home?.findAll((node) => node.children.includes("feed screen"))).not.toEqual([]);
     const train = ofType(tree.root, "TabScreen").find((tab) => tab.props.name === "Train");
     expect(train?.findAll((node) => node.children.includes("train screen"))).not.toEqual([]);
   });

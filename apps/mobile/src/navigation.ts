@@ -66,6 +66,22 @@ export type RootStackParamList = {
   /** Units, RPE, and your plates and bars. */
   WorkoutSettings: undefined;
   Account: undefined;
+  OwnProfile: undefined;
+  /** `username` fills in the field, for links such as svett://profile/edit?username=anna. */
+  EditProfile: { username?: string } | undefined;
+  FollowRequests: undefined;
+  People: { q?: string } | undefined;
+  Profile: { username: string };
+  /**
+   * `list` is followers or following, parsed by the screen. `own` is set by your own profile,
+   * whose followers can be removed.
+   */
+  Connections: { username: string; list: string; own?: string };
+  Blocks: undefined;
+  /** A post in full, named by its activity's social ID. */
+  /** `comment` opens the post on the page of comments that holds it. */
+  Post: { id: string; comment?: string };
+  Inbox: undefined;
 };
 
 export type RootNavigation = NativeStackNavigationProp<RootStackParamList>;

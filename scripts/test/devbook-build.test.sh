@@ -5092,4 +5092,600 @@ check "health.sh fails when the linked workout's sources never show" test "$heal
 check "health.sh stops paging after 15 pages" \
   grep -qF 'id="activity-sources" was not on screen after 15 pages' "$output"
 
+# Stands in for the bound command on the social screens. It tracks the screen, the
+# sign-in step, the saved username and the follow of the other profile. Each button
+# under a screen's top shows only after a scroll since the screen last changed, so
+# the test proves the script scrolls to it. A press or fill lands on the element
+# whose attrs were read last. FAKE_NO_CLERK makes Account say the build has no
+# Clerk key, FAKE_TAKEN refuses the username, FAKE_NOBODY finds nobody, and
+# FAKE_STUCK leaves the follow button as it was.
+cat >"$fake/social-device" <<EOF
+#!/usr/bin/env bash
+echo "\$*" >>"$root/bound-calls"
+state="$root/social-state"
+get() { cat "\$state/\$1" 2>/dev/null || echo "\$2"; }
+put() { echo "\$2" >"\$state/\$1"; }
+mkdir -p "\$state"
+screen=\$(get screen tabs)
+step=\$(get step choose)
+scrolled=\$(get scrolled no)
+show() { put screen "\$1"; put scrolled no; }
+id_of() { sed -nE 's/.*id="([^"]+)".*/\1/p' <<<"\$1"; }
+label_of() { sed -nE 's/.*label="([^"]+)".*/\1/p' <<<"\$1"; }
+follow_label() { [[ "\$(get follow none)" == requested ]] && echo Requested || echo "Ask to follow"; }
+# on_screen <id> is true when the element is on screen now.
+on_screen() {
+  case "\$screen:\$1" in
+    account:account) true ;;
+    account:accounts-off) [[ -n "\${FAKE_NO_CLERK:-}" ]] ;;
+    account:*) [[ -z "\${FAKE_NO_CLERK:-}" ]] || return 1
+      case "\$step:\$1" in
+        choose:sign-in-choose | email:sign-in-email | email:email-field | code:sign-in-code | \
+          code:code-field | signedin:signed-in) true ;;
+        choose:continue-with-email | email:send-code | code:check-code) [[ "\$scrolled" == yes ]] ;;
+        *) false ;;
+      esac ;;
+    edit:username-field) true ;;
+    edit:save-profile | own:requests-row) [[ "\$scrolled" == yes ]] ;;
+    own:own-username) true ;;
+    people:people-search) true ;;
+    people:person-social_proof_a) [[ -z "\${FAKE_NOBODY:-}" ]] ;;
+    profile:profile-username | profile:follow-button) true ;;
+    connections:connections | connections:connections-empty | requests:requests | requests:requests-empty) true ;;
+    *) false ;;
+  esac
+}
+label() {
+  case "\$1" in
+    own-username) get saved "" ;;
+    profile-username) echo social_proof_a ;;
+    follow-button) follow_label ;;
+    *) echo "" ;;
+  esac
+}
+exists() { on_screen "\$1" || { scrolled=yes; on_screen "\$1"; }; }
+args=" \$* "
+target=\$(id_of "\$args")
+case "\$args" in
+  *" open com.kron00.svett svett://account "*) show account ;;
+  *" open com.kron00.svett svett://profile/edit?username="*)
+    put linked "\$(sed -nE 's/.*username=([^ ]+).*/\1/p' <<<"\$args")"
+    show edit ;;
+  *" open com.kron00.svett svett://profile/requests "*) show requests ;;
+  *" open com.kron00.svett svett://profile "*) show own ;;
+  *" open com.kron00.svett svett://people?q=social_proof_ "*) show people ;;
+  *" open com.kron00.svett svett://people/"*"/followers "*) show connections ;;
+  *" open com.kron00.svett "*) show tabs ;;
+  *" scroll "*" --until "*) exists "\$target" && put scrolled yes ;;
+  *" scroll "*) put scrolled yes ;;
+  *" get attrs "*)
+    on_screen "\$target" || exit 1
+    put last "\$target"
+    echo '{"label": "Field", "rect": {"x": 20, "y": 300, "width": 120, "height": 40}}' ;;
+  *" fill 80 320 "*)
+    [[ "\$(get last)" == email-field || "\$(get last)" == code-field ]] || exit 1 ;;
+  *" press 80 320 "*)
+    case "\$screen:\$step:\$(get last)" in
+      account:choose:continue-with-email) put step email ;;
+      account:email:send-code) put step code ;;
+      account:code:check-code) put step signedin ;;
+      edit:*:save-profile) [[ -n "\${FAKE_TAKEN:-}" ]] || { put saved "\$(get linked)"; show tabs; } ;;
+      people:*:person-social_proof_a) show profile ;;
+      profile:*:follow-button)
+        [[ -n "\${FAKE_STUCK:-}" ]] ||
+          if [[ "\$(get follow none)" == none ]]; then put follow requested; else put follow none; fi ;;
+      *) echo "fake device: press on \$(get last) on \$screen" >&2; exit 1 ;;
+    esac ;;
+  *" get text "*) label "\$target" ;;
+  *" wait absent "*) ! on_screen "\$target" ;;
+  *" is visible "* | *" wait "*)
+    [[ -z "\$target" ]] && exit 0
+    on_screen "\$target" || exit 1
+    wanted=\$(label_of "\$args")
+    [[ -z "\$wanted" || "\$(label "\$target")" == "\$wanted" ]] ;;
+esac
+EOF
+chmod +x "$fake/social-device"
+
+# run_social [VAR=value...] [social.sh args...] leaves the exit status in social_status.
+run_social() {
+  local -a vars=()
+  while [[ "${1:-}" == *=* ]]; do
+    vars+=("$1")
+    shift
+  done
+  rm -rf "$root/simctl-calls" "$root/bound-calls" "$root/social-state"
+  social_status=0
+  env PATH="$fake:$PATH" SVETT_DEVICE_CMD="social-device --session 't3-test session' --device FAKE-UDID" \
+    "${vars[@]}" "$repo/scripts/sim/social.sh" "$@" >"$output" 2>&1 || social_status=$?
+}
+
+social_links=("com.kron00.svett svett://account" "com.kron00.svett svett://profile/edit?username=social_proof_c"
+  "com.kron00.svett svett://profile" "com.kron00.svett svett://people?q=social_proof_"
+  "com.kron00.svett svett://people/social_proof_c/followers" "com.kron00.svett svett://profile/requests")
+
+case_name="social.sh Debug with SVETT_DEVICE_CMD"
+mkdir -p "$container_sqlite"
+for stale in svett-anonymous.db svett-account-user_old.db-wal ExpoSQLiteStorage; do
+  echo stale >"$container_sqlite/$stale"
+done
+run_social "$root/social"
+[[ "$social_status" == 0 ]] || fail "social.sh failed"
+check "social.sh removes svett's databases and its stored answers" test -z "$(ls "$container_sqlite")"
+check "social.sh stops svett and drops every Clerk session before it changes the files" \
+  only_simctl "simctl list devices available" "simctl terminate FAKE-UDID com.kron00.svett" "simctl keychain FAKE-UDID reset" \
+  "simctl get_app_container FAKE-UDID com.kron00.svett data"
+check "social.sh relaunches into the dev client, then opens each screen by its link" \
+  only_open "$debug_open" "${social_links[@]}"
+check "social.sh signs in a Clerk test account with the test code, at the field centres" \
+  only_calls "fill" "fill 80 320 svett-social-c+clerk_test@example.com" "fill 80 320 $test_code"
+check "social.sh scrolls to each control under the fold before it presses it" \
+  only_calls "get attrs" \
+  'get attrs id="continue-with-email"' 'get attrs id="email-field"' 'get attrs id="send-code"' \
+  'get attrs id="code-field"' 'get attrs id="check-code"' 'get attrs id="save-profile"' \
+  'get attrs id="person-social_proof_a"' 'get attrs id="follow-button"' 'get attrs id="follow-button"'
+check "social.sh reaches the requests row below the fold" \
+  bound_got '--session t3-test session --device FAKE-UDID scroll down --until id="requests-row"'
+check "social.sh shoots each screen at the largest text size, then restores the default" \
+  only_calls "settings text-size" \
+  "settings text-size accessibility-extra-extra-extra-large" "settings text-size large"
+check "social.sh screenshots the username, the profile, the search, the request, the followers and the requests" \
+  only_calls "screenshot" \
+  "screenshot $root/social/01-edit-profile.png" "screenshot $root/social/02-own-profile.png" \
+  "screenshot $root/social/03-search.png" "screenshot $root/social/04-requested.png" \
+  "screenshot $root/social/05-followers.png" "screenshot $root/social/06-requests.png"
+check "social.sh says the saved username shows on Profile" \
+  grep -qxF "Profile's username reads \"social_proof_c\"" "$output"
+check "social.sh says asking to follow the private profile left a request" \
+  grep -qxF 'The follow button after asking reads "Requested"' "$output"
+check "social.sh takes the request back" \
+  grep -qxF 'The follow button after taking the request back reads "Ask to follow"' "$output"
+check "social.sh with SVETT_DEVICE_CMD calls neither simctl launch nor openurl" no_simctl_launch_or_openurl
+
+case_name="social.sh Release with SVETT_DEVICE_CMD"
+run_social --release "$root/social-release"
+[[ "$social_status" == 0 ]] || fail "social.sh --release failed"
+check "social.sh Release relaunches the installed app without Metro" \
+  only_open "com.kron00.svett --relaunch" "${social_links[@]}"
+
+case_name="social.sh when the follow button does not change"
+run_social FAKE_STUCK=1 "$root/social-stuck"
+check "social.sh fails when asking to follow leaves no request" test "$social_status" -ne 0
+check "social.sh says what the follow button reads instead" \
+  grep -qF 'The follow button after asking should read "Requested", but it reads: Ask to follow' "$output"
+check "social.sh restores the default text size after a failure" \
+  only_calls "settings text-size" \
+  "settings text-size accessibility-extra-extra-extra-large" "settings text-size large"
+
+case_name="social.sh when the search finds nobody"
+run_social FAKE_NOBODY=1 "$root/social-nobody"
+check "social.sh fails when the search does not find the other profile" test "$social_status" -ne 0
+check "social.sh says to run the server proof first" \
+  grep -qF 'Searching "social_proof_" did not find social_proof_a. Run apps/server/src/social-proof.ts' "$output"
+
+case_name="social.sh when the username is taken"
+run_social FAKE_TAKEN=1 "$root/social-taken"
+check "social.sh fails when the username does not save" test "$social_status" -ne 0
+check "social.sh says the username did not save" \
+  grep -qF "Saving the username social_proof_c failed" "$output"
+
+case_name="social.sh on a build without a Clerk key"
+run_social FAKE_NO_CLERK=1 "$root/social-no-clerk"
+check "social.sh fails on a build without a Clerk key" test "$social_status" -ne 0
+check "social.sh says to build with the publishable key" \
+  grep -qF "Build it with EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY set" "$output"
+
+feed_lift=0196f000-5e4f-4000-8000-0000000000a1
+feed_run=0196f000-5e4f-4000-8000-0000000000a2
+
+# Stands in for the bound command on the feed screens. It tracks the screen, the
+# sign-in step and who signed in: the lifter sees the run and the runner sees the
+# lifting session. Posts on Home and everything under a post's top show only after a
+# scroll since the screen last changed, so the test proves the script scrolls to
+# them. FAKE_LEAK shows the run's hidden heart rate, FAKE_NO_POSTS leaves Home empty.
+cat >"$fake/feed-device" <<EOF
+#!/usr/bin/env bash
+echo "\$*" >>"$root/bound-calls"
+state="$root/feed-state"
+get() { cat "\$state/\$1" 2>/dev/null || echo "\$2"; }
+put() { echo "\$2" >"\$state/\$1"; }
+mkdir -p "\$state"
+screen=\$(get screen tabs)
+step=\$(get step choose)
+scrolled=\$(get scrolled no)
+who=\$(get who nobody)
+show() { put screen "\$1"; put scrolled no; }
+id_of() { sed -nE 's/.*id="([^"]+)".*/\1/p' <<<"\$1"; }
+label_of() { sed -nE 's/.*label="([^"]+)".*/\1/p' <<<"\$1"; }
+lift=$feed_lift
+run=$feed_run
+# theirs is the post the signed-in account should see from the other one.
+if [[ "\$who" == svett-feed-a* ]]; then theirs=\$run; else theirs=\$lift; fi
+below() { [[ "\$scrolled" == yes ]]; }
+on_screen() {
+  case "\$screen:\$1" in
+    account:account) true ;;
+    account:*)
+      case "\$step:\$1" in
+        choose:sign-in-choose | email:sign-in-email | email:email-field | code:sign-in-code | \
+          code:code-field | signedin:signed-in) true ;;
+        choose:continue-with-email | email:send-code | code:check-code) below ;;
+        *) false ;;
+      esac ;;
+    feed:feed) true ;;
+    feed:post-\$theirs | feed:post-numbers-\$theirs) [[ -z "\${FAKE_NO_POSTS:-}" ]] && below ;;
+    feed:post-route-\$run) [[ "\$theirs" == "\$run" ]] && below ;;
+    feed:post-muscles-\$lift) [[ "\$theirs" == "\$lift" ]] && below ;;
+    post-\$run:post-title | post-\$run:post-route | post-\$run:post-line) true ;;
+    post-\$run:post-distance | post-\$run:post-time | post-\$run:post-pace | post-\$run:post-split-4 | \
+      post-\$run:post-hidden) below ;;
+    post-\$run:post-heart-rate) [[ -n "\${FAKE_LEAK:-}" ]] && below ;;
+    post-\$lift:post-title | post-\$lift:post-hidden) true ;;
+    post-\$lift:muscle-split | post-\$lift:post-exercises) below ;;
+    inbox:inbox | inbox:inbox-items) true ;;
+    *) false ;;
+  esac
+}
+label() {
+  case "\$screen:\$1" in
+    feed:post-numbers-\$run) echo "4.44 km" ;;
+    feed:post-numbers-\$lift) echo "2 exercises · 6 sets · 2,700 kg" ;;
+    feed:post-muscles-\$lift) echo "Quadriceps 60% · Chest 40%" ;;
+    post-\$run:post-title) echo "Feed proof, river loop" ;;
+    post-\$run:post-distance) echo "Distance, 4.44 km" ;;
+    post-\$run:post-time) echo "Time, Hidden" ;;
+    post-\$run:post-pace) echo "Pace, Hidden" ;;
+    post-\$run:post-split-4) echo "Split 4, 1.00 km, Hidden" ;;
+    post-\$run:post-line) echo "Run · Duration hidden · Start time hidden" ;;
+    post-\$run:post-hidden) echo "feed_proof_b hides heart rate and start time." ;;
+    post-\$lift:post-title) echo "Feed proof, legs and bench" ;;
+    post-\$lift:post-hidden) echo "feed_proof_a hides calories." ;;
+    *) echo "" ;;
+  esac
+}
+exists() { on_screen "\$1" || { scrolled=yes; on_screen "\$1"; }; }
+args=" \$* "
+target=\$(id_of "\$args")
+case "\$args" in
+  *" open com.kron00.svett svett://account "*) show account; put step choose ;;
+  *" open com.kron00.svett svett://feed "*) show feed ;;
+  *" open com.kron00.svett svett://post/\$run "*) show "post-\$run" ;;
+  *" open com.kron00.svett svett://post/\$lift "*) show "post-\$lift" ;;
+  *" open com.kron00.svett svett://inbox "*) show inbox ;;
+  *" open com.kron00.svett "*) show tabs ;;
+  *" scroll "*" --until "*) exists "\$target" && put scrolled yes ;;
+  *" scroll "*) put scrolled yes ;;
+  *" get attrs "*)
+    on_screen "\$target" || exit 1
+    put last "\$target"
+    echo '{"label": "Field", "rect": {"x": 20, "y": 300, "width": 120, "height": 40}}' ;;
+  *" fill 80 320 "*)
+    case "\$(get last)" in
+      email-field) put who "\$(sed -nE 's/.* fill 80 320 ([^ ]+) .*/\1/p' <<<"\$args")" ;;
+      code-field) ;;
+      *) exit 1 ;;
+    esac ;;
+  *" press 80 320 "*)
+    case "\$screen:\$step:\$(get last)" in
+      account:choose:continue-with-email) put step email ;;
+      account:email:send-code) put step code ;;
+      account:code:check-code) put step signedin ;;
+      *) echo "fake device: press on \$(get last) on \$screen" >&2; exit 1 ;;
+    esac ;;
+  *" get text "*) label "\$target" ;;
+  *" wait absent "*) ! on_screen "\$target" ;;
+  *" is visible "* | *" wait "*)
+    [[ -z "\$target" ]] && exit 0
+    on_screen "\$target" || exit 1
+    wanted=\$(label_of "\$args")
+    [[ -z "\$wanted" || "\$(label "\$target")" == "\$wanted" ]] ;;
+esac
+EOF
+chmod +x "$fake/feed-device"
+
+# run_feed [VAR=value...] [feed.sh args...] leaves the exit status in feed_status.
+run_feed() {
+  local -a vars=()
+  while [[ "${1:-}" == *=* ]]; do
+    vars+=("$1")
+    shift
+  done
+  rm -rf "$root/simctl-calls" "$root/bound-calls" "$root/feed-state"
+  feed_status=0
+  env PATH="$fake:$PATH" SVETT_DEVICE_CMD="feed-device --session 't3-test session' --device FAKE-UDID" \
+    SVETT_FEED_POSTS="$feed_lift $feed_run" "${vars[@]}" "$repo/scripts/sim/feed.sh" "$@" >"$output" 2>&1 ||
+    feed_status=$?
+}
+
+feed_reset=("simctl terminate FAKE-UDID com.kron00.svett" "simctl keychain FAKE-UDID reset"
+  "simctl get_app_container FAKE-UDID com.kron00.svett data")
+feed_links() {
+  printf '%s\n' "$1" "com.kron00.svett svett://account" "com.kron00.svett svett://feed" \
+    "com.kron00.svett svett://post/$feed_run" "com.kron00.svett svett://inbox" \
+    "$1" "com.kron00.svett svett://account" "com.kron00.svett svett://feed" \
+    "com.kron00.svett svett://post/$feed_lift" "com.kron00.svett svett://inbox"
+}
+
+case_name="feed.sh Debug with SVETT_DEVICE_CMD"
+echo stale >"$container_sqlite/svett-account-user_old.db"
+run_feed "$root/feed"
+[[ "$feed_status" == 0 ]] || fail "feed.sh failed"
+check "feed.sh drops svett's data and every Clerk session before each sign-in" \
+  only_simctl "simctl list devices available" "${feed_reset[@]}" "${feed_reset[@]}"
+check "feed.sh removes svett's databases" test -z "$(ls "$container_sqlite")"
+mapfile -t feed_debug_links < <(feed_links "$debug_open")
+check "feed.sh relaunches into the dev client for each account, then opens each screen by its link" \
+  only_open "${feed_debug_links[@]}"
+check "feed.sh signs in as the lifter, then as the runner, with the test code" \
+  only_calls "fill" "fill 80 320 svett-feed-a+clerk_test@example.com" "fill 80 320 $test_code" \
+  "fill 80 320 svett-feed-b+clerk_test@example.com" "fill 80 320 $test_code"
+check "feed.sh scrolls Home to the run before it checks it" \
+  bound_got "$bound_prefix scroll down --until id=\"post-$feed_run\""
+check "feed.sh scrolls the run's post to its distance below the fold" \
+  bound_got "$bound_prefix scroll down --until id=\"post-distance\""
+check "feed.sh scrolls the lifting post to its muscle split" \
+  bound_got "$bound_prefix scroll down --until id=\"muscle-split\""
+check "feed.sh shoots each screen at the largest text size, then restores the default" \
+  only_calls "settings text-size" \
+  "settings text-size accessibility-extra-extra-extra-large" "settings text-size large"
+check "feed.sh screenshots both feeds, both posts and both inboxes" \
+  only_calls "screenshot" \
+  "screenshot $root/feed/01-lifter-feed.png" "screenshot $root/feed/02-run-route.png" \
+  "screenshot $root/feed/03-run-detail.png" "screenshot $root/feed/04-lifter-inbox.png" \
+  "screenshot $root/feed/05-runner-feed.png" "screenshot $root/feed/06-lifting-split.png" \
+  "screenshot $root/feed/07-lifting-sets.png" "screenshot $root/feed/08-runner-inbox.png"
+check "feed.sh says the run shows its distance without its pace in the lifter's feed" \
+  grep -qxF "The run's distance, without its pace, on Home reads \"4.44 km\"" "$output"
+check "feed.sh says the lifting session shows its muscles in the runner's feed" \
+  grep -qxF "The lifting post's muscles on Home reads \"Quadriceps 60% · Chest 40%\"" "$output"
+check "feed.sh says the run's start time is hidden" \
+  grep -qxF "The line under the run's title reads \"Run · Duration hidden · Start time hidden\"" "$output"
+check "feed.sh says the run's time is hidden with its start" \
+  grep -qxF "The run's time reads \"Time, Hidden\"" "$output"
+check "feed.sh says the run's pace is hidden with its start" \
+  grep -qxF "The run's pace reads \"Pace, Hidden\"" "$output"
+check "feed.sh says the run's split times are hidden with its start" \
+  grep -qxF "The run's fourth split reads \"Split 4, 1.00 km, Hidden\"" "$output"
+check "feed.sh says the run's heart rate does not show" \
+  grep -qxF "The run's heart rate does not show" "$output"
+check "feed.sh with SVETT_DEVICE_CMD calls neither simctl launch nor openurl" no_simctl_launch_or_openurl
+
+case_name="feed.sh Release with SVETT_DEVICE_CMD"
+run_feed --release "$root/feed-release"
+[[ "$feed_status" == 0 ]] || fail "feed.sh --release failed"
+mapfile -t feed_release_links < <(feed_links "com.kron00.svett --relaunch")
+check "feed.sh Release relaunches the installed app without Metro" only_open "${feed_release_links[@]}"
+
+case_name="feed.sh when a hidden field shows"
+run_feed FAKE_LEAK=1 "$root/feed-leak"
+check "feed.sh fails when the run shows its hidden heart rate" test "$feed_status" -ne 0
+check "feed.sh says the hidden heart rate showed" \
+  grep -qF "The run's heart rate shows, but the owner hid it" "$output"
+check "feed.sh restores the default text size after a failure" \
+  only_calls "settings text-size" \
+  "settings text-size accessibility-extra-extra-extra-large" "settings text-size large"
+
+case_name="feed.sh when Home has no posts"
+run_feed FAKE_NO_POSTS=1 "$root/feed-empty"
+check "feed.sh fails when Home lacks the other account's post" test "$feed_status" -ne 0
+check "feed.sh says to run the server proof first" \
+  grep -qF "Home has no run from feed_proof_b. Run SVETT_PROOF_KEEP=1 node apps/server/src/feed-proof.ts" "$output"
+
+case_name="feed.sh without post IDs or a Clerk key"
+run_feed SVETT_FEED_POSTS= CLERK_SECRET_KEY= "$root/feed-no-posts"
+check "feed.sh refuses to run without post IDs or a key to make them" test "$feed_status" -eq 64
+check "feed.sh says what to set" grep -qF "Set SVETT_FEED_POSTS to the two post IDs" "$output"
+check "feed.sh touches no simulator without post IDs" test ! -s "$root/simctl-calls"
+
+# Stands in for the bound command on the safety screens. It tracks the screen, the
+# sign-in step, the block and the deletion. Each control under a screen's top shows
+# only after a scroll since the screen last changed, so the test proves the script
+# scrolls to it. svett's own confirmations show as buttons by label. FAKE_NO_CLERK
+# makes Account say the build has no Clerk key, FAKE_NOT_BLOCKED leaves the profile
+# as it was, FAKE_DELETE_FAILS keeps the account signed in with a problem, and
+# FAKE_NOT_KEPT finds no exercise after the deletion.
+cat >"$fake/safety-device" <<EOF
+#!/usr/bin/env bash
+echo "\$*" >>"$root/bound-calls"
+state="$root/safety-state"
+get() { cat "\$state/\$1" 2>/dev/null || echo "\$2"; }
+put() { echo "\$2" >"\$state/\$1"; }
+mkdir -p "\$state"
+screen=\$(get screen tabs)
+step=\$(get step choose)
+scrolled=\$(get scrolled no)
+show() { put screen "\$1"; put scrolled no; }
+id_of() { sed -nE 's/.*id="([^"]+)".*/\1/p' <<<"\$1"; }
+label_of() { sed -nE 's/.*label="([^"]+)".*/\1/p' <<<"\$1"; }
+# key_of <args> names the element an id selector names, or label:<label> for a label alone.
+key_of() {
+  local id
+  id=\$(id_of "\$1")
+  if [[ -n "\$id" ]]; then echo "\$id"; elif [[ -n "\$(label_of "\$1")" ]]; then echo "label:\$(label_of "\$1")"; fi
+}
+under() { [[ "\$scrolled" == yes ]]; }
+# on_screen <key> is true when the element is on screen now.
+on_screen() {
+  case "\$screen:\$1" in
+    tabs:label:*) true ;;
+    account:account) true ;;
+    account:accounts-off) [[ -n "\${FAKE_NO_CLERK:-}" ]] ;;
+    account:*) [[ -z "\${FAKE_NO_CLERK:-}" ]] || return 1
+      case "\$step:\$1" in
+        choose:sign-in-choose | email:sign-in-email | email:email-field | code:sign-in-code | \
+          code:code-field | signedin:signed-in | choice:delete-keep-copy | \
+          confirm:label:Delete\ account | signedout:sign-in-choose | failed:sign-in-problem | \
+          choice:signed-in | confirm:signed-in | failed:signed-in) true ;;
+        choose:continue-with-email | email:send-code | code:check-code | signedin:delete-account | \
+          choice:delete-erase-copy) under ;;
+        *) false ;;
+      esac ;;
+    edit:username-field) true ;;
+    edit:save-profile | form:save-exercise) under ;;
+    form:exercise-form | detail:exercise-name) true ;;
+    profile:profile-username) [[ "\$(get block none)" != blocked ]] ;;
+    profile:label:Block\ safety_proof_a) [[ "\$(get block none)" == none ]] ;;
+    profile:label:Block) [[ "\$(get block none)" == asking ]] ;;
+    profile:profile-blocked) [[ "\$(get block none)" == blocked ]] ;;
+    profile:block-problem) [[ "\$(get block none)" == refused ]] ;;
+    blocks:blocks) true ;;
+    blocks:blocked-safety_proof_a) [[ "\$(get block none)" == blocked ]] ;;
+    blocks:unblock-safety_proof_a) [[ "\$(get block none)" == blocked ]] && under ;;
+    blocks:blocks-empty) [[ "\$(get block none)" == unblocked ]] ;;
+    library:exercise-library) true ;;
+    library:exercise-result-0) [[ -z "\${FAKE_NOT_KEPT:-}" ]] ;;
+    *) false ;;
+  esac
+}
+label() {
+  case "\$1" in
+    profile-username) echo safety_proof_a ;;
+    exercise-name) get exercise "" ;;
+    sign-in-problem) echo "Your data is gone from svett, but signing you out everywhere did not finish. Try again." ;;
+    block-problem) echo "That was a lot at once. Try again in 30 seconds." ;;
+    *) echo "" ;;
+  esac
+}
+exists() { on_screen "\$1" || { scrolled=yes; on_screen "\$1"; }; }
+args=" \$* "
+target=\$(key_of "\$args")
+case "\$args" in
+  *" open com.kron00.svett svett://account "*) show account ;;
+  *" open com.kron00.svett svett://profile/edit?username="*) show edit ;;
+  *" open com.kron00.svett svett://exercises/new?name="*)
+    put exercise "\$(node -e 'console.log(decodeURIComponent(process.argv[1]))' "\$(sed -nE 's/.*name=([^&]+)&.*/\1/p' <<<"\$args")")"
+    show form ;;
+  *" open com.kron00.svett svett://profile/blocked "*) show blocks ;;
+  *" open com.kron00.svett svett://people/safety_proof_a "*) show profile ;;
+  *" open com.kron00.svett svett://exercises?q="*) show library ;;
+  *" open com.kron00.svett "*) show tabs ;;
+  *" scroll "*" --until "*) exists "\$target" && put scrolled yes ;;
+  *" scroll "*) put scrolled yes ;;
+  *" get attrs "*)
+    on_screen "\$target" || exit 1
+    put last "\$target"
+    if [[ "\$target" == exercise-result-0 ]]; then
+      echo "{\"label\": \"\$(get exercise ""), Chest, Cable\", \"rect\": {\"x\": 20, \"y\": 300, \"width\": 120, \"height\": 40}}"
+    else
+      echo '{"label": "Field", "rect": {"x": 20, "y": 300, "width": 120, "height": 40}}'
+    fi ;;
+  *" fill 80 320 "*)
+    [[ "\$(get last)" == email-field || "\$(get last)" == code-field ]] || exit 1 ;;
+  *" press 80 320 "*)
+    case "\$screen:\$step:\$(get last)" in
+      account:choose:continue-with-email) put step email ;;
+      account:email:send-code) put step code ;;
+      account:code:check-code) put step signedin ;;
+      account:signedin:delete-account) put step choice; put scrolled no ;;
+      account:choice:delete-keep-copy) put step confirm ;;
+      account:confirm:label:Delete\ account)
+        if [[ -n "\${FAKE_DELETE_FAILS:-}" ]]; then put step failed; else put step signedout; fi ;;
+      edit:*:save-profile) show tabs ;;
+      form:*:save-exercise) show detail ;;
+      profile:*:label:Block\ safety_proof_a) put block asking ;;
+      profile:*:label:Block)
+        if [[ -n "\${FAKE_NOT_BLOCKED:-}" ]]; then put block refused; else put block blocked; fi ;;
+      blocks:*:unblock-safety_proof_a) put block unblocked ;;
+      *) echo "fake device: press on \$(get last) on \$screen" >&2; exit 1 ;;
+    esac ;;
+  *" get text "*) label "\$target" ;;
+  *" wait absent "*) ! on_screen "\$target" ;;
+  *" is visible "* | *" wait "*)
+    [[ -z "\$target" ]] && exit 0
+    if [[ "\$target" == label:* ]]; then on_screen "\$target"; exit; fi
+    on_screen "\$target" || exit 1
+    wanted=\$(label_of "\$args")
+    [[ -z "\$wanted" || "\$(label "\$target")" == "\$wanted" ]] ;;
+esac
+EOF
+chmod +x "$fake/safety-device"
+
+# run_safety [VAR=value...] [safety.sh args...] leaves the exit status in safety_status.
+run_safety() {
+  local -a vars=()
+  while [[ "${1:-}" == *=* ]]; do
+    vars+=("$1")
+    shift
+  done
+  rm -rf "$root/simctl-calls" "$root/bound-calls" "$root/safety-state"
+  safety_status=0
+  env PATH="$fake:$PATH" SVETT_DEVICE_CMD="safety-device --session 't3-test session' --device FAKE-UDID" \
+    "${vars[@]}" "$repo/scripts/sim/safety.sh" "$@" >"$output" 2>&1 || safety_status=$?
+}
+
+safety_links=("com.kron00.svett svett://account" "com.kron00.svett svett://profile/edit?username=safety_proof_d"
+  "com.kron00.svett svett://exercises/new?name=Safety%20proof%20press&muscle=chest&equipment=cable"
+  "com.kron00.svett svett://people/safety_proof_a" "com.kron00.svett svett://profile/blocked"
+  "com.kron00.svett svett://account" "com.kron00.svett svett://exercises?q=Safety%20proof%20press")
+
+case_name="safety.sh Debug with SVETT_DEVICE_CMD"
+for stale in svett-anonymous.db svett-account-user_old.db-wal ExpoSQLiteStorage; do
+  echo stale >"$container_sqlite/$stale"
+done
+run_safety "$root/safety"
+[[ "$safety_status" == 0 ]] || fail "safety.sh failed"
+check "safety.sh removes svett's databases and its stored answers" test -z "$(ls "$container_sqlite")"
+check "safety.sh stops svett and drops every Clerk session before it changes the files" \
+  only_simctl "simctl list devices available" "simctl terminate FAKE-UDID com.kron00.svett" "simctl keychain FAKE-UDID reset" \
+  "simctl get_app_container FAKE-UDID com.kron00.svett data"
+check "safety.sh relaunches into the dev client, then opens each screen by its link" \
+  only_open "$debug_open" "${safety_links[@]}"
+check "safety.sh signs in a Clerk test account with the test code, at the field centres" \
+  only_calls "fill" "fill 80 320 svett-safety-d+clerk_test@example.com" "fill 80 320 $test_code"
+check "safety.sh presses Block and svett's own confirmations by their labels, never alert accept" \
+  only_calls "get attrs label|alert" \
+  'get attrs label="Block safety_proof_a"' 'get attrs label="Block safety_proof_a"' \
+  'get attrs label="Block"' 'get attrs label="Block"' \
+  'get attrs label="Delete account"' 'get attrs label="Delete account"'
+check "safety.sh scrolls to Delete account before it presses it" \
+  bound_got '--session t3-test session --device FAKE-UDID scroll down --until id="delete-account"'
+check "safety.sh scrolls to the erase choice to check it is offered" \
+  bound_got '--session t3-test session --device FAKE-UDID scroll down --until id="delete-erase-copy"'
+check "safety.sh scrolls to Unblock before it presses it" \
+  bound_got '--session t3-test session --device FAKE-UDID scroll down --until id="unblock-safety_proof_a"'
+check "safety.sh shoots each screen at the largest text size, then restores the default" \
+  only_calls "settings text-size" \
+  "settings text-size accessibility-extra-extra-extra-large" "settings text-size large"
+check "safety.sh screenshots the profile, the block, the blocked accounts, the choice, the sign-out and the kept copy" \
+  only_calls "screenshot" \
+  "screenshot $root/safety/01-profile.png" "screenshot $root/safety/02-blocked.png" \
+  "screenshot $root/safety/03-blocked-accounts.png" "screenshot $root/safety/04-delete-choice.png" \
+  "screenshot $root/safety/05-signed-out.png" "screenshot $root/safety/06-kept-copy.png"
+check "safety.sh says the kept copy holds the exercise with no account" \
+  grep -qF 'The kept copy holds "Safety proof press" with no account.' "$output"
+check "safety.sh with SVETT_DEVICE_CMD calls neither simctl launch nor openurl" no_simctl_launch_or_openurl
+
+case_name="safety.sh Release with SVETT_DEVICE_CMD"
+run_safety --release "$root/safety-release"
+[[ "$safety_status" == 0 ]] || fail "safety.sh --release failed"
+check "safety.sh Release relaunches the installed app without Metro" \
+  only_open "com.kron00.svett --relaunch" "${safety_links[@]}"
+
+case_name="safety.sh when the block does not take"
+run_safety FAKE_NOT_BLOCKED=1 "$root/safety-not-blocked"
+check "safety.sh fails when the profile does not say it is blocked" test "$safety_status" -ne 0
+check "safety.sh says why the block did not finish" \
+  grep -qF "Blocking safety_proof_a did not finish: That was a lot at once." "$output"
+check "safety.sh restores the default text size after a failure" \
+  only_calls "settings text-size" \
+  "settings text-size accessibility-extra-extra-extra-large" "settings text-size large"
+
+case_name="safety.sh when the deletion fails"
+run_safety FAKE_DELETE_FAILS=1 "$root/safety-delete-fails"
+check "safety.sh fails when deleting the account does not sign out" test "$safety_status" -ne 0
+check "safety.sh says what Account said" \
+  grep -qF "Deleting the account did not sign out: Your data is gone from svett, but signing you out everywhere did not finish." "$output"
+
+case_name="safety.sh when the kept copy is missing"
+run_safety FAKE_NOT_KEPT=1 "$root/safety-not-kept"
+check "safety.sh fails when the exercise is gone after keeping a copy" test "$safety_status" -ne 0
+check "safety.sh says the kept copy is missing" \
+  grep -qF '"Safety proof press" is not on the phone after the deletion kept a copy' "$output"
+
+case_name="safety.sh on a build without a Clerk key"
+run_safety FAKE_NO_CLERK=1 "$root/safety-no-clerk"
+check "safety.sh fails on a build without a Clerk key" test "$safety_status" -ne 0
+check "safety.sh says to build with the publishable key" \
+  grep -qF "Build it with EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY set" "$output"
+
 echo "$passed passed"

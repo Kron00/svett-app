@@ -2,8 +2,11 @@ import { execFile } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { promisify } from "node:util";
 
-import { Redacted } from "effect";
+import { PgClient } from "@effect/sql-pg";
+import { Effect, Redacted } from "effect";
 
+import { KEPT_TABLES } from "./account-deletion.ts";
+import { databaseLayer } from "./database.ts";
 import type { PgToolCommands } from "./pg-tools.ts";
 
 const exec = promisify(execFile);
@@ -101,4 +104,40 @@ export const startTestPostgres = async (): Promise<TestPostgres> => {
     await stop();
     throw error;
   }
+};
+
+export const query = <A extends object = Record<string, unknown>>(
+  url: Redacted.Redacted,
+  text: string,
+) =>
+  Effect.runPromise(
+    Effect.flatMap(Effect.service(PgClient.PgClient), (sql) => sql.unsafe<A>(text)).pipe(
+      Effect.provide(databaseLayer(url)),
+    ),
+  );
+
+/** How many rows of each table name `id` in any of their text columns. */
+export const rowsNaming = async (url: Redacted.Redacted, id: string) => {
+  const columns = await query<{ table_name: string; column_name: string }>(
+    url,
+    `select table_name, column_name from information_schema.columns
+     where table_schema = 'public' and data_type = 'text' order by table_name, column_name`,
+  );
+  const tables = new Map<string, Array<string>>();
+  for (const { table_name, column_name } of columns) {
+    tables.set(table_name, [...(tables.get(table_name) ?? []), column_name]);
+  }
+  const counted = await Promise.all(
+    [...tables]
+      .filter(([table]) => !(table in KEPT_TABLES))
+      .map(async ([table, names]) => {
+        const where = names.map((column) => `"${column}" = '${id}'`).join(" or ");
+        const [row] = await query<{ n: number }>(
+          url,
+          `select count(*)::int as n from "${table}" where ${where}`,
+        );
+        return [table, row?.n ?? 0] as const;
+      }),
+  );
+  return Object.fromEntries(counted) as Record<string, number>;
 };

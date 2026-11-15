@@ -104,6 +104,7 @@ const backupsLayer = (
           backupDir,
           backupKeep: options.backupKeep ?? 14,
           backupCron: options.backupCron ?? "0 3 * * *",
+          newDeletionLedger: false,
         }),
       ),
     ),

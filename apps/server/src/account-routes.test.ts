@@ -10,7 +10,9 @@ import { Sessions } from "./auth.ts";
 import { ClerkConfig, type ClerkConfigShape } from "./clerk-config.ts";
 import { databaseLayer, migrate } from "./database.ts";
 import { type StandInIssuer, startStandInIssuer } from "./test-issuer.ts";
+import { withoutDeletions } from "./test-ledger.ts";
 import { startTestPostgres, type TestPostgres } from "./test-postgres.ts";
+import { Safety } from "./safety.ts";
 
 let postgres: TestPostgres;
 let issuer: StandInIssuer;
@@ -74,7 +76,8 @@ const withServer = async <A>(
       },
     ),
   );
-  const services = Layer.mergeAll(AccountRows.layer, Sessions.layer).pipe(
+  const services = Layer.mergeAll(AccountRows.layer, Sessions.layer, Safety.layer()).pipe(
+    Layer.provide(withoutDeletions()),
     Layer.provide(databaseLayer(url)),
     Layer.provide(clerk),
   );

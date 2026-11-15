@@ -959,6 +959,7 @@ describe("TransferRepository", () => {
     expect(liveRows(phone)["activity_set"]).toEqual([]);
   });
 
+  // Builds and imports 6,000 sets, which takes several seconds on a busy CI runner.
   it("imports the 300-workout fixture back into an empty database unchanged", async () => {
     const { database, driver } = openNodeDatabase();
     await buildFixture(driver);
@@ -984,7 +985,7 @@ describe("TransferRepository", () => {
     const imported = await transfer(wiped, (repository) => repository.applyImport(file, []));
     const batch = Option.getOrThrow(imported).importBatchId;
     expect(liveRows(wiped, batch)).toEqual(liveRows(original));
-  });
+  }, 30_000);
 
   it("adds nothing when the same file is imported twice", async () => {
     const original = openTestDatabase(1);
