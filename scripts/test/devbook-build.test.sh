@@ -4104,4 +4104,209 @@ check "cardio.sh fails when the activity's last section never shows" test "$card
 check "cardio.sh stops paging after 15 pages" \
   grep -qF "The activity's hide setting was not on screen after 15 pages" "$output"
 
+# health.sh runs against the real proof files, the real seed and checks, and a fake
+# device that stands in for svett. Pressing Import imports the file the last link
+# opened into the database svett launched on, as svett does, and pressing Save
+# saves the manual ride. Like agent-device, wait and is visible see only what is on
+# screen. At the largest text size each screen's buttons and lower sections sit
+# below it until the screen scrolls, and a press there does nothing.
+# FAKE_DECLINE_SAVES makes Don't import import anyway, FAKE_KEEP_BOTH imports the
+# duplicate as its own workout instead of linking it, FAKE_NO_SOURCES never shows the
+# linked workout's sources, FAKE_SUMMARY is the line atop every preview, and
+# FAKE_BOTTOM_EDGE leaves each button on the bottom edge until a drag.
+{
+  printf '#!/usr/bin/env bash\nroot=%q\nrepo=%q\n' "$root" "$repo"
+  cat <<'EOF'
+echo "$*" >>"$root/bound-calls"
+documents="$root/data container/Documents"
+app() { node "$repo/scripts/test/health-app.ts" "$@"; }
+set -- "${@:5}"
+# A new screen starts at its top.
+new_screen() { rm -f "$root/scrolled" "$root/dragged"; }
+below() {
+  [[ "$(cat "$root/text-size" 2>/dev/null)" == accessibility-extra-extra-extra-large && ! -e "$root/scrolled" ]] ||
+    return 1
+  case "$1" in
+    *health-decline* | *health-apply* | *health-duplicate-* | *health-nothing-new* | *health-new* | \
+      *'label="Done"'* | *manual-save* | *activity-heart-* | *activity-sources* | *activity-notes*) ;;
+    *) return 1 ;;
+  esac
+}
+shown() { ! below "$1" && [[ "$1" != 'id="activity-sources"' || -z "${FAKE_NO_SOURCES:-}" ]]; }
+case "$1" in
+  settings) [[ "$2" != text-size ]] || echo "$3" >"$root/text-size" ;;
+  open)
+    new_screen
+    [[ "${3:-}" != svett://health-import\?file=* ]] || echo "${3#*file=}" >"$root/health-file" ;;
+  wait)
+    [[ "$2" == absent || "$2" =~ ^[0-9]+$ ]] || shown "$2" || {
+      echo "wait timed out for selector: $2" >&2
+      exit 1
+    } ;;
+  is) shown "$3" ;;
+  scroll)
+    [[ "${3:-}" != --until || "$4" != 'id="activity-sources"' || -z "${FAKE_NO_SOURCES:-}" ]] || exit 1
+    touch "$root/scrolled" ;;
+  gesture) touch "$root/dragged" ;;
+  get)
+    case "$2" in
+      text)
+        if [[ -n "${FAKE_SUMMARY:-}" ]]; then
+          echo "$FAKE_SUMMARY"
+        else
+          app summary "$documents/$(cat "$root/health-file")"
+        fi ;;
+      attrs)
+        y=300
+        if below "$3"; then
+          y=1100
+        elif [[ -n "${FAKE_BOTTOM_EDGE:-}" && ! -e "$root/dragged" ]]; then
+          y=870
+        fi
+        echo "$3" >"$root/last-attrs"
+        echo "{\"rect\": {\"x\": 20, \"y\": $y, \"width\": 120, \"height\": 40}}" ;;
+    esac ;;
+  press)
+    if (($3 > 880)); then
+      echo "$*" >>"$root/edge-presses"
+      exit 0
+    fi
+    file="$documents/$(cat "$root/health-file" 2>/dev/null)"
+    case "$(cat "$root/last-attrs")" in
+      *health-apply*)
+        app import "$documents/svett-health.db" "$file" ${FAKE_KEEP_BOTH:+--keep-both}
+        new_screen ;;
+      *health-decline*) [[ -z "${FAKE_DECLINE_SAVES:-}" ]] || app import "$documents/svett-health.db" "$file" ;;
+      *manual-save*)
+        app manual "$documents/svett-health.db"
+        new_screen ;;
+    esac ;;
+esac
+EOF
+} >"$data_fake/health-device"
+chmod +x "$data_fake/health-device"
+
+# run_health [VAR=value...] [health.sh args...] leaves the exit status in health_status.
+run_health() {
+  local -a vars=()
+  while [[ "${1:-}" == *=* ]]; do
+    vars+=("$1")
+    shift
+  done
+  rm -rf "$root/simctl-calls" "$root/bound-calls" "$root/health-file" "$root/data container" \
+    "$root/text-size" "$root/scrolled" "$root/dragged" "$root/edge-presses"
+  health_status=0
+  env PATH="$data_fake:$fake:$PATH" SVETT_DEVICE_CMD="health-device --session 't3-test session' --device FAKE-UDID" \
+    "${vars[@]}" "$repo/scripts/sim/health.sh" "$@" >"$output" 2>&1 || health_status=$?
+}
+
+health_args="--launch-args=-svettFixture --launch-args=$documents/svett-health.db"
+health_link="com.kron00.svett svett://health-import?file=svett-health-export.zip"
+gpx_link="com.kron00.svett svett://health-import?file=svett-ride.gpx"
+manual_link="com.kron00.svett $(node "$repo/scripts/health-proof.ts" manual-link)"
+
+case_name="the fake device at the largest text size, as agent-device sees it"
+health_device() {
+  env PATH="$data_fake:$PATH" health-device --session 't3-test session' --device FAKE-UDID "$@" 2>>"$output"
+}
+health_device_refuses() { ! health_device "$@"; }
+rm -rf "$root/bound-calls" "$root/text-size" "$root/scrolled"
+health_device settings text-size accessibility-extra-extra-extra-large
+health_device open com.kron00.svett "svett://health-import?file=svett-health-export.zip"
+check "the wait for Don't import that 406f10a made times out, since the button is below the screen" \
+  health_device_refuses wait 'id="health-decline"' 180000
+check "the wait for the line atop the preview passes" health_device wait 'id="health-summary"' 180000
+check "Don't import is not visible until the screen scrolls" health_device_refuses is visible 'id="health-decline"'
+health_device scroll down --until 'id="health-decline"'
+check "Don't import is visible once the screen scrolls to it" health_device is visible 'id="health-decline"'
+
+case_name="health.sh Debug with SVETT_DEVICE_CMD"
+run_health "$root/health proof"
+[[ "$health_status" == 0 ]] || fail "health.sh failed"
+hevy_link=$(grep -oE 'svett://activity/[0-9a-f-]+' "$root/bound-calls" | head -1)
+check "health.sh previews and declines, imports, imports again, imports the GPX ride, opens the linked workout and enters a ride" \
+  only_open "$debug_open $health_args" "$health_link" "$health_link" "$health_link" "$gpx_link" \
+  "com.kron00.svett $hevy_link" "$manual_link"
+check "health.sh waits for the top of each screen, not for a button below it" \
+  only_calls "wait id|wait label|wait role" 'wait label="You, tab, 5 of 5" 120000' \
+  'wait id="health-summary" 180000' 'wait id="health-summary" 180000' \
+  'wait id="health-done" 300000' 'wait id="health-summary" 180000' 'wait id="health-summary" 180000' \
+  'wait id="health-done" 60000' 'wait id="activity" 180000' 'wait id="manual-cardio" 180000' \
+  'wait id="activity" 30000'
+check "health.sh scrolls each button on screen before it reads where it is" \
+  only_calls "scroll down --until" 'scroll down --until id="health-duplicate-0"' \
+  'scroll down --until role="button" label="Done"' 'scroll down --until id="health-nothing-new"' \
+  'scroll down --until id="health-new"' 'scroll down --until role="button" label="Done"'
+check "health.sh presses Don't import, Import, Done by its role and Save at their centres" \
+  only_calls "get attrs" 'get attrs id="health-decline"' 'get attrs id="health-apply"' \
+  'get attrs role="button" label="Done"' 'get attrs role="button" label="Done"' 'get attrs id="health-apply"' \
+  'get attrs role="button" label="Done"' 'get attrs id="manual-save"'
+check "health.sh never presses below the screen or on its bottom edge" test ! -e "$root/edge-presses"
+check "health.sh passes every database check, the duplicate link and the manual ride included" \
+  bash -c '! grep -q FAILED "$1" && grep -qF "PASSED: imported, the Hevy workout gained the Health heart rate" "$1" &&
+    grep -qF "PASSED: manual, the manual ride saved" "$1"' _ "$root/health proof/proof.txt"
+check "health.sh says in proof.txt that the export holds one entry svett cannot read, on purpose" \
+  grep -qF "PASSED: preview of svett-health-export.zip, the export reads as 4 workouts and 1 entry svett cannot read, the run the sample dates with text that is not a date on purpose" \
+  "$root/health proof/proof.txt"
+check "health.sh checks the GPX preview too" \
+  grep -qF "PASSED: preview of svett-ride.gpx" "$root/health proof/proof.txt"
+check "health.sh shoots at the largest text size, then restores the default" \
+  only_calls "settings text-size" \
+  "settings text-size accessibility-extra-extra-extra-large" "settings text-size large"
+check "health.sh screenshots every step" only_calls "screenshot" \
+  "screenshot $root/health proof/01-preview-01.png" "screenshot $root/health proof/02-preview-02.png" \
+  "screenshot $root/health proof/03-declined.png" "screenshot $root/health proof/04-duplicate.png" \
+  "screenshot $root/health proof/05-imported.png" "screenshot $root/health proof/06-import-again.png" \
+  "screenshot $root/health proof/07-gpx-preview.png" "screenshot $root/health proof/08-gpx-imported.png" \
+  "screenshot $root/health proof/09-linked-workout-01.png" "screenshot $root/health proof/10-linked-workout-02.png" \
+  "screenshot $root/health proof/11-manual-01.png" "screenshot $root/health proof/12-manual-02.png" \
+  "screenshot $root/health proof/13-manual-ride-01.png" "screenshot $root/health proof/14-manual-ride-02.png"
+check "health.sh puts the sample export and GPX ride in svett's Documents" \
+  test -s "$documents/svett-health-export.zip" -a -s "$documents/svett-ride.gpx"
+check "health.sh with SVETT_DEVICE_CMD calls neither simctl launch nor openurl" no_simctl_launch_or_openurl
+
+case_name="health.sh Release with SVETT_DEVICE_CMD"
+run_health --release "$root/health-release"
+[[ "$health_status" == 0 ]] || fail "health.sh --release failed"
+check "health.sh Release relaunches the installed app without Metro" \
+  bound_got "$bound_prefix open com.kron00.svett --relaunch $health_args"
+
+case_name="health.sh when each button sits on the screen's bottom edge"
+run_health FAKE_BOTTOM_EDGE=1 "$root/health-edge"
+[[ "$health_status" == 0 ]] || fail "health.sh failed with buttons on the bottom edge"
+check "health.sh drags each of its seven buttons up before pressing it" \
+  test "$(grep -c -- " gesture pan 20 600 0 -300 400" "$root/bound-calls")" -eq 7
+check "health.sh never presses on the bottom edge" test ! -e "$root/edge-presses"
+check "health.sh still passes every database check" bash -c '! grep -q FAILED "$1"' _ "$root/health-edge/proof.txt"
+
+case_name="health.sh when the preview does not say what the export holds"
+run_health "FAKE_SUMMARY=An Apple Health export with 4 workouts." "$root/health-summary"
+check "health.sh fails when the preview leaves out the entry svett cannot read" test "$health_status" -ne 0
+check "health.sh names the preview that is wrong" \
+  grep -qF "The preview of svett-health-export.zip is not what the proof expects" "$output"
+check "health.sh shows what svett showed" \
+  grep -qF 'svett shows "An Apple Health export with 4 workouts."' "$output"
+check "health.sh stops before it declines" bash -c '! grep -qF "get attrs" "$1"' _ "$root/bound-calls"
+
+case_name="health.sh when Don't import saves the workouts"
+run_health FAKE_DECLINE_SAVES=1 "$root/health-decline"
+check "health.sh fails when declining imports anything" test "$health_status" -ne 0
+check "health.sh names the declined step" \
+  grep -qF "The database is not as the declined step leaves it" "$output"
+check "health.sh shows which check failed" grep -qF "FAILED: declined, 1 workout and 9 sets" "$output"
+check "health.sh restores the default text size after a failure" \
+  only_calls "settings text-size" \
+  "settings text-size accessibility-extra-extra-extra-large" "settings text-size large"
+
+case_name="health.sh when the duplicate is not linked"
+run_health FAKE_KEEP_BOTH=1 "$root/health-keep-both"
+check "health.sh fails when the Health copy of the Hevy workout is not linked" \
+  grep -qF "FAILED: imported, the Hevy workout records Apple Health as a linked source" "$output"
+
+case_name="health.sh when the linked workout never shows its sources"
+run_health FAKE_NO_SOURCES=1 "$root/health-no-sources"
+check "health.sh fails when the linked workout's sources never show" test "$health_status" -ne 0
+check "health.sh stops paging after 15 pages" \
+  grep -qF 'id="activity-sources" was not on screen after 15 pages' "$output"
+
 echo "$passed passed"

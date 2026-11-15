@@ -1,6 +1,6 @@
 import { Option, Schema } from "effect";
 
-import { ANONYMOUS, DatabaseOwner } from "./database.ts";
+import { ANONYMOUS, DatabaseOwner } from "./owner.ts";
 import { ActivityId } from "./schema.ts";
 import {
   addReading,

@@ -8,6 +8,19 @@ import { currentDatabase, type OpenDatabase, stillOpen } from "../data/current";
 import { writeTo } from "../data/store";
 import { transferInTurn } from "../data/turns";
 
+// Each open database gets its own key, so a match screen or plan read from other data starts
+// over instead of keeping choices made for it.
+const databaseKeys = new WeakMap<object, string>();
+let nextKey = 0;
+export const databaseKey = ({ handle }: OpenDatabase) => {
+  let key = databaseKeys.get(handle);
+  if (key === undefined) {
+    key = String(nextKey++);
+    databaseKeys.set(handle, key);
+  }
+  return key;
+};
+
 /** Runs `body` with the transfer repository of `database`, by default the open one. */
 export const withTransfers = <A, E>(
   body: (transfers: typeof TransferRepository.Service) => Effect.Effect<A, E>,

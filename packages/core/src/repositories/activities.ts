@@ -133,6 +133,7 @@ const childrenOf = {
   sets: "activity_exercise_id IN (SELECT id FROM activity_exercise WHERE activity_id = ?)",
   tracks: "activity_id = ?",
   samples: "activity_track_id IN (SELECT id FROM activity_track WHERE activity_id = ?)",
+  sources: "activity_id = ?",
 };
 
 const insertSet = (
@@ -669,6 +670,7 @@ const makeActivityRepository = Effect.gen(function* () {
           yield* softDeleteRows(TABLES.activityExercise, childrenOf.exercises, [id], at);
           yield* softDeleteRows(TABLES.activitySample, childrenOf.samples, [id], at);
           yield* softDeleteRows(TABLES.activityTrack, childrenOf.tracks, [id], at);
+          yield* softDeleteRows(TABLES.activitySource, childrenOf.sources, [id], at);
         }),
       ),
     );
@@ -697,6 +699,7 @@ const makeActivityRepository = Effect.gen(function* () {
           yield* restoreRows(TABLES.activitySet, childrenOf.sets, [id], deletedAt, at);
           yield* restoreRows(TABLES.activityTrack, childrenOf.tracks, [id], deletedAt, at);
           yield* restoreRows(TABLES.activitySample, childrenOf.samples, [id], deletedAt, at);
+          yield* restoreRows(TABLES.activitySource, childrenOf.sources, [id], deletedAt, at);
         }),
       ),
     );
@@ -796,6 +799,9 @@ const makeActivityRepository = Effect.gen(function* () {
     ) => run(updateRow(TABLES.activityTrack, id, patch)),
     samples: (trackId: ActivityTrackId) =>
       run(selectRows(TABLES.activitySample, "activity_track_id = ?", [trackId], "recorded_at, id")),
+    /** The other sources linked to this activity, beyond the one it came from. */
+    sources: (id: ActivityId) =>
+      run(selectRows(TABLES.activitySource, childrenOf.sources, [id], "source, source_id")),
     counts: run(
       Effect.all({
         activities: countRows(TABLES.activity, "status = 'finished'"),
@@ -809,7 +815,10 @@ const makeActivityRepository = Effect.gen(function* () {
   };
 });
 
-/** The only writer of activity, activity_exercise, activity_set, activity_track and activity_sample. */
+/**
+ * The only writer of activity, activity_exercise, activity_set, activity_track,
+ * activity_sample and activity_source, apart from TransferRepository's whole-row imports.
+ */
 export class ActivityRepository extends Context.Service<
   ActivityRepository,
   Effect.Success<typeof makeActivityRepository>
