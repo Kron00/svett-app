@@ -166,4 +166,51 @@ export const MIGRATIONS: Record<string, Effect.Effect<void, unknown, SqlClient>>
       )
     `;
   }),
+  // A block works both ways, so each pair is read in both directions. A rate limit is a token
+  // bucket per account and route group, kept here so it survives a restart and holds across
+  // servers. A deleted account's ID stays, so no later request or upload recreates it, with
+  // whether its rows are gone yet and whether Clerk ended its sessions, so a start finishes a
+  // deletion that failed part way. A deletion's receipt is kept as a hash alone, so a phone
+  // whose session ended with the deletion can still ask whether it happened, and nobody else can.
+  "7_safety": Effect.gen(function* () {
+    const sql = yield* SqlClient;
+    yield* sql`
+      create table block (
+        id text not null default gen_random_uuid()::text,
+        blocker_id text not null,
+        blocked_id text not null,
+        created_at timestamptz not null default now(),
+        primary key (blocker_id, blocked_id)
+      )
+    `;
+    yield* sql`create unique index block_id on block (id)`;
+    yield* sql`create index block_blocked on block (blocked_id)`;
+    yield* sql`
+      create table rate_limit (
+        account_id text not null,
+        route_group text not null,
+        tokens double precision not null,
+        at_ms bigint not null,
+        primary key (account_id, route_group)
+      )
+    `;
+    yield* sql`
+      create table deleted_account (
+        id text primary key,
+        deleted_at timestamptz not null default now(),
+        rows_deleted boolean not null default false,
+        sessions_ended boolean not null default false
+      )
+    `;
+    yield* sql`
+      create table deletion_receipt (
+        receipt_hash text primary key,
+        deleted_at timestamptz not null default now()
+      )
+    `;
+    yield* sql`create index activity_like_liker on activity_like (liker_id)`;
+    // The ID of the deletion ledger in BACKUP_DIR, recorded when the ledger is made, so a start
+    // or a restore can tell a lost or wrongly mounted ledger from a server that never had one.
+    yield* sql`create table deletion_ledger (id text primary key)`;
+  }),
 };

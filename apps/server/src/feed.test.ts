@@ -34,7 +34,9 @@ import { FeedRows } from "./feed-rows.ts";
 import { SocialRoutes } from "./social-routes.ts";
 import { SocialRows } from "./social-rows.ts";
 import { type StandInIssuer, startStandInIssuer } from "./test-issuer.ts";
+import { withoutDeletions } from "./test-ledger.ts";
 import { startTestPostgres, type TestPostgres } from "./test-postgres.ts";
+import { Safety } from "./safety.ts";
 
 let postgres: TestPostgres;
 let issuer: StandInIssuer;
@@ -72,7 +74,13 @@ const routes = async () => {
     SocialRows.layer,
     FeedRows.layer,
     Sessions.layer,
-  ).pipe(Layer.provideMerge(databaseLayer(url)), Layer.provide(clerk));
+    // A test that fills a page of the inbox writes more comments than one burst allows.
+    Safety.layer({ comments: { capacity: 1_000, perSecond: 1 } }),
+  ).pipe(
+    Layer.provideMerge(withoutDeletions()),
+    Layer.provideMerge(databaseLayer(url)),
+    Layer.provide(clerk),
+  );
   return HttpRouter.serve(Layer.mergeAll(AccountRoutes, SocialRoutes, FeedRoutes), {
     disableLogger: true,
     disableListenLog: true,

@@ -1,25 +1,19 @@
-import { SYNC_PROTOCOL_VERSION, SYNC_VERSION_HEADER, SyncPush } from "@svett/core";
+import {
+  DeletionReceipt,
+  EpochMillis,
+  exportFileName,
+  SYNC_PROTOCOL_VERSION,
+  SYNC_VERSION_HEADER,
+  SyncPush,
+} from "@svett/core";
 import { Clock, Data, Effect, Layer, Schema } from "effect";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 
+import { AccountDeletion } from "./account-deletion.ts";
 import { AccountRows, checkRows } from "./account-rows.ts";
 import { signedInAccount } from "./auth.ts";
-
-const unauthorized = () =>
-  Effect.succeed(HttpServerResponse.jsonUnsafe({ error: "unauthorized" }, { status: 401 }));
-
-// Clients tell this apart from a refused session, which signing in again would fix.
-const signInUnavailable = () =>
-  Effect.succeed(
-    HttpServerResponse.jsonUnsafe(
-      {
-        error: "sign_in_unavailable",
-        message:
-          "Sign-in is not set up on this server yet, so accounts and their data are unavailable.",
-      },
-      { status: 503 },
-    ),
-  );
+import { Safety } from "./safety.ts";
+import { answerRefusals, route } from "./social-routes.ts";
 
 class OutdatedSync extends Data.TaggedError("OutdatedSync")<{}> {}
 
@@ -41,12 +35,12 @@ const outdatedSync = () =>
     ),
   );
 
-const me = Effect.gen(function* () {
-  const account = yield* signedInAccount;
-  const rows = yield* AccountRows;
-  yield* rows.ensureAccount(account);
-  return HttpServerResponse.jsonUnsafe({ accountId: account });
-}).pipe(Effect.catchTags({ Unauthorized: unauthorized, SignInUnavailable: signInUnavailable }));
+const me = route((account) =>
+  Effect.gen(function* () {
+    yield* (yield* AccountRows).ensureAccount(account);
+    return { accountId: account };
+  }),
+);
 
 const PullQuery = Schema.Struct({
   after: Schema.optional(
@@ -54,57 +48,90 @@ const PullQuery = Schema.Struct({
   ),
 });
 
-const invalidRequest = (error: { readonly message: string }) =>
-  Effect.succeed(
-    HttpServerResponse.jsonUnsafe(
-      { error: "invalid_request", message: error.message },
-      { status: 400 },
-    ),
-  );
-
 /** The account's rows applied after the change number `after`, a page at a time. */
-const pullRows = Effect.gen(function* () {
-  const account = yield* signedInAccount;
-  yield* currentSync;
-  const { after } = yield* HttpServerRequest.schemaSearchParams(PullQuery);
-  const rows = yield* AccountRows;
-  return HttpServerResponse.jsonUnsafe(yield* rows.changes(account, after ?? 0));
-}).pipe(
-  Effect.catchTags({
-    OutdatedSync: outdatedSync,
-    Unauthorized: unauthorized,
-    SignInUnavailable: signInUnavailable,
-    SchemaError: invalidRequest,
+const pullRows = route((account) =>
+  Effect.gen(function* () {
+    yield* currentSync;
+    const { after } = yield* HttpServerRequest.schemaSearchParams(PullQuery);
+    return yield* (yield* AccountRows).changes(account, after ?? 0);
+  }),
+).pipe(Effect.catchTag("OutdatedSync", outdatedSync));
+
+const pushRows = route(
+  (account) =>
+    Effect.gen(function* () {
+      yield* currentSync;
+      const push = yield* HttpServerRequest.schemaBodyJson(SyncPush);
+      const checked = yield* checkRows(push);
+      return yield* (yield* AccountRows).write(account, checked, yield* Clock.currentTimeMillis);
+    }),
+  "sync_push",
+).pipe(Effect.catchTag("OutdatedSync", outdatedSync));
+
+/** Every row the server holds for the account, as a svett file the app imports. */
+const exportRows = answerRefusals(
+  Effect.gen(function* () {
+    const account = yield* signedInAccount;
+    const rows = yield* AccountRows;
+    const now = yield* Clock.currentTimeMillis;
+    const file = yield* (yield* Safety).asAccount(
+      account,
+      undefined,
+      rows.exportFile(account, now),
+    );
+    return HttpServerResponse.text(file, {
+      contentType: "application/json",
+      headers: {
+        "content-disposition": `attachment; filename="${exportFileName(EpochMillis.make(now))}"`,
+      },
+    });
   }),
 );
 
-const pushRows = Effect.gen(function* () {
-  const account = yield* signedInAccount;
-  yield* currentSync;
-  const push = yield* HttpServerRequest.schemaBodyJson(SyncPush);
-  const checked = yield* checkRows(push);
-  const rows = yield* AccountRows;
-  return HttpServerResponse.jsonUnsafe(
-    yield* rows.write(account, checked, yield* Clock.currentTimeMillis),
-  );
-}).pipe(
-  Effect.catchTags({
-    OutdatedSync: outdatedSync,
-    Unauthorized: unauthorized,
-    SignInUnavailable: signInUnavailable,
-    InvalidRow: (invalid) =>
-      Effect.succeed(
-        HttpServerResponse.jsonUnsafe(
-          {
-            error: "invalid_row",
-            table: invalid.table,
-            index: invalid.index,
-            message: invalid.message,
-          },
-          { status: 400 },
-        ),
-      ),
-    SchemaError: invalidRequest,
+const DeleteBody = Schema.fromJsonString(
+  Schema.Struct({
+    account: Schema.optional(Schema.String),
+    receipt: Schema.optional(DeletionReceipt),
+  }),
+);
+const decodeDeleteBody = Schema.decodeUnknownEffect(DeleteBody);
+
+/**
+ * Deletes the signed-in account. It skips the deleted-account check, so a deletion that
+ * Clerk failed can be sent again to finish. The body may carry the deletion's receipt, and the
+ * account the phone means to delete, which must be the session's.
+ */
+const deleteAccount = answerRefusals(
+  Effect.gen(function* () {
+    const account = yield* signedInAccount;
+    const text = yield* (yield* HttpServerRequest.HttpServerRequest).text;
+    const body = text.trim() === "" ? {} : yield* decodeDeleteBody(text);
+    if (body.account !== undefined && body.account !== account) {
+      return HttpServerResponse.jsonUnsafe(
+        {
+          error: "wrong_account",
+          message: "The session belongs to another account than the one to delete.",
+        },
+        { status: 409 },
+      );
+    }
+    yield* (yield* AccountDeletion).remove(account, body.receipt);
+    return HttpServerResponse.jsonUnsafe({ deleted: true });
+  }),
+);
+
+const ReceiptPath = Schema.Struct({ receipt: DeletionReceipt });
+
+/**
+ * Whether an account was deleted with this receipt. It needs no session, as the deletion ended
+ * every one, and only the phone that made the receipt knows it.
+ */
+const deletionHappened = answerRefusals(
+  Effect.gen(function* () {
+    const { receipt } = yield* HttpRouter.schemaPathParams(ReceiptPath);
+    return HttpServerResponse.jsonUnsafe({
+      deleted: yield* (yield* AccountDeletion).deleted(receipt),
+    });
   }),
 );
 
@@ -113,4 +140,14 @@ export const AccountRoutes = Layer.mergeAll(
   HttpRouter.add("GET", "/v1/me", me),
   HttpRouter.add("GET", "/v1/rows", pullRows),
   HttpRouter.add("PUT", "/v1/rows", pushRows),
+  HttpRouter.add("GET", "/v1/export", exportRows),
+);
+
+/**
+ * Deleting the signed-in account, which needs Clerk's Backend API to end its sessions, and
+ * asking with a receipt whether a deletion happened.
+ */
+export const DeletionRoutes = Layer.mergeAll(
+  HttpRouter.add("DELETE", "/v1/me", deleteAccount),
+  HttpRouter.add("GET", "/v1/deletions/:receipt", deletionHappened),
 );

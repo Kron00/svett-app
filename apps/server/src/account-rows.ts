@@ -1,6 +1,7 @@
 import { PgClient } from "@effect/sql-pg";
 import {
   type AccountId,
+  type AnyRow,
   type CheckedRow,
   changeIdOf,
   checkSyncRow,
@@ -9,6 +10,8 @@ import {
   deletionSpansAboveOf,
   deletionToJoin,
   DRAFT_MESSAGE,
+  encodeSvettFile,
+  EpochMillis,
   inDraftWorkout,
   isPublished,
   isShared,
@@ -23,9 +26,13 @@ import {
   type SyncPull,
   type SyncPush,
   type SyncPushResult,
+  TABLE_KEYS,
+  TABLES,
+  type TableKey,
+  tableKeyOf,
   WORKOUT_TABLES,
 } from "@svett/core";
-import { Context, Data, Effect, Layer } from "effect";
+import { Context, Data, Effect, Layer, Option, Schema } from "effect";
 import type { SqlError } from "effect/sql/SqlError";
 
 export class InvalidRow extends Data.TaggedError("InvalidRow")<{
@@ -121,6 +128,11 @@ export interface AccountRowsShape {
     rows: ReadonlyArray<CheckedPush>,
     nowMillis: number,
   ) => Effect.Effect<SyncPushResult, SqlError>;
+  /**
+   * Every row the server holds for the account, deleted ones too, as a svett file that the
+   * app's import reads. A row that no longer passes its table's schema is left out.
+   */
+  readonly exportFile: (account: AccountId, nowMillis: number) => Effect.Effect<string, SqlError>;
   /** Up to `limit` of the account's rows with a change number after `after`, in order. */
   readonly changes: (
     account: AccountId,
@@ -137,7 +149,11 @@ export class AccountRows extends Context.Service<AccountRows, AccountRowsShape>(
     Effect.gen(function* () {
       const sql = yield* PgClient.PgClient;
       const ensureAccount = (account: AccountId) =>
-        Effect.asVoid(sql`insert into account (id) values (${account}) on conflict do nothing`);
+        Effect.asVoid(sql`
+          insert into account (id)
+          select ${account} where not exists (select 1 from deleted_account where id = ${account})
+          on conflict do nothing
+        `);
       return AccountRows.of({
         ensureAccount,
         write: (account, rows, nowMillis) =>
@@ -355,6 +371,26 @@ export class AccountRows extends Context.Service<AccountRows, AccountRowsShape>(
               };
             }),
           ),
+        exportFile: (account, nowMillis) =>
+          Effect.gen(function* () {
+            const stored = yield* sql<{ readonly tableName: string; readonly data: unknown }>`
+              select table_name as "tableName", data from account_row
+              where account_id = ${account}
+              order by table_name, row_id
+            `;
+            const tables: Record<TableKey, Array<AnyRow>> = Object.fromEntries(
+              TABLE_KEYS.map((name) => [name, []]),
+            ) as unknown as Record<TableKey, Array<AnyRow>>;
+            for (const { tableName, data } of stored) {
+              const table = tableKeyOf(tableName);
+              if (table === undefined) continue;
+              const row = Option.getOrUndefined(
+                Schema.decodeUnknownOption(TABLES[table].schema)(data),
+              );
+              if (row !== undefined) tables[table].push(row as AnyRow);
+            }
+            return encodeSvettFile(tables, EpochMillis.make(nowMillis));
+          }),
         changes: (account, after, limit = MAX_SYNC_ROWS) =>
           sql<{ readonly seq: string; readonly tableName: SyncedTable; readonly data: unknown }>`
             select seq, table_name as "tableName", data from account_row

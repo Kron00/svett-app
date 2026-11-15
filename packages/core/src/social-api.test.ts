@@ -1,6 +1,7 @@
 import { Cause, Effect, Exit, Option } from "effect";
 import { describe, expect, it } from "vite-plus/test";
 
+import { AccountId } from "./database.ts";
 import { SocialActivityId } from "./privacy.ts";
 import { httpSocialApi, SocialFailed, socialProblemMessage } from "./social-api.ts";
 
@@ -215,5 +216,75 @@ describe("httpSocialApi", () => {
       },
     });
     expect((await failure(api.requests())).problem).toBe("offline");
+  });
+  it("blocks, lists blocks and unblocks a block by its ID", async () => {
+    const { api, sent } = server(200, {});
+    await Effect.runPromise(api.block("Anna.K"));
+    await Effect.runPromise(api.unblock("block/1"));
+    await Effect.runPromise(api.removeFollower("ben"));
+    expect(sent.map(({ method, url }) => `${method} ${url}`)).toEqual([
+      "PUT https://svett.test/v1/profiles/Anna.K/block",
+      "DELETE https://svett.test/v1/blocks/block%2F1",
+      "DELETE https://svett.test/v1/followers/ben",
+    ]);
+    const list = { blocks: [{ id: "b1", username: "anna" }], next: "anna" };
+    const pages = server(200, list);
+    expect(await Effect.runPromise(pages.api.blocks())).toEqual(list);
+    await Effect.runPromise(pages.api.blocks("anna"));
+    expect(pages.sent.map(({ url }) => url)).toEqual([
+      "https://svett.test/v1/blocks",
+      "https://svett.test/v1/blocks?after=anna",
+    ]);
+  });
+
+  it("deletes the account it names with its receipt and reads that it is gone", async () => {
+    const { api, sent } = server(200, { deleted: true });
+    const receipt = "a".repeat(64);
+    const account = AccountId.make("user_anna");
+    expect(await Effect.runPromise(api.deleteAccount(account, receipt))).toEqual({
+      deleted: true,
+    });
+    expect(sent[0]).toMatchObject({
+      method: "DELETE",
+      url: "https://svett.test/v1/me",
+      body: JSON.stringify({ account, receipt }),
+    });
+    const other = await failure(
+      server(409, { error: "wrong_account" }).api.deleteAccount(account, receipt),
+    );
+    expect(other.problem).toBe("wrong_account");
+    const gone = await failure(server(410, { error: "account_deleted" }).api.feed());
+    expect(gone.problem).toBe("account_deleted");
+    expect(socialProblemMessage(gone)).toBe("This svett account was deleted.");
+  });
+
+  it("asks whether a deletion happened with its receipt alone, with no session", async () => {
+    const { api, sent } = server(200, { deleted: true }, null);
+    expect(await Effect.runPromise(api.deletionHappened("b".repeat(64)))).toEqual({
+      deleted: true,
+    });
+    expect(sent).toEqual([
+      {
+        method: "GET",
+        url: `https://svett.test/v1/deletions/${"b".repeat(64)}`,
+        body: null,
+        authorization: undefined,
+      },
+    ]);
+  });
+
+  it("says how long to wait when the server limits the account", async () => {
+    const api = httpSocialApi({
+      server: "https://svett.test",
+      token: async () => "token-1",
+      fetch: async () =>
+        new Response(JSON.stringify({ error: "rate_limited" }), {
+          status: 429,
+          headers: { "retry-after": "42" },
+        }),
+    });
+    const error = await failure(api.like("6f1c2a4e-93b0-4d5e-8a71-0c9e4b2d7f13"));
+    expect(error.problem).toBe("rate_limited");
+    expect(socialProblemMessage(error)).toBe("That was a lot at once. Try again in 42 seconds.");
   });
 });

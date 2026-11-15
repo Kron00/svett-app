@@ -48,7 +48,8 @@ import {
   SCAN,
   type ListAnchor,
 } from "./paging.ts";
-import { UsernameRequired } from "./social-rows.ts";
+import { lockOther } from "./safety.ts";
+import { hiddenBetween, hiddenFrom, UsernameRequired } from "./social-rows.ts";
 
 /** The post is not there, or the privacy rule does not let the account see it. */
 export class PostNotFound extends Data.TaggedError("PostNotFound")<{}> {}
@@ -122,12 +123,12 @@ const InboxCursor = Schema.Struct({ at: Schema.Int, key: Schema.String });
 const readInboxCursor = decodeCursor(InboxCursor);
 
 /** Where `viewer` stands to an account they follow, or to themself. */
-const relation = (viewer: AccountId, owner: string, follow: FollowState): Relation => ({
-  viewer,
-  owner,
-  follow,
-  blocked: false,
-});
+const relation = (
+  viewer: AccountId,
+  owner: string,
+  follow: FollowState,
+  blocked = false,
+): Relation => ({ viewer, owner, follow, blocked });
 
 /** The audiences of an owner's own posts in their feed: every one but their own alone. */
 const SHARED_AUDIENCES = Audience.literals.filter((audience) => audience !== "only_you");
@@ -312,16 +313,24 @@ export class FeedRows extends Context.Service<FeedRows, FeedRowsShape>()("svett/
           return rows;
         });
 
+      /**
+       * The post's likes and comments as `viewer` may see them. An account in a block with the
+       * viewer is left out of each count, as its comments are left out of the thread, so its
+       * likes and comments never move a number the viewer sees.
+       */
       const likesOf = (viewer: string, owner: string, activityId: string) =>
         sql<{ readonly likes: number; readonly liked: boolean; readonly comments: number }>`
           select
-            (select count(*)::int from activity_like
-              where owner_id = ${owner} and activity_id = ${activityId}) as likes,
+            (select count(*)::int from activity_like l
+              where l.owner_id = ${owner} and l.activity_id = ${activityId}
+                and not ${hiddenFrom(sql, viewer, "l.liker_id")}) as likes,
             exists (select 1 from activity_like
               where owner_id = ${owner} and activity_id = ${activityId}
                 and liker_id = ${viewer}) as liked,
-            (select count(*)::int from activity_comment
-              where owner_id = ${owner} and activity_id = ${activityId}) as comments
+            (select count(*)::int from activity_comment c
+              join profile p on p.account_id = c.author_id
+              where c.owner_id = ${owner} and c.activity_id = ${activityId}
+                and not ${hiddenFrom(sql, viewer, "c.author_id")}) as comments
         `.pipe(Effect.map(([row]) => row ?? { likes: 0, liked: false, comments: 0 }));
 
       /**
@@ -385,8 +394,9 @@ export class FeedRows extends Context.Service<FeedRows, FeedRowsShape>()("svett/
               : undefined;
           if (row === undefined || activity === undefined) return yield* new PostNotFound();
           const follow = row.owner === viewer ? "none" : yield* followOf(viewer, row.owner);
+          const blocked = row.owner !== viewer && (yield* hiddenBetween(sql, viewer, row.owner));
           const post = yield* postFor(
-            relation(viewer, row.owner, follow),
+            relation(viewer, row.owner, follow, blocked),
             row.username,
             activity,
             id,
@@ -396,6 +406,12 @@ export class FeedRows extends Context.Service<FeedRows, FeedRowsShape>()("svett/
         });
 
       type VisiblePost = Effect.Success<ReturnType<typeof visiblePost>>;
+
+      /** Locks the post's owner, which a like or comment names, as one gone hides the post. */
+      const named = (owner: string) =>
+        lockOther(sql, owner).pipe(
+          Effect.catchTag("AccountGone", () => Effect.fail(new PostNotFound())),
+        );
 
       const needUsername = (viewer: AccountId) =>
         Effect.flatMap(usernameOf(viewer), (username) =>
@@ -419,7 +435,8 @@ export class FeedRows extends Context.Service<FeedRows, FeedRowsShape>()("svett/
           and ((s.account_id = ${viewer}
               and r.data->>'audience' in ${sql.in(SHARED_AUDIENCES)})
             or (f.follower_id is not null
-              and r.data->>'audience' in ${sql.in(visibleAudiences(relation(viewer, "", "following")))}))
+              and r.data->>'audience' in ${sql.in(visibleAudiences(relation(viewer, "", "following")))}
+              and not ${hiddenFrom(sql, viewer, "s.account_id")}))
       `;
 
       /**
@@ -483,6 +500,8 @@ export class FeedRows extends Context.Service<FeedRows, FeedRowsShape>()("svett/
           left join activity_social social on social.account_id = i.owner_id
             and social.activity_id = i.activity_id
           where (i.activity_id is null or (post.data is not null and owner.username is not null))
+            and not ${hiddenFrom(sql, viewer, "i.actor")}
+            and (i.owner_id is null or not ${hiddenFrom(sql, viewer, "i.owner_id")})
             ${options.before === undefined ? sql`` : sql`and (i.at, i.key) < (${options.before.at}, ${options.before.key})`}
             ${options.after === undefined ? sql`` : sql`and i.at > ${options.after}`}
           order by i.at desc, i.key desc
@@ -491,12 +510,16 @@ export class FeedRows extends Context.Service<FeedRows, FeedRowsShape>()("svett/
 
       const commentOrder = sql`(c.created_ms, c.id collate "C")`;
 
-      /** Where comment `comment` sits on the post, or undefined when it is not on the post. */
-      const anchorOf = (post: VisiblePost, comment: string) =>
+      /**
+       * Where comment `comment` sits on the post, or undefined when it is not on the post or
+       * its author is in a block with `viewer`.
+       */
+      const anchorOf = (post: VisiblePost, viewer: AccountId, comment: string) =>
         sql<CommentAnchor>`
           select c.created_ms as at, c.id from activity_comment c
           where c.id = ${comment} and c.owner_id = ${post.owner}
             and c.activity_id = ${post.activityId}
+            and not ${hiddenFrom(sql, viewer, "c.author_id")}
         `.pipe(Effect.map(([row]) => row));
 
       /**
@@ -517,6 +540,7 @@ export class FeedRows extends Context.Service<FeedRows, FeedRowsShape>()("svett/
           select c.id, p.username, c.body, c.created_ms as at, c.author_id as "authorId"
           from activity_comment c join profile p on p.account_id = c.author_id
           where c.owner_id = ${post.owner} and c.activity_id = ${post.activityId}
+            and not ${hiddenFrom(sql, viewer, "c.author_id")}
             ${bound.from === undefined ? sql`` : sql`and ${commentOrder} >= (${bound.from.at}::bigint, ${bound.from.id} collate "C")`}
             ${bound.after === undefined ? sql`` : sql`and ${commentOrder} > (${bound.after.at}::bigint, ${bound.after.id} collate "C")`}
             ${bound.before === undefined ? sql`` : sql`and ${commentOrder} < (${bound.before.at}::bigint, ${bound.before.id} collate "C")`}
@@ -595,7 +619,8 @@ export class FeedRows extends Context.Service<FeedRows, FeedRowsShape>()("svett/
           Effect.gen(function* () {
             const found = yield* visiblePost(viewer, id);
             const { owner, activityId } = found;
-            const target = comment === undefined ? undefined : yield* anchorOf(found, comment);
+            const target =
+              comment === undefined ? undefined : yield* anchorOf(found, viewer, comment);
             // A comment within the first page opens the first page, so the thread reads from
             // its start whenever it can.
             const before =
@@ -604,6 +629,7 @@ export class FeedRows extends Context.Service<FeedRows, FeedRowsShape>()("svett/
                 : yield* sql<{ readonly count: number }>`
                     select count(*)::int as count from activity_comment c
                     where c.owner_id = ${owner} and c.activity_id = ${activityId}
+                      and not ${hiddenFrom(sql, viewer, "c.author_id")}
                       and ${commentOrder} < (${target.at}::bigint, ${target.id} collate "C")
                   `.pipe(Effect.map(([row]) => row?.count ?? 0));
             const from = target !== undefined && before >= COMMENT_PAGE ? target : undefined;
@@ -620,7 +646,7 @@ export class FeedRows extends Context.Service<FeedRows, FeedRowsShape>()("svett/
           Effect.gen(function* () {
             const found = yield* visiblePost(viewer, id);
             const cursor = "after" in from ? from.after : from.before;
-            const anchor = yield* anchorOf(found, yield* readIdCursor(cursor));
+            const anchor = yield* anchorOf(found, viewer, yield* readIdCursor(cursor));
             if (anchor === undefined) return yield* new InvalidCursor();
             if ("after" in from) {
               const rows = yield* commentRows(found, viewer, { after: anchor, ascending: true });
@@ -644,6 +670,7 @@ export class FeedRows extends Context.Service<FeedRows, FeedRowsShape>()("svett/
           Effect.gen(function* () {
             const { owner, activityId } = yield* visiblePost(viewer, id);
             yield* needUsername(viewer);
+            yield* named(owner);
             yield* sql`
               insert into activity_like (owner_id, activity_id, liker_id, created_ms)
               values (${owner}, ${activityId}, ${viewer}, ${yield* Clock.currentTimeMillis})
@@ -651,7 +678,7 @@ export class FeedRows extends Context.Service<FeedRows, FeedRowsShape>()("svett/
             `;
             const { likes, liked } = yield* likesOf(viewer, owner, activityId);
             return { likes, liked };
-          }),
+          }).pipe(sql.withTransaction),
         unlike: (viewer, id) =>
           Effect.gen(function* () {
             const { owner, activityId } = yield* visiblePost(viewer, id);
@@ -669,13 +696,14 @@ export class FeedRows extends Context.Service<FeedRows, FeedRowsShape>()("svett/
             const body = cleanComment(text);
             const problem = commentProblem(body);
             if (problem !== undefined) return yield* new InvalidComment({ message: problem });
+            yield* named(owner);
             const comment = { id: randomUUID(), at: yield* Clock.currentTimeMillis };
             yield* sql`
               insert into activity_comment (id, owner_id, activity_id, author_id, body, created_ms)
               values (${comment.id}, ${owner}, ${activityId}, ${viewer}, ${body}, ${comment.at})
             `;
             return { ...comment, username: author, body, canDelete: true };
-          }),
+          }).pipe(sql.withTransaction),
         deleteComment: (viewer, id, commentId) =>
           Effect.gen(function* () {
             const { owner, activityId } = yield* visiblePost(viewer, id);

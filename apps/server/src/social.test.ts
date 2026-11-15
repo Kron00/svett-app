@@ -23,7 +23,9 @@ import { socialProof } from "./social-proof.ts";
 import { SocialRoutes } from "./social-routes.ts";
 import { PAGE, SocialRows, type SocialRowsShape } from "./social-rows.ts";
 import { type StandInIssuer, startStandInIssuer } from "./test-issuer.ts";
+import { withoutDeletions } from "./test-ledger.ts";
 import { startTestPostgres, type TestPostgres } from "./test-postgres.ts";
+import { Safety } from "./safety.ts";
 
 let postgres: TestPostgres;
 let issuer: StandInIssuer;
@@ -55,7 +57,13 @@ const routes = async () => {
       audience: undefined,
     }),
   );
-  const services = Layer.mergeAll(AccountRows.layer, SocialRows.layer, Sessions.layer).pipe(
+  const services = Layer.mergeAll(
+    AccountRows.layer,
+    SocialRows.layer,
+    Sessions.layer,
+    Safety.layer(),
+  ).pipe(
+    Layer.provideMerge(withoutDeletions()),
     Layer.provide(databaseLayer(url)),
     Layer.provide(clerk),
   );
@@ -611,6 +619,38 @@ describe("follow lists", { timeout: 60_000 }, () => {
       profiles: [{ username: pages.followers[PAGE], private: true, follow: "none" }],
       next: null,
     });
+  });
+
+  it("pages blocks by username until the last page", async () => {
+    const layer = await socialRows();
+    const pages = await Effect.runPromise(
+      Effect.gen(function* () {
+        const rows = yield* SocialRows;
+        yield* rows.saveProfile(ANNA as AccountId, {
+          username: Username.make("anna"),
+          private: false,
+        });
+        const blocked = Array.from(
+          { length: PAGE + 1 },
+          (_, n) => `b${String(n).padStart(3, "0")}`,
+        );
+        // Blocked newest first, so the pages follow usernames and not the order of blocking.
+        for (const username of blocked.toReversed()) {
+          const account = `user_${username}` as AccountId;
+          yield* rows.saveProfile(account, { username: Username.make(username), private: false });
+          yield* rows.block(ANNA as AccountId, username);
+        }
+        const first = yield* rows.blocks(ANNA as AccountId);
+        const second = yield* rows.blocks(ANNA as AccountId, first.next ?? undefined);
+        return { blocked, first, second };
+      }).pipe(Effect.provide(layer)),
+    );
+    expect(pages.first.blocks.map(({ username }) => username)).toEqual(
+      pages.blocked.slice(0, PAGE),
+    );
+    expect(pages.first.next).toBe(pages.blocked[PAGE - 1]);
+    expect(pages.second.blocks.map(({ username }) => username)).toEqual([pages.blocked[PAGE]]);
+    expect(pages.second.next).toBeNull();
   });
 });
 

@@ -3,6 +3,7 @@ import {
   AccountId,
   Activity,
   type ActivityPage,
+  type BlockPage,
   type ActivityView,
   type FollowRequest,
   type FollowState,
@@ -30,12 +31,15 @@ import {
   SCAN,
   type ListAnchor,
 } from "./paging.ts";
+import { lockOther, lockPair } from "./safety.ts";
 
 export class NotFound extends Data.TaggedError("NotFound")<{}> {}
 export class UsernameTaken extends Data.TaggedError("UsernameTaken")<{}> {}
 export class UsernameRequired extends Data.TaggedError("UsernameRequired")<{}> {}
 export class CannotFollowSelf extends Data.TaggedError("CannotFollowSelf")<{}> {}
 export class RequestNotFound extends Data.TaggedError("RequestNotFound")<{}> {}
+export class CannotBlockSelf extends Data.TaggedError("CannotBlockSelf")<{}> {}
+export class BlockNotFound extends Data.TaggedError("BlockNotFound")<{}> {}
 
 /** The most profiles a search or a page of a list returns, and the most activities a profile shows. */
 export const PAGE = 50;
@@ -128,6 +132,27 @@ export interface SocialRowsShape {
     owner: AccountId,
     request: string,
   ) => Effect.Effect<void, SqlError | RequestNotFound>;
+  /**
+   * Blocks the account with this username. Any follow or request between the two, either way,
+   * ends. From then on neither finds, sees or follows the other, and neither sees the other's
+   * likes or comments. Blocking again changes nothing.
+   */
+  readonly block: (
+    viewer: AccountId,
+    username: string,
+  ) => Effect.Effect<void, SqlError | NotFound | CannotBlockSelf>;
+  /** One page of the accounts `viewer` blocked, by username, paged like `followers`. */
+  readonly blocks: (viewer: AccountId, after?: string) => Effect.Effect<BlockPage, SqlError>;
+  /** Ends the block with this ID, when `viewer` made it. A follow it ended stays ended. */
+  readonly unblock: (
+    viewer: AccountId,
+    block: string,
+  ) => Effect.Effect<void, SqlError | BlockNotFound>;
+  /** Ends the follow of `viewer` by the account with this username, without blocking it. */
+  readonly removeFollower: (
+    viewer: AccountId,
+    username: string,
+  ) => Effect.Effect<void, SqlError | NotFound>;
 }
 
 const decodeActivity = Schema.decodeUnknownOption(Activity);
@@ -151,6 +176,36 @@ const summary = (row: SummaryRow): ProfileSummary => ({
 
 const ownList = (relation: OwnedRelation) => relation.viewer === relation.owner;
 
+/**
+ * True when the account in `column` was deleted. A deletion marks the account first and
+ * deletes its rows after, so its rows can stay a while, and no read shows them meanwhile. The
+ * caller names a column it trusts, never one a request supplies.
+ */
+export const deletedAccount = (sql: PgClient.PgClient, column: string) =>
+  sql`exists (select 1 from deleted_account d where d.id = ${sql.literal(column)})`;
+
+/**
+ * True when `viewer` must not see the account in `column`: the two block each other, either
+ * way round, or that account was deleted. Every read of another account's profile, follows,
+ * posts, likes, comments and inbox items leaves out an account this holds for. The caller
+ * names a column it trusts, never one a request supplies.
+ */
+export const hiddenFrom = (sql: PgClient.PgClient, viewer: string, column: string) =>
+  sql`(exists (
+    select 1 from block b
+    where (b.blocker_id = ${viewer} and b.blocked_id = ${sql.literal(column)})
+      or (b.blocked_id = ${viewer} and b.blocker_id = ${sql.literal(column)})
+  ) or ${deletedAccount(sql, column)})`;
+
+/**
+ * Whether `viewer` must not see the account `other`, as `hiddenFrom` decides. The privacy rule
+ * takes it as its `blocked`, which hides everything.
+ */
+export const hiddenBetween = (sql: PgClient.PgClient, viewer: string, other: string) =>
+  sql<{ readonly hidden: boolean }>`
+    select ${hiddenFrom(sql, viewer, "o.id")} as hidden from (select ${other}::text as id) o
+  `.pipe(Effect.map(([row]) => row?.hidden === true));
+
 export class SocialRows extends Context.Service<SocialRows, SocialRowsShape>()(
   "svett/server/SocialRows",
 ) {
@@ -160,16 +215,27 @@ export class SocialRows extends Context.Service<SocialRows, SocialRowsShape>()(
       const sql = yield* PgClient.PgClient;
 
       // `lock` holds the profile's row until the transaction ends, so its private choice
-      // cannot change between reading it and acting on it.
-      const findAccount = (username: string, lock = false) =>
+      // cannot change between reading it and acting on it. With a `viewer`, an account in a
+      // block with them is not found, as one that does not exist is not.
+      const findAccount = (
+        username: string,
+        options: { readonly lock?: boolean; readonly viewer?: AccountId } = {},
+      ) =>
         sql<Account>`
           select account_id as id, username, private from profile
           where username_key = ${usernameKey(username)}
-          ${lock ? sql`for update` : sql``}
+          ${options.viewer === undefined ? sql`` : sql`and not ${hiddenFrom(sql, options.viewer, "profile.account_id")}`}
+          ${options.lock === true ? sql`for update` : sql``}
         `.pipe(
           Effect.flatMap(([account]) =>
             account === undefined ? Effect.fail(new NotFound()) : Effect.succeed(account),
           ),
+        );
+
+      /** Locks `other`, an account a write names, and answers NotFound when it is gone. */
+      const named = (other: string) =>
+        lockOther(sql, other).pipe(
+          Effect.catchTag("AccountGone", () => Effect.fail(new NotFound())),
         );
 
       const followState = (follower: AccountId, followee: AccountId) =>
@@ -178,22 +244,27 @@ export class SocialRows extends Context.Service<SocialRows, SocialRowsShape>()(
         `.pipe(Effect.map(([row]) => row?.state ?? "none"));
 
       const relationTo = (viewer: AccountId, owner: AccountId) =>
-        Effect.map(followState(viewer, owner), (follow): OwnedRelation => ({
-          viewer,
-          owner,
-          follow,
-          blocked: false,
-        }));
+        Effect.map(
+          Effect.all([followState(viewer, owner), hiddenBetween(sql, viewer, owner)]),
+          ([follow, blocked]): OwnedRelation => ({ viewer, owner, follow, blocked }),
+        );
 
-      const counts = (account: AccountId) =>
+      /**
+       * The profile's counts as `viewer` may see them. Each counts only what the matching list
+       * shows the viewer, so an account in a block with the viewer never moves a count.
+       */
+      const counts = (owner: AccountId, viewer: AccountId) =>
         sql<{ readonly followers: number; readonly following: number; readonly requests: number }>`
           select
-            (select count(*)::int from follow
-              where followee_id = ${account} and state = 'following') as followers,
-            (select count(*)::int from follow
-              where follower_id = ${account} and state = 'following') as following,
-            (select count(*)::int from follow
-              where followee_id = ${account} and state = 'requested') as requests
+            (select count(*)::int from follow f join profile p on p.account_id = f.follower_id
+              where f.followee_id = ${owner} and f.state = 'following'
+                and not ${hiddenFrom(sql, viewer, "p.account_id")}) as followers,
+            (select count(*)::int from follow f join profile p on p.account_id = f.followee_id
+              where f.follower_id = ${owner} and f.state = 'following'
+                and not ${hiddenFrom(sql, viewer, "p.account_id")}) as following,
+            (select count(*)::int from follow f join profile p on p.account_id = f.follower_id
+              where f.followee_id = ${owner} and f.state = 'requested'
+                and not ${hiddenFrom(sql, owner, "p.account_id")}) as requests
         `.pipe(Effect.map(([row]) => row ?? { followers: 0, following: 0, requests: 0 }));
 
       const ownProfile = (account: AccountId) =>
@@ -204,7 +275,7 @@ export class SocialRows extends Context.Service<SocialRows, SocialRowsShape>()(
           return {
             username: profile?.username ?? null,
             private: profile?.private ?? true,
-            ...(yield* counts(account)),
+            ...(yield* counts(account, account)),
           };
         });
 
@@ -225,6 +296,7 @@ export class SocialRows extends Context.Service<SocialRows, SocialRowsShape>()(
           left join follow mine on mine.follower_id = ${viewer} and mine.followee_id = p.account_id
           where ${where === "followers" ? sql`f.followee_id` : sql`f.follower_id`} = ${owner}
             and f.state = 'following'
+            and not ${hiddenFrom(sql, viewer, "p.account_id")}
             ${after === undefined ? sql`` : sql`and p.username_key collate "C" > ${after}`}
           order by p.username_key collate "C"
           limit ${PAGE + 1}
@@ -362,18 +434,19 @@ export class SocialRows extends Context.Service<SocialRows, SocialRowsShape>()(
             from profile p
             left join follow f on f.follower_id = ${viewer} and f.followee_id = p.account_id
             where p.username_key like ${likePrefix(prefix)}
+              and not ${hiddenFrom(sql, viewer, "p.account_id")}
             order by p.username_key collate "C"
             limit ${PAGE}
           `.pipe(Effect.map((rows) => rows.map(summary))),
         profile: (viewer, username) =>
           Effect.gen(function* () {
-            const owner = yield* findAccount(username);
+            const owner = yield* findAccount(username, { viewer });
             const seen = yield* relationTo(viewer, owner.id);
             return {
               username: owner.username,
               private: owner.private,
               self: viewer === owner.id,
-              ...(yield* Effect.map(counts(owner.id), ({ followers, following }) => ({
+              ...(yield* Effect.map(counts(owner.id, viewer), ({ followers, following }) => ({
                 followers,
                 following,
               }))),
@@ -384,7 +457,7 @@ export class SocialRows extends Context.Service<SocialRows, SocialRowsShape>()(
           }),
         activities: (viewer, username, cursor) =>
           Effect.gen(function* () {
-            const owner = yield* findAccount(username);
+            const owner = yield* findAccount(username, { viewer });
             const seen = yield* relationTo(viewer, owner.id);
             const start = cursor === undefined ? undefined : yield* activitiesAfter(seen, cursor);
             return yield* activityPage(seen, start);
@@ -392,8 +465,13 @@ export class SocialRows extends Context.Service<SocialRows, SocialRowsShape>()(
         follow: (viewer, username) =>
           sql.withTransaction(
             Effect.gen(function* () {
-              const owner = yield* findAccount(username, true);
-              if (owner.id === viewer) return yield* new CannotFollowSelf();
+              const found = yield* findAccount(username, { viewer });
+              if (found.id === viewer) return yield* new CannotFollowSelf();
+              yield* named(found.id);
+              yield* lockPair(sql, viewer, found.id);
+              // Read again under the pair lock, so a block that committed meanwhile refuses it.
+              const owner = yield* findAccount(username, { lock: true, viewer });
+              if (owner.id !== found.id) return yield* new NotFound();
               const [own] = yield* sql`select 1 from profile where account_id = ${viewer}`;
               if (own === undefined) return yield* new UsernameRequired();
               const state: FollowState = owner.private ? "requested" : "following";
@@ -407,16 +485,16 @@ export class SocialRows extends Context.Service<SocialRows, SocialRowsShape>()(
           ),
         unfollow: (viewer, username) =>
           Effect.gen(function* () {
-            const owner = yield* findAccount(username);
+            const owner = yield* findAccount(username, { viewer });
             yield* sql`delete from follow where follower_id = ${viewer} and followee_id = ${owner.id}`;
             return "none" as const;
           }),
         followers: (viewer, username, after) =>
-          Effect.flatMap(findAccount(username), (owner) =>
+          Effect.flatMap(findAccount(username, { viewer }), (owner) =>
             listOf(viewer, "followers", owner.id, after),
           ),
         following: (viewer, username, after) =>
-          Effect.flatMap(findAccount(username), (owner) =>
+          Effect.flatMap(findAccount(username, { viewer }), (owner) =>
             listOf(viewer, "following", owner.id, after),
           ),
         activity: (viewer, socialId) =>
@@ -444,18 +522,30 @@ export class SocialRows extends Context.Service<SocialRows, SocialRowsShape>()(
             join profile p on p.account_id = f.follower_id
             left join follow mine on mine.follower_id = ${owner} and mine.followee_id = p.account_id
             where f.followee_id = ${owner} and f.state = 'requested'
+              and not ${hiddenFrom(sql, owner, "f.follower_id")}
             order by f.created_at, f.id
             limit ${PAGE}
           `.pipe(Effect.map((rows) => rows.map((row) => ({ id: row.id, ...summary(row) })))),
         approve: (owner, request) =>
           Effect.gen(function* () {
+            const [waiting] = yield* sql<{ readonly followerId: string }>`
+              select follower_id as "followerId" from follow
+              where id = ${request} and followee_id = ${owner} and state = 'requested'
+            `;
+            if (waiting === undefined) return yield* new RequestNotFound();
+            yield* lockOther(sql, waiting.followerId).pipe(
+              Effect.catchTag("AccountGone", () => Effect.fail(new RequestNotFound())),
+            );
+            yield* lockPair(sql, owner, waiting.followerId);
             const approved = yield* sql`
               update follow set state = 'following'
               where id = ${request} and followee_id = ${owner} and state = 'requested'
+                and follower_id = ${waiting.followerId}
+                and not ${hiddenFrom(sql, owner, "follow.follower_id")}
               returning 1
             `;
             if (approved.length === 0) return yield* new RequestNotFound();
-          }),
+          }).pipe(sql.withTransaction),
         decline: (owner, request) =>
           Effect.gen(function* () {
             const declined = yield* sql`
@@ -465,6 +555,66 @@ export class SocialRows extends Context.Service<SocialRows, SocialRowsShape>()(
             `;
             if (declined.length === 0) return yield* new RequestNotFound();
           }),
+        block: (viewer, username) =>
+          sql.withTransaction(
+            Effect.gen(function* () {
+              // Blocking finds the account even when it blocked the viewer first, so each
+              // side can keep the other out whoever blocked first.
+              const other = yield* findAccount(username);
+              if (other.id === viewer) return yield* new CannotBlockSelf();
+              yield* named(other.id);
+              yield* lockPair(sql, viewer, other.id);
+              yield* sql`
+                insert into block (blocker_id, blocked_id) values (${viewer}, ${other.id})
+                on conflict do nothing
+              `;
+              yield* sql`
+                delete from follow
+                where (follower_id = ${viewer} and followee_id = ${other.id})
+                  or (follower_id = ${other.id} and followee_id = ${viewer})
+              `;
+            }),
+          ),
+        blocks: (viewer, after) =>
+          sql<{ readonly id: string; readonly username: string; readonly key: string }>`
+            select b.id, p.username, p.username_key as key from block b
+            join profile p on p.account_id = b.blocked_id
+            where b.blocker_id = ${viewer} and not ${deletedAccount(sql, "b.blocked_id")}
+              ${after === undefined ? sql`` : sql`and p.username_key collate "C" > ${after}`}
+            order by p.username_key collate "C"
+            limit ${PAGE + 1}
+          `.pipe(
+            Effect.map((rows): BlockPage => {
+              const page = rows.slice(0, PAGE);
+              return {
+                blocks: page.map((row) => ({ id: row.id, username: row.username })),
+                next: rows.length > PAGE ? (page.at(-1)?.key ?? null) : null,
+              };
+            }),
+          ),
+        unblock: (viewer, block) =>
+          Effect.gen(function* () {
+            const [found] = yield* sql<{ readonly blockedId: string }>`
+              select blocked_id as "blockedId" from block
+              where id = ${block} and blocker_id = ${viewer}
+            `;
+            if (found === undefined) return yield* new BlockNotFound();
+            yield* lockPair(sql, viewer, found.blockedId);
+            const removed = yield* sql`
+              delete from block where id = ${block} and blocker_id = ${viewer} returning 1
+            `;
+            if (removed.length === 0) return yield* new BlockNotFound();
+          }).pipe(sql.withTransaction),
+        removeFollower: (viewer, username) =>
+          Effect.gen(function* () {
+            const follower = yield* findAccount(username, { viewer });
+            yield* lockPair(sql, viewer, follower.id);
+            yield* sql`
+              delete from follow
+              where follower_id = ${follower.id} and followee_id = ${viewer}
+                and state = 'following'
+            `;
+          }).pipe(sql.withTransaction),
       });
     }),
   );
