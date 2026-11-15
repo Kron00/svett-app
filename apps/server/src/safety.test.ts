@@ -294,6 +294,58 @@ const failCommits = async (url: Redacted.Redacted, id: string) => {
 const commitAgain = (url: Redacted.Redacted) =>
   query(url, "drop trigger fail_commit on deleted_account");
 
+/** Makes deleting the rows of `id` fail, as a database that fails part way through a deletion. */
+const failErasing = async (url: Redacted.Redacted, id: string) => {
+  await query(
+    url,
+    `create or replace function fail_erase() returns trigger language plpgsql as $$
+     begin raise exception 'The rows could not be deleted.'; end $$`,
+  );
+  await query(
+    url,
+    `create trigger fail_erase before delete on account
+     for each row when (old.id = '${id}') execute function fail_erase()`,
+  );
+};
+
+const eraseAgain = (url: Redacted.Redacted) => query(url, "drop trigger fail_erase on account");
+
+const usernames = (list: ReadonlyArray<{ readonly username: string }>) =>
+  list.map(({ username }) => username);
+
+/**
+ * What Ben, Cara and Dan read of Anna and of what she did: search, her profile, her
+ * activities, her post, Ben's followers and following and their counts, Ben's feed, the likes
+ * and comments on Ben's post, Ben's inbox, Cara's follow requests and Dan's blocks.
+ */
+const readsOfAnna = async (
+  api: ReturnType<typeof client>,
+  who: { readonly ben: string; readonly cara: string; readonly dan: string },
+  posts: { readonly annas: string; readonly bens: string },
+) => {
+  const { ben, cara, dan } = who;
+  const profile = await api.ok(ben, "GET", "/v1/profiles/ben");
+  const thread = await api.ok(ben, "GET", `/v1/posts/${posts.bens}`);
+  return {
+    search: usernames((await api.ok(ben, "GET", "/v1/profiles?prefix=an")).profiles),
+    profile: (await api.call(ben, "GET", "/v1/profiles/anna")).status,
+    activities: (await api.call(ben, "GET", "/v1/profiles/anna/activities")).status,
+    activity: (await api.call(ben, "GET", `/v1/activities/${posts.annas}`)).status,
+    post: (await api.call(ben, "GET", `/v1/posts/${posts.annas}`)).status,
+    followers: usernames((await api.ok(ben, "GET", "/v1/profiles/ben/followers")).profiles),
+    following: usernames((await api.ok(ben, "GET", "/v1/profiles/ben/following")).profiles),
+    counts: [profile.followers, profile.following],
+    feed: usernames((await api.ok(ben, "GET", "/v1/feed")).posts),
+    likes: thread.post.likes,
+    comments: [thread.post.comments, usernames(thread.comments)],
+    inbox: (await api.ok(ben, "GET", "/v1/inbox")).items.map(
+      (item: { kind: string; username: string }) => `${item.kind} ${item.username}`,
+    ),
+    requests: usernames((await api.ok(cara, "GET", "/v1/follow-requests")).requests),
+    blocks: usernames((await api.ok(dan, "GET", "/v1/blocks")).blocks),
+  };
+};
+
 /** Waits up to 30 seconds for `check` to hold, asking four times a second. */
 const eventually = async (
   check: () => Promise<boolean>,
@@ -914,7 +966,7 @@ describe("deleting an account", { timeout: 60_000 }, () => {
     await again.stop();
   });
 
-  it("refuses the account at once when the commit fails after the rename, and finishes the deletion in the background", async () => {
+  it("refuses the account at once when marking it fails after the rename, and finishes the deletion in the background", async () => {
     const url = await freshDatabase();
     const anna = account("anna");
     const receipt = receiptFor("commit");
@@ -1053,6 +1105,140 @@ describe("deleting an account", { timeout: 60_000 }, () => {
     expect(await rowsNaming(url, anna)).toMatchObject({ account: 1, account_row: 1 });
   });
 
+  it("hides the account from every read of other accounts once it is marked, while its rows wait to be deleted", async () => {
+    const url = await freshDatabase();
+    const server = await start(url);
+    const api = client(server.base);
+    const [anna, ben, cara, dan] = ["anna", "ben", "cara", "dan"].map(account) as [
+      string,
+      string,
+      string,
+      string,
+    ];
+    const receipt = receiptFor("marked");
+    await api.name(anna, "anna");
+    await api.name(ben, "ben");
+    await api.name(cara, "cara", true);
+    await api.name(dan, "dan");
+    const annasRun = activity("Anna's run");
+    const bensRun = activity("Ben's run");
+    await api.write(anna, [annasRun]);
+    await api.write(ben, [bensRun]);
+    await api.ok(ben, "PUT", "/v1/profiles/anna/follow");
+    await api.ok(anna, "PUT", "/v1/profiles/ben/follow");
+    await api.ok(anna, "PUT", "/v1/profiles/cara/follow");
+    await api.ok(dan, "PUT", "/v1/profiles/anna/block");
+    const posts = {
+      annas: await api.postId(ben, "anna", annasRun.title),
+      bens: await api.postId(anna, "ben", bensRun.title),
+    };
+    await api.ok(anna, "PUT", `/v1/posts/${posts.bens}/like`);
+    await api.ok(anna, "POST", `/v1/posts/${posts.bens}/comments`, { body: "Nice" });
+    const held = { token: await issuer.sessionToken(anna) };
+    const who = { ben, cara, dan };
+
+    expect(await readsOfAnna(api, who, posts)).toEqual({
+      search: ["anna"],
+      profile: 200,
+      activities: 200,
+      activity: 200,
+      post: 200,
+      followers: ["anna"],
+      following: ["anna"],
+      counts: [1, 1],
+      feed: ["ben", "anna"],
+      likes: 1,
+      comments: [1, ["anna"]],
+      inbox: ["comment anna", "like anna", "follow anna"],
+      requests: ["anna"],
+      blocks: ["anna"],
+    });
+
+    await failErasing(url, anna);
+    expect((await api.call(held, "DELETE", "/v1/me", { receipt })).status).toBe(500);
+
+    expect(await query(url, "select id, rows_deleted from deleted_account")).toEqual([
+      { id: anna, rows_deleted: false },
+    ]);
+    expect(await rowsNaming(url, anna)).toMatchObject({ account: 1, profile: 1, account_row: 1 });
+    expect(await readsOfAnna(api, who, posts)).toEqual({
+      search: [],
+      profile: 404,
+      activities: 404,
+      activity: 404,
+      post: 404,
+      followers: [],
+      following: [],
+      counts: [0, 0],
+      feed: ["ben"],
+      likes: 0,
+      comments: [0, []],
+      inbox: [],
+      requests: [],
+      blocks: [],
+    });
+    expect((await api.call(ben, "PUT", "/v1/profiles/anna/follow")).body).toEqual({
+      error: "not_found",
+    });
+    expect((await api.call(ben, "PUT", `/v1/posts/${posts.annas}/like`)).body).toEqual({
+      error: "post_not_found",
+    });
+    await expectRefused(api, held, url, anna);
+
+    await eraseAgain(url);
+    await eventually(async () => (await sessionsEnded(url, anna)) === true);
+
+    expect(nothingLeft(await rowsNaming(url, anna))).toBe(true);
+    expect(issuer.deletedUsers()).toContain(anna);
+    await expectDeleted(api, held, receipt);
+    await server.stop();
+  });
+
+  it("lets another server on the same database refuse, answer for and finish a deletion whose server died before marking it", async () => {
+    const url = await freshDatabase();
+    const anna = AccountId.make(account("anna"));
+    const receipt = receiptFor("peer");
+    const other = await start(url);
+    const api = client(other.base);
+    await api.write(anna, [activity("Gone")]);
+    const held = { token: await issuer.sessionToken(anna) };
+    expect((await api.call(held, "GET", "/v1/me")).status).toBe(200);
+    expect((await api.call(held, "GET", `/v1/deletions/${receipt}`)).body).toEqual({
+      deleted: false,
+    });
+
+    // The first server renames the entry into place, then hangs in the directory's sync until
+    // it dies, so it never marks the account in the database.
+    const dying = ManagedRuntime.make(
+      servicesOf(url, { ledger: { syncDirectory: () => new Promise(() => {}) } }),
+    );
+    const deleting = dying.runFork(
+      Effect.flatMap(Effect.service(AccountDeletion), (deletion) => deletion.remove(anna, receipt)),
+    );
+    await eventually(async () => (await ledgerReceipts(url)).includes(receiptHash(receipt)));
+    await dying.runPromise(Fiber.interrupt(deleting));
+    await dying.dispose();
+    expect(await query(url, "select id from deleted_account")).toEqual([]);
+    expect(await rowsNaming(url, anna)).toMatchObject({ account: 1, account_row: 1 });
+
+    expect((await api.call(held, "GET", `/v1/deletions/${receipt}`)).body).toEqual({
+      deleted: true,
+    });
+    await expectRefused(api, held, url, anna);
+    await eventually(async () => (await sessionsEnded(url, anna)) === true);
+
+    expect(nothingLeft(await rowsNaming(url, anna))).toBe(true);
+    expect(issuer.deletedUsers()).toContain(anna);
+    expect(
+      await query(
+        url,
+        `select 1 from deletion_receipt where receipt_hash = '${receiptHash(receipt)}'`,
+      ),
+    ).toHaveLength(1);
+    await expectDeleted(api, held, receipt);
+    await other.stop();
+  });
+
   it("waits for a request in flight, so nothing it writes outlives the deletion", async () => {
     const url = await freshDatabase();
     const anna = AccountId.make(account("anna"));
@@ -1162,12 +1348,12 @@ const outcomeOf = (exit: Exit.Exit<unknown, unknown>) =>
           ?.constructor.name,
       );
 
-/** Waits until the deletion holds the account's lock and waits for the held table. */
+/** Waits until the deletion holds the account's lock and waits to mark the account. */
 const untilDeletionWaits = Effect.gen(function* () {
   const sql = yield* PgClient.PgClient;
   const [waiting] = yield* sql<{ readonly n: number }>`
     select count(*)::int as n from pg_stat_activity
-    where wait_event_type = 'Lock' and query like '%"inbox_read"%'
+    where wait_event_type = 'Lock' and query like '%insert into deleted_account%'
   `;
   if ((waiting?.n ?? 0) === 0) return yield* Effect.fail("not yet");
 }).pipe(Effect.retry({ schedule: Schedule.spaced("10 millis"), times: 1000 }));
@@ -1224,14 +1410,15 @@ describe(
               const sql = yield* PgClient.PgClient;
               const safety = yield* Safety;
               const deletion = yield* AccountDeletion;
-              // A transaction on a table the deletion reaches late holds the deletion open,
-              // with the account's lock taken.
+              // A transaction that keeps every insert out of deleted_account holds the deletion
+              // open with the account's lock taken, before the database marks the account and
+              // while every read still shows it.
               const locked = yield* Deferred.make<void>();
               const unlock = yield* Deferred.make<void>();
               const holder = yield* Effect.forkChild(
                 sql.withTransaction(
                   Effect.gen(function* () {
-                    yield* sql`lock table inbox_read in access exclusive mode`;
+                    yield* sql`lock table deleted_account in exclusive mode`;
                     yield* Deferred.succeed(locked, undefined);
                     yield* Deferred.await(unlock);
                   }),

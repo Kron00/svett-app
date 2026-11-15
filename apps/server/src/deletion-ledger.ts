@@ -12,7 +12,7 @@ import {
 } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
-import { Clock, Context, Data, Effect, Layer, Option, Schema } from "effect";
+import { Clock, Context, Data, Effect, Layer, Option, Queue, Schema } from "effect";
 
 import { ServerConfig } from "./config.ts";
 
@@ -31,6 +31,13 @@ export const TEMPORARY_PREFIX = ".tmp-";
 
 /** How old a temporary file must be before a start takes it as left by a crash and removes it. */
 export const LEFTOVER_AGE_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * How recent a change to the directory must be for a check to read it again even when its
+ * modification time is the same. A file system stamps times from a coarse clock, so two changes
+ * a few milliseconds apart can carry one time, and the second would go unseen.
+ */
+export const COARSE_CLOCK_MS = 1_000;
 
 /** What LEDGER_ID_FILE holds, the random ID the database records when the ledger is made. */
 export const LedgerHeader = Schema.Struct({ ledger: Schema.String });
@@ -98,7 +105,8 @@ export interface DeletionLedgerShape {
   readonly create: Effect.Effect<string, LedgerError>;
   /**
    * Records `entry` in ledger `id` and waits until it is on disk. A deletion records itself
-   * here before it commits, so no deletion the database holds is missing from the ledger. The
+   * here first, before the database marks the account deleted, so no deletion the database
+   * holds is missing from the ledger. The
    * entry is written whole to a temporary file, synced, and only then renamed to its final
    * name, so a reader sees all of it or none. Two deletions never touch the same file, so they
    * need no lock. Fails when the ledger is missing or another ledger, or when a write stores
@@ -107,13 +115,21 @@ export interface DeletionLedgerShape {
    */
   readonly record: (id: string, entry: LedgerEntry) => Effect.Effect<void, LedgerError>;
   /**
-   * The ledger's entries for `account`, from memory. A read fills that memory, which the server
-   * does on every start, and so does every entry this server records. Any entry means the
-   * account is deleted, whatever the database says.
+   * The ledger's entries for `account`. Any entry means the account is deleted, whatever the
+   * database says. They come from memory, which a read fills and every entry this server
+   * records adds to. Before it answers, it reads the directory's modification time, and when
+   * that changed reads the files it has not read yet, so it also holds what another server
+   * recorded, even one that died before its database knew.
    */
   readonly deletionsOf: (account: string) => Effect.Effect<ReadonlyArray<LedgerEntry>, LedgerError>;
-  /** Whether the ledger holds a deletion sent with the receipt of this hash, from memory. */
+  /** Whether the ledger holds a deletion sent with the receipt of this hash, read as `deletionsOf` reads. */
   readonly holdsReceipt: (hash: string) => Effect.Effect<boolean, LedgerError>;
+  /**
+   * Waits for accounts with entries this server found in the directory after its first read,
+   * which another server recorded, and gives back each account once per entry. The server
+   * finishes their deletions, as the one that recorded them may have died before it could.
+   */
+  readonly found: Effect.Effect<ReadonlyArray<string>>;
   /**
    * Removes temporary files older than LEFTOVER_AGE_MS, which a crash left part way through a
    * deletion that never committed. Gives back how many it removed.
@@ -187,6 +203,16 @@ const namesIn = (dir: string) =>
     throw error;
   });
 
+/** The directory's modification time in nanoseconds and milliseconds, or None when it is missing. */
+const modifiedAt = (dir: string) =>
+  stat(dir, { bigint: true }).then(
+    ({ mtimeNs, mtimeMs }) => Option.some({ ns: mtimeNs, ms: Number(mtimeMs) }),
+    (error: unknown) => {
+      if (isMissing(error)) return Option.none<{ readonly ns: bigint; readonly ms: number }>();
+      throw error;
+    },
+  );
+
 /**
  * The record of deleted accounts that outlives a restore. The database keeps its own record in
  * `deleted_account`, but a backup from before a deletion brings the account back without it,
@@ -199,19 +225,39 @@ export class DeletionLedger extends Context.Service<DeletionLedger, DeletionLedg
   static readonly layer = (
     backupDir: string,
     options: LedgerOptions = {},
-  ): Layer.Layer<DeletionLedger> => {
+  ): Layer.Layer<DeletionLedger> => Layer.effect(DeletionLedger, makeLedger(backupDir, options));
+
+  /** The ledger in BACKUP_DIR. */
+  static readonly fromConfig: Layer.Layer<DeletionLedger, never, ServerConfig> = Layer.unwrap(
+    Effect.map(Effect.service(ServerConfig), ({ backupDir, newDeletionLedger }) =>
+      DeletionLedger.layer(backupDir, { newLedgerOverAccounts: newDeletionLedger }),
+    ),
+  );
+}
+
+const makeLedger = (backupDir: string, options: LedgerOptions) =>
+  Effect.gen(function* () {
     const path = join(backupDir, LEDGER_DIR);
     const idFile = join(path, LEDGER_ID_FILE);
     const write = options.write ?? defaultWrite;
     const syncDirectory = options.syncDirectory ?? defaultSyncDirectory;
     const known = new Map<string, Array<LedgerEntry>>();
     const receipts = new Set<string>();
+    /** Every file under a final name already read. A final file never changes once in place. */
+    const readFiles = new Map<string, LedgerEntry>();
+    const found = yield* Queue.unbounded<string>();
     let loaded = false;
+    /** The directory's modification time at its last read, or undefined to read it again. */
+    let seen: bigint | undefined;
+
+    /** Keeps `entry` in memory. Gives back whether it was new there. */
     const remember = (entry: LedgerEntry) => {
       const entries = known.get(entry.account) ?? [];
-      if (!entries.some((each) => each.receipt === entry.receipt)) entries.push(entry);
+      const fresh = !entries.some((each) => each.receipt === entry.receipt);
+      if (fresh) entries.push(entry);
       known.set(entry.account, entries);
       if (entry.receipt !== null) receipts.add(entry.receipt);
+      return fresh;
     };
     const damaged = (problem: string) =>
       new LedgerError({
@@ -233,39 +279,77 @@ export class DeletionLedger extends Context.Service<DeletionLedger, DeletionLedg
       return Option.some(header.value.ledger);
     };
 
-    const read = Effect.tryPromise({
-      try: async () => {
-        const id = await readId();
-        const names = (await namesIn(path)).filter(
-          (name) => !isTemporary(name) && name !== LEDGER_ID_FILE,
-        );
-        if (Option.isNone(id)) {
-          if (names.length > 0) {
-            throw damaged(`It holds ${names.length} deletions but no ${LEDGER_ID_FILE}.`);
-          }
-          loaded = true;
-          return Option.none<Ledger>();
+    /**
+     * Reads every file under a final name that it has not read before, and remembers it. An
+     * account that another server deleted since the first read goes to `found`. The directory's
+     * time is read first, so a file that arrives during the read changes it again.
+     */
+    const scan = async (now: number) => {
+      const modified = await modifiedAt(path);
+      const id = await readId();
+      const names = (await namesIn(path)).filter(
+        (name) => !isTemporary(name) && name !== LEDGER_ID_FILE,
+      );
+      if (Option.isNone(id)) {
+        if (names.length > 0) {
+          throw damaged(`It holds ${names.length} deletions but no ${LEDGER_ID_FILE}.`);
         }
+      } else {
         const entries = await Promise.all(
-          names.toSorted().map(async (name) => {
-            const entry = decodeEntry(await readFile(join(path, name), "utf8"));
-            if (Option.isNone(entry) || entryFileName(entry.value) !== name) {
-              throw damaged(`${name} is damaged.`);
-            }
-            return entry.value;
-          }),
+          names
+            .filter((name) => !readFiles.has(name))
+            .toSorted()
+            .map(async (name) => {
+              const entry = decodeEntry(await readFile(join(path, name), "utf8"));
+              if (Option.isNone(entry) || entryFileName(entry.value) !== name) {
+                throw damaged(`${name} is damaged.`);
+              }
+              return [name, entry.value] as const;
+            }),
         );
-        entries.forEach(remember);
-        loaded = true;
-        return Option.some<Ledger>({
-          id: id.value,
-          entries: entries.toSorted((a, b) => a.at - b.at),
-        });
-      },
-      catch: failed("read"),
-    });
+        for (const [name, entry] of entries) {
+          readFiles.set(name, entry);
+          if (remember(entry) && loaded) Queue.offerUnsafe(found, entry.account);
+        }
+      }
+      loaded = true;
+      seen = Option.match(modified, {
+        onNone: () => undefined,
+        onSome: ({ ns, ms }) => (now - ms < COARSE_CLOCK_MS ? undefined : ns),
+      });
+      return id;
+    };
 
-    const load = Effect.suspend(() => (loaded ? Effect.void : Effect.asVoid(read)));
+    const read = Effect.flatMap(Clock.currentTimeMillis, (now) =>
+      Effect.tryPromise({
+        try: async () => {
+          const id = await scan(now);
+          if (Option.isNone(id)) return Option.none<Ledger>();
+          return Option.some<Ledger>({
+            id: id.value,
+            entries: [...readFiles.values()].toSorted((a, b) => a.at - b.at),
+          });
+        },
+        catch: failed("read"),
+      }),
+    );
+
+    /**
+     * Reads the directory again when it changed since the last read, which costs a stat when it
+     * did not. A directory that is gone keeps what memory holds.
+     */
+    const refresh = Effect.flatMap(Clock.currentTimeMillis, (now) =>
+      Effect.tryPromise({
+        try: async () => {
+          if (loaded && seen !== undefined) {
+            const modified = await modifiedAt(path);
+            if (Option.isNone(modified) || modified.value.ns === seen) return;
+          }
+          await scan(now);
+        },
+        catch: failed("read"),
+      }),
+    );
 
     const create = Effect.tryPromise({
       try: async () => {
@@ -300,24 +384,26 @@ export class DeletionLedger extends Context.Service<DeletionLedger, DeletionLedg
     const record = (id: string, entry: LedgerEntry) =>
       Effect.tryPromise({
         try: async () => {
-          const found = await readId();
-          if (Option.isNone(found)) {
+          const current = await readId();
+          if (Option.isNone(current)) {
             throw new LedgerError({
               message: `The deletion ledger ${path} is missing. Check that BACKUP_DIR is the backup volume and that it is mounted.`,
             });
           }
-          if (found.value !== id) {
+          if (current.value !== id) {
             throw new LedgerError({
-              message: `The database names deletion ledger ${id}, but ${path} is ledger ${found.value}. Check that BACKUP_DIR is this server's backup volume.`,
+              message: `The database names deletion ledger ${id}, but ${path} is ledger ${current.value}. Check that BACKUP_DIR is this server's backup volume.`,
             });
           }
+          const name = entryFileName(entry);
           const temporary = await writeTemporary(write, path, `${encodeEntry(entry)}\n`);
           try {
-            await rename(temporary, join(path, entryFileName(entry)));
+            await rename(temporary, join(path, name));
           } catch (error) {
             await rm(temporary, { force: true });
             throw error;
           }
+          readFiles.set(name, entry);
           remember(entry);
           await syncDirectory(path);
         },
@@ -356,33 +442,23 @@ export class DeletionLedger extends Context.Service<DeletionLedger, DeletionLedg
       ),
     );
 
-    return Layer.succeed(
-      DeletionLedger,
-      DeletionLedger.of({
-        path,
-        newLedgerOverAccounts: options.newLedgerOverAccounts ?? false,
-        read,
-        create,
-        record,
-        deletionsOf: (account) =>
-          Effect.andThen(
-            load,
-            Effect.sync(() => [...(known.get(account) ?? [])]),
-          ),
-        holdsReceipt: (hash) =>
-          Effect.andThen(
-            load,
-            Effect.sync(() => receipts.has(hash)),
-          ),
-        removeLeftovers,
-      }),
-    );
-  };
-
-  /** The ledger in BACKUP_DIR. */
-  static readonly fromConfig: Layer.Layer<DeletionLedger, never, ServerConfig> = Layer.unwrap(
-    Effect.map(Effect.service(ServerConfig), ({ backupDir, newDeletionLedger }) =>
-      DeletionLedger.layer(backupDir, { newLedgerOverAccounts: newDeletionLedger }),
-    ),
-  );
-}
+    return DeletionLedger.of({
+      path,
+      newLedgerOverAccounts: options.newLedgerOverAccounts ?? false,
+      read,
+      create,
+      record,
+      deletionsOf: (account) =>
+        Effect.andThen(
+          refresh,
+          Effect.sync(() => [...(known.get(account) ?? [])]),
+        ),
+      holdsReceipt: (hash) =>
+        Effect.andThen(
+          refresh,
+          Effect.sync(() => receipts.has(hash)),
+        ),
+      found: Effect.map(Queue.takeAll(found), (accounts) => [...new Set(accounts)]),
+      removeLeftovers,
+    });
+  });

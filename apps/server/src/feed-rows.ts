@@ -49,7 +49,7 @@ import {
   type ListAnchor,
 } from "./paging.ts";
 import { lockOther } from "./safety.ts";
-import { blockedWith, UsernameRequired } from "./social-rows.ts";
+import { hiddenBetween, hiddenFrom, UsernameRequired } from "./social-rows.ts";
 
 /** The post is not there, or the privacy rule does not let the account see it. */
 export class PostNotFound extends Data.TaggedError("PostNotFound")<{}> {}
@@ -246,15 +246,6 @@ export class FeedRows extends Context.Service<FeedRows, FeedRowsShape>()("svett/
           select state from follow where follower_id = ${viewer} and followee_id = ${owner}
         `.pipe(Effect.map(([row]) => row?.state ?? "none"));
 
-      const blockedOf = (viewer: AccountId, owner: string) =>
-        sql<{ readonly blocked: boolean }>`
-          select exists (
-            select 1 from block
-            where (blocker_id = ${viewer} and blocked_id = ${owner})
-              or (blocker_id = ${owner} and blocked_id = ${viewer})
-          ) as blocked
-        `.pipe(Effect.map(([row]) => row?.blocked === true));
-
       /** The sets or the route under one activity, each row checked against its schema. */
       const postRows = (owner: string, activityId: string) =>
         Effect.gen(function* () {
@@ -332,14 +323,14 @@ export class FeedRows extends Context.Service<FeedRows, FeedRowsShape>()("svett/
           select
             (select count(*)::int from activity_like l
               where l.owner_id = ${owner} and l.activity_id = ${activityId}
-                and not ${blockedWith(sql, viewer, "l.liker_id")}) as likes,
+                and not ${hiddenFrom(sql, viewer, "l.liker_id")}) as likes,
             exists (select 1 from activity_like
               where owner_id = ${owner} and activity_id = ${activityId}
                 and liker_id = ${viewer}) as liked,
             (select count(*)::int from activity_comment c
               join profile p on p.account_id = c.author_id
               where c.owner_id = ${owner} and c.activity_id = ${activityId}
-                and not ${blockedWith(sql, viewer, "c.author_id")}) as comments
+                and not ${hiddenFrom(sql, viewer, "c.author_id")}) as comments
         `.pipe(Effect.map(([row]) => row ?? { likes: 0, liked: false, comments: 0 }));
 
       /**
@@ -403,7 +394,7 @@ export class FeedRows extends Context.Service<FeedRows, FeedRowsShape>()("svett/
               : undefined;
           if (row === undefined || activity === undefined) return yield* new PostNotFound();
           const follow = row.owner === viewer ? "none" : yield* followOf(viewer, row.owner);
-          const blocked = row.owner !== viewer && (yield* blockedOf(viewer, row.owner));
+          const blocked = row.owner !== viewer && (yield* hiddenBetween(sql, viewer, row.owner));
           const post = yield* postFor(
             relation(viewer, row.owner, follow, blocked),
             row.username,
@@ -445,7 +436,7 @@ export class FeedRows extends Context.Service<FeedRows, FeedRowsShape>()("svett/
               and r.data->>'audience' in ${sql.in(SHARED_AUDIENCES)})
             or (f.follower_id is not null
               and r.data->>'audience' in ${sql.in(visibleAudiences(relation(viewer, "", "following")))}
-              and not ${blockedWith(sql, viewer, "s.account_id")}))
+              and not ${hiddenFrom(sql, viewer, "s.account_id")}))
       `;
 
       /**
@@ -509,8 +500,8 @@ export class FeedRows extends Context.Service<FeedRows, FeedRowsShape>()("svett/
           left join activity_social social on social.account_id = i.owner_id
             and social.activity_id = i.activity_id
           where (i.activity_id is null or (post.data is not null and owner.username is not null))
-            and not ${blockedWith(sql, viewer, "i.actor")}
-            and (i.owner_id is null or not ${blockedWith(sql, viewer, "i.owner_id")})
+            and not ${hiddenFrom(sql, viewer, "i.actor")}
+            and (i.owner_id is null or not ${hiddenFrom(sql, viewer, "i.owner_id")})
             ${options.before === undefined ? sql`` : sql`and (i.at, i.key) < (${options.before.at}, ${options.before.key})`}
             ${options.after === undefined ? sql`` : sql`and i.at > ${options.after}`}
           order by i.at desc, i.key desc
@@ -528,7 +519,7 @@ export class FeedRows extends Context.Service<FeedRows, FeedRowsShape>()("svett/
           select c.created_ms as at, c.id from activity_comment c
           where c.id = ${comment} and c.owner_id = ${post.owner}
             and c.activity_id = ${post.activityId}
-            and not ${blockedWith(sql, viewer, "c.author_id")}
+            and not ${hiddenFrom(sql, viewer, "c.author_id")}
         `.pipe(Effect.map(([row]) => row));
 
       /**
@@ -549,7 +540,7 @@ export class FeedRows extends Context.Service<FeedRows, FeedRowsShape>()("svett/
           select c.id, p.username, c.body, c.created_ms as at, c.author_id as "authorId"
           from activity_comment c join profile p on p.account_id = c.author_id
           where c.owner_id = ${post.owner} and c.activity_id = ${post.activityId}
-            and not ${blockedWith(sql, viewer, "c.author_id")}
+            and not ${hiddenFrom(sql, viewer, "c.author_id")}
             ${bound.from === undefined ? sql`` : sql`and ${commentOrder} >= (${bound.from.at}::bigint, ${bound.from.id} collate "C")`}
             ${bound.after === undefined ? sql`` : sql`and ${commentOrder} > (${bound.after.at}::bigint, ${bound.after.id} collate "C")`}
             ${bound.before === undefined ? sql`` : sql`and ${commentOrder} < (${bound.before.at}::bigint, ${bound.before.id} collate "C")`}
@@ -638,7 +629,7 @@ export class FeedRows extends Context.Service<FeedRows, FeedRowsShape>()("svett/
                 : yield* sql<{ readonly count: number }>`
                     select count(*)::int as count from activity_comment c
                     where c.owner_id = ${owner} and c.activity_id = ${activityId}
-                      and not ${blockedWith(sql, viewer, "c.author_id")}
+                      and not ${hiddenFrom(sql, viewer, "c.author_id")}
                       and ${commentOrder} < (${target.at}::bigint, ${target.id} collate "C")
                   `.pipe(Effect.map(([row]) => row?.count ?? 0));
             const from = target !== undefined && before >= COMMENT_PAGE ? target : undefined;

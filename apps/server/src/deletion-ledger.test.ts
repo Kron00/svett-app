@@ -97,6 +97,32 @@ describe("the deletion ledger", () => {
     );
   });
 
+  it("holds another server's entry once the directory changes, and offers its account to finish", async () => {
+    const dir = await newDir();
+    const id = await run(dir, (ledger) => ledger.create);
+    await run(dir, (ledger) => ledger.record(id, entry("user_before", 1)));
+    const ledgerOf = () =>
+      Effect.runPromise(
+        Effect.service(DeletionLedger).pipe(Effect.provide(DeletionLedger.layer(dir))),
+      );
+    const [ours, theirs] = [await ledgerOf(), await ledgerOf()];
+    const hash = "c".repeat(64);
+    // An old directory time is one the next check trusts, so it reads only the time.
+    const old = new Date(Date.now() - 60_000);
+    await utimes(join(dir, LEDGER_DIR), old, old);
+    await Effect.runPromise(ours.read);
+    expect(await Effect.runPromise(ours.deletionsOf("user_anna"))).toEqual([]);
+    expect(await Effect.runPromise(ours.holdsReceipt(hash))).toBe(false);
+
+    await Effect.runPromise(theirs.record(id, entry("user_anna", 2, hash)));
+
+    expect(await Effect.runPromise(ours.deletionsOf("user_anna"))).toEqual([
+      entry("user_anna", 2, hash),
+    ]);
+    expect(await Effect.runPromise(ours.holdsReceipt(hash))).toBe(true);
+    expect(await Effect.runPromise(ours.found)).toEqual(["user_anna"]);
+  });
+
   it("keeps every deletion when two processes record at once", { timeout: 60_000 }, async () => {
     const dir = await newDir();
     const id = await run(dir, (ledger) => ledger.create);

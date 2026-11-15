@@ -89,8 +89,10 @@ export interface SafetyShape {
   /**
    * Runs `effect` for `account` in one transaction that holds the account's lock shared, after
    * checking that the account was not deleted and taking a token of `group` when it names one.
-   * An account is deleted once the deletion ledger holds it, before the database commits, so a
-   * deletion whose commit failed still refuses the account while the server finishes it.
+   * An account is deleted once the deletion ledger holds it, before the database marks it, so
+   * a deletion whose mark failed still refuses the account while the server finishes it. The
+   * check reads the ledger's directory again when it changed, so it sees another server's
+   * entries too.
    * Deleting the account takes the same lock alone, so a request either finishes before the
    * deletion starts or sees the account gone, and nothing it writes outlives the deletion. A
    * write that names another account takes that account's lock too, through `lockOther`. The

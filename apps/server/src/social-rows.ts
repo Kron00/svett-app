@@ -177,15 +177,34 @@ const summary = (row: SummaryRow): ProfileSummary => ({
 const ownList = (relation: OwnedRelation) => relation.viewer === relation.owner;
 
 /**
- * True when `viewer` and the account in `column` block each other, either way round. The
+ * True when the account in `column` was deleted. A deletion marks the account first and
+ * deletes its rows after, so its rows can stay a while, and no read shows them meanwhile. The
  * caller names a column it trusts, never one a request supplies.
  */
-export const blockedWith = (sql: PgClient.PgClient, viewer: string, column: string) =>
-  sql`exists (
+export const deletedAccount = (sql: PgClient.PgClient, column: string) =>
+  sql`exists (select 1 from deleted_account d where d.id = ${sql.literal(column)})`;
+
+/**
+ * True when `viewer` must not see the account in `column`: the two block each other, either
+ * way round, or that account was deleted. Every read of another account's profile, follows,
+ * posts, likes, comments and inbox items leaves out an account this holds for. The caller
+ * names a column it trusts, never one a request supplies.
+ */
+export const hiddenFrom = (sql: PgClient.PgClient, viewer: string, column: string) =>
+  sql`(exists (
     select 1 from block b
     where (b.blocker_id = ${viewer} and b.blocked_id = ${sql.literal(column)})
       or (b.blocked_id = ${viewer} and b.blocker_id = ${sql.literal(column)})
-  )`;
+  ) or ${deletedAccount(sql, column)})`;
+
+/**
+ * Whether `viewer` must not see the account `other`, as `hiddenFrom` decides. The privacy rule
+ * takes it as its `blocked`, which hides everything.
+ */
+export const hiddenBetween = (sql: PgClient.PgClient, viewer: string, other: string) =>
+  sql<{ readonly hidden: boolean }>`
+    select ${hiddenFrom(sql, viewer, "o.id")} as hidden from (select ${other}::text as id) o
+  `.pipe(Effect.map(([row]) => row?.hidden === true));
 
 export class SocialRows extends Context.Service<SocialRows, SocialRowsShape>()(
   "svett/server/SocialRows",
@@ -205,7 +224,7 @@ export class SocialRows extends Context.Service<SocialRows, SocialRowsShape>()(
         sql<Account>`
           select account_id as id, username, private from profile
           where username_key = ${usernameKey(username)}
-          ${options.viewer === undefined ? sql`` : sql`and not ${blockedWith(sql, options.viewer, "profile.account_id")}`}
+          ${options.viewer === undefined ? sql`` : sql`and not ${hiddenFrom(sql, options.viewer, "profile.account_id")}`}
           ${options.lock === true ? sql`for update` : sql``}
         `.pipe(
           Effect.flatMap(([account]) =>
@@ -224,18 +243,9 @@ export class SocialRows extends Context.Service<SocialRows, SocialRowsShape>()(
           select state from follow where follower_id = ${follower} and followee_id = ${followee}
         `.pipe(Effect.map(([row]) => row?.state ?? "none"));
 
-      const isBlocked = (viewer: AccountId, other: AccountId) =>
-        sql<{ readonly blocked: boolean }>`
-          select exists (
-            select 1 from block
-            where (blocker_id = ${viewer} and blocked_id = ${other})
-              or (blocker_id = ${other} and blocked_id = ${viewer})
-          ) as blocked
-        `.pipe(Effect.map(([row]) => row?.blocked === true));
-
       const relationTo = (viewer: AccountId, owner: AccountId) =>
         Effect.map(
-          Effect.all([followState(viewer, owner), isBlocked(viewer, owner)]),
+          Effect.all([followState(viewer, owner), hiddenBetween(sql, viewer, owner)]),
           ([follow, blocked]): OwnedRelation => ({ viewer, owner, follow, blocked }),
         );
 
@@ -248,13 +258,13 @@ export class SocialRows extends Context.Service<SocialRows, SocialRowsShape>()(
           select
             (select count(*)::int from follow f join profile p on p.account_id = f.follower_id
               where f.followee_id = ${owner} and f.state = 'following'
-                and not ${blockedWith(sql, viewer, "p.account_id")}) as followers,
+                and not ${hiddenFrom(sql, viewer, "p.account_id")}) as followers,
             (select count(*)::int from follow f join profile p on p.account_id = f.followee_id
               where f.follower_id = ${owner} and f.state = 'following'
-                and not ${blockedWith(sql, viewer, "p.account_id")}) as following,
+                and not ${hiddenFrom(sql, viewer, "p.account_id")}) as following,
             (select count(*)::int from follow f join profile p on p.account_id = f.follower_id
               where f.followee_id = ${owner} and f.state = 'requested'
-                and not ${blockedWith(sql, owner, "p.account_id")}) as requests
+                and not ${hiddenFrom(sql, owner, "p.account_id")}) as requests
         `.pipe(Effect.map(([row]) => row ?? { followers: 0, following: 0, requests: 0 }));
 
       const ownProfile = (account: AccountId) =>
@@ -286,7 +296,7 @@ export class SocialRows extends Context.Service<SocialRows, SocialRowsShape>()(
           left join follow mine on mine.follower_id = ${viewer} and mine.followee_id = p.account_id
           where ${where === "followers" ? sql`f.followee_id` : sql`f.follower_id`} = ${owner}
             and f.state = 'following'
-            and not ${blockedWith(sql, viewer, "p.account_id")}
+            and not ${hiddenFrom(sql, viewer, "p.account_id")}
             ${after === undefined ? sql`` : sql`and p.username_key collate "C" > ${after}`}
           order by p.username_key collate "C"
           limit ${PAGE + 1}
@@ -424,7 +434,7 @@ export class SocialRows extends Context.Service<SocialRows, SocialRowsShape>()(
             from profile p
             left join follow f on f.follower_id = ${viewer} and f.followee_id = p.account_id
             where p.username_key like ${likePrefix(prefix)}
-              and not ${blockedWith(sql, viewer, "p.account_id")}
+              and not ${hiddenFrom(sql, viewer, "p.account_id")}
             order by p.username_key collate "C"
             limit ${PAGE}
           `.pipe(Effect.map((rows) => rows.map(summary))),
@@ -510,7 +520,7 @@ export class SocialRows extends Context.Service<SocialRows, SocialRowsShape>()(
             join profile p on p.account_id = f.follower_id
             left join follow mine on mine.follower_id = ${owner} and mine.followee_id = p.account_id
             where f.followee_id = ${owner} and f.state = 'requested'
-              and not ${blockedWith(sql, owner, "f.follower_id")}
+              and not ${hiddenFrom(sql, owner, "f.follower_id")}
             order by f.created_at, f.id
             limit ${PAGE}
           `.pipe(Effect.map((rows) => rows.map((row) => ({ id: row.id, ...summary(row) })))),
@@ -572,7 +582,7 @@ export class SocialRows extends Context.Service<SocialRows, SocialRowsShape>()(
           sql<{ readonly id: string; readonly username: string }>`
             select b.id, p.username from block b
             join profile p on p.account_id = b.blocked_id
-            where b.blocker_id = ${viewer}
+            where b.blocker_id = ${viewer} and not ${deletedAccount(sql, "b.blocked_id")}
             order by b.created_at desc, b.id
             limit ${PAGE}
           `.pipe(Effect.map((rows) => rows.map((row) => ({ id: row.id, username: row.username })))),

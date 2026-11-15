@@ -14,7 +14,10 @@ export interface Relation {
   readonly owner: string;
   /** Where the viewer's follow of the owner stands. */
   readonly follow: FollowState;
-  /** Either account blocks the other. A block works both ways. */
+  /**
+   * Either account blocks the other, or the owner's account was deleted and its rows are not
+   * all gone yet. A block works both ways.
+   */
   readonly blocked: boolean;
 }
 
