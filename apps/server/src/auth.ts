@@ -16,8 +16,15 @@ export class SignInUnavailable extends Data.TaggedError("SignInUnavailable")<{
 export interface SessionsShape {
   /** Fails when the server has no Clerk setup, so no session can be checked at all. */
   readonly available: Effect.Effect<void, SignInUnavailable>;
-  /** The account a Clerk session token belongs to, once its signature and claims check out. */
-  readonly verify: (token: string) => Effect.Effect<AccountId, Unauthorized | SignInUnavailable>;
+  /**
+   * The account a Clerk session token belongs to, once its signature and claims check out.
+   * `alsoTrusted` adds origins the token's `azp` may name, such as the server's own for a page
+   * it serves.
+   */
+  readonly verify: (
+    token: string,
+    alsoTrusted?: ReadonlyArray<string>,
+  ) => Effect.Effect<AccountId, Unauthorized | SignInUnavailable>;
 }
 
 const decodeAccountId = Schema.decodeUnknownEffect(AccountId);
@@ -39,7 +46,7 @@ export class Sessions extends Context.Service<Sessions, SessionsShape>()("svett/
       const keys = createRemoteJWKSet(new URL(jwksUrl));
       return Sessions.of({
         available: Effect.void,
-        verify: (token) =>
+        verify: (token, alsoTrusted = []) =>
           Effect.tryPromise({
             try: () =>
               jwtVerify(token, keys, {
@@ -59,7 +66,11 @@ export class Sessions extends Context.Service<Sessions, SessionsShape>()("svett/
               if (payload["sts"] === "pending") {
                 return Effect.fail(new Unauthorized({ reason: "The session is still pending." }));
               }
-              const refused = refusedParty(payload, authorizedParties, audience);
+              const refused = refusedParty(
+                payload,
+                [...authorizedParties, ...alsoTrusted],
+                audience,
+              );
               if (refused !== undefined) return Effect.fail(new Unauthorized({ reason: refused }));
               return decodeAccountId(payload.sub).pipe(
                 Effect.mapError(

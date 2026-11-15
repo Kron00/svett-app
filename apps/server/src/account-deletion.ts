@@ -27,6 +27,10 @@ export const ACCOUNT_TABLES: Readonly<Record<string, ReadonlyArray<string>>> = {
   activity_comment: ["owner_id", "author_id"],
   inbox_read: ["account_id"],
   rate_limit: ["account_id"],
+  oauth_code: ["account_id"],
+  assistant_connection: ["account_id"],
+  assistant_access: ["account_id"],
+  assistant_proposal: ["account_id"],
 };
 
 /** The tables a deletion leaves, and why. */
@@ -36,6 +40,8 @@ export const KEPT_TABLES: Readonly<Record<string, string>> = {
   deletion_receipt: "It keeps the hash of a deletion's receipt alone, and names no account.",
   deletion_ledger: "It keeps the deletion ledger's ID alone, and names no account.",
   effect_sql_migrations: "The migrator's record of the schema. It names no account.",
+  oauth_client:
+    "It keeps an app's name and where it sends people back after sign-in, and names no account.",
 };
 
 /** The hash the server keeps of a receipt the phone sent with a deletion. */

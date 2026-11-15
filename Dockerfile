@@ -11,9 +11,11 @@ WORKDIR /app
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY apps/server/package.json apps/server/
 COPY packages/core/package.json packages/core/
+COPY packages/tools/package.json packages/tools/
 RUN pnpm install --frozen-lockfile --prod --filter "@svett/server..."
 
 COPY packages/core/src packages/core/src
+COPY packages/tools/src packages/tools/src
 COPY apps/server/src apps/server/src
 
 RUN mkdir /backups && chown node:node /backups

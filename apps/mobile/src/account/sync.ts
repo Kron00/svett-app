@@ -1,6 +1,8 @@
 import {
   type AccountId,
+  httpSocialApi,
   httpSyncApi,
+  receiveAssistantProposals,
   SyncFailed,
   syncOnce,
   SyncRepository,
@@ -45,6 +47,7 @@ export const useSyncStatus = () =>
 
 type Token = () => Promise<string | null>;
 let running: Promise<void> | undefined;
+let last: { readonly accountId: AccountId; readonly token: Token } | undefined;
 
 /**
  * Syncs the open database with the server, as `accountId`. It runs only when the open file is
@@ -52,6 +55,7 @@ let running: Promise<void> | undefined;
  * takes its turn after any import, undo or move. A sync already running is joined.
  */
 export const syncNow = (accountId: AccountId, token: Token): Promise<void> => {
+  last = { accountId, token };
   running ??= transferInTurn(async () => {
     const open = currentDatabase();
     const owner = { kind: "account", accountId } as const;
@@ -68,8 +72,15 @@ export const syncNow = (accountId: AccountId, token: Token): Promise<void> => {
     );
     if (Exit.isSuccess(exit)) {
       show({ kind: "synced", queued, held: exit.value.held });
+      // Proposals a connected app made come with each sync. One that fails comes next time.
+      const taken = await runtime.runPromiseExit(
+        receiveAssistantProposals(
+          httpSocialApi({ server: svettServer(), token, fetch }).assistantProposals,
+        ),
+      );
+      const proposed = Exit.isSuccess(taken) && taken.value > 0;
       // Only a sync that changed the open file makes screens read it again.
-      if (exit.value.pulled > 0 && stillOpen(open)) dataChanged();
+      if ((exit.value.pulled > 0 || proposed) && stillOpen(open)) dataChanged();
       return;
     }
     const error = Option.getOrUndefined(Cause.findErrorOption(exit.cause));
@@ -84,5 +95,15 @@ export const syncNow = (accountId: AccountId, token: Token): Promise<void> => {
   return running;
 };
 
+/**
+ * Syncs again as the account the last sync ran for, such as when the coach opens, so the
+ * proposals a connected app made arrive. Nothing happens before the first sync.
+ */
+export const syncAgain = (): Promise<void> =>
+  last === undefined ? Promise.resolve() : syncNow(last.accountId, last.token);
+
 /** Forgets the last account's sync status, as signing out does. */
-export const resetSyncStatus = () => show({ kind: "waiting" });
+export const resetSyncStatus = () => {
+  last = undefined;
+  show({ kind: "waiting" });
+};

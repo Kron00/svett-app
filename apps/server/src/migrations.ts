@@ -213,4 +213,70 @@ export const MIGRATIONS: Record<string, Effect.Effect<void, unknown, SqlClient>>
     // or a restore can tell a lost or wrongly mounted ledger from a server that never had one.
     yield* sql`create table deletion_ledger (id text primary key)`;
   }),
+  // Apps the person connects, such as ChatGPT, sign in with the server's own OAuth. A client
+  // names no account. A code, a connection and its tokens do, and only hashes of the codes and
+  // tokens are kept. A connection holds one access token and one refresh token at a time, so
+  // deleting the row cuts the app off at once. The access log records each tool call, and the
+  // proposals an app made wait here until the phone takes them.
+  "7_assistant": Effect.gen(function* () {
+    const sql = yield* SqlClient;
+    yield* sql`
+      create table oauth_client (
+        id text primary key,
+        name text not null,
+        redirect_uris jsonb not null,
+        created_ms bigint not null
+      )
+    `;
+    yield* sql`
+      create table oauth_code (
+        code_hash text primary key,
+        client_id text not null,
+        account_id text not null,
+        redirect_uri text not null,
+        code_challenge text not null,
+        scopes text not null,
+        expires_ms bigint not null
+      )
+    `;
+    yield* sql`create index oauth_code_account on oauth_code (account_id)`;
+    yield* sql`
+      create table assistant_connection (
+        id text primary key,
+        account_id text not null,
+        client_id text not null,
+        name text not null,
+        host text not null,
+        scopes text not null,
+        created_ms bigint not null,
+        last_read_ms bigint,
+        access_hash text not null unique,
+        access_expires_ms bigint not null,
+        refresh_hash text not null unique,
+        refresh_expires_ms bigint not null
+      )
+    `;
+    yield* sql`create index assistant_connection_account on assistant_connection (account_id)`;
+    yield* sql`
+      create table assistant_access (
+        id text primary key,
+        account_id text not null,
+        connection_id text not null,
+        tool text not null,
+        at_ms bigint not null
+      )
+    `;
+    yield* sql`create index assistant_access_account on assistant_access (account_id, at_ms)`;
+    yield* sql`
+      create table assistant_proposal (
+        id text primary key,
+        account_id text not null,
+        connection_id text not null,
+        source_name text not null,
+        plan jsonb not null,
+        created_ms bigint not null
+      )
+    `;
+    yield* sql`create index assistant_proposal_account on assistant_proposal (account_id, created_ms)`;
+  }),
 };

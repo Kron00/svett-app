@@ -111,7 +111,13 @@ export const connectionAccess = (scopes: ReadonlyArray<AssistantScope>): string 
 
 /** When a connection last read the account's data, with `formatTime` for the time. */
 export const lastReadLine = (lastReadAt: number | null, formatTime: (millis: number) => string) =>
-  lastReadAt === null ? "Has not read your data yet" : `Last read your data ${formatTime(lastReadAt)}`;
+  lastReadAt === null
+    ? "Has not read your data yet"
+    : `Last read your data on ${formatTime(lastReadAt)}`;
+
+/** When the person connected the app, with `formatDay` for the day. */
+export const connectedLine = (createdAt: number, formatDay: (millis: number) => string) =>
+  `Connected on ${formatDay(createdAt)}`;
 
 /** A routine or program a connected assistant proposed, waiting for the phone to take it. */
 export const AssistantProposal = Schema.Struct({

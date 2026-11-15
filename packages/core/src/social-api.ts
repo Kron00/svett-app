@@ -1,5 +1,10 @@
 import { Data, Effect, Option, Schema } from "effect";
 
+import {
+  type AssistantProposalSource,
+  AssistantProposalList,
+  ConnectionList,
+} from "./assistant.ts";
 import type { AccountId } from "./database.ts";
 import { CommentPage, FeedPage, InboxPage, Likes, PostComment, PostThread } from "./feed.ts";
 import { ActivityView, FollowState, type SocialActivityId } from "./privacy.ts";
@@ -114,6 +119,8 @@ export const DeletionAnswer = Schema.Struct({ deleted: Schema.Boolean });
 export type DeletionAnswer = typeof DeletionAnswer.Type;
 
 const Done = Schema.Struct({});
+const Revoked = Schema.Struct({ revoked: Schema.Boolean });
+const ProposalsReceived = Schema.Struct({ received: Schema.Int });
 
 /** The error codes the server answers social requests with, beside sign-in's. */
 const SERVER_PROBLEMS = [
@@ -132,6 +139,7 @@ const SERVER_PROBLEMS = [
   "account_deleted",
   "session_end_failed",
   "wrong_account",
+  "connection_not_found",
 ] as const;
 
 export type SocialProblem =
@@ -184,6 +192,8 @@ export const socialProblemMessage = (failed: SocialFailed): string => {
       return "Your data is gone from svett, but signing you out everywhere did not finish. Try again.";
     case "wrong_account":
       return "This phone is signed in to another account now.";
+    case "connection_not_found":
+      return "That app was already disconnected.";
     case "server":
       return "The svett server had a problem. Try again soon.";
   }
@@ -379,6 +389,17 @@ export const httpSocialApi = (options: HttpSocialOptions) => {
     /** Whether the server deleted an account with this receipt. It needs no session. */
     deletionHappened: (receipt: string) =>
       call(DeletionAnswer, "GET", `/v1/deletions/${encodeURIComponent(receipt)}`, undefined, false),
+    /** The apps connected to the account, such as ChatGPT, for Connected apps. */
+    connections: () => call(ConnectionList, "GET", "/v1/connections"),
+    /** Cuts a connected app off. Its next request to svett is refused. */
+    revokeConnection: (connection: string) =>
+      call(Revoked, "DELETE", `/v1/connections/${encodeURIComponent(connection)}`),
+    /** Where the phone takes the proposals connected apps made. */
+    assistantProposals: {
+      waiting: call(AssistantProposalList, "GET", "/v1/assistant-proposals"),
+      received: (ids: ReadonlyArray<string>) =>
+        call(ProposalsReceived, "POST", "/v1/assistant-proposals/received", { ids }),
+    } satisfies AssistantProposalSource<SocialFailed>,
   };
 };
 

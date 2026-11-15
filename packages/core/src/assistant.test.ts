@@ -6,6 +6,7 @@ import {
   assistantProposalId,
   base64url,
   clientLabel,
+  connectedLine,
   connectionAccess,
   lastReadLine,
   pkceChallenge,
@@ -99,7 +100,8 @@ describe("scopes", () => {
 
   it("says when a connection last read, or that it has not yet", () => {
     expect(lastReadLine(null, () => "never")).toBe("Has not read your data yet");
-    expect(lastReadLine(5, (at) => `at ${at}`)).toBe("Last read your data at 5");
+    expect(lastReadLine(5, (at) => `day ${at}`)).toBe("Last read your data on day 5");
+    expect(connectedLine(7, (at) => `day ${at}`)).toBe("Connected on day 7");
   });
 
   it("cuts a long client name and names a client that gave none", () => {

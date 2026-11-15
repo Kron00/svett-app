@@ -7,6 +7,10 @@ import { HttpRouter } from "effect/http";
 import { AccountDeletion, readyToServe } from "./account-deletion.ts";
 import { AccountRoutes, DeletionRoutes } from "./account-routes.ts";
 import { AccountRows } from "./account-rows.ts";
+import { AssistantConfig } from "./assistant-config.ts";
+import { AssistantOAuthRoutes } from "./assistant-oauth.ts";
+import { AssistantRoutes } from "./assistant-routes.ts";
+import { AssistantRows } from "./assistant-rows.ts";
 import { Sessions } from "./auth.ts";
 import { Backups, NightlyBackups } from "./backups.ts";
 import { ClerkConfig } from "./clerk-config.ts";
@@ -16,6 +20,7 @@ import { Database } from "./database.ts";
 import { DeletionLedger } from "./deletion-ledger.ts";
 import { FeedRoutes } from "./feed-routes.ts";
 import { FeedRows } from "./feed-rows.ts";
+import { McpRoutes } from "./mcp.ts";
 import { Routes } from "./http.ts";
 import { PgTools } from "./pg-tools.ts";
 import { Safety } from "./safety.ts";
@@ -38,6 +43,7 @@ const Services = Layer.mergeAll(
   AccountRows.layer,
   SocialRows.layer,
   FeedRows.layer,
+  AssistantRows.layer,
   Sessions.layer,
   AccountDeletion.layer,
 ).pipe(
@@ -48,11 +54,23 @@ const Services = Layer.mergeAll(
   Layer.provide(PgTools.layer()),
   // Without a valid Clerk setup the server still starts, with sign-in off.
   Layer.provideMerge(ClerkConfig.fromEnv),
+  Layer.provideMerge(AssistantConfig.fromEnv),
   Layer.provideMerge(ServerConfig.fromEnv),
 );
 
 const App = Layer.mergeAll(
-  HttpRouter.serve(Layer.mergeAll(Routes, AccountRoutes, DeletionRoutes, SocialRoutes, FeedRoutes)),
+  HttpRouter.serve(
+    Layer.mergeAll(
+      Routes,
+      AccountRoutes,
+      DeletionRoutes,
+      SocialRoutes,
+      FeedRoutes,
+      AssistantRoutes,
+      AssistantOAuthRoutes,
+      McpRoutes,
+    ),
+  ),
   NightlyBackups,
 ).pipe(Layer.provide(Prepared), Layer.provide(HttpServer), Layer.provide(Services));
 
