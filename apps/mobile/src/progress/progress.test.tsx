@@ -6,6 +6,8 @@ import {
   EpochMillis,
   libraryExerciseId,
   MADE_HERE,
+  monthKey,
+  monthOf,
   RoutineRepository,
   type SetDraft,
 } from "@svett/core";
@@ -19,6 +21,7 @@ import { writeTo } from "../data/store";
 import type { RootStackParamList } from "../navigation";
 import { changeWorkoutSettings } from "../settings/store";
 import { CalendarScreen } from "./CalendarScreen";
+import { PHONE_OFFSET } from "./dates";
 import { ProgressScreen } from "./ProgressScreen";
 import { SetEditScreen } from "./SetEditScreen";
 import { WorkoutScreen } from "./WorkoutScreen";
@@ -385,7 +388,6 @@ describe("history", () => {
     const detail = await render(<WorkoutScreen {...screenProps("Workout", { id: newest })} />);
     await showsTestId(detail, "workout-delete");
     await press(byTestId(detail, "workout-delete"));
-    expect(navigation.navigate).toHaveBeenCalledWith("Tabs", { screen: "Progress" });
     // The screen keeps showing the workout while it slides away.
     expect(lines(detail)).toContain("105 kg × 5");
     // The counts and the list are separate reads that finish in either order, so wait for each.
@@ -395,6 +397,8 @@ describe("history", () => {
     expect(() => byTestId(history, `workout-${newest}`)).toThrow();
     await showsTestId(history, "undo-delete-banner");
     expect(textOf(byTestId(history, "undo-delete-banner"))).toContain("Deleted Heavy legs.");
+    // Deleting goes back to Progress once the delete has saved, by the time the banner shows.
+    expect(navigation.navigate).toHaveBeenCalledWith("Tabs", { screen: "Progress" });
 
     await press(byTestId(history, "undo-delete"));
     await showsLine(history, "2 workouts, 5 sets");
@@ -453,7 +457,9 @@ describe("the calendar", () => {
 
   it("lists the month's workouts instead of a grid at accessibility text sizes", async () => {
     screen.fontScale = 3.1;
-    const tree = await calendar();
+    // Legs is 9 days old, so on the 1st to the 9th it falls in the month before.
+    const month = monthKey(monthOf(Date.now() - 9 * DAY, PHONE_OFFSET));
+    const tree = await render(<CalendarScreen {...screenProps("Calendar", { month })} />);
     await showsLine(tree, "Legs");
     expect(lines(tree)).not.toContain("M");
     const rows = tree.root.findAll(
