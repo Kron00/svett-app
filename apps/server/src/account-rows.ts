@@ -233,7 +233,7 @@ export class AccountRows extends Context.Service<AccountRows, AccountRowsShape>(
                           deleted_at as "deletedAt", change_id as "changeId", restored
                         from account_row
                         where account_id = ${account} and table_name = ${child.table}
-                          and data ->> ${child.key}::text = ${id}
+                          and data ->> ${sql.literal(`'${child.key}'`)} = ${id}
                         order by row_id
                       `,
                       (found) =>
