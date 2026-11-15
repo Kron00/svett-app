@@ -1,4 +1,5 @@
 import {
+  accessLabel,
   type AssistantConnection,
   connectedLine,
   connectionAccess,
@@ -66,6 +67,26 @@ function Connection({
       <AppText variant="footnote" tone="secondary">
         {connectedLine(connection.createdAt, formatDay)}
       </AppText>
+      {connection.recentAccess.length === 0 ? null : (
+        <View className="gap-2" testID={`connection-${id}-recent`}>
+          <AppText
+            variant="subheadline"
+            tone="secondary"
+            accessibilityRole="header"
+            testID={`connection-${id}-recent-title`}
+          >
+            Recent access
+          </AppText>
+          {connection.recentAccess.map((entry, index) => (
+            <View key={entry.id} accessible testID={`connection-${id}-recent-${index}`}>
+              <AppText>{accessLabel(entry.tool)}</AppText>
+              <AppText variant="footnote" tone="secondary">
+                {formatDayAndTime(entry.at)}
+              </AppText>
+            </View>
+          ))}
+        </View>
+      )}
       <Button
         label={busy ? "Revoking" : "Revoke"}
         variant="destructive"
@@ -113,7 +134,7 @@ function Connections({ api }: { readonly api: ConnectionsApi }) {
 
 /**
  * The apps connected to the svett account, such as ChatGPT: what each may do, when it last read
- * your data, and Revoke. Below them, the proposals they made that wait for Apply.
+ * your data, its latest tool calls from the access log, and Revoke. Below them, the proposals they made that wait for Apply.
  */
 export function ConnectedAppsScreen() {
   const standIn = connectionsStandIn();

@@ -5150,7 +5150,8 @@ check "safety.sh says to build with the publishable key" \
 # $FAKE_STATE. The You tab's Connected apps row and every part of the connection
 # start below the fold, so only a scroll finds them. Revoke sits at the bottom edge
 # until a drag moves it up. FAKE_NO_STUB launches without the stand-in, and
-# FAKE_REVOKE_IGNORED makes Revoke access do nothing. alert accept is refused, as
+# FAKE_REVOKE_IGNORED makes Revoke access do nothing, and FAKE_NO_RECENT
+# leaves the access log out. alert accept is refused, as
 # agent-device refuses it for svett's own alert.
 cat >"$fake/apps-device" <<'EOF'
 #!/usr/bin/env bash
@@ -5175,6 +5176,9 @@ elements() {
         printf '%s\n' 'id="connection-stand-in-chatgpt"' \
           'id="connection-stand-in-chatgpt-access"' 'id="connection-stand-in-chatgpt-read"' \
           'id="revoke-stand-in-chatgpt"'
+        [[ -n "${FAKE_NO_RECENT:-}" ]] ||
+          printf '%s\n' 'id="connection-stand-in-chatgpt-recent-title"' \
+            'id="connection-stand-in-chatgpt-recent-0"'
       fi ;;
   esac
   if has alert; then echo 'label="Revoke access"'; fi
@@ -5209,6 +5213,8 @@ case "$args" in
     case $target in
       *-access*) echo "${FAKE_ACCESS:-Read your training and propose routines and programs}" ;;
       *-read*) echo "Last read your data on Fri, 13 Nov 2026, 18:05" ;;
+      *-recent-title*) echo "Recent access" ;;
+      *-recent-0*) echo "Listed workouts, Fri, 13 Nov 2026, 18:05" ;;
     esac ;;
   *" get attrs "*)
     target=$(selector)
@@ -5263,6 +5269,8 @@ check "connected-apps.sh scrolls to the You tab's row and to every part of the c
   'scroll down --until id="connection-stand-in-chatgpt"' \
   'scroll down --until id="connection-stand-in-chatgpt-access"' \
   'scroll down --until id="connection-stand-in-chatgpt-read"' \
+  'scroll down --until id="connection-stand-in-chatgpt-recent-title"' \
+  'scroll down --until id="connection-stand-in-chatgpt-recent-0"' \
   'scroll down --until id="revoke-stand-in-chatgpt"' \
   'scroll down --until id="connected-apps-empty"' \
   'scroll down --until id="connection-stand-in-chatgpt"' \
@@ -5297,6 +5305,12 @@ run_apps FAKE_ACCESS="Read your training" "$root/connected-apps-access"
 check "connected-apps.sh fails when the connection's access is wrong" test "$apps_status" -ne 0
 check "connected-apps.sh shows what the connection said" \
   grep -qF 'but it shows "Read your training"' "$output"
+
+case_name="connected-apps.sh when the connection shows no recent access"
+run_apps FAKE_NO_RECENT=1 "$root/connected-apps-no-recent"
+check "connected-apps.sh fails when Recent access never shows" test "$apps_status" -ne 0
+check "connected-apps.sh says Recent access is missing" \
+  grep -qxF 'id="connection-stand-in-chatgpt-recent-title" did not show.' "$output"
 
 case_name="connected-apps.sh when Revoke access does nothing"
 run_apps FAKE_REVOKE_IGNORED=1 "$root/connected-apps-ignored"

@@ -10,7 +10,10 @@ class ConnectionNotFound extends Data.TaggedError("ConnectionNotFound")<{}> {}
 const ConnectionPath = Schema.Struct({ connection: Schema.String });
 const Received = Schema.Struct({ ids: Schema.Array(Schema.String).check(Schema.isMaxLength(100)) });
 
-/** The apps connected to the signed-in account, what each may do and when it last read. */
+/**
+ * The apps connected to the signed-in account, what each may do, when it last read and its
+ * latest entries in the access log.
+ */
 const connections = route((account) =>
   Effect.gen(function* () {
     return { connections: yield* (yield* AssistantRows).connections(account) };

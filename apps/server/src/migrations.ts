@@ -259,6 +259,17 @@ export const MIGRATIONS: Record<string, Effect.Effect<void, unknown, SqlClient>>
       )
     `;
     yield* sql`create index assistant_connection_account on assistant_connection (account_id)`;
+    // Every refresh token a connection has spent, so one that comes back shows a stolen copy.
+    yield* sql`
+      create table assistant_refresh_used (
+        refresh_hash text primary key,
+        connection_id text not null,
+        account_id text not null,
+        used_ms bigint not null
+      )
+    `;
+    yield* sql`create index assistant_refresh_used_connection on assistant_refresh_used (connection_id)`;
+    yield* sql`create index assistant_refresh_used_account on assistant_refresh_used (account_id)`;
     yield* sql`
       create table assistant_access (
         id text primary key,

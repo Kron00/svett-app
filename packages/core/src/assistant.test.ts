@@ -2,6 +2,7 @@ import { Effect } from "effect";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  accessLabel,
   type AssistantProposalList,
   assistantProposalId,
   base64url,
@@ -102,6 +103,14 @@ describe("scopes", () => {
     expect(lastReadLine(null, () => "never")).toBe("Has not read your data yet");
     expect(lastReadLine(5, (at) => `day ${at}`)).toBe("Last read your data on day 5");
     expect(connectedLine(7, (at) => `day ${at}`)).toBe("Connected on day 7");
+  });
+
+  it("says in words what each tool call in the access log did", () => {
+    expect(accessLabel("list_workouts")).toBe("Listed workouts");
+    expect(accessLabel("propose_routine")).toBe("Proposed a routine");
+    expect(accessLabel("get_workout")).toBe("Read a workout");
+    expect(accessLabel("new_tool_name")).toBe("New tool name");
+    expect(accessLabel("__")).toBe("Used a tool");
   });
 
   it("cuts a long client name and names a client that gave none", () => {

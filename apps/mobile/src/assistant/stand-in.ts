@@ -13,7 +13,7 @@ export interface ConnectionsApi {
 /**
  * A stand-in for the server's connections, for scripts/sim/connected-apps.sh, which launches
  * svett with `-svettConnectionsStub one`. It holds one ChatGPT connection that may read and
- * propose, until Revoke removes it. It lasts until svett quits.
+ * propose, with one read in its access log, until Revoke removes it. It lasts until svett quits.
  */
 const standIn = (): ConnectionsApi => {
   let connections: ConnectionList["connections"] = [
@@ -24,6 +24,9 @@ const standIn = (): ConnectionsApi => {
       scopes: ["svett.read", "svett.propose"],
       createdAt: Date.UTC(2026, 10, 1, 9),
       lastReadAt: Date.UTC(2026, 10, 13, 18, 5),
+      recentAccess: [
+        { id: "stand-in-read", tool: "list_workouts", at: Date.UTC(2026, 10, 13, 18, 5) },
+      ],
     },
   ];
   return {

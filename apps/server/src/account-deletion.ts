@@ -29,6 +29,7 @@ export const ACCOUNT_TABLES: Readonly<Record<string, ReadonlyArray<string>>> = {
   rate_limit: ["account_id"],
   oauth_code: ["account_id"],
   assistant_connection: ["account_id"],
+  assistant_refresh_used: ["account_id"],
   assistant_access: ["account_id"],
   assistant_proposal: ["account_id"],
 };

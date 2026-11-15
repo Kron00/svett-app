@@ -136,16 +136,27 @@ const CHATGPT = {
   scopes: ["svett.read"],
   createdAt: 100,
   lastReadAt: 200,
+  recentAccess: [
+    { id: "a2", tool: "list_workouts", at: 200 },
+    { id: "a1", tool: "search_exercises", at: 150 },
+  ],
 };
 
 describe("Connected apps", () => {
-  it("lists each connection with what it may do and when it last read", async () => {
+  it("lists each connection with what it may do, when it last read and its recent access", async () => {
     answer(
       "GET /v1/connections",
       ok({
         connections: [
           CHATGPT,
-          { ...CHATGPT, id: "c2", name: "Other", scopes: ["svett.propose"], lastReadAt: null },
+          {
+            ...CHATGPT,
+            id: "c2",
+            name: "Other",
+            scopes: ["svett.propose"],
+            lastReadAt: null,
+            recentAccess: [],
+          },
         ],
       }),
     );
@@ -157,9 +168,15 @@ describe("Connected apps", () => {
         "Read your training",
         "Last read your data on time 200",
         "Connected on day 100",
+        "Recent access",
+        "Listed workouts",
+        "time 200",
+        "Searched exercises",
+        "time 150",
         "Revoke",
       ].join("\n"),
     );
+    expect(has(root, "connection-c2-recent")).toBe(false);
     expect(texts(find(root, "connection-c2-read"))).toBe("Has not read your data yet");
     expect(texts(find(root, "connection-c2-access"))).toBe("Propose routines and programs");
     expect(find(root, "revoke-c1").props.accessibilityLabel).toBe("Revoke ChatGPT");
@@ -196,6 +213,7 @@ describe("Connected apps", () => {
     expect(texts(find(root, "connection-stand-in-chatgpt-access"))).toBe(
       "Read your training and propose routines and programs",
     );
+    expect(texts(find(root, "connection-stand-in-chatgpt-recent"))).toContain("Listed workouts");
     await press(root, "revoke-stand-in-chatgpt");
     await answerAlert("Revoke access");
     await until(() => has(root, "connected-apps-empty"), "the empty list");

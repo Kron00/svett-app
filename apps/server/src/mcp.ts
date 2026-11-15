@@ -178,6 +178,16 @@ const handle = Effect.gen(function* () {
   const found = token === undefined ? Option.none() : yield* rows.grantOf(token, now);
   if (Option.isNone(found)) return unauthorized(base, token !== undefined);
   const grant = found.value;
+  // The token alone does not show a deletion a peer server wrote to the ledger before its
+  // database step, so every request asks the same check a tool call does.
+  const live = yield* (yield* Safety)
+    .asAccount(grant.accountId, undefined, rows.holdConnection(grant.connectionId))
+    .pipe(
+      Effect.catch((error) =>
+        error instanceof AccountDeleted ? Effect.succeed(false) : Effect.fail(error),
+      ),
+    );
+  if (!live) return unauthorized(base, true);
 
   const text = yield* request.text;
   let body: unknown;

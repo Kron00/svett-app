@@ -8,7 +8,7 @@
 # which stands in for the server with one ChatGPT connection that may read and
 # propose. It opens the You tab and finds the Connected apps row, then opens the
 # screen through svett://connected-apps. It checks the connection says what it may
-# do and when it last read, presses Revoke, answers svett's own confirmation with
+# do, when it last read and its recent access, presses Revoke, answers svett's own confirmation with
 # Revoke access, and checks the connection is gone and the list says no app is
 # connected. It fails when a screen, row or result it expects does not show.
 #
@@ -171,6 +171,8 @@ bring "$connection" "The stand-in ChatGPT connection"
 expect_text 'id="connection-stand-in-chatgpt-access"' \
   "Read your training and propose routines and programs"
 expect_text 'id="connection-stand-in-chatgpt-read"' "Last read your data on"
+expect_text 'id="connection-stand-in-chatgpt-recent-title"' "Recent access"
+expect_text 'id="connection-stand-in-chatgpt-recent-0"' "Listed workouts"
 screenshot connection
 
 tap 'id="revoke-stand-in-chatgpt"' "Revoke"

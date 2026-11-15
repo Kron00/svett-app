@@ -330,6 +330,11 @@ const rpc = (server: Server, token: string, method: string, params?: unknown) =>
     json: { jsonrpc: "2.0", id: ++rpcIds, method, ...(params === undefined ? {} : { params }) },
   });
 
+const refresh = (server: Server, clientId: string, refreshToken: string) =>
+  send(server, "POST", "/oauth/token", {
+    form: { grant_type: "refresh_token", refresh_token: refreshToken, client_id: clientId },
+  });
+
 const callTool = async (server: Server, token: string, name: string, args: unknown) => {
   const answer = await rpc(server, token, "tools/call", { name, arguments: args });
   return answer;
@@ -711,6 +716,55 @@ describe("the connector's sign-in", () => {
     });
     expect(reused.body.error).toBe("invalid_grant");
   });
+
+  it("ends the connection's new tokens too when a spent refresh token comes back", async () => {
+    const server = await start();
+    const alice = account("alice");
+    const stolen = await connect(server, alice, ["svett.read"]);
+    // Whoever refreshes the stolen copy first gets a working pair.
+    const first = await refresh(server, stolen.clientId, stolen.refresh_token);
+    expect(first.status).toBe(200);
+    expect((await rpc(server, first.body.access_token, "ping")).status).toBe(200);
+
+    const replayed = await refresh(server, stolen.clientId, stolen.refresh_token);
+
+    expect(replayed.body.error).toBe("invalid_grant");
+    expect((await rpc(server, first.body.access_token, "ping")).status).toBe(401);
+    expect((await refresh(server, stolen.clientId, first.body.refresh_token)).body.error).toBe(
+      "invalid_grant",
+    );
+    expect(
+      (await send(server, "GET", "/v1/connections", { token: await issuer.sessionToken(alice) }))
+        .body,
+    ).toEqual({ connections: [] });
+  });
+
+  it("leaves at most one working pair when one refresh token is sent several times at once", async () => {
+    const server = await start();
+    const alice = account("alice");
+    const tokens = await connect(server, alice, ["svett.read"]);
+
+    const answers = await Promise.all(
+      Array.from({ length: 5 }, () => refresh(server, tokens.clientId, tokens.refresh_token)),
+    );
+
+    const issued = answers.filter(({ status }) => status === 200);
+    expect(issued.length).toBeLessThanOrEqual(1);
+    expect(answers.filter(({ status }) => status !== 200).map(({ body }) => body.error)).toEqual(
+      Array(answers.length - issued.length).fill("invalid_grant"),
+    );
+    // A pair the server gave and then ended, because a later request reused the token, is
+    // ended whole.
+    const [winner] = issued;
+    if (
+      winner !== undefined &&
+      (await rpc(server, winner.body.access_token, "ping")).status !== 200
+    ) {
+      const again = await refresh(server, tokens.clientId, winner.body.refresh_token);
+      expect(again.body.error).toBe("invalid_grant");
+    }
+    expect((await rpc(server, tokens.access_token, "ping")).status).toBe(401);
+  });
 });
 
 describe("the connector's tools", () => {
@@ -725,7 +779,13 @@ describe("the connector's tools", () => {
       token: await issuer.sessionToken(alice),
     });
     expect(before.body.connections).toMatchObject([
-      { name: "ChatGPT", host: "chatgpt.com", scopes: ["svett.read"], lastReadAt: null },
+      {
+        name: "ChatGPT",
+        host: "chatgpt.com",
+        scopes: ["svett.read"],
+        lastReadAt: null,
+        recentAccess: [],
+      },
     ]);
 
     const init = await rpc(server, tokens.access_token, "initialize", {
@@ -762,6 +822,9 @@ describe("the connector's tools", () => {
       token: await issuer.sessionToken(alice),
     });
     expect(after.body.connections[0].lastReadAt).toEqual(expect.any(Number));
+    expect(after.body.connections[0].recentAccess).toEqual([
+      { id: expect.any(String), tool: "list_workouts", at: after.body.connections[0].lastReadAt },
+    ]);
     const log = await query<{ tool: string }>(
       server.url,
       `select tool from assistant_access where account_id = '${alice}' order by at_ms`,
@@ -903,14 +966,9 @@ describe("the connector's tools", () => {
     const after = await callTool(server, tokens.access_token, "list_workouts", LIST_JANUARY);
     expect(after.status).toBe(401);
     expect(after.headers.get("www-authenticate")).toContain('error="invalid_token"');
-    const refresh = await send(server, "POST", "/oauth/token", {
-      form: {
-        grant_type: "refresh_token",
-        refresh_token: tokens.refresh_token,
-        client_id: tokens.clientId,
-      },
-    });
-    expect(refresh.body.error).toBe("invalid_grant");
+    expect((await refresh(server, tokens.clientId, tokens.refresh_token)).body.error).toBe(
+      "invalid_grant",
+    );
     expect((await send(server, "GET", "/v1/connections", { token: session })).body).toEqual({
       connections: [],
     });
@@ -946,19 +1004,15 @@ describe("the connector's tools", () => {
       "propose_routine",
       await pushDay(server, tokens.access_token),
     );
+    const refreshed = await refresh(server, tokens.clientId, tokens.refresh_token);
+    expect(refreshed.status).toBe(200);
     const deleted = await send(server, "DELETE", "/v1/me", {
       token: await issuer.sessionToken(alice),
     });
     expect(deleted.status).toBe(200);
-    expect((await rpc(server, tokens.access_token, "tools/list")).status).toBe(401);
-    const refresh = await send(server, "POST", "/oauth/token", {
-      form: {
-        grant_type: "refresh_token",
-        refresh_token: tokens.refresh_token,
-        client_id: tokens.clientId,
-      },
-    });
-    expect(refresh.body.error).toBe("invalid_grant");
+    expect((await rpc(server, refreshed.body.access_token, "tools/list")).status).toBe(401);
+    const again = await refresh(server, tokens.clientId, refreshed.body.refresh_token);
+    expect(again.body.error).toBe("invalid_grant");
     const left = await rowsNaming(server.url, alice);
     expect(
       Object.fromEntries(Object.entries(left).filter(([table]) => /assistant|oauth/.test(table))),
@@ -966,8 +1020,36 @@ describe("the connector's tools", () => {
       assistant_access: 0,
       assistant_connection: 0,
       assistant_proposal: 0,
+      assistant_refresh_used: 0,
       oauth_code: 0,
     });
+  });
+
+  it("answers 401 to every request once a deletion is in the ledger, before its database step", async () => {
+    const server = await start();
+    const alice = account("alice");
+    const tokens = await connect(server, alice, ["svett.read"]);
+    expect((await rpc(server, tokens.access_token, "tools/list")).status).toBe(200);
+    await server.runtime.runPromise(
+      Effect.gen(function* () {
+        const ledger = yield* DeletionLedger;
+        const { id } = Option.getOrThrow(yield* ledger.read);
+        yield* ledger.record(id, { account: alice, at: Date.now(), receipt: null });
+      }),
+    );
+
+    const answers = await Promise.all(
+      ["initialize", "ping", "tools/list"].map(
+        async (method) =>
+          [method, (await rpc(server, tokens.access_token, method)).status] as const,
+      ),
+    );
+
+    expect(answers).toEqual([
+      ["initialize", 401],
+      ["ping", 401],
+      ["tools/list", 401],
+    ]);
   });
 
   it("slows a connection that calls too often, with S5's token bucket", async () => {

@@ -82,6 +82,37 @@ export const clientLabel = (name: string | null | undefined): string => {
   return trimmed.length <= MAX_CLIENT_NAME ? trimmed : `${trimmed.slice(0, MAX_CLIENT_NAME - 1)}…`;
 };
 
+/** One tool call in a connection's access log. */
+export const AccessEntry = Schema.Struct({
+  id: Schema.String,
+  tool: Schema.String,
+  at: Schema.Number,
+});
+export type AccessEntry = typeof AccessEntry.Type;
+
+/** How many of a connection's latest access log entries Connected apps shows. */
+export const RECENT_ACCESS_COUNT = 10;
+
+const TOOL_ACCESS: Readonly<Record<string, string>> = {
+  search_exercises: "Searched exercises",
+  list_workouts: "Listed workouts",
+  get_workout: "Read a workout",
+  best_sets: "Read best sets",
+  exercise_history: "Read exercise history",
+  body_measurements: "Read body measurements",
+  list_routines: "Listed routines",
+  propose_routine: "Proposed a routine",
+  propose_program: "Proposed a program",
+};
+
+/** What a tool call in the access log did, in words, such as "Listed workouts". */
+export const accessLabel = (tool: string): string => {
+  const known = TOOL_ACCESS[tool];
+  if (known !== undefined) return known;
+  const words = tool.replace(/_+/gu, " ").trim();
+  return words === "" ? "Used a tool" : words.charAt(0).toUpperCase() + words.slice(1);
+};
+
 /** One app connected to the signed-in account, as Connected apps lists it. */
 export const AssistantConnection = Schema.Struct({
   id: Schema.String,
@@ -92,6 +123,8 @@ export const AssistantConnection = Schema.Struct({
   createdAt: Schema.Number,
   /** When it last called a tool that reads the account's data. Null until it first does. */
   lastReadAt: Schema.NullOr(Schema.Number),
+  /** Its latest tool calls, newest first, at most RECENT_ACCESS_COUNT from the last 90 days. */
+  recentAccess: Schema.Array(AccessEntry),
 });
 export type AssistantConnection = typeof AssistantConnection.Type;
 

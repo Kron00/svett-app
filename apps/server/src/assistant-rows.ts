@@ -8,9 +8,10 @@ import {
   type AssistantScope,
   ASSISTANT_SCOPES,
   ProposalPlan,
+  RECENT_ACCESS_COUNT,
   scopeText,
 } from "@svett/core";
-import { Context, Data, Effect, Layer, Option, Schema } from "effect";
+import { Clock, Context, Data, Effect, Layer, Option, Schema } from "effect";
 import type { SqlError } from "effect/sql/SqlError";
 
 /** How long each kind of secret lasts. A refresh token's time starts again at each refresh. */
@@ -98,7 +99,10 @@ export interface AssistantRowsShape {
     client: OAuthClient,
     nowMillis: number,
   ) => Effect.Effect<Tokens, SqlError | ClientGone>;
-  /** The account a refresh token belongs to, while it is valid for the client. */
+  /**
+   * The account a refresh token belongs to, while it is valid for the client or after its
+   * connection spent it.
+   */
   readonly refreshOwner: (
     refreshToken: string,
     clientId: string,
@@ -106,7 +110,9 @@ export interface AssistantRowsShape {
   ) => Effect.Effect<Option.Option<AccountId>, SqlError>;
   /**
    * Replaces both tokens of the connection that holds `refreshToken`, so the old ones stop
-   * working. None when the token is not valid any more. Run it as the account.
+   * working, and keeps the spent token's hash. A spent token that comes back means someone else
+   * holds a copy, so it deletes the connection, which ends every token it has (RFC 9700
+   * section 4.14.2). None when the token is not valid any more. Run it as the account.
    */
   readonly refresh: (
     refreshToken: string,
@@ -130,6 +136,7 @@ export interface AssistantRowsShape {
     read: boolean,
     nowMillis: number,
   ) => Effect.Effect<void, SqlError>;
+  /** The account's connections, each with its latest access log entries, newest first. */
   readonly connections: (
     account: AccountId,
   ) => Effect.Effect<ReadonlyArray<AssistantConnection>, SqlError>;
@@ -291,6 +298,13 @@ export class AssistantRows extends Context.Service<AssistantRows, AssistantRowsS
             `;
             if (marked.length === 0) return yield* new ClientGone();
             yield* sql`
+              delete from assistant_refresh_used
+              where connection_id in (
+                select id from assistant_connection
+                where account_id = ${code.accountId} and client_id = ${client.id}
+              )
+            `;
+            yield* sql`
               delete from assistant_connection
               where account_id = ${code.accountId} and client_id = ${client.id}
             `;
@@ -316,21 +330,56 @@ export class AssistantRows extends Context.Service<AssistantRows, AssistantRowsS
               select account_id as "accountId" from assistant_connection
               where refresh_hash = ${secretHash(refreshToken)} and client_id = ${clientId}
                 and refresh_expires_ms > ${nowMillis}
+              union all
+              select used.account_id from assistant_refresh_used used
+              join assistant_connection connection on connection.id = used.connection_id
+              where used.refresh_hash = ${secretHash(refreshToken)}
+                and connection.client_id = ${clientId}
+              limit 1
             `,
             ([row]) => Option.fromNullishOr(row?.accountId),
           ),
         refresh: (refreshToken, clientId, nowMillis) =>
           Effect.gen(function* () {
             const tokens = newTokens(nowMillis);
-            const [row] = yield* sql<{ readonly scopes: string }>`
+            const spent = secretHash(refreshToken);
+            // The update holds the connection's row, so of two refreshes with one token the
+            // second waits, then finds the token spent below and deletes the connection.
+            const [row] = yield* sql<{
+              readonly id: string;
+              readonly accountId: AccountId;
+              readonly scopes: string;
+            }>`
               update assistant_connection
               set access_hash = ${tokens.accessHash}, access_expires_ms = ${tokens.accessExpires},
                 refresh_hash = ${tokens.refreshHash}, refresh_expires_ms = ${tokens.refreshExpires}
-              where refresh_hash = ${secretHash(refreshToken)} and client_id = ${clientId}
+              where refresh_hash = ${spent} and client_id = ${clientId}
                 and refresh_expires_ms > ${nowMillis}
-              returning scopes
+              returning id, account_id as "accountId", scopes
             `;
-            if (row === undefined) return Option.none();
+            if (row === undefined) {
+              const reused = yield* sql<{ readonly connectionId: string }>`
+                select used.connection_id as "connectionId"
+                from assistant_refresh_used used
+                join assistant_connection connection on connection.id = used.connection_id
+                where used.refresh_hash = ${spent} and connection.client_id = ${clientId}
+              `;
+              const ids = reused.map(({ connectionId }) => connectionId);
+              if (ids.length > 0) {
+                yield* sql`delete from assistant_refresh_used where connection_id in ${sql.in(ids)}`;
+                yield* sql`delete from assistant_connection where id in ${sql.in(ids)}`;
+              }
+              return Option.none();
+            }
+            yield* sql`
+              insert into assistant_refresh_used (refresh_hash, connection_id, account_id, used_ms)
+              values (${spent}, ${row.id}, ${row.accountId}, ${nowMillis})
+            `;
+            // A token spent this long ago had expired anyway, so its hash proves nothing more.
+            yield* sql`
+              delete from assistant_refresh_used
+              where connection_id = ${row.id} and used_ms < ${nowMillis - LIFETIME_MS.refresh}
+            `;
             return Option.some({
               accessToken: tokens.accessToken,
               refreshToken: tokens.refreshToken,
@@ -374,8 +423,9 @@ export class AssistantRows extends Context.Service<AssistantRows, AssistantRowsS
             }
           }),
         connections: (account) =>
-          Effect.map(
-            sql<{
+          Effect.gen(function* () {
+            const now = yield* Clock.currentTimeMillis;
+            const rows = yield* sql<{
               readonly id: string;
               readonly name: string;
               readonly host: string;
@@ -387,26 +437,47 @@ export class AssistantRows extends Context.Service<AssistantRows, AssistantRowsS
                 last_read_ms as "lastReadMs"
               from assistant_connection where account_id = ${account}
               order by created_ms desc, id
-            `,
-            (rows) =>
-              rows.map((row) => ({
-                id: row.id,
-                name: row.name,
-                host: row.host,
-                scopes: scopesOf(row.scopes),
-                createdAt: Number(row.createdMs),
-                lastReadAt: row.lastReadMs === null ? null : Number(row.lastReadMs),
-              })),
-          ),
+            `;
+            const entries = yield* sql<{
+              readonly id: string;
+              readonly connectionId: string;
+              readonly tool: string;
+              readonly atMs: string;
+            }>`
+              select id, connection_id as "connectionId", tool, at_ms as "atMs" from (
+                select id, connection_id, tool, at_ms,
+                  row_number() over (partition by connection_id order by at_ms desc, id desc) as n
+                from assistant_access
+                where account_id = ${account} and at_ms >= ${now - ACCESS_LOG_MS}
+              ) latest
+              where n <= ${RECENT_ACCESS_COUNT}
+              order by at_ms desc, n
+            `;
+            return rows.map((row) => ({
+              id: row.id,
+              name: row.name,
+              host: row.host,
+              scopes: scopesOf(row.scopes),
+              createdAt: Number(row.createdMs),
+              lastReadAt: row.lastReadMs === null ? null : Number(row.lastReadMs),
+              recentAccess: entries
+                .filter(({ connectionId }) => connectionId === row.id)
+                .map((entry) => ({ id: entry.id, tool: entry.tool, at: Number(entry.atMs) })),
+            }));
+          }),
         revoke: (account, connectionId) =>
-          Effect.map(
-            sql`
+          Effect.gen(function* () {
+            yield* sql`
+              delete from assistant_refresh_used
+              where account_id = ${account} and connection_id = ${connectionId}
+            `;
+            const removed = yield* sql`
               delete from assistant_connection
               where account_id = ${account} and id = ${connectionId}
               returning id
-            `,
-            (rows) => rows.length > 0,
-          ),
+            `;
+            return removed.length > 0;
+          }),
         propose: (grant, plan, nowMillis) =>
           Effect.gen(function* () {
             const id = randomUUID();
