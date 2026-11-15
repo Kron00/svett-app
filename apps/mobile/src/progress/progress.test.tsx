@@ -344,6 +344,9 @@ describe("in pounds", () => {
 describe("history", () => {
   it("deletes a workout and brings it back with Undo", async () => {
     const history = await render(<ProgressScreen />);
+    // The counts and the list load after the database opens, so wait for both.
+    await showsLine(history, "2 workouts, 5 sets");
+    await showsTestId(history, `workout-${newest}`);
     expect(textOf(byTestId(history, "workout-counts"))).toBe("2 workouts, 5 sets");
     expect(() => byTestId(history, `workout-${newest}`)).not.toThrow();
 
@@ -469,7 +472,7 @@ describe("the streak across midnight", () => {
   it("reads the clock again when svett comes back to the foreground", async () => {
     time.set(lastMinute());
     const history = await render(<ProgressScreen />);
-    expect(streak(history)).toMatch(/^Streak, [12] weeks?$/);
+    await streakReads(history, /^Streak, [12] weeks?$/);
 
     time.set(lastMinute() + 3 * DAY);
     for (const listener of appState.listeners) listener("background");
