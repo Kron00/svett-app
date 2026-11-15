@@ -2609,10 +2609,13 @@ check "startup.sh says what SVETT_LAUNCHES must be" \
 # bottom edge. The open keypad covers the screen from y=524, with Next and Done
 # at its foot, and a running rest sits right above it, so a press there reaches
 # the keypad or the rest instead of the workout. A drag from inside the workout
-# brings the element it is for clear of them. agent-device swipes in the middle of
-# the screen to scroll, so while the keypad and the rest reach above y=478 a scroll
-# lands on them and moves nothing. Like agent-device, it still counts an element
-# under them as on screen. The set being typed into stays on screen, because the
+# brings the element it is for clear of them. agent-device starts its swipe low in
+# the workout to scroll, so while the keypad or the rest covers the workout's foot a
+# scroll lands on them and moves nothing, as on the Mac when only the rest ran at the
+# foot. The rest's Skip, at the foot of the screen without the keypad, ends it. Moving
+# an exercise leaves the workout at its top, with the exercises after the first below
+# the screen. Like agent-device, it still counts an element under the keypad or the
+# rest as on screen. The set being typed into stays on screen, because the
 # app scrolls it above them. After a scroll or a drag the next element read glides
 # for two reads. A press acts on the element whose frame was
 # read last, if it lands on its centre, so a press at a gliding frame misses.
@@ -2758,7 +2761,7 @@ const elements = () => {
       add("keypad-next");
       add("keypad-done");
     }
-    if (state.rest) add("rest-timer");
+    if (state.rest) { add("rest-timer"); add("rest-timer-skip", "Skip rest"); }
   }
   return found;
 };
@@ -2805,8 +2808,12 @@ const HOME_INDICATOR = 900;
 const restTop = () => (state.focus ? KEYPAD_TOP : 956) - restHeight();
 // The top of what covers the workout: the open keypad and the running rest.
 const coverTop = () => Math.min(state.focus ? KEYPAD_TOP : 956, state.rest ? restTop() : 956);
-// Where agent-device swipes to scroll.
-const SCREEN_MIDDLE = 478;
+// The rest's Skip sits at its right end: at the foot of the screen, where its centre is
+// below the line other presses keep to, or above the open keypad.
+const skipFrame = () => state.focus
+  ? { x: 330, y: restTop() + 32, width: 94, height: 60 }
+  : { x: 276, y: 839, width: 134, height: 84 };
+const inside = (rect, x, y) => x >= rect.x && x < rect.x + rect.width && y >= rect.y && y < rect.y + rect.height;
 const keyFrame = (key) => {
   const row = KEY_ROWS.findIndex((keys) => keys.includes(key));
   return { x: KEY_COLUMNS[KEY_ROWS[row].indexOf(key)], y: KEYPAD_TOP + 12 + 75 * row, width: 130, height: 67 };
@@ -2843,6 +2850,7 @@ const frame = (element) => {
   const key = /^key-(\d)$/.exec(id);
   if (key) return keyFrame(key[1]);
   if (id === "rest-timer") return { x: 0, y: restTop(), width: 440, height: restHeight() };
+  if (id === "rest-timer-skip") return skipFrame();
   return fixed[id] ?? { x: 16, y: centreY(id) - 25, width: 408, height: 50 };
 };
 const centre = (rect) => `${Math.round(rect.x + rect.width / 2)} ${Math.round(rect.y + rect.height / 2)}`;
@@ -2873,14 +2881,17 @@ const press = (x, y) => {
     if (y >= KEYPAD_TOP) {
       for (const digit of "0123456789") {
         const rect = keyFrame(digit);
-        if (x >= rect.x && x < rect.x + rect.width && y >= rect.y && y < rect.y + rect.height) return typeKey(digit);
+        if (inside(rect, x, y)) return typeKey(digit);
       }
       if (y >= 836 && x < 220) state.focus = { ...state.focus, column: "reps", text: "", fresh: true };
       else if (y >= 836) state.focus = null;
       return;
     }
   }
-  if (state.screen === "workout" && state.rest && y >= restTop() && y < restTop() + restHeight()) return;
+  if (state.screen === "workout" && state.rest && y >= restTop() && y < restTop() + restHeight()) {
+    if (inside(skipFrame(), x, y)) state.rest = false;
+    return;
+  }
   if (state.alert && state.target !== "alert-finish") return;
   const target = state.target;
   if (target === null || centre(frame({ id: target })) !== `${x} ${y}`) return;
@@ -2957,7 +2968,8 @@ switch (command[0]) {
   case "screenshot":
     break;
   case "snapshot":
-    console.log(JSON.stringify({ screen: state.screen, prompt: state.prompt, elements: elements().length }));
+    console.log(JSON.stringify({ screen: state.screen, prompt: state.prompt, elements: elements().length,
+      keypad: state.focus !== null, rest: state.rest, scrolled: state.scrolled }));
     break;
   case "settings":
     if (command[1] === "permission") {
@@ -3004,7 +3016,7 @@ switch (command[0]) {
   case "scroll": {
     const element = find(command[3]);
     if (element === null || (command[1] === "up" && !visible(element) && !flung(element))) fail();
-    if (state.screen === "workout" && coverTop() <= SCREEN_MIDDLE && !visible(element)) fail();
+    if (state.screen === "workout" && coverTop() < 956 && !visible(element)) fail();
     state.scrolled.push(element.id);
     state.low = null;
     state.panned = false;
@@ -3132,10 +3144,10 @@ logger_pans_slow() {
 }
 
 # logger_presses_clear checks every press point sits above y=840, but the keypad's Done
-# at its foot.
+# and the rest's Skip at the foot of the screen.
 logger_presses_clear() {
   ! grep -E "^$bound_prefix press " "$root/bound-calls" |
-    awk '$NF > 840 && !($(NF - 1) == 324 && $NF == 880) { found = 1 } END { exit !found }'
+    awk '$NF > 840 && !($(NF - 1) == 324 && $NF == 880) && !($(NF - 1) == 343 && $NF == 881) { found = 1 } END { exit !found }'
 }
 
 logger_db="$root/data container/Documents/svett-logger.db"
@@ -3167,12 +3179,13 @@ check "logger.sh never reads or presses the keypad's Next" \
   test -z "$(grep -E 'keypad-next' "$root/bound-calls")"
 check "logger.sh closes the keypad with Done after Move down, Romanian Deadlift's weight and Plank's set" \
   test "$(grep -cxF -e "$bound_prefix press 324 880" "$root/bound-calls")" = 3
-check "logger.sh closes the keypad right after Move down, before it scrolls to exercise 2" \
+check "logger.sh closes the keypad and skips the rest right after Move down, before it scrolls to exercise 2" \
   logger_between 'get attrs id="move-exercise-down-0"' \
   'scroll down --until id="workout-exercise-1" label="Barbell Squat"' \
   'get attrs id="move-exercise-down-0"' "wait 250" 'get attrs id="move-exercise-down-0"' "press 220 250" \
   'is visible id="key-1"' 'get attrs id="keypad-done"' "press 324 880" 'wait absent id="key-1" 5000' \
-  'is visible id="workout-exercise-1" label="Barbell Squat"' \
+  'is visible id="rest-timer-skip"' 'get attrs id="rest-timer-skip"' "press 343 881" \
+  'wait absent id="rest-timer" 5000' 'is visible id="workout-exercise-1" label="Barbell Squat"' \
   'scroll up --until id="workout-exercise-1" label="Barbell Squat"' \
   'scroll down --until id="workout-exercise-1" label="Barbell Squat"'
 check "logger.sh reads exercise 2 only once its frame shows clear of the rest" \
@@ -3192,7 +3205,9 @@ check "logger.sh reads the first set marked done where it is, without a scroll" 
 check "logger.sh reads the first set's frame only once it stops moving as the rest appears" \
   test "$(sed -n '/wait id="workout-set-0-0" label="Set 1, 100 kg, 5 reps, Done" 5000$/,/get attrs id="set-0-0-weight"$/p' \
     "$root/bound-calls" | grep -c 'get attrs id="workout-set-0-0"$')" = 4
-check "logger.sh presses nothing at the bottom edge but the keypad's Done" logger_presses_clear
+check "logger.sh skips the rest before the order check, before Plank's set is checked, and before the empty workout's set is checked" \
+  test "$(grep -cxF -e "$bound_prefix press 343 881" "$root/bound-calls")" = 3
+check "logger.sh presses nothing at the bottom edge but the keypad's Done and the rest's Skip" logger_presses_clear
 check "logger.sh presses Start workout only once two reads agree after the scroll that found it" \
   logger_from 'scroll down --until id="start-routine"' 'is visible id="key-1"' 'is visible id="rest-timer"' \
   'get attrs id="start-routine"' "wait 250" 'get attrs id="start-routine"' "wait 250" \
@@ -3307,6 +3322,24 @@ check "a scroll down to exercise 2 lands on the keypad and finds nothing" \
   bound_got "$bound_prefix scroll down --until id=\"workout-exercise-1\" label=\"Barbell Squat\""
 check "logger.sh keeps the screen with the keypad still open" \
   grep -qF '"screen":"workout"' "$root/logger-open-keypad/failure.txt"
+
+case_name="logger.sh as f7668d0 ran it, closing the keypad but leaving the rest at the foot"
+# The same copy, now with logger.sh closing the keypad but never skipping the rest, as
+# f7668d0's did not. On the Mac it then failed with the workout at its top, the rest
+# over the foot of the screen and exercise 2 below it.
+sed -E 's/^( *)skip_rest$/\1:/' "$repo/scripts/sim/logger.sh" >"$old_repo/scripts/sim/logger.sh"
+check "the copy never skips the rest" test -z "$(grep -E '^ *skip_rest$' "$old_repo/scripts/sim/logger.sh")"
+logger_script="$old_repo/scripts/sim/logger.sh" run_logger "$root/logger-rest-left"
+check "logger.sh fails when it reads exercise 2 with the rest over the foot of the screen" \
+  test "$logger_status" -ne 0
+check "logger.sh fails at the same step as on the Mac" \
+  grep -qxF "Exercise 2 of the workout is not Barbell Squat" "$output"
+check "logger.sh closed the keypad after Move down, as f7668d0 did" \
+  bound_got "$bound_prefix press 324 880"
+check "a scroll down to exercise 2 starts on the rest and finds nothing" \
+  bound_got "$bound_prefix scroll down --until id=\"workout-exercise-1\" label=\"Barbell Squat\""
+check "the failure shows the workout at its top, the keypad closed and the rest running, as failure.txt on the Mac did" \
+  grep -qF '"keypad":false,"rest":true,"scrolled":[]' "$root/logger-rest-left/failure.txt"
 
 case_name="logger.sh when the workout does not survive the kill"
 run_logger FAKE_LOSES_WORKOUT=1 "$root/logger-loses"

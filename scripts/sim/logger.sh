@@ -34,21 +34,23 @@
 # notifications. So it grants them ahead, and answers the prompt after the first
 # set marked done if it shows anyway.
 #
-# Every step waits for a screen's top element and scrolls to anything below it,
-# because at the largest text size the workout is several screens tall. It
-# opens screens through svett:// links and presses an element at the centre of
-# its frame, because agent-device 0.21.37 refuses a selector press inside
-# screen content on iOS 27. It reads that frame until two reads agree, because
-# the screen glides on after a scroll or a drag. It presses an element only when
-# its whole frame shows where nothing covers the workout: below the navigation
-# bar, and above the bottom edge, the open keypad and the running rest. An
-# element outside that space is dragged into it, slowly and only as far as it
-# needs. A check reads an element only once it shows there too. It moves to a
-# set's reps by pressing the field, and leaves the keypad open while a step
-# types. It types only once the field it pressed is selected with the keypad
-# open. When a step stops typing it closes the keypad with Done, as a person
-# does, because the keypad and the rest above it cover the middle of the screen,
-# where agent-device swipes to scroll. It never presses the keypad's Next.
+# Every step waits for a screen's top element, and reads or presses everything
+# else through ready, because at the largest text size the workout is several
+# screens tall. ready first clears the screen as a person does: it closes the
+# keypad with Done and skips a running rest, because agent-device swipes low in
+# the workout to scroll, and on the Mac a scroll that started on the rest moved
+# nothing. Only Barbell Squat's sets are typed and checked with the keypad and
+# the rest up, because those steps prove the set shows above them. Then ready
+# brings the element on screen with a scroll, and drags it whole into the space
+# nothing covers: below the navigation bar, and above the bottom edge, the open
+# keypad and the running rest. It drags slowly and only as far as it needs.
+# Last it reads the frame until two reads agree, because the screen glides on
+# after a scroll or a drag, and only then does a step read or press it. It opens
+# screens through svett:// links and presses an element at the centre of its
+# frame, because agent-device 0.21.37 refuses a selector press inside screen
+# content on iOS 27. It moves to a set's reps by pressing the field, and types
+# only once the field it pressed is selected with the keypad open. It never
+# presses the keypad's Next.
 #
 # When svett's tabs do not show within 120 seconds of a launch, it saves a
 # screenshot and the screen's elements as launch-<n>.png and launch-<n>.txt. It
@@ -194,10 +196,10 @@ bring() {
     fail "${2:-$1 never came on screen}"
 }
 
-# label_of <selector>: brings the element on screen and prints its label.
+# label_of <selector>: prints the element's label once it is ready.
 label_of() {
   local attrs
-  bring "$1"
+  ready "$1" >&2
   attrs=$(agent_device get attrs "$1") || fail "$1 is not on screen"
   node -e 'console.log(JSON.parse(process.argv[1]).label ?? "")' "$attrs"
 }
@@ -309,33 +311,52 @@ clear_point() {
   done
 }
 
-# tap <selector> [what is missing]: brings the element on screen and presses the
-# centre of its frame, once nothing covers it. bring may have scrolled, and the
-# screen glides on after a scroll as after a drag, so the frame is read until two
-# reads agree.
-tap() {
-  local point
+# ready [--covered] <selector> [what is missing]: gets the element ready to read or
+# press, and leaves the centre of its frame in $point as "x y". It clears the screen,
+# brings the element on screen, drags it whole into the space nothing covers, and
+# reads its frame until two reads agree. --covered leaves the keypad and the rest up,
+# for the steps that check a set shows above them.
+point=
+ready() {
+  if [[ "$1" == --covered ]]; then
+    shift
+  else
+    clear_screen
+  fi
   bring "$@"
-  point=$(clear_point "$1")
+  # A failure inside $(...) has already said why, and label_of runs this in a subshell
+  # that does not stop at errors by itself.
+  point=$(clear_point "$1") || exit 1
+}
+
+# tap [--covered] <selector> [what is missing]: presses the centre of the element
+# once ready.
+tap() {
+  ready "$@"
   agent_device press "${point% *}" "${point#* }"
 }
 
 # tap_bar <selector>: presses an item of the navigation bar, which sits above the
-# workout and never scrolls with it, at its centre once two reads agree.
+# workout and never scrolls with it, on a clear screen at its centre once two reads
+# agree.
 tap_bar() {
-  local point
-  point=$(settled_centre "$1")
+  clear_screen
+  point=$(settled_centre "$1") || exit 1
   agent_device press "${point% *}" "${point#* }"
 }
 
-# field <id> <name>: presses an entry field of the workout and waits until it is
-# selected with the keypad open, because keys pressed while the press missed go
+# field [--covered] <id> <name>: presses an entry field of the workout and waits until
+# it is selected with the keypad open, because keys pressed while the press missed go
 # to another field or nowhere. A press that missed is tried once more.
 field() {
-  local selector="id=\"$1\"" point attempt
+  local flag='' selector attempt
+  if [[ "$1" == --covered ]]; then
+    flag=--covered
+    shift
+  fi
+  selector="id=\"$1\""
   for attempt in 1 2; do
-    bring "$selector" "$2 never came on screen"
-    point=$(clear_point "$selector")
+    ready ${flag:+"$flag"} "$selector" "$2 never came on screen"
     agent_device press "${point% *}" "${point#* }"
     if agent_device wait "$selector selected=true" 3000 >/dev/null 2>&1 &&
       agent_device wait 'id="key-1"' 3000 >/dev/null 2>&1; then
@@ -356,18 +377,28 @@ keys() {
   done
 }
 
-# type_into <field id> <name> <digits>: opens the keypad on a field and types.
+# type_into [--covered] <field id> <name> <digits>: opens the keypad on a field and types.
 type_into() {
-  field "$1" "$2"
+  local flag=''
+  if [[ "$1" == --covered ]]; then
+    flag=--covered
+    shift
+  fi
+  field ${flag:+"$flag"} "$1" "$2"
   keys "$3"
 }
 
 asked=false
-# mark_done <exercise> <set>: presses the set's done box. The first set marked
-# done starts the first rest, which asks for notifications unless they were
+# mark_done [--covered] <exercise> <set>: presses the set's done box. The first set
+# marked done starts the first rest, which asks for notifications unless they were
 # granted ahead. That prompt covers svett until it is answered.
 mark_done() {
-  tap "id=\"workout-set-$1-$2\""
+  local flag=''
+  if [[ "$1" == --covered ]]; then
+    flag=--covered
+    shift
+  fi
+  tap ${flag:+"$flag"} "id=\"workout-set-$1-$2\""
   [[ "$asked" == false ]] || return 0
   asked=true
   if agent_device alert wait 3000 >/dev/null 2>&1; then
@@ -377,12 +408,13 @@ mark_done() {
 }
 
 # log_set <exercise> <set> <weight digits> <reps digits>: types a set's weight and
-# reps, each by pressing its field, and marks the set done.
+# reps, each by pressing its field, and marks the set done, with the keypad and the
+# rest up as a person keeps them between sets.
 log_set() {
   local name="set $(($2 + 1)) of exercise $(($1 + 1))"
-  type_into "set-$1-$2-weight" "the weight of $name" "$3"
-  type_into "set-$1-$2-reps" "the reps of $name" "$4"
-  mark_done "$1" "$2"
+  type_into --covered "set-$1-$2-weight" "the weight of $name" "$3"
+  type_into --covered "set-$1-$2-reps" "the reps of $name" "$4"
+  mark_done --covered "$1" "$2"
 }
 
 # edges_of <selector>: the top and bottom of the element's frame.
@@ -428,16 +460,41 @@ close_keypad() {
   agent_device wait absent 'id="key-1"' 5000 >/dev/null 2>&1 || fail "Done did not close the keypad"
 }
 
-# see <selector> <what is missing>: brings the element on screen and then whole into
-# the space nothing covers, so a check reads only what a person can see.
-see() {
-  bring "$1" "$2"
-  clear_point "$1" >/dev/null
+# skip_rest: presses the rest's Skip when a rest runs, and waits until the rest is
+# gone. Like the keypad's Done, Skip sits at the foot of the screen and never moves
+# with the workout.
+skip_rest() {
+  local point
+  agent_device is visible 'id="rest-timer-skip"' >/dev/null 2>&1 || return 0
+  point=$(centre_of 'id="rest-timer-skip"') || fail "The running rest has no Skip on screen"
+  ((${point#* } <= home_indicator)) || fail "The rest's Skip sits on the home indicator, at y=${point#* }"
+  agent_device press "${point% *}" "${point#* }"
+  agent_device wait absent 'id="rest-timer"' 5000 >/dev/null 2>&1 || fail "Skip did not end the rest"
 }
 
-# expect_set <exercise> <set> <label>: the set's done box reads its values and state.
+# clear_screen: closes the keypad, then skips the rest it leaves at the foot of the
+# screen, so nothing covers the workout where agent-device swipes to scroll.
+clear_screen() {
+  close_keypad
+  skip_rest
+}
+
+# see [--covered] <selector> <what is missing>: a check that reads the element only
+# once it is ready, whole where a person sees it.
+see() {
+  ready "$@"
+}
+
+# expect_set [--covered] <exercise> <set> <label>: the set's done box reads its
+# values and state.
 expect_set() {
-  see "id=\"workout-set-$1-$2\" label=\"$3\"" "Set $(($2 + 1)) of exercise $(($1 + 1)) does not read \"$3\""
+  local flag=''
+  if [[ "$1" == --covered ]]; then
+    flag=--covered
+    shift
+  fi
+  see ${flag:+"$flag"} "id=\"workout-set-$1-$2\" label=\"$3\"" \
+    "Set $(($2 + 1)) of exercise $(($1 + 1)) does not read \"$3\""
 }
 
 expect_exercise() {
@@ -446,17 +503,17 @@ expect_exercise() {
 
 # Checks the picker's first result is the exercise named $1, then presses it.
 choose_first_result() {
-  local attrs point
+  local attrs
+  ready 'id="exercise-result-0"' "The search for \"$1\" showed no result"
   attrs=$(agent_device get attrs 'id="exercise-result-0"') || fail "The search for \"$1\" showed no result"
   # shellcheck disable=SC2016 # The ${...} are JavaScript template literals.
-  point=$(node -e '
-    const { label, rect } = JSON.parse(process.argv[1]);
+  node -e '
+    const { label } = JSON.parse(process.argv[1]);
     if (typeof label !== "string" || (label !== process.argv[2] && !label.startsWith(`${process.argv[2]},`))) {
       console.error(`The first result was not "${process.argv[2]}". Its label is "${label}".`);
       process.exit(1);
     }
-    console.log(Math.round(rect.x + rect.width / 2), Math.round(rect.y + rect.height / 2));
-  ' "$attrs" "$1") || exit 1
+  ' "$attrs" "$1" || exit 1
   agent_device press "${point% *}" "${point#* }"
 }
 
@@ -486,7 +543,6 @@ check_rows() {
 }
 
 finish_workout() {
-  close_keypad
   # Finish is a native bar item, which carries its label but no identifier.
   tap_bar 'label="Finish"'
   agent_device alert wait 5000 >/dev/null || fail "Finish asked nothing"
@@ -523,38 +579,37 @@ log_set 0 0 100 5
 shown_set 0 0 "Set 1, 100 kg, 5 reps, Done"
 log_set 0 1 100 5
 shown_set 0 1 "Set 2, 100 kg, 5 reps, Done"
-tap 'id="workout-set-0-2-type"'
+# Barbell Squat is logged as a person does it between sets, with the keypad and the
+# rest up. Every step after the move clears them first.
+tap --covered 'id="workout-set-0-2-type"'
 expect 'id="set-type-sheet"' "The set type sheet did not open"
-tap 'id="set-type-sheet-failure"'
+tap --covered 'id="set-type-sheet-failure"'
 expect 'id="workout"' "Choosing a set type did not close the sheet"
 log_set 0 2 100 4
 shown_set 0 2 "Failure set, 100 kg, 4 reps, Done"
-tap 'id="add-workout-set-0"'
-bring 'id="workout-set-0-3"' "Add set added no set"
-mark_done 0 3
-expect_set 0 3 "Failure set, 100 kg, 4 reps, Done"
+tap --covered 'id="add-workout-set-0"'
+see --covered 'id="workout-set-0-3"' "Add set added no set"
+mark_done --covered 0 3
+expect_set --covered 0 3 "Failure set, 100 kg, 4 reps, Done"
 screenshot squat-logged
+tap --covered 'id="move-exercise-down-0"'
 
-tap 'id="move-exercise-down-0"'
-close_keypad
 expect_exercise 1 "Barbell Squat"
 expect_exercise 0 "Romanian Deadlift"
 type_into set-0-0-weight "the weight of Romanian Deadlift's first set" 80
 expect_set 0 0 "Set 1, 80 kg, 6 to 10 reps, To do"
-close_keypad
 
 add_exercise plank Plank
 expect_exercise 5 "Plank"
 type_into set-5-0-time "the time of Plank's first set" 100
 mark_done 5 0
 expect_set 5 0 "Set 1, 60 seconds, Done"
-close_keypad
 screenshot before-kill
 
 xcrun simctl terminate "$udid" "$bundle_id"
 echo "Killed svett mid-workout"
 relaunch
-bring 'id="workout-bar"' "The workout in progress did not show above the tabs after the kill"
+see 'id="workout-bar"' "The workout in progress did not show above the tabs after the kill"
 screenshot restored-bar
 tap 'id="workout-bar"'
 expect 'id="workout"' "The workout bar did not open the workout"
