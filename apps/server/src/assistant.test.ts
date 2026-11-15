@@ -4,7 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { NodeHttpServer } from "@effect/platform-node";
+import { PgClient } from "@effect/sql-pg";
 import {
+  type AccountId,
   ActivityRepository,
   applyProposal,
   assistantProposalId,
@@ -20,7 +22,7 @@ import {
   syncOnce,
 } from "@svett/core";
 import { legDay, openTestDatabase } from "@svett/core/node";
-import { Effect, Layer, ManagedRuntime, Redacted } from "effect";
+import { Deferred, Effect, Fiber, Layer, ManagedRuntime, Option, Redacted } from "effect";
 import { HttpRouter, HttpServer } from "effect/http";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 
@@ -58,6 +60,53 @@ afterAll(async () => {
 
 /** A new account ID per test, as the stand-in issuer remembers deleted users. */
 const account = (name: string) => `user_${name}_${++accounts}`;
+
+const DAY = 24 * 60 * 60_000;
+
+/**
+ * Runs `hold` in a transaction of its own, and keeps that transaction open until `release`
+ * completes, then commits it. The effect returned completes once `hold` has run.
+ */
+const holdOpen = (hold: Effect.Effect<unknown, unknown, PgClient.PgClient>) =>
+  Effect.gen(function* () {
+    const sql = yield* PgClient.PgClient;
+    const held = yield* Deferred.make<void>();
+    const release = yield* Deferred.make<void>();
+    const fiber = yield* Effect.forkChild(
+      sql.withTransaction(
+        Effect.gen(function* () {
+          yield* hold;
+          yield* Deferred.succeed(held, undefined);
+          yield* Deferred.await(release);
+        }),
+      ),
+    );
+    yield* Deferred.await(held);
+    return Effect.andThen(Deferred.succeed(release, undefined), Fiber.join(fiber));
+  });
+
+/** Waits until `count` sessions on this database wait for a lock. */
+const lockWaits = (count: number) =>
+  Effect.gen(function* () {
+    const sql = yield* PgClient.PgClient;
+    for (let tries = 0; tries < 500; tries++) {
+      const [row] = yield* sql<{ readonly waiting: number }>`
+        select count(*)::int as waiting from pg_stat_activity
+        where datname = current_database() and wait_event_type = 'Lock'
+      `;
+      if ((row?.waiting ?? 0) >= count) return;
+      yield* Effect.sleep("20 millis");
+    }
+    return yield* Effect.die(new Error(`${count} sessions never waited for a lock`));
+  });
+
+/** Runs `effect` in the background, and waits until it ends or `waits` sessions wait. */
+const startWaiting = <A, E, R>(effect: Effect.Effect<A, E, R>, waits: number) =>
+  Effect.gen(function* () {
+    const fiber = yield* Effect.forkChild(effect);
+    yield* Effect.race(Effect.asVoid(Fiber.await(fiber)), lockWaits(waits));
+    return fiber;
+  });
 
 /** The address svett answers ChatGPT at, as PUBLIC_URL sets it. */
 const PUBLIC = "https://svett.test";
@@ -211,14 +260,14 @@ const authorizeQuery = (clientId: string, extra: Record<string, string> = {}) =>
     ...extra,
   });
 
-/** The person's choice on the consent page, signed in as `who`. Gives back the code. */
-const consent = async (
+/** The person presses Allow on the consent page, signed in as `who`. */
+const allow = async (
   server: Server,
   clientId: string,
   who: string,
   scopes: ReadonlyArray<string>,
-) => {
-  const answer = await send(server, "POST", "/oauth/authorize", {
+) =>
+  send(server, "POST", "/oauth/authorize", {
     json: {
       request: Object.fromEntries(authorizeQuery(clientId)),
       decision: "allow",
@@ -226,6 +275,15 @@ const consent = async (
       sessionToken: await issuer.sessionToken(who),
     },
   });
+
+/** The person's choice on the consent page, signed in as `who`. Gives back the code. */
+const consent = async (
+  server: Server,
+  clientId: string,
+  who: string,
+  scopes: ReadonlyArray<string>,
+) => {
+  const answer = await allow(server, clientId, who, scopes);
   expect(answer.status).toBe(200);
   const redirect = new URL(answer.body.redirect);
   expect(`${redirect.origin}${redirect.pathname}`).toBe(CHATGPT_REDIRECT);
@@ -382,7 +440,6 @@ describe("the connector's sign-in", () => {
     const unused = await registerChatGPT(server);
     const fresh = await registerChatGPT(server);
     const tokens = await connect(server, alice, ["svett.read"]);
-    const DAY = 24 * 60 * 60_000;
     await query(
       server.url,
       `update oauth_client set created_ms = created_ms - ${DAY + 60_000}
@@ -406,6 +463,90 @@ describe("the connector's sign-in", () => {
     expect(refreshed.status).toBe(200);
     const buckets = "select 1 from rate_limit where account_id like 'address:%'";
     expect(await query(server.url, buckets)).toEqual([]);
+  });
+
+  it("keeps an app through the day's cleanup while its code waits, so the code still trades", async () => {
+    const server = await start();
+    const alice = account("alice");
+    const clientId = await registerChatGPT(server);
+    const code = await consent(server, clientId, alice, ["svett.read"]);
+    await query(server.url, `update oauth_client set created_ms = created_ms - ${DAY + 60_000}`);
+    await server.runtime.runPromise(expireRegistrations);
+
+    const traded = await exchange(server, clientId, code);
+    expect(traded.status).toBe(200);
+    expect(traded.body.scope).toBe("svett.read");
+    const kept = await send(server, "GET", `/oauth/authorize?${authorizeQuery(clientId)}`);
+    expect(kept.status).toBe(200);
+  });
+
+  it("removes an app whose codes all expired, with its codes", async () => {
+    const server = await start();
+    const clientId = await registerChatGPT(server);
+    const code = await consent(server, clientId, account("alice"), ["svett.read"]);
+    await query(server.url, `update oauth_client set created_ms = created_ms - ${DAY + 60_000}`);
+    await query(server.url, `update oauth_code set expires_ms = expires_ms - ${DAY}`);
+    await server.runtime.runPromise(expireRegistrations);
+
+    const gone = await send(server, "GET", `/oauth/authorize?${authorizeQuery(clientId)}`);
+    expect(gone.status).toBe(400);
+    expect(await query(server.url, "select 1 from oauth_code")).toEqual([]);
+    expect((await exchange(server, clientId, code)).body.error).toBe("invalid_grant");
+  });
+
+  it("refuses a code as an unknown app when the cleanup that holds the app removes it", async () => {
+    const server = await start();
+    const clientId = await registerChatGPT(server);
+    await query(server.url, `update oauth_client set created_ms = created_ms - ${DAY + 60_000}`);
+    const answer = await server.runtime.runPromise(
+      Effect.gen(function* () {
+        const rows = yield* AssistantRows;
+        const release = yield* holdOpen(rows.expireClients(Date.now()));
+        const allowed = yield* startWaiting(
+          Effect.promise(() => allow(server, clientId, account("alice"), ["svett.read"])),
+          1,
+        );
+        yield* release;
+        return yield* Fiber.join(allowed);
+      }),
+    );
+    expect(answer.status).toBe(400);
+    expect(answer.body.message).toBe("svett does not know this app. Add svett to it again.");
+    expect(await query(server.url, "select 1 from oauth_code")).toEqual([]);
+  });
+
+  it("keeps an app when its code was issued before the cleanup could hold it", async () => {
+    const server = await start();
+    const alice = account("alice");
+    const clientId = await registerChatGPT(server);
+    await query(server.url, `update oauth_client set created_ms = created_ms - ${DAY + 60_000}`);
+    const { code, removed } = await server.runtime.runPromise(
+      Effect.gen(function* () {
+        const rows = yield* AssistantRows;
+        const issued = yield* Deferred.make<Option.Option<string>>();
+        const release = yield* holdOpen(
+          Effect.flatMap(
+            rows.createCode(
+              {
+                clientId,
+                accountId: alice as AccountId,
+                redirectUri: CHATGPT_REDIRECT,
+                codeChallenge: pkceChallenge(VERIFIER),
+                scopes: ["svett.read"],
+              },
+              Date.now(),
+            ),
+            (secret) => Deferred.succeed(issued, secret),
+          ),
+        );
+        const cleanup = yield* startWaiting(rows.expireClients(Date.now()), 1);
+        yield* release;
+        return { code: yield* Deferred.await(issued), removed: yield* Fiber.join(cleanup) };
+      }),
+    );
+    expect(removed).toBe(0);
+    const traded = await exchange(server, clientId, Option.getOrThrow(code));
+    expect(traded.status).toBe(200);
   });
 
   it("shows read and propose as separate choices, neither ticked, on the consent page", async () => {

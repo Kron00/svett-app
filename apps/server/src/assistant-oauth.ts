@@ -199,6 +199,8 @@ const answerAt = (
   return url.toString();
 };
 
+const UNKNOWN_CLIENT = "svett does not know this app. Add svett to it again.";
+
 /**
  * Checks an authorization request: a registered client, one of its addresses, the code
  * response, PKCE with S256 and, when named, svett's MCP endpoint as the resource.
@@ -211,9 +213,7 @@ const checkRequest = (params: Readonly<Record<string, string>>) =>
       return yield* new BadClient({ message: "The app sent no client ID." });
     const found = yield* (yield* AssistantRows).client(clientId);
     if (Option.isNone(found)) {
-      return yield* new BadClient({
-        message: "svett does not know this app. Add svett to it again.",
-      });
+      return yield* new BadClient({ message: UNKNOWN_CLIENT });
     }
     const client = found.value;
     const asked = params["redirect_uri"];
@@ -330,7 +330,8 @@ const decide = Effect.gen(function* () {
         now,
       ),
     );
-    return at({ code });
+    if (Option.isNone(code)) return yield* new BadClient({ message: UNKNOWN_CLIENT });
+    return at({ code: code.value });
   }).pipe(
     Effect.catchTags({
       BadClient: ({ message }) => Effect.succeed(json({ message }, 400)),

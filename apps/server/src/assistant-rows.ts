@@ -72,14 +72,18 @@ export interface AssistantRowsShape {
   readonly client: (id: string) => Effect.Effect<Option.Option<OAuthClient>, SqlError>;
   /**
    * Removes the clients registered before `nowMillis` less `UNCONNECTED_CLIENT_MS` that never
-   * connected an account, with their codes. Gives back how many it removed.
+   * connected an account and hold no unexpired code, with their codes. Gives back how many it
+   * removed.
    */
   readonly expireClients: (nowMillis: number) => Effect.Effect<number, SqlError>;
-  /** Stores a new authorization code and gives back the code itself, which is never stored. */
+  /**
+   * Stores a new authorization code and gives back the code itself, which is never stored.
+   * None when the client is gone.
+   */
   readonly createCode: (
     code: Omit<AuthorizationCode, "expiresMs">,
     nowMillis: number,
-  ) => Effect.Effect<string, SqlError>;
+  ) => Effect.Effect<Option.Option<string>, SqlError>;
   /** Takes the code out for good, so a code works once, valid or not. */
   readonly takeCode: (code: string) => Effect.Effect<Option.Option<AuthorizationCode>, SqlError>;
   /**
@@ -207,9 +211,23 @@ export class AssistantRows extends Context.Service<AssistantRows, AssistantRowsS
         expireClients: (nowMillis) =>
           sql.withTransaction(
             Effect.gen(function* () {
+              // Holding the clients first means a code issued for one either committed before
+              // the check below reads the codes, or waits and then finds its client gone.
+              const candidates = yield* sql<{ readonly id: string }>`
+                select id from oauth_client
+                where connected_ms is null and created_ms < ${nowMillis - UNCONNECTED_CLIENT_MS}
+                order by id
+                for update
+              `;
+              if (candidates.length === 0) return 0;
               const removed = yield* sql<{ readonly id: string }>`
                 delete from oauth_client
-                where connected_ms is null and created_ms < ${nowMillis - UNCONNECTED_CLIENT_MS}
+                where id in ${sql.in(candidates.map(({ id }) => id))}
+                  and not exists (
+                    select 1 from oauth_code
+                    where oauth_code.client_id = oauth_client.id
+                      and oauth_code.expires_ms > ${nowMillis}
+                  )
                 returning id
               `;
               const ids = removed.map(({ id }) => id);
@@ -219,17 +237,23 @@ export class AssistantRows extends Context.Service<AssistantRows, AssistantRowsS
             }),
           ),
         createCode: (code, nowMillis) =>
-          Effect.gen(function* () {
-            const secret = newSecret("code");
-            yield* sql`
+          sql.withTransaction(
+            Effect.gen(function* () {
+              const [client] = yield* sql`
+                select 1 from oauth_client where id = ${code.clientId} for share
+              `;
+              if (client === undefined) return Option.none();
+              const secret = newSecret("code");
+              yield* sql`
               insert into oauth_code
                 (code_hash, client_id, account_id, redirect_uri, code_challenge, scopes, expires_ms)
               values (${secretHash(secret)}, ${code.clientId}, ${code.accountId},
                 ${code.redirectUri}, ${code.codeChallenge}, ${scopeText(code.scopes)},
                 ${nowMillis + LIFETIME_MS.code})
             `;
-            return secret;
-          }),
+              return Option.some(secret);
+            }),
+          ),
         takeCode: (code) =>
           Effect.map(
             sql<{
