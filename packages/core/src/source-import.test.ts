@@ -203,6 +203,28 @@ describe("planSourceImport", () => {
     ]);
   });
 
+  it("goes by the workout's own copy when it and a link are both live", () => {
+    const both = workout("both", T, 60);
+    const own = local(sourceActivityId(both), T, "apple_health", {
+      sourceId: both.identity,
+      fingerprint: Fingerprint.make("0".repeat(64)),
+    });
+    const link = {
+      activityId: ActivityId.make(UUID(2)),
+      source: "apple_health" as const,
+      sourceId: both.identity,
+      fingerprint: both.fingerprint,
+      deletedAt: null,
+    };
+    const plan = planSourceImport({ activities: [own, local(UUID(2), T, "hevy")], links: [link] }, [
+      both,
+    ]);
+    expect(plan.changed).toMatchObject([
+      { key: "apple_health:both", local: own.id, linked: false, deleted: false },
+    ]);
+    expect(plan.unchanged).toBe(0);
+  });
+
   it("keeps workouts that share an identity but not their content, with the same IDs in any order", () => {
     const first = workout("same", T, 30);
     const second = { ...workout("same", T, 45), fingerprint: Fingerprint.make("c".repeat(64)) };

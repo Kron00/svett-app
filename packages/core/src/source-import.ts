@@ -389,6 +389,16 @@ const overlapMs = (local: LocalActivity, workout: SourceWorkout) =>
   Math.min(local.startedAt + local.durationS * 1000, workout.endedAt) -
   Math.max(local.startedAt, workout.startedAt);
 
+/** Orders saved copies of a workout so the one that decides it comes last. */
+const laterCopyLast = (
+  a: { readonly at: EpochMillis | null; readonly linked: boolean },
+  b: { readonly at: EpochMillis | null; readonly linked: boolean },
+) => {
+  const aAt = a.at ?? Infinity;
+  const bAt = b.at ?? Infinity;
+  return aAt === bAt ? Number(b.linked) - Number(a.linked) : aAt < bAt ? -1 : 1;
+};
+
 const newestFirst = (a: SourcePlanItem, b: SourcePlanItem) =>
   b.workout.startedAt - a.workout.startedAt || a.key.localeCompare(b.key);
 
@@ -422,6 +432,7 @@ export const planSourceImport = (
     const own = byId.get(sourceActivityId(workout));
     const link = linked.get(key);
     // A live copy wins over a deleted one, and of two deleted copies the later deletion.
+    // When both are live, or deleted together, the workout's own copy wins.
     const saved = [
       own && { local: own.id, linked: false, fingerprint: own.fingerprint, at: own.deletedAt },
       link && {
@@ -432,7 +443,7 @@ export const planSourceImport = (
       },
     ]
       .filter((copy) => copy !== undefined)
-      .sort((a, b) => (a.at ?? Infinity) - (b.at ?? Infinity))
+      .sort(laterCopyLast)
       .at(-1);
     if (saved !== undefined) {
       const deleted = saved.at !== null;

@@ -75,7 +75,11 @@ const withState =
       ? { ...before, state: next(before.state) }
       : { params, read: firstRead(params), state: next(PREVIEWING) };
 
-/** A long list stops here, with a line for the rest, so a whole Health history stays quick. */
+/**
+ * A long list shows this many rows at a time, so a whole Health history stays quick. A list
+ * without choices stops here with a line for the rest, and one with choices adds a page at a
+ * time.
+ */
 const LISTED = 30;
 
 const toggled = (key: string) => (current: ReadonlySet<string>) => {
@@ -88,8 +92,37 @@ const subtitle = (item: SourcePlanItem) =>
   `${SPORTS[item.workout.kind].label}, ${formatDay(item.workout.startedAt)}`;
 
 /** The line under a capped list for the rows it leaves out. */
-const more = (count: number, rest = "") =>
-  count > LISTED ? `And ${workoutsLabel(count - LISTED)} more${rest}.` : undefined;
+const more = (count: number) =>
+  count > LISTED ? `And ${workoutsLabel(count - LISTED)} more.` : undefined;
+
+/** Adds the next page to a list of choices, while it holds rows not shown yet. */
+function ShowMore({
+  list,
+  shown,
+  total,
+  onPress,
+  testID,
+}: {
+  readonly list: string;
+  readonly shown: number;
+  readonly total: number;
+  readonly onPress: () => void;
+  readonly testID: string;
+}) {
+  if (shown >= total) return null;
+  return (
+    <View className="items-start px-gutter">
+      <Button
+        label="Show more"
+        variant="secondary"
+        accessibilityLabel={`Show more ${list}`}
+        accessibilityHint={`${workoutsLabel(total - shown)} not shown yet.`}
+        testID={testID}
+        onPress={onPress}
+      />
+    </View>
+  );
+}
 
 const changedSubtitle = (item: Extract<SourcePlanItem, { status: "changed" }>) =>
   [
@@ -113,6 +146,8 @@ function Plan({
 }) {
   const [keepBoth, setKeepBoth] = useState<ReadonlySet<string>>(new Set());
   const [take, setTake] = useState<ReadonlySet<string>>(new Set());
+  const [duplicatesShown, setDuplicatesShown] = useState(LISTED);
+  const [changedShown, setChangedShown] = useState(LISTED);
   const newItems = plan.items.filter((item) => item.status === "new");
 
   return (
@@ -144,17 +179,12 @@ function Plan({
             </View>
           )}
           {plan.duplicates.length === 0 ? null : (
-            <View testID="health-duplicates">
+            <View testID="health-duplicates" className="gap-3">
               <ListSection
-                header="Possible duplicates"
-                footer={[
-                  "Each overlaps a workout from another source. Linking keeps one workout, with its sets and this file's heart rate. Switch one off to keep both.",
-                  more(plan.duplicates.length, ", which link"),
-                ]
-                  .filter((line) => line !== undefined)
-                  .join(" ")}
+                header={`Possible duplicates, ${workoutsLabel(plan.duplicates.length)}`}
+                footer="Each overlaps a workout from another source. Linking keeps one workout, with its sets and this file's heart rate. Switch one off to keep both."
               >
-                {plan.duplicates.slice(0, LISTED).map((item, index) => (
+                {plan.duplicates.slice(0, duplicatesShown).map((item, index) => (
                   <ListRow
                     key={item.key}
                     testID={`health-duplicate-${index}`}
@@ -169,22 +199,25 @@ function Plan({
                   />
                 ))}
               </ListSection>
+              <ShowMore
+                list="possible duplicates"
+                shown={duplicatesShown}
+                total={plan.duplicates.length}
+                testID="health-duplicates-more"
+                onPress={() => setDuplicatesShown((shown) => shown + LISTED)}
+              />
             </View>
           )}
           {plan.changed.length === 0 ? null : (
-            <View testID="health-changed">
+            <View testID="health-changed" className="gap-3">
               <ListSection
-                header="Changed since your copy"
-                footer={[
-                  "svett keeps yours unless you switch on the file's version. A workout deleted here stays deleted. Undo puts yours back.",
-                  more(plan.changed.length, ", which keep yours"),
-                ]
-                  .filter((line) => line !== undefined)
-                  .join(" ")}
+                header={`Changed since your copy, ${workoutsLabel(plan.changed.length)}`}
+                footer="svett keeps yours unless you switch on the file's version. A workout deleted here stays deleted. Undo puts yours back."
               >
-                {plan.changed.slice(0, LISTED).map((item) => (
+                {plan.changed.slice(0, changedShown).map((item, index) => (
                   <ListRow
                     key={item.key}
+                    testID={`health-changed-${index}`}
                     title={item.workout.title}
                     subtitle={changedSubtitle(item)}
                     value={take.has(item.key) ? "File's version" : "Yours"}
@@ -196,6 +229,13 @@ function Plan({
                   />
                 ))}
               </ListSection>
+              <ShowMore
+                list="changed workouts"
+                shown={changedShown}
+                total={plan.changed.length}
+                testID="health-changed-more"
+                onPress={() => setChangedShown((shown) => shown + LISTED)}
+              />
             </View>
           )}
           {plan.collisions.length === 0 ? null : (
