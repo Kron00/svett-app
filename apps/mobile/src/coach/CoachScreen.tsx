@@ -164,6 +164,9 @@ function FailureNotice({
  * new one. Nothing of the previous owner's shows, and an answer still arriving for them changes
  * nothing here.
  */
+/** The question an empty chat offers, so a first answer is one tap away. */
+const WEEK_QUESTION = "How did my training go this week?";
+
 export function CoachScreen() {
   const { version } = useCurrentDatabase();
   return <Coach key={version} />;
@@ -325,10 +328,17 @@ function Coach() {
         onContentSizeChange={() => scroll.current?.scrollToEnd({ animated: false })}
       >
         {entries.length === 0 && pending === undefined ? (
-          <AppText tone="secondary" className="text-center">
-            Ask about your workouts, records or measurements. Each answer says which of your data it
-            read.
-          </AppText>
+          <EmptyState
+            testID="coach-empty"
+            symbol="bubble.left.and.bubble.right"
+            title="Ask your coach"
+            message="Ask about your workouts, records or measurements below. Each answer says which of your data it read."
+            action={{
+              label: "Ask how this week went",
+              testID: "coach-empty-action",
+              onPress: () => void ask(WEEK_QUESTION),
+            }}
+          />
         ) : (
           <Button
             label="New chat"

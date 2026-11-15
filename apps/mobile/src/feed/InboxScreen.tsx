@@ -86,6 +86,7 @@ function InboxRow({ item }: { readonly item: InboxItem }) {
 }
 
 function InboxList({ api }: { readonly api: SocialApi }) {
+  const navigation = useNavigation<RootNavigation>();
   const [inbox, setInbox] = useState<Inbox>({ status: "loading" });
 
   // Unread items keep their mark on this visit and read as seen on the next.
@@ -151,7 +152,12 @@ function InboxList({ api }: { readonly api: SocialApi }) {
             <EmptyState
               symbol="bell"
               title="Nothing new"
-              message="Likes, comments, follows and follow requests show here."
+              message="Likes, comments, follows and follow requests show here. Follow people to see their workouts and hear back from them."
+              action={{
+                label: "Find people",
+                testID: "inbox-empty-action",
+                onPress: () => navigation.navigate("People"),
+              }}
             />
           </View>
         );

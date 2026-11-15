@@ -4,6 +4,7 @@ import { ScrollView } from "react-native";
 
 import { useQuery } from "../data/useQuery";
 import type { RootNavigation } from "../navigation";
+import { openTrain } from "../open-train";
 import { EmptyState } from "../ui/EmptyState";
 import { ListRow, ListSection } from "../ui/List";
 import { performedExercises } from "./queries";
@@ -27,6 +28,7 @@ export function ExercisesScreen() {
               symbol="chart.xyaxis.line"
               title="No exercises yet"
               message="Exercises from your finished workouts show here, each with its charts."
+              action={{ label: "Start a workout", onPress: () => openTrain(navigation) }}
             />
           ) : (
             <ListSection>

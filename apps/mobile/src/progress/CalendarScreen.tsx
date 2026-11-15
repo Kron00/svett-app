@@ -19,7 +19,9 @@ import { useQuery } from "../data/store";
 import { useIsAccessibilityTextSize } from "../design/hooks";
 import { SPORTS } from "../design/tokens";
 import type { RootStackParamList } from "../navigation";
+import { openTrain } from "../open-train";
 import { AppText } from "../ui/AppText";
+import { EmptyState } from "../ui/EmptyState";
 import { Icon } from "../ui/Icon";
 import { ListRow, ListSection } from "../ui/List";
 import { StatTile } from "../ui/StatTile";
@@ -241,6 +243,22 @@ function Calendar({ route, navigation, now }: Props & { readonly now: number }) 
             />
           ))}
         </ListSection>
+      ) : query.status === "ready" ? (
+        <EmptyState
+          testID="calendar-empty"
+          symbol="calendar"
+          title={`No workouts in ${formatMonth(month)}`}
+          message={
+            starts.length === 0
+              ? "Each workout you finish or import shows on its day."
+              : "Workouts you log this month show on their day."
+          }
+          action={{
+            label: "Start a workout",
+            testID: "calendar-empty-action",
+            onPress: () => openTrain(navigation),
+          }}
+        />
       ) : null}
     </ScrollView>
   );

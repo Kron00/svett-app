@@ -20,6 +20,7 @@ import { useIsAccessibilityTextSize } from "../design/hooks";
 import type { RootNavigation, RootStackParamList } from "../navigation";
 import { AppText } from "../ui/AppText";
 import { Button } from "../ui/Button";
+import { EmptyState } from "../ui/EmptyState";
 import { ListRow, ListSection } from "../ui/List";
 import { SearchField } from "../ui/SearchField";
 import { TextField } from "../ui/TextField";
@@ -35,16 +36,16 @@ function People({
   testID,
 }: {
   readonly profiles: ReadonlyArray<ProfileSummary>;
-  readonly empty: string;
+  readonly empty: {
+    readonly title: string;
+    readonly message: string;
+    readonly action?: { readonly label: string; readonly onPress: () => void };
+  };
   readonly testID: string;
 }) {
   const navigation = useNavigation<RootNavigation>();
   if (profiles.length === 0) {
-    return (
-      <AppText tone="secondary" className="mx-gutter" testID={`${testID}-empty`}>
-        {empty}
-      </AppText>
-    );
+    return <EmptyState testID={`${testID}-empty`} symbol="person.2" {...empty} />;
   }
   return (
     <ListSection>
@@ -206,7 +207,11 @@ function PeopleSearch({ api, initial }: { readonly api: SocialApi; readonly init
       ) : found === undefined ? null : found.ok ? (
         <People
           profiles={found.value}
-          empty={`Nobody's username starts with “${text.trim()}”.`}
+          empty={{
+            title: "Nobody found",
+            message: `Nobody's username starts with “${text.trim()}”.`,
+            action: { label: "Clear the search", onPress: () => setText("") },
+          }}
           testID="people"
         />
       ) : (
@@ -313,6 +318,7 @@ function ConnectionsPages({
   first,
   reload,
 }: ConnectionsProps & { readonly first: ProfilePage; readonly reload: () => void }) {
+  const navigation = useNavigation<RootNavigation>();
   // Pages read after an older first page are dropped when the screen reads it again.
   const [more, setMore] = useState<{ readonly after: ProfilePage; readonly page: ProfilePage }>();
   const [loading, setLoading] = useState(false);
@@ -354,8 +360,19 @@ function ConnectionsPages({
           profiles={shown.profiles}
           empty={
             list === "followers"
-              ? `Nobody follows ${username} yet.`
-              : `${username} does not follow anyone yet.`
+              ? { title: "No followers yet", message: `Nobody follows ${username} yet.` }
+              : {
+                  title: "Not following anyone",
+                  message: `${username} does not follow anyone yet.`,
+                  ...(own
+                    ? {
+                        action: {
+                          label: "Find people",
+                          onPress: () => navigation.navigate("People"),
+                        },
+                      }
+                    : {}),
+                }
           }
           testID="connections"
         />
@@ -561,6 +578,7 @@ function BlocksPages({
   readonly first: BlockPage;
   readonly reload: () => void;
 }) {
+  const navigation = useNavigation<RootNavigation>();
   // Pages read after an older first page are dropped when the screen reads it again.
   const [more, setMore] = useState<{ readonly after: BlockPage; readonly page: BlockPage }>();
   const [loading, setLoading] = useState(false);
@@ -583,9 +601,13 @@ function BlocksPages({
   };
   if (shown.blocks.length === 0) {
     return (
-      <AppText tone="secondary" className="mx-gutter" testID="blocks-empty">
-        You have not blocked anyone. Block someone from the button at the top of their profile.
-      </AppText>
+      <EmptyState
+        testID="blocks-empty"
+        symbol="hand.raised"
+        title="Nobody blocked"
+        message="You have not blocked anyone. Block someone from the button at the top of their profile."
+        action={{ label: "Find people", onPress: () => navigation.navigate("People") }}
+      />
     );
   }
   return (

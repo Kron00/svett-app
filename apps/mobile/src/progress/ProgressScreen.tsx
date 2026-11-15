@@ -21,6 +21,7 @@ import { useQuery } from "../data/store";
 import { useIsAccessibilityTextSize } from "../design/hooks";
 import { SPORTS } from "../design/tokens";
 import type { RootNavigation } from "../navigation";
+import { openTrain } from "../open-train";
 import { useWorkoutSettings } from "../settings/store";
 import { AppText } from "../ui/AppText";
 import { Button } from "../ui/Button";
@@ -152,9 +153,15 @@ function RecentRecords() {
       <SectionHeader title="Recent records" />
       {query.status === "ready" && records.length === 0 ? (
         <EmptyState
+          testID="records-empty"
           symbol="trophy"
           title="No records yet"
           message="A set shows here when it beats every earlier workout with its exercise."
+          action={{
+            label: "Start a workout",
+            testID: "records-empty-action",
+            onPress: () => openTrain(navigation),
+          }}
         />
       ) : (
         <ListSection>
@@ -301,9 +308,15 @@ export function ProgressScreen() {
         ListEmptyComponent={
           query.status === "ready" ? (
             <EmptyState
+              testID="history-empty"
               symbol="clock.arrow.circlepath"
               title="No workouts yet"
-              message="Workouts you finish or import show up here, newest first."
+              message="Workouts you finish or import show up here, newest first. You can import a svett file or a Hevy export."
+              action={{
+                label: "Import workouts",
+                testID: "history-empty-action",
+                onPress: () => navigation.navigate("Data"),
+              }}
             />
           ) : null
         }
