@@ -1,5 +1,6 @@
 import { setBadge, type SetType } from "@svett/core";
-import { Pressable, View } from "react-native";
+import type { Ref } from "react";
+import { type HostInstance, Pressable, View } from "react-native";
 
 import { useColor, useIsAccessibilityTextSize } from "../design/hooks";
 import { SET_TYPE_COLOR } from "../design/tokens";
@@ -37,6 +38,8 @@ export type SetRowProps = {
   readonly done: boolean;
   /** The field the keypad types into, by its place in `fields`. */
   readonly focusedField?: number;
+  /** Takes the focused field's box, so the caller can keep it in view. */
+  readonly focusedFieldRef?: Ref<HostInstance>;
   readonly onPressSetType: () => void;
   readonly onPressField: (field: number) => void;
   readonly onToggleDone: () => void;
@@ -123,6 +126,8 @@ export function SetRow({ columns = WEIGHT_AND_REPS, ...props }: SetRowProps) {
     return (
       <View
         key={entry.name}
+        ref={props.focusedField === index ? props.focusedFieldRef : undefined}
+        collapsable={false}
         className={stacked ? "flex-1" : columns[index]?.wide ? COLUMN.wide : COLUMN.narrow}
       >
         <EntryField

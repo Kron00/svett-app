@@ -50,6 +50,10 @@ vi.mock("@react-navigation/native-stack", async () => {
     }),
   };
 });
+vi.mock("@react-navigation/elements", () => ({ useHeaderHeight: () => 0 }));
+vi.mock("react-native-safe-area-context", () => ({
+  useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }),
+}));
 vi.mock("@react-navigation/bottom-tabs", () => ({
   createBottomTabNavigator: () => ({
     Navigator: ({ children }: { readonly children: ReactNode }) => children,
