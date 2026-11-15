@@ -19,6 +19,8 @@ import {
   View,
 } from "react-native";
 
+import { syncAgain } from "../account/sync";
+import { AssistantProposals } from "../assistant/AssistantProposals";
 import { chatGPTStatus } from "../chatgpt/native";
 import { currentDatabase, type OpenDatabase, useCurrentDatabase } from "../data/current";
 import { quietWriteTo } from "../data/store";
@@ -194,7 +196,12 @@ function Coach() {
       () => setStatusFailed(true),
     );
   }, []);
-  useFocusEffect(checkStatus);
+  // Proposals a connected app such as ChatGPT made arrive with a sync.
+  const onFocus = useCallback(() => {
+    checkStatus();
+    void syncAgain();
+  }, [checkStatus]);
+  useFocusEffect(onFocus);
   useEffect(() => {
     const subscription = AppState.addEventListener("change", (state) => {
       if (state === "active") checkStatus();
@@ -324,6 +331,7 @@ function Coach() {
         keyboardShouldPersistTaps="handled"
         onContentSizeChange={() => scroll.current?.scrollToEnd({ animated: false })}
       >
+        <AssistantProposals />
         {entries.length === 0 && pending === undefined ? (
           <AppText tone="secondary" className="text-center">
             Ask about your workouts, records or measurements. Each answer says which of your data it

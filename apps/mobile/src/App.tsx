@@ -6,6 +6,7 @@ import { StatusBar } from "expo-status-bar";
 
 import { AccountProvider } from "./account/AccountProvider";
 import { AccountScreen } from "./account/AccountScreen";
+import { ConnectedAppsScreen } from "./assistant/ConnectedAppsScreen";
 import { ActivityScreen } from "./cardio/ActivityScreen";
 import { ManualCardioScreen } from "./cardio/ManualCardioScreen";
 import { RecordScreen } from "./cardio/RecordScreen";
@@ -99,12 +100,17 @@ export default function App() {
           <Stack.Screen
             name="Proposal"
             component={ProposalScreen}
-            options={{ headerShown: true, title: "Coach proposal" }}
+            options={{ headerShown: true, title: "Proposal" }}
           />
           <Stack.Screen
             name="Account"
             component={AccountScreen}
             options={{ headerShown: true, title: "Account" }}
+          />
+          <Stack.Screen
+            name="ConnectedApps"
+            component={ConnectedAppsScreen}
+            options={{ headerShown: true, title: "Connected apps" }}
           />
           <Stack.Screen
             name="OwnProfile"

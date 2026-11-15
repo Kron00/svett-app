@@ -12,6 +12,7 @@
     "@effect/platform-node": "4.1.3",
     "@effect/sql-pg": "4.1.3",
     "@svett/core": "workspace:*",
+    "@svett/tools": "workspace:*",
     "effect": "catalog:",
     "jose": "6.2.17"
   },

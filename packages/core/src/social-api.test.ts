@@ -4,6 +4,7 @@ import { describe, expect, it } from "vite-plus/test";
 import { AccountId } from "./database.ts";
 import { SocialActivityId } from "./privacy.ts";
 import { httpSocialApi, SocialFailed, socialProblemMessage } from "./social-api.ts";
+import { SYNC_PROTOCOL_VERSION, SYNC_VERSION_HEADER } from "./sync.ts";
 
 interface Sent {
   readonly url: string;
@@ -34,6 +35,9 @@ const server = (status: number, body: unknown, token: string | null = "token-1")
   });
   return { api, sent };
 };
+
+const tokenFor = (sub: string) =>
+  `e30.${Buffer.from(JSON.stringify({ sub })).toString("base64url")}.signature`;
 
 const failure = async <A>(effect: Effect.Effect<A, SocialFailed>) => {
   const exit = await Effect.runPromiseExit(effect);
@@ -200,6 +204,56 @@ describe("httpSocialApi", () => {
     const { api, sent } = server(200, PROFILE, null);
     expect((await failure(api.profile("anna"))).problem).toBe("signed_out");
     expect(sent).toEqual([]);
+  });
+
+  it("sends nothing for an account when the session names another", async () => {
+    const sent: Array<string> = [];
+    const api = (session: string) =>
+      httpSocialApi({
+        server: "https://svett.test",
+        accountId: "user_alice",
+        token: async () => tokenFor(session),
+        fetch: async (input) => {
+          sent.push(String(input));
+          return Response.json({ received: 1 });
+        },
+      });
+    const bobs = api("user_bob").assistantProposals;
+    expect((await failure(bobs.waiting)).problem).toBe("wrong_account");
+    expect((await failure(bobs.received(["proposal-1"]))).problem).toBe("wrong_account");
+    expect(sent).toEqual([]);
+    await Effect.runPromise(api("user_alice").assistantProposals.received(["proposal-1"]));
+    expect(sent).toEqual(["https://svett.test/v1/assistant-proposals/received"]);
+  });
+
+  it("sends the sync version with proposal requests alone, and reads 426 as update_required", async () => {
+    const versions: Array<string | undefined> = [];
+    const api = (status: number, body: unknown) =>
+      httpSocialApi({
+        server: "https://svett.test",
+        token: async () => "token-1",
+        fetch: async (_input, init) => {
+          versions.push(
+            (init?.headers as Record<string, string> | undefined)?.[SYNC_VERSION_HEADER],
+          );
+          return Response.json(body, { status });
+        },
+      });
+    await Effect.runPromise(api(200, { proposals: [] }).assistantProposals.waiting);
+    await Effect.runPromise(api(200, { received: 0 }).assistantProposals.received([]));
+    await Effect.runPromise(api(200, PROFILE).profile("anna"));
+    expect(versions).toEqual([
+      String(SYNC_PROTOCOL_VERSION),
+      String(SYNC_PROTOCOL_VERSION),
+      undefined,
+    ]);
+
+    const old = await failure(
+      api(426, { error: "update_required", message: "Update svett to sync." }).assistantProposals
+        .waiting,
+    );
+    expect(old.problem).toBe("update_required");
+    expect(socialProblemMessage(old)).toBe("Update svett to take proposals from connected apps.");
   });
 
   it("refuses an answer that does not match its schema", async () => {

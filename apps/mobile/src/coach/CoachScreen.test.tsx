@@ -25,7 +25,11 @@ const app = vi.hoisted(() => ({
   /** The events the stand-in for Swift streams for request n. */
   answer: (_number: number): ReadonlyArray<unknown> => [],
   requests: 0,
-  focus: undefined as (() => void) | undefined,
+  /** Every focus effect the screen holds now, which coming into view again runs. */
+  focused: new Set<() => void>(),
+  focus: () => {
+    for (const effect of app.focused) effect();
+  },
   navigated: [] as Array<readonly [string, unknown]>,
   appState: undefined as ((state: string) => void) | undefined,
 }));
@@ -60,8 +64,11 @@ vi.mock("@react-navigation/native", async () => {
     useRoute: () => ({ params: undefined }),
     useFocusEffect: (effect: () => void) => {
       useEffect(() => {
-        app.focus = effect;
+        app.focused.add(effect);
         effect();
+        return () => {
+          app.focused.delete(effect);
+        };
       }, [effect]);
     },
   };
@@ -273,7 +280,7 @@ describe("CoachScreen", () => {
 
     await send(tree, "And now?");
     expect(sendDisabled(tree)).toBe(true);
-    await act(async () => app.focus?.());
+    await act(async () => app.focus());
     await settle();
     act(() => byTestID(tree, "coach-input")[0]!.props.onChangeText("Once more?"));
     expect(sendDisabled(tree)).toBe(false);
