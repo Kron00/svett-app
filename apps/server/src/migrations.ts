@@ -53,4 +53,10 @@ export const MIGRATIONS: Record<string, Effect.Effect<void, unknown, SqlClient>>
     yield* sql`alter table account_row alter column seq set not null`;
     yield* sql`create unique index account_row_seq on account_row (account_id, seq)`;
   }),
+  // The Undos the server took of each row, so a delete that arrives after a change to the row
+  // decides as it would have had it arrived first.
+  "3_sync_restored": Effect.gen(function* () {
+    const sql = yield* SqlClient;
+    yield* sql`alter table account_row add column restored jsonb not null default '[]'`;
+  }),
 };

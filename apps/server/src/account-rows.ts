@@ -4,18 +4,24 @@ import {
   type CheckedRow,
   changeIdOf,
   checkSyncRow,
-  deletionsAboveOf,
+  childTablesOf,
+  type DeletionSpan,
+  deletionSpansAboveOf,
+  deletionToJoin,
   DRAFT_MESSAGE,
   inDraftWorkout,
   isTooFarAhead,
   MAX_SYNC_ROWS,
   mergePushed,
   needsDeletionsAbove,
-  type RowCopy,
+  type Restoration,
+  restoredAfter,
+  type ServerCopy,
   type SyncedTable,
   type SyncPull,
   type SyncPush,
   type SyncPushResult,
+  WORKOUT_TABLES,
 } from "@svett/core";
 import { Context, Data, Effect, Layer } from "effect";
 import type { SqlError } from "effect/sql/SqlError";
@@ -63,14 +69,8 @@ export interface CheckedPush extends CheckedRow {
   readonly restores: ReadonlyArray<number>;
 }
 
-/**
- * The deleted copy the server keeps of a row it refused to add under a deleted row, so the
- * phone that added it removes it too. It takes the row's own time, never the time of a
- * deletion above it, so an Undo of that deletion leaves it deleted.
- */
-const refusedCopy = (row: CheckedRow, deletedAbove: ReadonlyArray<number>): CheckedRow => {
-  let at = row.updatedAt;
-  while (deletedAbove.includes(at)) at++;
+/** `row` deleted at `at`, as a delete that took it with it would leave it. */
+const deletedCopy = (row: CheckedRow, at: number): CheckedRow => {
   const encoded = {
     ...(row.encoded as Readonly<Record<string, unknown>>),
     updatedAt: at,
@@ -85,6 +85,20 @@ const refusedCopy = (row: CheckedRow, deletedAbove: ReadonlyArray<number>): Chec
   };
 };
 
+/**
+ * The deleted copy the server keeps of a change it drops, such as a row added under a deleted
+ * row, so the phone that made it removes it too. It takes the row's own time, never the time
+ * of a deletion above it, so an Undo of that deletion leaves it deleted.
+ */
+const droppedCopy = (row: CheckedRow, deletions: ReadonlySet<number>): CheckedRow => {
+  let at = row.updatedAt;
+  while (deletions.has(at)) at++;
+  return deletedCopy(row, at);
+};
+
+const deletionTimes = (spans: ReadonlyArray<DeletionSpan>) =>
+  new Set(spans.map(({ deletedAt }) => deletedAt));
+
 export interface AccountRowsShape {
   /** Records that the account exists. Safe to call on every request. */
   readonly ensureAccount: (account: AccountId) => Effect.Effect<void, SqlError>;
@@ -94,8 +108,11 @@ export interface AccountRowsShape {
    * workout from a phone that had not seen the delete, the copy it keeps gets the next number
    * too, so that phone pulls it again. A row it refuses to add under a deleted row is kept as
    * a deleted copy, for the same reason. Either way the change counts as stored, so the phone
-   * stops sending it. A row another account holds under the same ID is a different row and
-   * stays as it was. Rows timed too far past `nowMillis` are refused.
+   * stops sending it. A workout row timed before a deletion above it is kept deleted with
+   * that deletion, and a delete of a workout row also deletes each live row it holds that the
+   * push did not, as the phone's delete would have. One changed after the delete is a dropped
+   * change and stays deleted after Undo. A row another account holds under the same ID is a
+   * different row and stays as it was. Rows timed too far past `nowMillis` are refused.
    */
   readonly write: (
     account: AccountId,
@@ -133,7 +150,7 @@ export class AccountRows extends Context.Service<AccountRows, AccountRowsShape>(
               let seq = Number(locked?.nextSeq ?? 0);
               const ahead = rows.filter((row) => isTooFarAhead(row.updatedAt, nowMillis));
               const timely = rows.filter((row) => !isTooFarAhead(row.updatedAt, nowMillis));
-              const stored = new Map<string, RowCopy>();
+              const stored = new Map<string, ServerCopy>();
               if (timely.length > 0) {
                 const existing = yield* sql<{
                   readonly tableName: string;
@@ -141,9 +158,11 @@ export class AccountRows extends Context.Service<AccountRows, AccountRowsShape>(
                   readonly updatedAt: string;
                   readonly deletedAt: string | null;
                   readonly changeId: string;
+                  readonly restored: ReadonlyArray<Restoration>;
                 }>`
                   select table_name as "tableName", row_id as "rowId",
-                    updated_at as "updatedAt", deleted_at as "deletedAt", change_id as "changeId"
+                    updated_at as "updatedAt", deleted_at as "deletedAt",
+                    change_id as "changeId", restored
                   from account_row
                   where account_id = ${account}
                     and row_id in ${sql.in([...new Set(timely.map((row) => row.id))])}
@@ -153,33 +172,119 @@ export class AccountRows extends Context.Service<AccountRows, AccountRowsShape>(
                     updatedAt: Number(row.updatedAt),
                     deletedAt: row.deletedAt === null ? null : Number(row.deletedAt),
                     changeId: row.changeId,
+                    restored: row.restored,
                   });
                 }
               }
               const lookup = (table: SyncedTable, id: string) =>
                 Effect.map(
-                  sql<{ readonly data: Readonly<Record<string, unknown>> }>`
-                    select data from account_row
+                  sql<{
+                    readonly data: Readonly<Record<string, unknown>>;
+                    readonly restored: ReadonlyArray<Restoration>;
+                  }>`
+                    select data, restored from account_row
                     where account_id = ${account} and table_name = ${table} and row_id = ${id}
                   `,
-                  ([row]) => row?.data,
+                  ([row]) => row && { row: row.data, restored: row.restored },
                 );
+              const save = (row: CheckedRow, restored: ReadonlyArray<Restoration>) => {
+                seq++;
+                stored.set(key(row.table, row.id), { ...row, restored });
+                return sql`
+                  insert into account_row
+                    (account_id, table_name, row_id, updated_at, deleted_at, data, seq, change_id,
+                     restored)
+                  values
+                    (${account}, ${row.table}, ${row.id}, ${row.updatedAt}, ${row.deletedAt},
+                     ${sql.json(row.encoded)}, ${seq}, ${row.changeId}, ${sql.json(restored)})
+                  on conflict (account_id, table_name, row_id) do update set
+                    updated_at = excluded.updated_at,
+                    deleted_at = excluded.deleted_at,
+                    data = excluded.data,
+                    seq = excluded.seq,
+                    change_id = excluded.change_id,
+                    restored = excluded.restored
+                `;
+              };
+              /**
+               * Deletes each live row under `table`/`id` as the phone's delete at `deletedAt`
+               * would have: one changed before it with it, and one changed at or after it as a
+               * dropped change. `deletions` holds the deletion times above.
+               */
+              const deleteUnder = (
+                table: SyncedTable,
+                id: string,
+                deletedAt: number,
+                deletions: ReadonlySet<number>,
+              ): Effect.Effect<void, SqlError> =>
+                Effect.forEach(
+                  childTablesOf(table),
+                  (child) =>
+                    Effect.flatMap(
+                      sql<{
+                        readonly rowId: string;
+                        readonly data: Readonly<Record<string, unknown>>;
+                        readonly updatedAt: string;
+                        readonly deletedAt: string | null;
+                        readonly changeId: string;
+                        readonly restored: ReadonlyArray<Restoration>;
+                      }>`
+                        select row_id as "rowId", data, updated_at as "updatedAt",
+                          deleted_at as "deletedAt", change_id as "changeId", restored
+                        from account_row
+                        where account_id = ${account} and table_name = ${child.table}
+                          and data ->> ${child.key}::text = ${id}
+                        order by row_id
+                      `,
+                      (found) =>
+                        Effect.forEach(
+                          found,
+                          (row) =>
+                            Effect.gen(function* () {
+                              const updatedAt = Number(row.updatedAt);
+                              if (row.deletedAt === null) {
+                                const checked: CheckedRow = {
+                                  table: child.table,
+                                  id: row.rowId,
+                                  updatedAt,
+                                  deletedAt: null,
+                                  encoded: row.data,
+                                  changeId: row.changeId,
+                                };
+                                yield* save(
+                                  updatedAt < deletedAt
+                                    ? deletedCopy(checked, deletedAt)
+                                    : droppedCopy(checked, deletions),
+                                  row.restored,
+                                );
+                              }
+                              const below =
+                                row.deletedAt === null
+                                  ? deletions
+                                  : new Set([...deletions, Number(row.deletedAt)]);
+                              yield* deleteUnder(child.table, row.rowId, deletedAt, below);
+                            }),
+                          { discard: true },
+                        ),
+                    ),
+                  { discard: true },
+                );
+              const deleted: Array<{
+                readonly table: SyncedTable;
+                readonly id: string;
+                readonly deletedAt: number;
+                readonly above: ReadonlyArray<DeletionSpan>;
+              }> = [];
               for (const pushed of timely) {
                 const current = stored.get(key(pushed.table, pushed.id));
-                const deletedAbove = needsDeletionsAbove(pushed.table, current, pushed)
-                  ? yield* deletionsAboveOf(
+                const above = needsDeletionsAbove(pushed.table, current, pushed)
+                  ? yield* deletionSpansAboveOf(
                       pushed.table,
                       pushed.encoded as Readonly<Record<string, unknown>>,
                       lookup,
                     )
                   : [];
-                const merged = mergePushed(
-                  pushed.table,
-                  current,
-                  pushed,
-                  pushed.restores,
-                  deletedAbove,
-                );
+                const merged = mergePushed(pushed.table, current, pushed, pushed.restores, above);
                 if (merged === "keep") continue;
                 if (merged === "refuse" && current !== undefined) {
                   seq++;
@@ -190,22 +295,32 @@ export class AccountRows extends Context.Service<AccountRows, AccountRowsShape>(
                   `;
                   continue;
                 }
-                const row = merged === "refuse" ? refusedCopy(pushed, deletedAbove) : pushed;
-                seq++;
-                yield* sql`
-                  insert into account_row
-                    (account_id, table_name, row_id, updated_at, deleted_at, data, seq, change_id)
-                  values
-                    (${account}, ${row.table}, ${row.id}, ${row.updatedAt}, ${row.deletedAt},
-                     ${sql.json(row.encoded)}, ${seq}, ${row.changeId})
-                  on conflict (account_id, table_name, row_id) do update set
-                    updated_at = excluded.updated_at,
-                    deleted_at = excluded.deleted_at,
-                    data = excluded.data,
-                    seq = excluded.seq,
-                    change_id = excluded.change_id
-                `;
-                stored.set(key(row.table, row.id), row);
+                if (merged === "refuse") {
+                  yield* save(droppedCopy(pushed, deletionTimes(above)), []);
+                  continue;
+                }
+                const workout = WORKOUT_TABLES.has(pushed.table);
+                const joined = workout ? deletionToJoin(pushed, above) : null;
+                const row = joined === null ? pushed : deletedCopy(pushed, joined);
+                yield* save(
+                  row,
+                  workout
+                    ? restoredAfter(current, row, pushed.restores)
+                    : (current?.restored ?? []),
+                );
+                if (workout && row.deletedAt !== null) {
+                  deleted.push({
+                    table: row.table,
+                    id: row.id,
+                    deletedAt: row.deletedAt,
+                    above,
+                  });
+                }
+              }
+              for (const { table, id, deletedAt, above } of deleted) {
+                if (stored.get(key(table, id))?.deletedAt !== deletedAt) continue;
+                const deletions = deletionTimes([...above, { deletedAt, restoredAt: null }]);
+                yield* deleteUnder(table, id, deletedAt, deletions);
               }
               yield* sql`update account set next_seq = ${seq} where id = ${account}`;
               return {

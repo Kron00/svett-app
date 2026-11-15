@@ -2,7 +2,7 @@ import { Data, Effect, Schema } from "effect";
 
 import { contentFingerprint } from "./ids.ts";
 import { TABLES } from "./table.ts";
-import { PARENT, tableKeyOf } from "./transfer.ts";
+import { CHILDREN, PARENT, tableKeyOf } from "./transfer.ts";
 
 /** Coach chats and the proposals they make stay on the phone that had the chat. */
 const LOCAL_ONLY: ReadonlySet<string> = new Set([TABLES.coachMessage.name, TABLES.proposal.name]);
@@ -130,31 +130,9 @@ export const parentOf = (
 };
 
 /**
- * The `deletedAt` of each deleted row above `row`, nearest first, read through `lookup`,
+ * The earliest `deletedAt` of the deleted rows above `row`, or null, read through `lookup`,
  * which gives a stored row in its encoded form. A row above that is missing ends the walk.
  */
-export const deletionsAboveOf = <E, R>(
-  table: SyncedTable,
-  row: Readonly<Record<string, unknown>>,
-  lookup: (
-    table: SyncedTable,
-    id: string,
-  ) => Effect.Effect<Readonly<Record<string, unknown>> | undefined, E, R>,
-): Effect.Effect<ReadonlyArray<number>, E, R> =>
-  Effect.gen(function* () {
-    const deletions: Array<number> = [];
-    let above = parentOf(table, row);
-    for (let depth = 0; above !== undefined && depth < 8; depth++) {
-      const found = yield* lookup(above.table, above.id);
-      if (found === undefined) break;
-      const deletedAt = found["deletedAt"];
-      if (typeof deletedAt === "number") deletions.push(deletedAt);
-      above = parentOf(above.table, found);
-    }
-    return deletions;
-  });
-
-/** The earliest `deletedAt` of the deleted rows above `row`, or null. See `deletionsAboveOf`. */
 export const deletedAboveOf = <E, R>(
   table: SyncedTable,
   row: Readonly<Record<string, unknown>>,
@@ -163,9 +141,82 @@ export const deletedAboveOf = <E, R>(
     id: string,
   ) => Effect.Effect<Readonly<Record<string, unknown>> | undefined, E, R>,
 ): Effect.Effect<number | null, E, R> =>
-  Effect.map(deletionsAboveOf(table, row, lookup), (deletions) =>
-    deletions.length === 0 ? null : Math.min(...deletions),
+  Effect.map(
+    deletionSpansAboveOf(table, row, (above, id) =>
+      Effect.map(lookup(above, id), (found) =>
+        found === undefined ? undefined : { row: found, restored: [] },
+      ),
+    ),
+    (spans) => (spans.length === 0 ? null : Math.min(...spans.map(({ deletedAt }) => deletedAt))),
   );
+
+/** An Undo the server took: the deletion it reversed, and the time of the Undo. */
+export interface Restoration {
+  readonly deletedAt: number;
+  readonly restoredAt: number;
+}
+
+/**
+ * A deletion of a row the server has seen: from `deletedAt` until the Undo that reversed it,
+ * or for good while `restoredAt` is null. A change timed inside it was made to a deleted row.
+ */
+export interface DeletionSpan {
+  readonly deletedAt: number;
+  readonly restoredAt: number | null;
+}
+
+/** The server's copy of a row, with every Undo of it the server took. */
+export interface ServerCopy extends RowCopy {
+  readonly restored: ReadonlyArray<Restoration>;
+}
+
+/** Every deletion of a row the server has seen, from its copy and the Undos it took. */
+export const deletionSpansOf = (copy: {
+  readonly deletedAt: number | null;
+  readonly restored: ReadonlyArray<Restoration>;
+}): ReadonlyArray<DeletionSpan> =>
+  copy.deletedAt === null
+    ? copy.restored
+    : [...copy.restored, { deletedAt: copy.deletedAt, restoredAt: null }];
+
+/**
+ * Every deletion the server has seen of the rows above `row`, read through `lookup`, which
+ * gives a stored row in its encoded form with the Undos the server took of it. A row above
+ * that is missing ends the walk.
+ */
+export const deletionSpansAboveOf = <E, R>(
+  table: SyncedTable,
+  row: Readonly<Record<string, unknown>>,
+  lookup: (
+    table: SyncedTable,
+    id: string,
+  ) => Effect.Effect<
+    | {
+        readonly row: Readonly<Record<string, unknown>>;
+        readonly restored: ReadonlyArray<Restoration>;
+      }
+    | undefined,
+    E,
+    R
+  >,
+): Effect.Effect<ReadonlyArray<DeletionSpan>, E, R> =>
+  Effect.gen(function* () {
+    const spans: Array<DeletionSpan> = [];
+    let above = parentOf(table, row);
+    for (let depth = 0; above !== undefined && depth < 8; depth++) {
+      const found = yield* lookup(above.table, above.id);
+      if (found === undefined) break;
+      const deletedAt = found.row["deletedAt"];
+      spans.push(
+        ...deletionSpansOf({
+          deletedAt: typeof deletedAt === "number" ? deletedAt : null,
+          restored: found.restored,
+        }),
+      );
+      above = parentOf(above.table, found.row);
+    }
+    return spans;
+  });
 
 /** The tables of a workout, whose deletes only an Undo on a phone that saw them reverses. */
 export const WORKOUT_TABLES: ReadonlySet<SyncedTable> = new Set([
@@ -177,57 +228,124 @@ export const WORKOUT_TABLES: ReadonlySet<SyncedTable> = new Set([
   TABLES.activitySource.name,
 ]);
 
+/** The tables whose rows sit directly under a row of `table`, with the key that names it. */
+export const childTablesOf = (
+  table: SyncedTable,
+): ReadonlyArray<{ readonly table: SyncedTable; readonly key: string }> => {
+  const key = tableKeyOf(table);
+  if (key === undefined) return [];
+  return CHILDREN[key].flatMap((child) => {
+    const parent = PARENT[child];
+    const name = TABLES[child].name as SyncedTable;
+    return parent !== null && SYNCED_BY_NAME.has(name) ? [{ table: name, key: parent.key }] : [];
+  });
+};
+
 /**
  * True when the server must read the deletions above a pushed row before `mergePushed`
- * decides: a live copy of a workout row that wins the plain merge, or a copy whose merge a
- * delete above it can overturn.
+ * decides: any change to a workout row, or a copy whose merge a delete above it can overturn.
  */
 export const needsDeletionsAbove = (
   table: SyncedTable,
   stored: RowCopy | undefined,
   incoming: RowCopy,
 ): boolean =>
-  (WORKOUT_TABLES.has(table) &&
-    incoming.deletedAt === null &&
-    mergeRow(stored, incoming) === "take") ||
-  deletionMatters(stored, incoming);
+  WORKOUT_TABLES.has(table)
+    ? stored?.changeId !== incoming.changeId
+    : deletionMatters(stored, incoming);
+
+const inside = (span: DeletionSpan, at: number) =>
+  span.deletedAt <= at && (span.restoredAt === null || at < span.restoredAt);
 
 /**
- * The server's rule for a pushed change, where every phone's changes meet. Deleting a workout
- * deletes its exercises, sets and route with it, and a later change to one of those from a
- * phone that had not seen the delete is dropped. So a live copy of a workout row that would
- * bring back a deleted copy, or that sits under a deleted row, is taken only as an Undo of
- * that very deletion: `restores` lists the `deletedAt` of each deletion the phone reversed,
- * and it must hold the stored copy's and every deleted row's above it. Otherwise the change
- * is refused. Every other
- * change follows `mergeChange`. `deletedAbove` lists the `deletedAt` of each deleted row
- * above, from `deletionsAboveOf`, and only matters when `needsDeletionsAbove` is true.
+ * The server's rule for a pushed change, where every phone's changes meet, so the result is
+ * the same in whatever order the changes arrive. Deleting a workout deletes its exercises,
+ * sets and route with it. A change to one of those, or to the workout, timed at or after a
+ * deletion of it or of a row above it, and before an Undo of that deletion, was made by a
+ * phone that had not seen the delete, and is dropped, whatever it is. Only an Undo of that
+ * very deletion brings the row back: `restores` lists the `deletedAt` of each deletion the
+ * phone reversed. A delete that arrives after such a change still beats it, unless the
+ * server took an Undo of that delete. `above` lists every deletion of the rows above, from
+ * `deletionSpansAboveOf`, and only matters when `needsDeletionsAbove` is true. Every change
+ * to another table follows `mergeChange`.
  *
  * "refuse" means the change would win the plain merge but loses. The server then hands the
  * phone that sent it the stored copy, or a deleted one when it has none.
  */
 export const mergePushed = (
   table: SyncedTable,
-  stored: RowCopy | undefined,
+  stored: ServerCopy | undefined,
   incoming: RowCopy,
   restores: ReadonlyArray<number>,
-  deletedAbove: ReadonlyArray<number>,
+  above: ReadonlyArray<DeletionSpan>,
 ): "take" | "keep" | "refuse" => {
   const plain = mergeRow(stored, incoming);
-  if (WORKOUT_TABLES.has(table) && incoming.deletedAt === null) {
-    if (plain === "keep") return "keep";
-    const reverses = (deletedAt: number) => restores.includes(deletedAt);
-    if (stored !== undefined && stored.deletedAt !== null && !reverses(stored.deletedAt)) {
-      return "refuse";
-    }
-    return deletedAbove.every(reverses) ? "take" : "refuse";
+  if (!WORKOUT_TABLES.has(table)) {
+    const deletedAbove = above
+      .filter(({ restoredAt }) => restoredAt === null)
+      .map(({ deletedAt }) => deletedAt);
+    const merged = mergeChange(
+      stored,
+      incoming,
+      deletedAbove.length === 0 ? null : Math.min(...deletedAbove),
+    );
+    return merged === "keep" && plain === "take" ? "refuse" : merged;
   }
-  const merged = mergeChange(
-    stored,
-    incoming,
-    deletedAbove.length === 0 ? null : Math.min(...deletedAbove),
+  if (stored?.changeId === incoming.changeId) return "keep";
+  const reverses = (deletedAt: number) =>
+    restores.includes(deletedAt) || deletedAt === incoming.deletedAt;
+  const spans = [...(stored === undefined ? [] : deletionSpansOf(stored)), ...above];
+  if (spans.some((span) => inside(span, incoming.updatedAt) && !reverses(span.deletedAt))) {
+    return plain === "take" ? "refuse" : "keep";
+  }
+  const deletion = incoming.deletedAt;
+  if (
+    deletion !== null &&
+    stored !== undefined &&
+    (stored.deletedAt === null ? stored.updatedAt >= deletion : stored.updatedAt > deletion) &&
+    !stored.restored.some(({ deletedAt }) => deletedAt === deletion)
+  ) {
+    return "take";
+  }
+  return plain;
+};
+
+/**
+ * The Undos the server keeps for a workout row once it takes `incoming`: those it had, and
+ * each deletion an Undo names, reversed at the Undo's time. A deletion that arrives after its
+ * Undo then changes nothing.
+ */
+export const restoredAfter = (
+  stored: ServerCopy | undefined,
+  incoming: RowCopy,
+  restores: ReadonlyArray<number>,
+): ReadonlyArray<Restoration> => {
+  const restored = stored?.restored ?? [];
+  if (incoming.deletedAt !== null) return restored;
+  const known = new Set(restored.map(({ deletedAt }) => deletedAt));
+  const named = [...new Set(restores)].filter(
+    (deletedAt) => deletedAt <= incoming.updatedAt && !known.has(deletedAt),
   );
-  return merged === "keep" && plain === "take" ? "refuse" : merged;
+  return [
+    ...restored,
+    ...named.map((deletedAt) => ({ deletedAt, restoredAt: incoming.updatedAt })),
+  ];
+};
+
+/**
+ * The deletion the server stores a live workout row it takes under, or null. A row timed
+ * before a deletion above it was there when that delete was made, so the delete takes it
+ * with it, and an Undo of that delete brings it back.
+ */
+export const deletionToJoin = (
+  incoming: RowCopy,
+  above: ReadonlyArray<DeletionSpan>,
+): number | null => {
+  if (incoming.deletedAt !== null) return null;
+  const later = above
+    .filter(({ deletedAt, restoredAt }) => restoredAt === null && deletedAt > incoming.updatedAt)
+    .map(({ deletedAt }) => deletedAt);
+  return later.length === 0 ? null : Math.min(...later);
 };
 
 /**

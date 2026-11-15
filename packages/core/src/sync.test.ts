@@ -10,8 +10,10 @@ import {
   mergeChange,
   mergePushed,
   mergeRow,
+  restoredAfter,
   type RowCopy,
   type RowVersion,
+  type ServerCopy,
   staysOnPhone,
 } from "./sync.ts";
 
@@ -158,6 +160,19 @@ describe("mergeChange", () => {
   });
 });
 
+/** The copy and Undos a server keeps of a workout after the changes arrive in this order. */
+const serverArrive = (
+  first: RowCopy,
+  changes: ReadonlyArray<{ readonly copy: RowCopy; readonly restores: ReadonlyArray<number> }>,
+) =>
+  changes.reduce<ServerCopy>(
+    (stored, { copy, restores }) =>
+      mergePushed("activity", stored, copy, restores, []) === "take"
+        ? { ...copy, restored: restoredAfter(stored, copy, restores) }
+        : stored,
+    { ...first, restored: [] },
+  );
+
 describe("mergePushed", () => {
   it.each([
     {
@@ -221,7 +236,7 @@ describe("mergePushed", () => {
       incoming: live(2, "b"),
       restores: [],
       deletedAbove: [3],
-      result: "refuse",
+      result: "take",
     },
     {
       case: "a set the Undo brings back before the workout",
@@ -260,6 +275,51 @@ describe("mergePushed", () => {
       result: "take",
     },
     {
+      case: "a delete of a workout another phone edited after it",
+      table: "activity",
+      stored: live(4, "b"),
+      incoming: deleted(3, "a"),
+      restores: [],
+      deletedAbove: [],
+      result: "take",
+    },
+    {
+      case: "a delete of a set another phone edited after it",
+      table: "activity_set",
+      stored: live(4, "b"),
+      incoming: deleted(3, "a"),
+      restores: [],
+      deletedAbove: [],
+      result: "take",
+    },
+    {
+      case: "a delete of a set another phone deleted after it",
+      table: "activity_set",
+      stored: deleted(4, "b"),
+      incoming: deleted(3, "a"),
+      restores: [],
+      deletedAbove: [],
+      result: "take",
+    },
+    {
+      case: "a delete of a set after the workout's delete",
+      table: "activity_set",
+      stored: deleted(3, "a"),
+      incoming: deleted(4, "b"),
+      restores: [],
+      deletedAbove: [3],
+      result: "refuse",
+    },
+    {
+      case: "a later delete of a deleted workout",
+      table: "activity",
+      stored: deleted(3, "a"),
+      incoming: deleted(4, "b"),
+      restores: [],
+      deletedAbove: [],
+      result: "refuse",
+    },
+    {
       case: "an edit to a live workout",
       table: "activity",
       stored: live(2, "a"),
@@ -289,9 +349,121 @@ describe("mergePushed", () => {
   ] as const)(
     "gives $result for $case",
     ({ table, stored, incoming, restores, deletedAbove, result }) => {
-      expect(mergePushed(table, stored, incoming, restores, deletedAbove)).toBe(result);
+      expect(
+        mergePushed(
+          table,
+          stored === undefined ? undefined : { ...stored, restored: [] },
+          incoming,
+          restores,
+          deletedAbove.map((deletedAt) => ({ deletedAt, restoredAt: null })),
+        ),
+      ).toBe(result);
     },
   );
+
+  it.each([
+    {
+      case: "a delete the server took an Undo of",
+      stored: live(5, "c"),
+      restored: [{ deletedAt: 3, restoredAt: 4 }],
+      incoming: deleted(3, "a"),
+      restores: [],
+      above: [],
+      result: "keep",
+    },
+    {
+      case: "an edit made while its workout was deleted, arriving after the Undo",
+      stored: live(2, "o"),
+      restored: [],
+      incoming: live(4, "b"),
+      restores: [],
+      above: [{ deletedAt: 3, restoredAt: 5 }],
+      result: "refuse",
+    },
+    {
+      case: "an edit made after an Undo",
+      stored: live(5, "c"),
+      restored: [{ deletedAt: 3, restoredAt: 5 }],
+      incoming: live(6, "b"),
+      restores: [],
+      above: [],
+      result: "take",
+    },
+    {
+      case: "a set added while its workout was deleted, arriving after the Undo",
+      stored: undefined,
+      restored: [],
+      incoming: live(4, "b"),
+      restores: [],
+      above: [{ deletedAt: 3, restoredAt: 5 }],
+      result: "refuse",
+    },
+    {
+      case: "a set added after its workout's Undo",
+      stored: undefined,
+      restored: [],
+      incoming: live(6, "b"),
+      restores: [],
+      above: [{ deletedAt: 3, restoredAt: 5 }],
+      result: "take",
+    },
+  ] as const)(
+    "gives $result for $case",
+    ({ stored, restored, incoming, restores, above, result }) => {
+      expect(
+        mergePushed(
+          "activity_set",
+          stored === undefined ? undefined : { ...stored, restored },
+          incoming,
+          restores,
+          above,
+        ),
+      ).toBe(result);
+    },
+  );
+
+  const remove = { copy: deleted(3, "a"), restores: [] };
+  const edit = { copy: live(4, "b"), restores: [] };
+  const removeAgain = { copy: deleted(5, "c"), restores: [] };
+  const undo = { copy: live(6, "u"), restores: [3] };
+
+  it.each(
+    orders([
+      ["delete", remove],
+      ["later edit", edit],
+      ["later delete", removeAgain],
+    ] as const).map((order) => ({
+      names: order.map(([name]) => name).join(", "),
+      changes: order.map(([, change]) => change),
+    })),
+  )(
+    "keeps a workout deleted at its first delete when the changes arrive as $names",
+    ({ changes }) => {
+      expect(serverArrive(live(1, "o"), changes)).toEqual({ ...deleted(3, "a"), restored: [] });
+    },
+  );
+
+  it.each(
+    orders([
+      ["delete", remove],
+      ["later edit", edit],
+      ["Undo", undo],
+    ] as const)
+      .filter(
+        (order) =>
+          order.findIndex(([name]) => name === "delete") <
+          order.findIndex(([name]) => name === "Undo"),
+      )
+      .map((order) => ({
+        names: order.map(([name]) => name).join(", "),
+        changes: order.map(([, change]) => change),
+      })),
+  )("keeps the Undo of a workout when the changes arrive as $names", ({ changes }) => {
+    expect(serverArrive(live(1, "o"), changes)).toEqual({
+      ...live(6, "u"),
+      restored: [{ deletedAt: 3, restoredAt: 6 }],
+    });
+  });
 });
 
 const journal = (fields: object) => ({
