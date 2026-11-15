@@ -19,7 +19,10 @@
 #      for 1:00.
 #   2. It kills svett with simctl terminate, launches it again, opens the
 #      workout from the bar above the tabs, and checks every set and value came
-#      back. It reads the database file and checks the same rows are there.
+#      back. It reads the database file and checks the same rows are there. svett
+#      reopens on the tabs, with the bar above them. The bar sits low at the
+#      largest text size and never scrolls, so it is pressed where it is: a drag
+#      that starts on it presses it.
 #   3. It finishes the workout and checks the database holds it finished with
 #      every done set, and without the set that was never marked done.
 #   4. It starts an empty workout from the Train tab, adds Barbell Squat, checks
@@ -223,11 +226,24 @@ expect() {
 # Mac 12 passes from its top stopped at Standing Calf Raises, short of Plank.
 max_passes=60
 
+# outside_list <selector>: whether the element sits outside the scrolling workout:
+# the workout bar and the tab buttons at the foot of the screen, the navigation bar's
+# items and an alert's buttons.
+outside_list() {
+  case "$1" in
+  *'id="workout-bar"'* | *', tab, '* | *'label="Home"'* | *'label="Finish"'* | *'label="Finish workout"'*) return 0 ;;
+  *) return 1 ;;
+  esac
+}
+
 # bring <selector> [what is missing]: scrolls until the element is on screen, up
 # or down, because at the largest text size the workout is taller than the screen.
-# A failure also says what the scroll down said.
+# A failure also says what the scroll down said. It refuses an element outside the
+# scrolling workout, which a scroll cannot move and press_fixed presses where it is.
 bring() {
   local said
+  ! outside_list "$1" ||
+    fail "$1 sits outside the scrolling workout, so no scroll or drag can bring it. Press it with press_fixed"
   agent_device is visible "$1" >/dev/null 2>&1 && return 0
   agent_device scroll up --until "$1" --max-passes "$max_passes" >/dev/null 2>&1 && return 0
   said=$(agent_device scroll down --until "$1" --max-passes "$max_passes" 2>&1) && return 0
@@ -375,13 +391,21 @@ tap() {
   agent_device press "${point% *}" "${point#* }"
 }
 
-# tap_bar <selector>: presses an item of the navigation bar, which sits above the
-# workout and never scrolls with it, on a clear screen at its centre once two reads
-# agree.
-tap_bar() {
+# press_fixed <selector> <what is missing>: presses an element outside the scrolling
+# workout, such as a navigation bar item, the workout bar above the tabs or an alert's
+# button. Nothing scrolls or drags for it, because it never moves, and a drag that
+# starts on the workout bar presses it: on the Mac a drag meant to lift the bar clear
+# of the bottom edge opened the workout instead. On a clear screen it fails at once
+# when the element is not there, and presses its centre once two reads agree, only
+# when that sits above the bottom edge.
+press_fixed() {
+  local x y
   clear_screen
+  agent_device wait "$1" 5000 >/dev/null 2>&1 || fail "$2"
   point=$(settled_centre "$1") || exit 1
-  agent_device press "${point% *}" "${point#* }"
+  read -r x y <<<"$point"
+  ((y <= safe_bottom)) || fail "$1 sits at the bottom edge of the screen, with its centre at y=$y"
+  agent_device press "$x" "$y"
 }
 
 # field [--covered] <id> <name>: presses an entry field of the workout and waits until
@@ -592,12 +616,12 @@ check_rows() {
 
 finish_workout() {
   # Finish is a native bar item, which carries its label but no identifier.
-  tap_bar 'label="Finish"'
+  press_fixed 'label="Finish"' "The workout's navigation bar has no Finish"
   agent_device alert wait 5000 >/dev/null || fail "Finish asked nothing"
   # The confirmation is svett's own alert, which agent-device's alert accept cannot
   # answer, so its button is pressed by its label like any other control. The
   # alert nests its button in containers with the same label, so ask for the button.
-  tap 'role="button" label="Finish workout"'
+  press_fixed 'role="button" label="Finish workout"' "The Finish alert has no Finish workout button"
   agent_device wait absent 'id="workout-bar"' 10000 >/dev/null ||
     fail "The workout bar still shows after Finish"
 }
@@ -657,9 +681,9 @@ screenshot before-kill
 xcrun simctl terminate "$udid" "$bundle_id"
 echo "Killed svett mid-workout"
 relaunch
-see 'id="workout-bar"' "The workout in progress did not show above the tabs after the kill"
+expect 'id="workout-bar"' "The workout in progress did not show above the tabs after the kill"
 screenshot restored-bar
-tap 'id="workout-bar"'
+press_fixed 'id="workout-bar"' "The workout in progress did not show above the tabs after the kill"
 expect 'id="workout"' "The workout bar did not open the workout"
 expect 'id="workout-title" label="Legs"' "Legs did not come back after the kill"
 expect_exercise 0 "Romanian Deadlift"

@@ -2629,6 +2629,8 @@ check "startup.sh says what SVETT_LAUNCHES must be" \
 # A drag faster than 100 points a second glides on and carries the element it was
 # for off the top of the screen, as on the Mac. FAKE_FLINGS overshoots the first
 # drag that way however slow it is, and leaves the second under the navigation bar.
+# The workout bar sits above the tabs with its foot below y=840, and a drag that starts
+# and lifts on it presses it and opens the workout.
 # FAKE_LOSES_WORKOUT forgets the workout when svett is killed, FAKE_DROPS_DONE
 # forgets the last exercise's done sets then, FAKE_KEEPS_UNDONE keeps the sets
 # not done when it finishes, and FAKE_NO_TIMING never times a set marked done.
@@ -2827,7 +2829,9 @@ const fixed = {
   "keypad-done": { x: 224, y: 836, width: 200, height: 88 },
   "bar-finish": { x: 340, y: 62, width: 84, height: 44 },
   "alert-finish": { x: 40, y: 480, width: 360, height: 50 },
-  "workout-bar": { x: 16, y: 700, width: 408, height: 60 },
+  // At the largest text size the bar stacks its title over its time, right above the tabs,
+  // so its foot reaches below the line presses keep to while its centre stays above it.
+  "workout-bar": { x: 16, y: 770, width: 408, height: 96 },
   "exercise-result-0": { x: 0, y: 200, width: 440, height: 80 },
 };
 const inFocusedSet = (id) => state.focus !== null &&
@@ -3075,6 +3079,12 @@ switch (command[0]) {
     // keypad and the rest timer. agent-device reports it on stdout.
     const y = Number(command[3]);
     const bottom = coverTop();
+    // The workout bar is a button that never scrolls, so a drag that starts and lifts on
+    // it presses it, as on the Mac.
+    const bar = fixed["workout-bar"];
+    const [fromX, toY] = [Number(command[2]), y + Number(command[5])];
+    if (state.prompt === null && ["tabs", "train"].includes(state.screen) && current() &&
+      inside(bar, fromX, y) && inside(bar, fromX + Number(command[4]), toY)) act("workout-bar");
     if (state.prompt === null && state.screen === "workout" && y > 110 && y < bottom) {
       state.panned = true;
       state.offset = Math.max(0, state.offset - Number(command[5]));
@@ -3188,6 +3198,14 @@ logger_pans_slow() {
     awk '{ by = $(NF - 1) < 0 ? -$(NF - 1) : $(NF - 1) } by * 20 > $NF { found = 1 } END { exit !found }'
 }
 
+# logger_still_after_relaunch checks the bound command got no scroll and no drag after
+# the last launch.
+logger_still_after_relaunch() {
+  ! awk -v launch="$bound_prefix open com.kron00.svett --relaunch" \
+    'index($0, launch) == 1 { moved = 0 } /^--session .* (scroll|gesture) / { moved = 1 } END { exit !moved }' \
+    "$root/bound-calls"
+}
+
 # logger_presses_clear checks every press point sits above y=840, but the keypad's Done
 # and the rest's Skip at the foot of the screen.
 logger_presses_clear() {
@@ -3208,6 +3226,10 @@ run_logger "$root/logger"
 check "logger.sh launches on the copied fixture with timing, kills svett, and launches it again" \
   only_open "$debug_open $logger_args" "com.kron00.svett svett://train" "${logger_links[@]}" \
   "$debug_open $logger_args" "${empty_links[@]}"
+check "logger.sh presses the workout bar where it sits after the kill, without a scroll or a drag" \
+  logger_between 'wait id="workout-bar" 10000' 'press 220 818' 'wait id="workout-bar" 10000' \
+  "screenshot $root/logger/05-restored-bar.png" 'is visible id="key-1"' 'is visible id="rest-timer-skip"' \
+  'wait id="workout-bar" 5000' 'get attrs id="workout-bar"' 'wait 250' 'get attrs id="workout-bar"' 'press 220 818'
 check "logger.sh kills svett mid-workout with simctl" \
   simctl_got "simctl terminate FAKE-UDID com.kron00.svett"
 check "logger.sh never launches or opens a link with simctl" no_simctl_launch_or_openurl
@@ -3424,6 +3446,36 @@ check "logger.sh prints the list with the failure" \
 check "logger.sh presses nothing while it lists the headers" \
   test -z "$(sed -n "/^$bound_prefix snapshot\$/,\$p" "$root/bound-calls" | grep -E "^$bound_prefix (press|gesture|alert accept)")"
 
+case_name="logger.sh as f25f34a ran it, dragging the workout bar clear of the bottom edge"
+# The same copy, now reaching the workout bar after the kill through see and tap, which
+# scroll and drag, and with bring taking any element, as f25f34a's did. At the largest
+# text size the bar's foot sits below y=840, so the drag to lift it started on the bar
+# and pressed it. On the Mac that opened the workout, and the bar was gone.
+sed -E -e '/^outside_list\(\) \{/,/^\}/ s/return 0/return 1/' \
+  -e "s/^expect ('id=\"workout-bar\"')/see \\1/" \
+  -e "s/^press_fixed ('id=\"workout-bar\"').*/tap \\1/" \
+  "$repo/scripts/sim/logger.sh" >"$old_repo/scripts/sim/logger.sh"
+check "the copy sees and taps the workout bar after the kill" \
+  grep -qxF "tap 'id=\"workout-bar\"'" "$old_repo/scripts/sim/logger.sh"
+logger_script="$old_repo/scripts/sim/logger.sh" run_logger "$root/logger-bar-drag"
+check "logger.sh fails when it drags for the workout bar" test "$logger_status" -ne 0
+check "logger.sh fails as it did on the Mac" \
+  grep -qxF 'id="workout-bar" went off screen after a drag and never came back' "$output"
+check "the drag to lift the bar starts on the bar" \
+  bound_got "$bound_prefix gesture pan 20 820 0 -42 840"
+check "the failure shows the workout the drag opened, as failure.png on the Mac did" \
+  grep -qF '"screen":"workout"' "$root/logger-bar-drag/failure.txt"
+
+case_name="logger.sh when a step taps the workout bar through bring"
+# A copy that taps the bar through ready, which brings and drags, with bring's refusal kept.
+sed -E "s/^press_fixed ('id=\"workout-bar\"').*/tap \\1/" "$repo/scripts/sim/logger.sh" \
+  >"$old_repo/scripts/sim/logger.sh"
+logger_script="$old_repo/scripts/sim/logger.sh" run_logger "$root/logger-bar-bring"
+check "logger.sh fails when bring is asked for the workout bar" test "$logger_status" -ne 0
+check "logger.sh says the bar sits outside the scrolling workout" \
+  grep -qxF 'id="workout-bar" sits outside the scrolling workout, so no scroll or drag can bring it. Press it with press_fixed' "$output"
+check "logger.sh neither scrolls nor drags after the second launch" logger_still_after_relaunch
+
 case_name="logger.sh when a timed exercise's header reads more than its name"
 run_logger FAKE_TIMED_HEADER=", by time" "$root/logger-header"
 check "logger.sh fails when Plank's header is not exactly Plank" test "$logger_status" -ne 0
@@ -3439,6 +3491,7 @@ run_logger FAKE_LOSES_WORKOUT=1 "$root/logger-loses"
 check "logger.sh fails when the workout is gone after the kill" test "$logger_status" -ne 0
 check "logger.sh says the workout did not come back" \
   grep -qxF "The workout in progress did not show above the tabs after the kill" "$output"
+check "logger.sh neither scrolls nor drags for the missing workout bar" logger_still_after_relaunch
 check "logger.sh restores the default text size after a failure" \
   only_calls "settings" "settings permission grant notifications" \
   "settings text-size accessibility-extra-extra-extra-large" "settings text-size large"
