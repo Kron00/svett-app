@@ -54,12 +54,13 @@ export const storedRows = (table: SyncedTable, ids: ReadonlyArray<string>) =>
 export const lookup = (table: SyncedTable, id: string) =>
   Effect.map(rawRows(table, [id]), ([row]) => row);
 
-/** Drops the row from the queue, with the deletions it was to reverse. */
+/** Drops the row from the queue, with the deletions it was to reverse or still had to send. */
 export const forget = (table: SyncedTable, id: string) =>
   Effect.gen(function* () {
     const sql = yield* Sql;
-    yield* sql.run("DELETE FROM sync_outbox WHERE table_name = ? AND row_id = ?", [table, id]);
-    yield* sql.run("DELETE FROM sync_restore WHERE table_name = ? AND row_id = ?", [table, id]);
+    for (const bookkeeping of ["sync_outbox", "sync_restore", "sync_unsent_deletion"]) {
+      yield* sql.run(`DELETE FROM ${bookkeeping} WHERE table_name = ? AND row_id = ?`, [table, id]);
+    }
   });
 
 /** Queues the row again, after every change queued so far. */

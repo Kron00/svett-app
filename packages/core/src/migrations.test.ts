@@ -21,6 +21,7 @@ const SYNC_BOOKKEEPING = [
   "sync_outbox",
   "sync_restore",
   "sync_state",
+  "sync_unsent_deletion",
 ];
 
 const open = () => {

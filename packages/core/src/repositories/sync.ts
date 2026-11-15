@@ -90,14 +90,45 @@ const makeSyncRepository = Effect.gen(function* () {
       });
     });
 
+  const recordSent = (rows: ReadonlyArray<QueuedRow>) =>
+    Effect.forEach(
+        rows,
+        ({ table, id, row }) =>
+          Effect.gen(function* () {
+            const deletedAt = (row as { readonly deletedAt?: unknown }).deletedAt;
+            if (typeof deletedAt !== "number") return;
+            yield* sql.run(
+              `DELETE FROM sync_unsent_deletion WHERE table_name = ? AND row_id = ? AND deleted_at = ?`,
+              [table, id, deletedAt],
+            );
+            yield* sql.run(
+              `INSERT OR IGNORE INTO sync_restore (table_name, row_id, deleted_at)
+                 SELECT ?, ?, ? WHERE NOT EXISTS
+                   (SELECT 1 FROM ${table} WHERE id = ? AND deleted_at IS ?)`,
+              [table, id, deletedAt, id, deletedAt],
+            );
+          }),
+        { discard: true },
+      );
+
+  /**
+   * Records that a push of `rows` is about to leave, so the server may hold each deletion one
+   * of them carries from now on. An Undo of such a deletion names it. One that was reversed
+   * or moved since `rows` were read is named now.
+   */
+  const sending = (rows: ReadonlyArray<QueuedRow>) => sql.transaction(recordSent(rows));
+
   /**
    * Drops the rows the server confirmed, unless they changed again since they were read, and
    * the deletions sent with them. A deletion an Undo reversed while the push was on the way
-   * stays, since the server may hold it now.
+   * stays, since the server may hold it now. Confirming a push that `sending` did not record
+   * records it too.
    */
   const confirm = (rows: ReadonlyArray<QueuedRow>) =>
     sql.transaction(
-      Effect.forEach(
+      Effect.andThen(
+        recordSent(rows),
+        Effect.forEach(
         rows,
         ({ table, id, mark, restores }) =>
           Effect.gen(function* () {
@@ -112,6 +143,7 @@ const makeSyncRepository = Effect.gen(function* () {
             );
           }),
         { discard: true },
+      ),
       ),
     );
 
@@ -270,6 +302,7 @@ const makeSyncRepository = Effect.gen(function* () {
       ),
     queued: (after: QueuedRow | undefined, limit?: number) =>
       queued(after, limit).pipe(Effect.provideService(Sql, sql)),
+    sending,
     confirm,
     apply: (rows: ReadonlyArray<CheckedRow>, next: number) =>
       apply(rows, next).pipe(Effect.provideService(Sql, sql)),
@@ -304,6 +337,26 @@ export interface SyncOutcome {
 }
 
 /**
+ * The pushes that send `page`. A row whose Undo deletions do not fit in one push's `restores`
+ * goes in several, newest deletions first, since the server most likely holds the newest one
+ * sent. The server takes the push whose list holds the deletion it has, and the others change
+ * nothing.
+ */
+export const pushesOf = (page: ReadonlyArray<QueuedRow>): Array<Array<PushedRow>> => {
+  const pushes: Array<Array<PushedRow>> = [];
+  for (const { table, row, restores } of page) {
+    const newestFirst = [...restores].reverse();
+    for (let index = 0; index === 0 || index * MAX_SYNC_ROWS < newestFirst.length; index++) {
+      const slice = newestFirst.slice(index * MAX_SYNC_ROWS, (index + 1) * MAX_SYNC_ROWS);
+      const push = pushes[index] ?? [];
+      pushes[index] = push;
+      push.push(slice.length === 0 ? { table, row } : { table, row, restores: slice });
+    }
+  }
+  return pushes;
+};
+
+/**
  * One sync: sends every queued row, then saves every row the server applied since the last
  * pull. When the server held changes timed too far ahead and this phone's clock is right
  * again, it moves them to times the server takes and sends them once more. Running it again
@@ -321,17 +374,17 @@ export const syncOnce = <E>(api: SyncApi<E>) =>
         const page = yield* repository.queued(after);
         const last = page.at(-1);
         if (last === undefined) break;
-        const result = yield* api.push(
-          page.map(({ table, row, restores }) =>
-            restores.length === 0 ? { table, row } : { table, row, restores },
-          ),
-        );
-        const ahead = new Set(result.ahead.map(({ table, id }) => `${table}/${id}`));
+        yield* repository.sending(page);
+        const ahead = new Set<string>();
+        for (const rows of pushesOf(page)) {
+          const result = yield* api.push(rows);
+          for (const { table, id } of result.ahead) ahead.add(`${table}/${id}`);
+          serverMillis = result.serverMillis;
+        }
         const confirmed = page.filter(({ table, id }) => !ahead.has(`${table}/${id}`));
         yield* repository.confirm(confirmed);
         pushed += confirmed.length;
         held += page.length - confirmed.length;
-        serverMillis = result.serverMillis;
         after = last;
       }
       return { pushed, held, serverMillis };

@@ -22,6 +22,7 @@ import {
   checkSyncRow,
   type CheckedRow,
   isTooFarAhead,
+  MAX_SYNC_ROWS,
   type PushedRow,
   type SyncedTable,
   type SyncPushResult,
@@ -31,7 +32,7 @@ import { openTestDatabase, T0 } from "../test-database.ts";
 import { ActivityRepository } from "./activities.ts";
 import { MADE_HERE } from "./origin.ts";
 import { CoachMessageRepository } from "./records.ts";
-import { type QueuedRow, type SyncApi, SyncRepository, syncOnce } from "./sync.ts";
+import { pushesOf, type QueuedRow, type SyncApi, SyncRepository, syncOnce } from "./sync.ts";
 import { TransferRepository } from "./transfer.ts";
 
 const HOUR = 3_600_000;
@@ -114,6 +115,34 @@ const importAll = async (on: Phone, file: SvettFile) => {
 
 const sync = Effect.service(SyncRepository);
 const activities = Effect.service(ActivityRepository);
+
+/** How many deletions `on` still has to name to the server for its Undos. */
+const restoresLeft = (on: Phone) =>
+  Number(on.database.prepare("SELECT count(*) AS n FROM sync_restore").get()?.["n"]);
+
+/** Deletes and undoes the workout `id` on `on`, and reads, sends and confirms its queue. */
+const undoSteps = (on: Phone, id: ActivityId) => {
+  const queued = () => on.run(Effect.flatMap(sync, (repository) => repository.queued(undefined)));
+  return {
+    queued,
+    sending: (rows: ReadonlyArray<QueuedRow>) =>
+      on.run(Effect.flatMap(sync, (repository) => repository.sending(rows))),
+    confirm: (rows: ReadonlyArray<QueuedRow>) =>
+      on.run(Effect.flatMap(sync, (repository) => repository.confirm(rows))),
+    workout: async () => {
+      const found = (await queued()).find(({ id: rowId }) => rowId === id);
+      if (found === undefined) throw new Error("The workout is not queued");
+      return found;
+    },
+    step: async (minutes: number, change: "remove" | "restore") => {
+      await on.at(T0 + minutes * MINUTE);
+      await (change === "remove"
+        ? on.run(Effect.flatMap(activities, (repository) => repository.remove(id)))
+        : on.run(Effect.flatMap(activities, (repository) => repository.restore(id))));
+      return T0 + minutes * MINUTE;
+    },
+  };
+};
 
 const logLegDay = (on: ReturnType<typeof phone>) =>
   on.run(Effect.flatMap(activities, (repository) => repository.create(legDay(MADE_HERE))));
@@ -246,22 +275,7 @@ describe("SyncRepository", () => {
 
   it("sends each deletion an Undo reversed until a push sent with it is confirmed, also while one is on the way", async () => {
     const on = phone();
-    const id = await logLegDay(on);
-    const queued = () => on.run(Effect.flatMap(sync, (repository) => repository.queued(undefined)));
-    const confirm = (rows: ReadonlyArray<QueuedRow>) =>
-      on.run(Effect.flatMap(sync, (repository) => repository.confirm(rows)));
-    const workout = async () => {
-      const found = (await queued()).find(({ id: rowId }) => rowId === id);
-      if (found === undefined) throw new Error("The workout is not queued");
-      return found;
-    };
-    const step = async (minutes: number, change: "remove" | "restore") => {
-      await on.at(T0 + minutes * MINUTE);
-      await (change === "remove"
-        ? on.run(Effect.flatMap(activities, (repository) => repository.remove(id)))
-        : on.run(Effect.flatMap(activities, (repository) => repository.restore(id))));
-      return T0 + minutes * MINUTE;
-    };
+    const { queued, sending, confirm, workout, step } = undoSteps(on, await logLegDay(on));
     await confirm(await queued());
     const first = await step(1, "remove");
     await confirm(await queued());
@@ -269,6 +283,7 @@ describe("SyncRepository", () => {
     await step(2, "restore");
     const second = await step(3, "remove");
     const onTheWay = await queued();
+    await sending(onTheWay);
     expect((await workout()).restores).toEqual([first]);
     await step(4, "restore");
     expect((await workout()).restores).toEqual([first, second]);
@@ -278,6 +293,100 @@ describe("SyncRepository", () => {
     expect((await workout()).row).toMatchObject({ deletedAt: null });
     await confirm(await queued());
     expect(await queued()).toEqual([]);
+  });
+
+  it("names no deletion that no push carried, through 1,000 delete and Undo cycles", async () => {
+    const on = phone();
+    const { queued, confirm, step } = undoSteps(on, await logLegDay(on));
+    await confirm(await queued());
+    for (let cycle = 0; cycle < 1_000; cycle++) {
+      await step(2 * cycle + 1, "remove");
+      await step(2 * cycle + 2, "restore");
+    }
+
+    const left = await queued();
+    expect(left).toHaveLength(7);
+    expect(left.map(({ restores }) => restores)).toEqual(left.map(() => []));
+    expect(left.map(({ row }) => (row as { deletedAt: number | null }).deletedAt)).toEqual(
+      left.map(() => null),
+    );
+    expect(restoresLeft(on)).toBe(0);
+  });
+
+  it.each(["confirmed", "answer lost"] as const)(
+    "still names a deletion a push carried when Undo reverses it offline, %s",
+    async (outcome) => {
+      const on = phone();
+      const { queued, sending, confirm, workout, step } = undoSteps(on, await logLegDay(on));
+      await confirm(await queued());
+      const sent = await step(1, "remove");
+      const push = await queued();
+      await sending(push);
+      if (outcome === "confirmed") await confirm(push);
+      await step(2, "restore");
+      await step(3, "remove");
+      await step(4, "restore");
+
+      expect((await workout()).restores).toEqual([sent]);
+      const named = await queued();
+      expect(named.map(({ restores }) => restores)).toEqual(named.map(() => [sent]));
+    },
+  );
+
+  it("names a deletion that Undo reversed after the push carrying it was read and before it left", async () => {
+    const on = phone();
+    const { queued, sending, confirm, workout, step } = undoSteps(on, await logLegDay(on));
+    await confirm(await queued());
+    const read = await step(1, "remove");
+    const push = await queued();
+    await step(2, "restore");
+    expect((await workout()).restores).toEqual([]);
+
+    await sending(push);
+    expect((await workout()).restores).toEqual([read]);
+  });
+
+  it("names a deletion an import brought when Undo of the import reverses it, since another phone may have sent it", async () => {
+    const on = phone();
+    const id = await logLegDay(on);
+    const { queued, confirm, workout, step } = undoSteps(on, id);
+    await confirm(await queued());
+    const deletedAt = await step(1, "remove");
+    const file = await exportFile(on);
+    await step(2, "restore");
+    await confirm(await queued());
+
+    await on.at(T0 + 3 * MINUTE);
+    const importBatchId = await importAll(on, file);
+    await on.at(T0 + 4 * MINUTE);
+    await transfer(on, (repository) => repository.undoImport(importBatchId, []));
+
+    expect((await workout()).row).toMatchObject({ deletedAt: null });
+    expect((await workout()).restores).toEqual([deletedAt]);
+  });
+
+  it("splits a row's Undo deletions across pushes when they pass one push's limit, newest first", () => {
+    const restores = Array.from({ length: 2 * MAX_SYNC_ROWS + 3 }, (_, index) => index);
+    const page: Array<QueuedRow> = [
+      { mark: 1, table: "activity", id: "a", row: { id: "a" }, restores },
+      { mark: 2, table: "activity", id: "b", row: { id: "b" }, restores: [7] },
+      { mark: 3, table: "activity", id: "c", row: { id: "c" }, restores: [] },
+    ];
+
+    const pushes = pushesOf(page);
+    expect(pushes.map((rows) => rows.map(({ row }) => (row as { id: string }).id))).toEqual([
+      ["a", "b", "c"],
+      ["a"],
+      ["a"],
+    ]);
+    expect(pushes.flat().every(({ restores: sent = [] }) => sent.length <= MAX_SYNC_ROWS)).toBe(
+      true,
+    );
+    expect(pushes.flatMap((rows) => rows[0]?.restores ?? [])).toEqual([...restores].reverse());
+    expect(pushes[0]?.slice(1)).toEqual([
+      { table: "activity", row: { id: "b" }, restores: [7] },
+      { table: "activity", row: { id: "c" } },
+    ]);
   });
 
   it("takes the server's copy of a row with no unsent change, whatever its time", async () => {

@@ -368,21 +368,44 @@ ${Object.entries(inDraft)
   .join("\n")}
 `;
 
-// An Undo on this phone, or any write here that brings back a deleted workout row, records the
-// deletion it reverses, so the server can tell it from a change made by a phone that never saw
-// that delete. Each one stays until the server confirms a copy sent with it, since a push on
-// the way can leave the server with the deletion before or after it, and only the server knows
-// which. Writes sync applies run quietly and record nothing.
+// An Undo on this phone, or any write here that brings back a deleted workout row or moves its
+// deletion, reverses that deletion. The server needs it named only when it may hold it, so
+// `sync_unsent_deletion` keeps each deletion made here that no push has carried yet. It takes
+// only a deletion stamped with the time this phone just took, never a deleted copy an import
+// brings, which another phone may have sent. A reversed deletion still there never left the
+// phone and is dropped. Any other goes in `sync_restore`, sent with the row until the server
+// confirms a copy sent with it, since a push on the way can leave the server with the deletion
+// before or after it, and only the server knows which. Writes sync applies run quietly and
+// record nothing.
 const syncRestores = `
 CREATE TABLE sync_restore (table_name TEXT NOT NULL, row_id TEXT NOT NULL,
   deleted_at INTEGER NOT NULL, PRIMARY KEY (table_name, row_id, deleted_at)) STRICT;
+CREATE TABLE sync_unsent_deletion (table_name TEXT NOT NULL, row_id TEXT NOT NULL,
+  deleted_at INTEGER NOT NULL, PRIMARY KEY (table_name, row_id, deleted_at)) STRICT;
 ${Object.keys(workoutColumns)
   .map(
-    (table) => `CREATE TRIGGER ${table}_restore AFTER UPDATE OF deleted_at ON ${table}
-WHEN (SELECT quiet FROM sync_state) = 0 AND OLD.deleted_at IS NOT NULL AND NEW.deleted_at IS NULL
+    (table) => `CREATE TRIGGER ${table}_delete_insert AFTER INSERT ON ${table}
+WHEN (SELECT quiet FROM sync_state) = 0 AND NEW.deleted_at = (SELECT clock FROM sync_state)
+BEGIN
+  INSERT OR IGNORE INTO sync_unsent_deletion (table_name, row_id, deleted_at)
+    VALUES ('${table}', NEW.id, NEW.deleted_at);
+END;
+CREATE TRIGGER ${table}_delete AFTER UPDATE OF deleted_at ON ${table}
+WHEN (SELECT quiet FROM sync_state) = 0 AND NEW.deleted_at = (SELECT clock FROM sync_state)
+  AND NEW.deleted_at IS NOT OLD.deleted_at
+BEGIN
+  INSERT OR IGNORE INTO sync_unsent_deletion (table_name, row_id, deleted_at)
+    VALUES ('${table}', NEW.id, NEW.deleted_at);
+END;
+CREATE TRIGGER ${table}_restore AFTER UPDATE OF deleted_at ON ${table}
+WHEN (SELECT quiet FROM sync_state) = 0 AND OLD.deleted_at IS NOT NULL
+  AND NEW.deleted_at IS NOT OLD.deleted_at
 BEGIN
   INSERT OR IGNORE INTO sync_restore (table_name, row_id, deleted_at)
-    VALUES ('${table}', NEW.id, OLD.deleted_at);
+    SELECT '${table}', NEW.id, OLD.deleted_at WHERE NOT EXISTS (SELECT 1 FROM sync_unsent_deletion
+      WHERE table_name = '${table}' AND row_id = NEW.id AND deleted_at = OLD.deleted_at);
+  DELETE FROM sync_unsent_deletion
+    WHERE table_name = '${table}' AND row_id = NEW.id AND deleted_at = OLD.deleted_at;
 END;`,
   )
   .join("\n")}

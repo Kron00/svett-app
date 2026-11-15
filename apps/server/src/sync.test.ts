@@ -32,6 +32,8 @@ import {
   type PushedRow,
   SYNC_PROTOCOL_VERSION,
   SYNC_VERSION_HEADER,
+  MAX_SYNC_ROWS,
+  type SyncApi,
 } from "@svett/core";
 import {
   legDay,
@@ -267,6 +269,10 @@ const pushWith = (
   };
   return { ...api, push };
 };
+
+/** How many deletions `phone` still has to name to the server for its Undos. */
+const restoresLeft = (phone: Phone) =>
+  Number(phone.database.prepare("SELECT count(*) AS n FROM sync_restore").get()?.["n"]);
 
 /** Checks that both phones hold the same rows, the workout `id` with `sets`, and nothing queued. */
 const expectBothKept = async (phones: readonly [Phone, Phone], id: ActivityId, sets: unknown) => {
@@ -1236,6 +1242,63 @@ describe("sync", { timeout: 120_000 }, () => {
       await expectBothKept([a, b], id, before);
     },
   );
+
+  it("keeps a workout live on both phones after 1,000 delete and Undo cycles made offline", async () => {
+    const server = await startServer();
+    const a = openPhone(server, ALICE, 1);
+    const b = openPhone(server, ALICE, 2);
+    const id = await sharedLegDay(a, [b]);
+    const before = await setsOf(a, id);
+
+    await inTurn(
+      Array.from({ length: 1_000 }, (_, cycle) => cycle),
+      async (cycle) => {
+        await a.at(T0 + (2 * cycle + 1) * MINUTE);
+        await remove(a, id);
+        await a.at(T0 + (2 * cycle + 2) * MINUTE);
+        await undo(a, id);
+      },
+    );
+    await syncAll([a, b]);
+
+    await expectBothKept([a, b], id, before);
+    expect(restoresLeft(a)).toBe(0);
+  });
+
+  it("sends more Undo deletions than one push names across several pushes, and keeps the workout", async () => {
+    const server = await startServer();
+    const a = openPhone(server, ALICE, 1);
+    const b = openPhone(server, ALICE, 2);
+    const id = await sharedLegDay(a, [b]);
+    const before = await setsOf(a, id);
+    const offline = (): SyncApi<SyncFailed> => ({
+      ...a.api(),
+      push: () => Effect.fail(new SyncFailed({ problem: "offline", message: "No network." })),
+    });
+
+    await a.at(T0 + MINUTE);
+    await remove(a, id);
+    await a.run(
+      Effect.exit(syncOnce(pushWith(a, holdsDeleted(id), async () => {}, "answer lost"))),
+    );
+    await inTurn(
+      Array.from({ length: 2 * MAX_SYNC_ROWS }, (_, cycle) => cycle),
+      async (cycle) => {
+        await a.at(T0 + (2 * cycle + 2) * MINUTE);
+        await undo(a, id);
+        await a.at(T0 + (2 * cycle + 3) * MINUTE);
+        await remove(a, id);
+        await a.run(Effect.exit(syncOnce(offline())));
+      },
+    );
+    await a.at(T0 + (4 * MAX_SYNC_ROWS + 2) * MINUTE);
+    await undo(a, id);
+    expect(restoresLeft(a)).toBeGreaterThan(MAX_SYNC_ROWS);
+    await syncAll([a, b]);
+
+    await expectBothKept([a, b], id, before);
+    expect(restoresLeft(a)).toBe(0);
+  });
 
   it.each([
     ["no sync version", undefined],
