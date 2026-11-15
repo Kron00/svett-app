@@ -5148,4 +5148,207 @@ check "safety.sh fails on a build without a Clerk key" test "$safety_status" -ne
 check "safety.sh says to build with the publishable key" \
   grep -qF "Build it with EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY set" "$output"
 
+# Stands in for agent-device in speed.sh. A screen shows its top element on a launch or
+# link. Import and the two times start below the screen, so only a scroll brings them up,
+# and Import then sits on the bottom edge until a drag lifts it. After a scroll or a drag
+# the screen glides: the next frame read differs, and a press before two reads agree, or
+# at the bottom edge, does nothing.
+cat >"$fake/speed-device" <<'EOF'
+#!/usr/bin/env bash
+s=$FAKE_STATE
+mkdir -p "$s"
+while [[ "$1" == --* ]]; do shift 2; done
+echo "$*" >>"$FAKE_ROOT/speed-calls"
+get() { cat "$s/$1" 2>/dev/null || echo "${2:-}"; }
+put() { echo "$2" >"$s/$1"; }
+screen=$(get screen none)
+top=$(get top 0)
+# y <selector>: the centre of the element on this screen, at this scroll.
+y() {
+  case "$screen:$1" in
+    *:'label="You, tab, 5 of 5"') [[ "$screen" != none ]] && echo 920 ;;
+    import:'id="hevy-summary"') ((top == 0)) && echo 160 ;;
+    import:'id="import-apply"') ((top == 1)) && { [[ -f "$s/lifted" ]] && echo 600 || echo 870; } ;;
+    done:'id="import-done"') echo 150 ;;
+    done:'id="import-timing"') ((top == 1)) && echo 500 ;;
+    coach:'id="coach-answer"') echo 200 ;;
+    coach:'id="coach-first-words-timing"') ((top == 1)) && echo 700 ;;
+    *) return 1 ;;
+  esac
+}
+label() {
+  case "$1" in
+    'id="import-timing"') echo "${FAKE_IMPORT_LABEL:-Read and previewed in 1200 ms, imported in 3400 ms}" ;;
+    'id="coach-first-words-timing"') echo "${FAKE_COACH_LABEL:-First words shown 12 ms after they arrived}" ;;
+    *) echo "" ;;
+  esac
+}
+glide() { touch "$s/glide"; }
+case "$1" in
+  settings) echo "$3" >>"$s/text-sizes" ;;
+  screenshot) touch "${@: -1}" ;;
+  open)
+    case "$3" in
+      --relaunch) put screen tabs; put top 0; rm -f "$s/lifted" "$s/glide"; echo "$*" >>"$s/launches"
+        { tail -1 "$s/text-sizes" 2>/dev/null || echo default; } >>"$s/size-at-launch" ;;
+      svett://import\?file=svett-speed-hevy.csv\&kind=hevy) put screen import; put top 0 ;;
+      svett://coach\?ask=*) [[ -n "${FAKE_NO_ANSWER:-}" ]] || { put screen coach; put top 0; } ;;
+      *) exit 1 ;;
+    esac ;;
+  wait) [[ "$2" =~ ^[0-9]+$ ]] || y "$2" >/dev/null ;;
+  is) y "$3" >/dev/null ;;
+  scroll)
+    [[ "$3" == --until ]] || exit 1
+    if [[ "$2" == down ]]; then top=1; else top=0; fi
+    put top "$top"
+    glide
+    y "$4" >/dev/null ;;
+  gesture) [[ "$2" == pan ]] && touch "$s/lifted" && glide ;;
+  get)
+    centre=$(y "$3") || exit 1
+    if [[ -f "$s/glide" ]]; then rm -f "$s/glide"; centre=$((centre + 40)); fi
+    node -e 'console.log(JSON.stringify({ label: process.argv[1], rect: { x: 20, y: Number(process.argv[2]) - 22, width: 400, height: 44 } }))' \
+      "$(label "$3")" "$centre" ;;
+  press)
+    centre=$(y 'id="import-apply"') || exit 0
+    [[ "$screen" == import && "$3" == "$centre" && ! -f "$s/glide" && "$centre" -le 840 ]] &&
+      { put screen done; put top 0; echo pressed >>"$s/presses"; }
+    # A press iOS ignores still succeeds, as it does on the simulator.
+    exit 0 ;;
+  *) exit 1 ;;
+esac
+EOF
+chmod +x "$fake/speed-device"
+
+# Stand-ins for the proof scripts speed.sh runs, which write what the real ones write.
+speed_scripts="$root/speed-scripts"
+mkdir -p "$speed_scripts"
+cat >"$speed_scripts/startup.sh" <<'EOF'
+#!/usr/bin/env bash
+echo "startup.sh $*" >>"$FAKE_ROOT/speed-subcalls"
+# The real scripts leave the simulator at the default text size.
+eval "$SVETT_DEVICE_CMD settings text-size large"
+out=${*: -1}
+mkdir -p "$out"
+printf '%s\n' "5 cold launches." "Launch 1: cold start 1500 ms." "Launch 2: cold start 1520 ms." \
+  "Launch 3: cold start 1530 ms." "Launch 4: cold start 1550 ms." "Launch 5: cold start 1600 ms." \
+  "Median: cold start ${FAKE_COLD_START:-1530} ms, which the plan's 2 second target judges." >"$out/startup.txt"
+EOF
+cat >"$speed_scripts/logger.sh" <<'EOF'
+#!/usr/bin/env bash
+echo "logger.sh $*" >>"$FAKE_ROOT/speed-subcalls"
+# The real scripts leave the simulator at the default text size.
+eval "$SVETT_DEVICE_CMD settings text-size large"
+[[ -z "${FAKE_LOGGER_FAILS:-}" ]] || { echo "Set 1 of exercise 1 does not read Set 1" >&2; exit 1; }
+out=${*: -1}
+mkdir -p "$out"
+echo "Marking a set done until the row showed it: 38 ms (Release, on the fixture database, timed in the app)" >"$out/set-done.txt"
+EOF
+cat >"$speed_scripts/history.sh" <<'EOF'
+#!/usr/bin/env bash
+echo "history.sh $*" >>"$FAKE_ROOT/speed-subcalls"
+# The real scripts leave the simulator at the default text size.
+eval "$SVETT_DEVICE_CMD settings text-size large"
+echo "The history list showed rows on all 214 screens down to the oldest workout"
+EOF
+chmod +x "$speed_scripts"/*.sh
+
+# run_speed [VAR=value...] [speed.sh args...] leaves the exit status in speed_status.
+run_speed() {
+  local -a vars=()
+  while [[ "${1:-}" == *=* ]]; do
+    vars+=("$1")
+    shift
+  done
+  rm -rf "$root/speed-state" "$root/speed-calls" "$root/speed-subcalls"
+  speed_status=0
+  env PATH="$fake:$PATH" FAKE_ROOT="$root" FAKE_STATE="$root/speed-state" SVETT_SPEED_SCRIPTS="$speed_scripts" \
+    SVETT_DEVICE_CMD="speed-device --session 't3-test session' --device FAKE-UDID" \
+    "${vars[@]}" "$repo/scripts/sim/speed.sh" "$@" >"$output" 2>&1 || speed_status=$?
+}
+
+speed_table() {
+  local build=$1
+  cat <<EOF
+| What | Target | Measured | Build | Device |
+| --- | --- | --- | --- | --- |
+| Cold start to a usable Train tab | Under 2 seconds | 1530 ms, the median of 5 launches, meets the target | $build | svett iPhone 16 Pro Max simulator, iOS 27.2 |
+| Marking a set done, until the row shows it | Under 100 milliseconds | 38 ms, meets the target | $build | svett iPhone 16 Pro Max simulator, iOS 27.2 |
+| History list of 300 workouts | No blank rows while scrolling | No blank rows on any of 214 screens | $build | svett iPhone 16 Pro Max simulator, iOS 27.2 |
+| Importing 300 workouts from a Hevy file | Under 10 seconds | 4600 ms: 1200 ms to read and preview, 3400 ms to import, meets the target | $build | svett iPhone 16 Pro Max simulator, iOS 27.2 |
+| First words of a coach answer | Shown as soon as OpenAI sends them, within 100 milliseconds | 12 ms from arriving to the frame that showed them, meets the target | $build | svett iPhone 16 Pro Max simulator, iOS 27.2 |
+EOF
+}
+
+case_name="speed.sh Release with SVETT_DEVICE_CMD"
+run_speed --release "$root/speed"
+[[ "$speed_status" == 0 ]] || fail "speed.sh --release failed"
+check "speed.sh writes the five targets as one table with the Release build and the simulator" \
+  diff <(speed_table Release) "$root/speed/speed.md"
+check "speed.sh runs startup.sh, logger.sh and history.sh on the Release build, each into its own folder" \
+  diff <(printf '%s\n' "startup.sh --release $root/speed/startup" "logger.sh --release $root/speed/logger" \
+    "history.sh --release $root/speed/history") "$root/speed-subcalls"
+check "speed.sh writes a 300-workout Hevy export for the import" \
+  test "$(grep -c '^"Push","' "$root/speed/hevy/svett-speed-hevy.csv")" -eq 2000
+check "speed.sh copies the export into the app's documents" \
+  cmp "$root/speed/hevy/svett-speed-hevy.csv" "$root/data container/Documents/svett-speed-hevy.csv"
+check "speed.sh imports on a new database with timing on, and asks the coach on the fixture with its stand-in" \
+  diff <(printf '%s\n' \
+    "open com.kron00.svett --relaunch --launch-args=-svettFixture --launch-args=$root/data container/Documents/svett-speed-hevy.db --launch-args=-svettTiming --launch-args=1" \
+    "open com.kron00.svett --relaunch --launch-args=-svettFixture --launch-args=$root/data container/Documents/svett-speed-coach.db --launch-args=-svettTiming --launch-args=1 --launch-args=-svettChatGPTStub --launch-args=signedIn --launch-args=-svettCoachStub --launch-args=$root/data container/Documents/coach-best-squat.json") \
+    "$root/speed-state/launches"
+check "speed.sh launches both at the largest text size, after the scripts before it restored the default" \
+  diff <(printf '%s\n' accessibility-extra-extra-extra-large accessibility-extra-extra-extra-large) \
+    "$root/speed-state/size-at-launch"
+check "speed.sh leaves the simulator at the default text size" \
+  test "$(tail -1 "$root/speed-state/text-sizes")" == large
+check "speed.sh presses Import once, after it lifted it off the bottom edge and the screen stopped" \
+  test "$(cat "$root/speed-state/presses")" == pressed
+check "speed.sh scrolls to the times below each result" \
+  grep -qxF 'scroll down --until id="coach-first-words-timing"' "$root/speed-calls"
+check "speed.sh saves what svett said about each time" \
+  grep -qxF "First words shown 12 ms after they arrived" "$root/speed/coach/first-words.txt"
+check "speed.sh screenshots the import and the answer" \
+  test -f "$root/speed/hevy/02-imported.png" -a -f "$root/speed/coach/01-answer.png"
+check "speed.sh prints the table" grep -qF "| Cold start to a usable Train tab | Under 2 seconds | 1530 ms" "$output"
+
+case_name="speed.sh Debug"
+run_speed "$root/speed-debug"
+[[ "$speed_status" == 0 ]] || fail "speed.sh failed on Debug"
+check "speed.sh runs the scripts on the Debug build" grep -qxF "startup.sh $root/speed-debug/startup" "$root/speed-subcalls"
+check "speed.sh says a Debug build is not judged" \
+  grep -qF "| Debug, loaded from Metro, not judged | svett iPhone 16 Pro Max simulator, iOS 27.2 |" "$root/speed-debug/speed.md"
+
+case_name="speed.sh when a step fails or misses its target"
+run_speed FAKE_LOGGER_FAILS=1 FAKE_COLD_START=2741 FAKE_NO_ANSWER=1 --release "$root/speed-failed"
+check "speed.sh fails when a step fails" test "$speed_status" -ne 0
+check "speed.sh still writes every other row" \
+  grep -qF "| Importing 300 workouts from a Hevy file | Under 10 seconds | 4600 ms" "$root/speed-failed/speed.md"
+check "speed.sh says which step was not measured and why" \
+  grep -qF "| Marking a set done, until the row shows it | Under 100 milliseconds | Not measured: logger.sh failed. See logger/logger.log |" \
+    "$root/speed-failed/speed.md"
+check "speed.sh keeps the failing script's own words in its log" \
+  grep -qxF "Set 1 of exercise 1 does not read Set 1" "$root/speed-failed/logger/logger.log"
+check "speed.sh says when the coach did not answer" \
+  grep -qF "| First words of a coach answer | Shown as soon as OpenAI sends them, within 100 milliseconds | Not measured: The coach did not answer. See coach/coach.log |" \
+    "$root/speed-failed/speed.md"
+check "speed.sh marks a time over its target" \
+  grep -qF "| 2741 ms, the median of 5 launches, over the target |" "$root/speed-failed/speed.md"
+
+case_name="the speed fake"
+speed_device() {
+  env FAKE_ROOT="$root" FAKE_STATE="$root/speed-state" "$fake/speed-device" \
+    --session 't3-test session' --device FAKE-UDID "$@" >/dev/null 2>&1
+}
+rm -rf "$root/speed-state"
+speed_device open com.kron00.svett --relaunch
+speed_device open com.kron00.svett 'svett://import?file=svett-speed-hevy.csv&kind=hevy'
+check "the fake keeps Import below the screen until a scroll" fails speed_device is visible 'id="import-apply"'
+speed_device scroll down --until 'id="import-apply"'
+speed_device press 20 870
+check "the fake ignores a press at the bottom edge" test ! -e "$root/speed-state/presses"
+speed_device gesture pan 20 600 0 -300 400
+speed_device press 20 600
+check "the fake ignores a press while the screen still glides" test ! -e "$root/speed-state/presses"
+
 echo "$passed passed"
