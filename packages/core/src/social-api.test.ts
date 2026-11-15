@@ -227,8 +227,14 @@ describe("httpSocialApi", () => {
       "DELETE https://svett.test/v1/blocks/block%2F1",
       "DELETE https://svett.test/v1/followers/ben",
     ]);
-    const list = { blocks: [{ id: "b1", username: "anna" }] };
-    expect(await Effect.runPromise(server(200, list).api.blocks())).toEqual(list);
+    const list = { blocks: [{ id: "b1", username: "anna" }], next: "anna" };
+    const pages = server(200, list);
+    expect(await Effect.runPromise(pages.api.blocks())).toEqual(list);
+    await Effect.runPromise(pages.api.blocks("anna"));
+    expect(pages.sent.map(({ url }) => url)).toEqual([
+      "https://svett.test/v1/blocks",
+      "https://svett.test/v1/blocks?after=anna",
+    ]);
   });
 
   it("deletes the account it names with its receipt and reads that it is gone", async () => {

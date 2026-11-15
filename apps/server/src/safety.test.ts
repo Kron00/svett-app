@@ -1,6 +1,6 @@
 import { createServer } from "node:http";
 import { mkdtempSync } from "node:fs";
-import { readdir, readFile, utimes } from "node:fs/promises";
+import { readdir, readFile, rm, utimes, writeFile } from "node:fs/promises";
 import type { FileHandle } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -1239,6 +1239,28 @@ describe("deleting an account", { timeout: 60_000 }, () => {
     await other.stop();
   });
 
+  it("refuses a receipt that is not well formed before it reads the ledger or the database", async () => {
+    const url = await freshDatabase();
+    const { base } = await start(url);
+    const api = client(base);
+    const anyone = account("anyone");
+    // A file where the ledger's directory was makes every read of the ledger fail from here.
+    const ledger = join(ledgerDirs.get(Redacted.value(url))!, LEDGER_DIR);
+    await rm(ledger, { recursive: true });
+    await writeFile(ledger, "not a directory");
+    const statusOf = async (receipt: string) =>
+      (await api.call(anyone, "GET", `/v1/deletions/${receipt}`)).status;
+    expect(
+      await Promise.all(
+        ["short", "a".repeat(42), `${"a".repeat(42)}.`, "a!".repeat(30)].map(statusOf),
+      ),
+    ).toEqual([400, 400, 400, 400]);
+    // The router refuses a path parameter over 100 characters before any route runs.
+    expect(await statusOf("a".repeat(101))).toBe(404);
+    // A well-formed receipt reads the ledger, which fails now, so the ones above never did.
+    expect(await statusOf("a".repeat(100))).toBe(500);
+  });
+
   it("waits for a request in flight, so nothing it writes outlives the deletion", async () => {
     const url = await freshDatabase();
     const anna = AccountId.make(account("anna"));
@@ -1477,6 +1499,175 @@ describe(
     });
   },
 );
+
+/** A write between a follower and the account it follows, ready to race a block of the two. */
+interface PairWrite {
+  readonly name: string;
+  /** Whether the followed account is private. */
+  readonly private: boolean;
+  /** Whether the follower has asked to follow already. */
+  readonly requested: boolean;
+  /** What the write answers when the block committed first. */
+  readonly refused: string;
+  readonly actor: "follower" | "followed";
+  readonly run: (
+    follower: AccountId,
+    followed: AccountId,
+    request: string,
+  ) => Effect.Effect<unknown, unknown, SocialRows>;
+}
+
+const PAIR_WRITES: ReadonlyArray<PairWrite> = [
+  {
+    name: "follow",
+    private: false,
+    requested: false,
+    refused: "NotFound",
+    actor: "follower",
+    run: (follower) =>
+      Effect.flatMap(Effect.service(SocialRows), (rows) => rows.follow(follower, "followed")),
+  },
+  {
+    name: "follow request",
+    private: true,
+    requested: false,
+    refused: "NotFound",
+    actor: "follower",
+    run: (follower) =>
+      Effect.flatMap(Effect.service(SocialRows), (rows) => rows.follow(follower, "followed")),
+  },
+  {
+    name: "approval",
+    private: true,
+    requested: true,
+    refused: "RequestNotFound",
+    actor: "followed",
+    run: (_, followed, request) =>
+      Effect.flatMap(Effect.service(SocialRows), (rows) => rows.approve(followed, request)),
+  },
+];
+
+/** A follower and the account it follows or asks to follow, as `write` needs them. */
+const followPair = async (write: PairWrite) => {
+  const url = await freshDatabase();
+  const { base } = await start(url);
+  const api = client(base);
+  const [follower, followed] = [account("follower"), account("followed")];
+  await api.name(follower, "follower");
+  await api.name(followed, "followed", write.private);
+  let request = "";
+  if (write.requested) {
+    await api.ok(follower, "PUT", "/v1/profiles/followed/follow");
+    request = (await api.ok(followed, "GET", "/v1/follow-requests")).requests[0].id;
+  }
+  return {
+    url,
+    follower: AccountId.make(follower),
+    followed: AccountId.make(followed),
+    request,
+  };
+};
+
+/** Every follow or request between the two accounts, either way. */
+const followsBetween = (url: Redacted.Redacted, a: string, b: string) =>
+  query(
+    url,
+    `select follower_id, state from follow
+     where (follower_id = '${a}' and followee_id = '${b}')
+       or (follower_id = '${b}' and followee_id = '${a}')`,
+  );
+
+describe("a block racing a follow, a follow request or an approval", { timeout: 60_000 }, () => {
+  describe.each(PAIR_WRITES)("$name", (write) => {
+    describe.each(["follower", "followed"] as const)("blocked by the %s", (blocker) => {
+      /**
+       * Runs `first` as `firstActor` and holds its transaction open once it ran, starts
+       * `second` as `secondActor`, and lets `first` commit 300 ms later. Gives back whether
+       * `second` was still waiting then, and how each ended.
+       */
+      const race = (
+        url: Redacted.Redacted,
+        first: {
+          readonly actor: AccountId;
+          readonly run: Effect.Effect<unknown, unknown, SocialRows>;
+        },
+        second: {
+          readonly actor: AccountId;
+          readonly run: Effect.Effect<unknown, unknown, SocialRows>;
+        },
+      ) =>
+        Effect.runPromise(
+          Effect.gen(function* () {
+            const safety = yield* Safety;
+            const ran = yield* Deferred.make<void>();
+            const release = yield* Deferred.make<void>();
+            const firstFiber = yield* Effect.forkChild(
+              Effect.exit(
+                safety.asAccount(
+                  first.actor,
+                  undefined,
+                  Effect.gen(function* () {
+                    yield* first.run;
+                    yield* Deferred.succeed(ran, undefined);
+                    yield* Deferred.await(release);
+                  }).pipe(Effect.onError(() => Deferred.succeed(ran, undefined))),
+                ),
+              ),
+            );
+            yield* Deferred.await(ran);
+            const secondFiber = yield* Effect.forkChild(
+              Effect.exit(safety.asAccount(second.actor, undefined, second.run)),
+            );
+            yield* Effect.sleep("300 millis");
+            const waited = secondFiber.pollUnsafe() === undefined;
+            yield* Deferred.succeed(release, undefined);
+            return {
+              waited,
+              first: outcomeOf(yield* Fiber.join(firstFiber)),
+              second: outcomeOf(yield* Fiber.join(secondFiber)),
+            };
+          }).pipe(Effect.provide(servicesOf(url))),
+        );
+
+      const sides = (pair: Awaited<ReturnType<typeof followPair>>) => {
+        const [by, other] =
+          blocker === "follower" ? [pair.follower, "followed"] : [pair.followed, "follower"];
+        return {
+          block: {
+            actor: by,
+            run: Effect.flatMap(Effect.service(SocialRows), (rows) => rows.block(by, other)),
+          },
+          write: {
+            actor: write.actor === "follower" ? pair.follower : pair.followed,
+            run: write.run(pair.follower, pair.followed, pair.request),
+          },
+        };
+      };
+
+      it("commits first, and the block waits for it and then removes it", async () => {
+        const pair = await followPair(write);
+        const { block, write: written } = sides(pair);
+        expect(await race(pair.url, written, block)).toEqual({
+          waited: true,
+          first: "written",
+          second: "written",
+        });
+        expect(await followsBetween(pair.url, pair.follower, pair.followed)).toEqual([]);
+      });
+
+      it("waits for a block that started first, then is refused and leaves nothing", async () => {
+        const pair = await followPair(write);
+        const { block, write: written } = sides(pair);
+        expect(await race(pair.url, block, written)).toEqual({
+          waited: true,
+          first: "written",
+          second: write.refused,
+        });
+        expect(await followsBetween(pair.url, pair.follower, pair.followed)).toEqual([]);
+      });
+    });
+  });
+});
 
 describe("the safety proof script", { timeout: 60_000 }, () => {
   it("passes against a running server with the stand-in issuer, twice", async () => {

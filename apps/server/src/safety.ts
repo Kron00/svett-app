@@ -85,6 +85,26 @@ export const lockOther = (sql: PgClient.PgClient, other: string) =>
     if (present === undefined) return yield* new AccountGone();
   });
 
+/**
+ * The first key of every pair lock, beside the account locks' space and the ledger's lock
+ * space, so it meets neither.
+ */
+const PAIR_LOCK_SPACE = 5_152;
+
+/**
+ * Holds the lock of the two accounts `a` and `b` alone until the running transaction ends,
+ * the same lock whichever comes first. Block, unblock, follow, approve and remove-follower each
+ * take it for their pair and then check for a block, so a follow or request either commits
+ * before a block, which then removes it, or sees the block and is refused. A row that does not
+ * exist yet has no row lock to wait for, which is why this is a lock of its own. Take it after
+ * every account lock and before touching a follow, block or profile row, so a write that holds
+ * it never waits for one that waits for it.
+ */
+export const lockPair = (sql: PgClient.PgClient, a: string, b: string) => {
+  const [low, high] = a < b ? [a, b] : [b, a];
+  return sql`select pg_advisory_xact_lock(${PAIR_LOCK_SPACE}, hashtext(${`${low} ${high}`}))`;
+};
+
 export interface SafetyShape {
   /**
    * Runs `effect` for `account` in one transaction that holds the account's lock shared, after

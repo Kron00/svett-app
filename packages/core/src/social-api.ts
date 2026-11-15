@@ -91,8 +91,12 @@ export type FollowResult = typeof FollowResult.Type;
 export const Block = Schema.Struct({ id: Schema.String, username: Schema.String });
 export type Block = typeof Block.Type;
 
-export const BlockList = Schema.Struct({ blocks: Schema.Array(Block) });
-export type BlockList = typeof BlockList.Type;
+/** One page of blocks, by username. `next` asks for the page after it, and is null on the last. */
+export const BlockPage = Schema.Struct({
+  blocks: Schema.Array(Block),
+  next: Schema.NullOr(Schema.String),
+});
+export type BlockPage = typeof BlockPage.Type;
 
 /** The server deleted the account and ended its sessions. */
 export const AccountDeleted = Schema.Struct({ deleted: Schema.Literal(true) });
@@ -100,9 +104,10 @@ export type AccountDeleted = typeof AccountDeleted.Type;
 
 /**
  * A secret the phone makes for one deletion and sends with it. The deletion ends the session,
- * so the phone asks with the receipt alone whether the deletion happened.
+ * so the phone asks with the receipt alone whether the deletion happened. It goes in a path,
+ * and the server's router takes path parameters of at most 100 characters.
  */
-export const DeletionReceipt = Schema.String.check(Schema.isPattern(/^[A-Za-z0-9_-]{43,128}$/));
+export const DeletionReceipt = Schema.String.check(Schema.isPattern(/^[A-Za-z0-9_-]{43,100}$/));
 
 /** Whether the server deleted an account with the receipt the phone asked about. */
 export const DeletionAnswer = Schema.Struct({ deleted: Schema.Boolean });
@@ -357,7 +362,8 @@ export const httpSocialApi = (options: HttpSocialOptions) => {
      * between them, either way, ends.
      */
     block: (username: string) => call(Done, "PUT", `${at(username)}/block`),
-    blocks: () => call(BlockList, "GET", "/v1/blocks"),
+    /** A page of the accounts you blocked, after the page whose `next` is `after`. */
+    blocks: (after?: string) => call(BlockPage, "GET", `/v1/blocks${page(after)}`),
     /** Ends the block with this `Block.id`. */
     unblock: (block: string) => call(Done, "DELETE", `/v1/blocks/${encodeURIComponent(block)}`),
     /** Ends this account's follow of the signed-in account, without blocking it. */

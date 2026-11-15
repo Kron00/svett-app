@@ -239,7 +239,7 @@ const block = route(
 
 const blocks = route((account) =>
   Effect.gen(function* () {
-    return { blocks: yield* (yield* SocialRows).blocks(account) };
+    return yield* (yield* SocialRows).blocks(account, yield* after);
   }),
 );
 

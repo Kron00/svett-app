@@ -610,6 +610,38 @@ describe("follow lists", { timeout: 60_000 }, () => {
       next: null,
     });
   });
+
+  it("pages blocks by username until the last page", async () => {
+    const layer = await socialRows();
+    const pages = await Effect.runPromise(
+      Effect.gen(function* () {
+        const rows = yield* SocialRows;
+        yield* rows.saveProfile(ANNA as AccountId, {
+          username: Username.make("anna"),
+          private: false,
+        });
+        const blocked = Array.from(
+          { length: PAGE + 1 },
+          (_, n) => `b${String(n).padStart(3, "0")}`,
+        );
+        // Blocked newest first, so the pages follow usernames and not the order of blocking.
+        for (const username of [...blocked].reverse()) {
+          const account = `user_${username}` as AccountId;
+          yield* rows.saveProfile(account, { username: Username.make(username), private: false });
+          yield* rows.block(ANNA as AccountId, username);
+        }
+        const first = yield* rows.blocks(ANNA as AccountId);
+        const second = yield* rows.blocks(ANNA as AccountId, first.next ?? undefined);
+        return { blocked, first, second };
+      }).pipe(Effect.provide(layer)),
+    );
+    expect(pages.first.blocks.map(({ username }) => username)).toEqual(
+      pages.blocked.slice(0, PAGE),
+    );
+    expect(pages.first.next).toBe(pages.blocked[PAGE - 1]);
+    expect(pages.second.blocks.map(({ username }) => username)).toEqual([pages.blocked[PAGE]]);
+    expect(pages.second.next).toBeNull();
+  });
 });
 
 describe("a profile's activities", { timeout: 60_000 }, () => {

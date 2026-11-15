@@ -3,7 +3,7 @@ import {
   AccountId,
   Activity,
   type ActivityPage,
-  type Block,
+  type BlockPage,
   type ActivityView,
   type FollowRequest,
   type FollowState,
@@ -31,7 +31,7 @@ import {
   SCAN,
   type ListAnchor,
 } from "./paging.ts";
-import { lockOther } from "./safety.ts";
+import { lockOther, lockPair } from "./safety.ts";
 
 export class NotFound extends Data.TaggedError("NotFound")<{}> {}
 export class UsernameTaken extends Data.TaggedError("UsernameTaken")<{}> {}
@@ -141,8 +141,8 @@ export interface SocialRowsShape {
     viewer: AccountId,
     username: string,
   ) => Effect.Effect<void, SqlError | NotFound | CannotBlockSelf>;
-  /** The accounts `viewer` blocked, newest first. */
-  readonly blocks: (viewer: AccountId) => Effect.Effect<ReadonlyArray<Block>, SqlError>;
+  /** One page of the accounts `viewer` blocked, by username, paged like `followers`. */
+  readonly blocks: (viewer: AccountId, after?: string) => Effect.Effect<BlockPage, SqlError>;
   /** Ends the block with this ID, when `viewer` made it. A follow it ended stays ended. */
   readonly unblock: (
     viewer: AccountId,
@@ -468,6 +468,8 @@ export class SocialRows extends Context.Service<SocialRows, SocialRowsShape>()(
               const found = yield* findAccount(username, { viewer });
               if (found.id === viewer) return yield* new CannotFollowSelf();
               yield* named(found.id);
+              yield* lockPair(sql, viewer, found.id);
+              // Read again under the pair lock, so a block that committed meanwhile refuses it.
               const owner = yield* findAccount(username, { lock: true, viewer });
               if (owner.id !== found.id) return yield* new NotFound();
               const [own] = yield* sql`select 1 from profile where account_id = ${viewer}`;
@@ -534,10 +536,12 @@ export class SocialRows extends Context.Service<SocialRows, SocialRowsShape>()(
             yield* lockOther(sql, waiting.followerId).pipe(
               Effect.catchTag("AccountGone", () => Effect.fail(new RequestNotFound())),
             );
+            yield* lockPair(sql, owner, waiting.followerId);
             const approved = yield* sql`
               update follow set state = 'following'
               where id = ${request} and followee_id = ${owner} and state = 'requested'
                 and follower_id = ${waiting.followerId}
+                and not ${hiddenFrom(sql, owner, "follow.follower_id")}
               returning 1
             `;
             if (approved.length === 0) return yield* new RequestNotFound();
@@ -559,17 +563,10 @@ export class SocialRows extends Context.Service<SocialRows, SocialRowsShape>()(
               const other = yield* findAccount(username);
               if (other.id === viewer) return yield* new CannotBlockSelf();
               yield* named(other.id);
+              yield* lockPair(sql, viewer, other.id);
               yield* sql`
                 insert into block (blocker_id, blocked_id) values (${viewer}, ${other.id})
                 on conflict do nothing
-              `;
-              // Two accounts that block each other at once lock their follows in one order.
-              yield* sql`
-                select 1 from follow
-                where (follower_id = ${viewer} and followee_id = ${other.id})
-                  or (follower_id = ${other.id} and followee_id = ${viewer})
-                order by follower_id, followee_id
-                for update
               `;
               yield* sql`
                 delete from follow
@@ -578,30 +575,46 @@ export class SocialRows extends Context.Service<SocialRows, SocialRowsShape>()(
               `;
             }),
           ),
-        blocks: (viewer) =>
-          sql<{ readonly id: string; readonly username: string }>`
-            select b.id, p.username from block b
+        blocks: (viewer, after) =>
+          sql<{ readonly id: string; readonly username: string; readonly key: string }>`
+            select b.id, p.username, p.username_key as key from block b
             join profile p on p.account_id = b.blocked_id
             where b.blocker_id = ${viewer} and not ${deletedAccount(sql, "b.blocked_id")}
-            order by b.created_at desc, b.id
-            limit ${PAGE}
-          `.pipe(Effect.map((rows) => rows.map((row) => ({ id: row.id, username: row.username })))),
+              ${after === undefined ? sql`` : sql`and p.username_key collate "C" > ${after}`}
+            order by p.username_key collate "C"
+            limit ${PAGE + 1}
+          `.pipe(
+            Effect.map((rows): BlockPage => {
+              const page = rows.slice(0, PAGE);
+              return {
+                blocks: page.map((row) => ({ id: row.id, username: row.username })),
+                next: rows.length > PAGE ? (page.at(-1)?.key ?? null) : null,
+              };
+            }),
+          ),
         unblock: (viewer, block) =>
           Effect.gen(function* () {
+            const [found] = yield* sql<{ readonly blockedId: string }>`
+              select blocked_id as "blockedId" from block
+              where id = ${block} and blocker_id = ${viewer}
+            `;
+            if (found === undefined) return yield* new BlockNotFound();
+            yield* lockPair(sql, viewer, found.blockedId);
             const removed = yield* sql`
               delete from block where id = ${block} and blocker_id = ${viewer} returning 1
             `;
             if (removed.length === 0) return yield* new BlockNotFound();
-          }),
+          }).pipe(sql.withTransaction),
         removeFollower: (viewer, username) =>
           Effect.gen(function* () {
             const follower = yield* findAccount(username, { viewer });
+            yield* lockPair(sql, viewer, follower.id);
             yield* sql`
               delete from follow
               where follower_id = ${follower.id} and followee_id = ${viewer}
                 and state = 'following'
             `;
-          }),
+          }).pipe(sql.withTransaction),
       });
     }),
   );

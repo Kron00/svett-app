@@ -1,6 +1,7 @@
 import { type RouteProp, useNavigation, useRoute } from "@react-navigation/native";
 import {
   type Block,
+  type BlockPage,
   type FollowRequest,
   type OwnProfile,
   type ProfilePage,
@@ -550,24 +551,75 @@ function BlockedAccount({
   );
 }
 
+/** The first page of blocks, and the pages after it as Show more reads them. */
+function BlocksPages({
+  api,
+  first,
+  reload,
+}: {
+  readonly api: SocialApi;
+  readonly first: BlockPage;
+  readonly reload: () => void;
+}) {
+  // Pages read after an older first page are dropped when the screen reads it again.
+  const [more, setMore] = useState<{ readonly after: BlockPage; readonly page: BlockPage }>();
+  const [loading, setLoading] = useState(false);
+  const [problem, setProblem] = useState<string>();
+  const shown = more !== undefined && more.after === first ? more.page : first;
+  const showMore = () => {
+    if (shown.next === null) return;
+    setLoading(true);
+    setProblem(undefined);
+    void runSocial(api.blocks(shown.next)).then((result) => {
+      setLoading(false);
+      if (!result.ok) setProblem(result.message);
+      else {
+        setMore({
+          after: first,
+          page: { blocks: [...shown.blocks, ...result.value.blocks], next: result.value.next },
+        });
+      }
+    });
+  };
+  if (shown.blocks.length === 0) {
+    return (
+      <AppText tone="secondary" className="mx-gutter" testID="blocks-empty">
+        You have not blocked anyone. Block someone from the button at the top of their profile.
+      </AppText>
+    );
+  }
+  return (
+    <>
+      <View className="gap-3">
+        {shown.blocks.map((block) => (
+          <BlockedAccount key={block.id} api={api} block={block} onUnblocked={reload} />
+        ))}
+      </View>
+      {problem === undefined ? null : (
+        <AppText tone="destructive" className="mx-gutter" testID="blocks-more-failed">
+          {problem}
+        </AppText>
+      )}
+      {shown.next === null ? null : (
+        <View className="mx-gutter">
+          <Button
+            label={loading ? "Loading" : "Show more"}
+            disabled={loading}
+            onPress={showMore}
+            testID="blocks-more"
+          />
+        </View>
+      )}
+    </>
+  );
+}
+
 function BlocksRead({ api }: { readonly api: SocialApi }) {
   const read = useCallback(() => api.blocks(), [api]);
   const { state, reload } = useSocialRead(read);
   return (
     <SocialView state={state} testID="blocks">
-      {({ blocks }) =>
-        blocks.length === 0 ? (
-          <AppText tone="secondary" className="mx-gutter" testID="blocks-empty">
-            You have not blocked anyone. Block someone from the button at the top of their profile.
-          </AppText>
-        ) : (
-          <View className="gap-3">
-            {blocks.map((block) => (
-              <BlockedAccount key={block.id} api={api} block={block} onUnblocked={reload} />
-            ))}
-          </View>
-        )
-      }
+      {(first) => <BlocksPages api={api} first={first} reload={reload} />}
     </SocialView>
   );
 }

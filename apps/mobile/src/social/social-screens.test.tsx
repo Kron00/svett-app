@@ -424,7 +424,11 @@ describe("blocked accounts", () => {
 
   it("unblocks an account by its block's ID and reads the list again", async () => {
     app.route.params = {};
-    answer("GET /v1/blocks", ok({ blocks: [{ id: BLOCK, username: "ben" }] }), ok({ blocks: [] }));
+    answer(
+      "GET /v1/blocks",
+      ok({ blocks: [{ id: BLOCK, username: "ben" }], next: null }),
+      ok({ blocks: [], next: null }),
+    );
     answer(`DELETE /v1/blocks/${BLOCK}`, ok({}));
     const root = await render(<BlocksScreen />, "unblock-ben");
     await press(root, "unblock-ben");
@@ -432,9 +436,27 @@ describe("blocked accounts", () => {
     expect(app.sent).toEqual(["GET /v1/blocks", `DELETE /v1/blocks/${BLOCK}`, "GET /v1/blocks"]);
   });
 
+  it("shows more blocks a page at a time until the last page", async () => {
+    app.route.params = {};
+    answer("GET /v1/blocks", ok({ blocks: [{ id: BLOCK, username: "ben" }], next: "ben" }));
+    answer(
+      "GET /v1/blocks?after=ben",
+      ok({
+        blocks: [{ id: "0190a0b2-0000-4000-8000-0000000b10c1", username: "cara" }],
+        next: null,
+      }),
+    );
+    const root = await render(<BlocksScreen />, "unblock-ben");
+    await press(root, "blocks-more");
+    await until(() => has(root, "unblock-cara"), "the second page");
+    expect(has(root, "unblock-ben")).toBe(true);
+    expect(has(root, "blocks-more")).toBe(false);
+    expect(app.sent).toEqual(["GET /v1/blocks", "GET /v1/blocks?after=ben"]);
+  });
+
   it("says when a request was refused for going too fast", async () => {
     app.route.params = {};
-    answer("GET /v1/blocks", ok({ blocks: [{ id: BLOCK, username: "ben" }] }));
+    answer("GET /v1/blocks", ok({ blocks: [{ id: BLOCK, username: "ben" }], next: null }));
     answer(`DELETE /v1/blocks/${BLOCK}`, { status: 429, body: { error: "rate_limited" } });
     const root = await render(<BlocksScreen />, "unblock-ben");
     await press(root, "unblock-ben");
