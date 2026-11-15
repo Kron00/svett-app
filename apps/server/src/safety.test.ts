@@ -1577,58 +1577,58 @@ const followsBetween = (url: Redacted.Redacted, a: string, b: string) =>
        or (follower_id = '${b}' and followee_id = '${a}')`,
   );
 
+/**
+ * Runs `first` as its actor and holds its transaction open once it ran, starts `second` as
+ * its actor, and lets `first` commit 300 ms later. Gives back whether `second` was still
+ * waiting then, and how each ended.
+ */
+const race = (
+  url: Redacted.Redacted,
+  first: {
+    readonly actor: AccountId;
+    readonly run: Effect.Effect<unknown, unknown, SocialRows>;
+  },
+  second: {
+    readonly actor: AccountId;
+    readonly run: Effect.Effect<unknown, unknown, SocialRows>;
+  },
+) =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      const safety = yield* Safety;
+      const ran = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const firstFiber = yield* Effect.forkChild(
+        Effect.exit(
+          safety.asAccount(
+            first.actor,
+            undefined,
+            Effect.gen(function* () {
+              yield* first.run;
+              yield* Deferred.succeed(ran, undefined);
+              yield* Deferred.await(release);
+            }).pipe(Effect.onError(() => Deferred.succeed(ran, undefined))),
+          ),
+        ),
+      );
+      yield* Deferred.await(ran);
+      const secondFiber = yield* Effect.forkChild(
+        Effect.exit(safety.asAccount(second.actor, undefined, second.run)),
+      );
+      yield* Effect.sleep("300 millis");
+      const waited = secondFiber.pollUnsafe() === undefined;
+      yield* Deferred.succeed(release, undefined);
+      return {
+        waited,
+        first: outcomeOf(yield* Fiber.join(firstFiber)),
+        second: outcomeOf(yield* Fiber.join(secondFiber)),
+      };
+    }).pipe(Effect.provide(servicesOf(url))),
+  );
+
 describe("a block racing a follow, a follow request or an approval", { timeout: 60_000 }, () => {
   describe.each(PAIR_WRITES)("$name", (write) => {
     describe.each(["follower", "followed"] as const)("blocked by the %s", (blocker) => {
-      /**
-       * Runs `first` as `firstActor` and holds its transaction open once it ran, starts
-       * `second` as `secondActor`, and lets `first` commit 300 ms later. Gives back whether
-       * `second` was still waiting then, and how each ended.
-       */
-      const race = (
-        url: Redacted.Redacted,
-        first: {
-          readonly actor: AccountId;
-          readonly run: Effect.Effect<unknown, unknown, SocialRows>;
-        },
-        second: {
-          readonly actor: AccountId;
-          readonly run: Effect.Effect<unknown, unknown, SocialRows>;
-        },
-      ) =>
-        Effect.runPromise(
-          Effect.gen(function* () {
-            const safety = yield* Safety;
-            const ran = yield* Deferred.make<void>();
-            const release = yield* Deferred.make<void>();
-            const firstFiber = yield* Effect.forkChild(
-              Effect.exit(
-                safety.asAccount(
-                  first.actor,
-                  undefined,
-                  Effect.gen(function* () {
-                    yield* first.run;
-                    yield* Deferred.succeed(ran, undefined);
-                    yield* Deferred.await(release);
-                  }).pipe(Effect.onError(() => Deferred.succeed(ran, undefined))),
-                ),
-              ),
-            );
-            yield* Deferred.await(ran);
-            const secondFiber = yield* Effect.forkChild(
-              Effect.exit(safety.asAccount(second.actor, undefined, second.run)),
-            );
-            yield* Effect.sleep("300 millis");
-            const waited = secondFiber.pollUnsafe() === undefined;
-            yield* Deferred.succeed(release, undefined);
-            return {
-              waited,
-              first: outcomeOf(yield* Fiber.join(firstFiber)),
-              second: outcomeOf(yield* Fiber.join(secondFiber)),
-            };
-          }).pipe(Effect.provide(servicesOf(url))),
-        );
-
       const sides = (pair: Awaited<ReturnType<typeof followPair>>) => {
         const [by, other] =
           blocker === "follower" ? [pair.follower, "followed"] : [pair.followed, "follower"];

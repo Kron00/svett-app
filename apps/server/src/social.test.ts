@@ -625,7 +625,7 @@ describe("follow lists", { timeout: 60_000 }, () => {
           (_, n) => `b${String(n).padStart(3, "0")}`,
         );
         // Blocked newest first, so the pages follow usernames and not the order of blocking.
-        for (const username of [...blocked].reverse()) {
+        for (const username of blocked.toReversed()) {
           const account = `user_${username}` as AccountId;
           yield* rows.saveProfile(account, { username: Username.make(username), private: false });
           yield* rows.block(ANNA as AccountId, username);
