@@ -27,6 +27,7 @@ import {
   RowNotFoundError,
   selectById,
   selectRows,
+  selectRowsWithDeleted,
   softDeleteRows,
   TABLES,
   updateRow,
@@ -131,6 +132,22 @@ const makeProposalRepository = Effect.gen(function* () {
             { ...draft, id, status: "pending", createdAt: now, updatedAt: now, deletedAt: null },
           ]);
           return id;
+        }),
+      ),
+    /**
+     * Stores a proposal made elsewhere, such as by a connected assistant, under the ID it came
+     * with, unless this phone holds that ID already, even deleted. Gives back whether it stored it.
+     */
+    receive: (id: ProposalId, draft: ProposalDraft, createdAt: EpochMillis) =>
+      run(
+        Effect.gen(function* () {
+          const held = yield* selectRowsWithDeleted(TABLES.proposal, "id = ?", [id]);
+          if (held.length > 0) return false;
+          const now = yield* currentTime;
+          yield* insertRows(TABLES.proposal, [
+            { ...draft, id, status: "pending", createdAt, updatedAt: now, deletedAt: null },
+          ]);
+          return true;
         }),
       ),
     get: (id: ProposalId) => run(selectById(TABLES.proposal, id)),
