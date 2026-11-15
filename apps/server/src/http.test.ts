@@ -13,7 +13,7 @@ import { ServerConfig } from "./config.ts";
 import { databaseLayer, migrate } from "./database.ts";
 import { Routes } from "./http.ts";
 import { PgTools } from "./pg-tools.ts";
-import { startTestPostgres, type TestPostgres } from "./test-postgres.ts";
+import { query, startTestPostgres, type TestPostgres } from "./test-postgres.ts";
 
 let postgres: TestPostgres;
 
@@ -66,6 +66,11 @@ describe("GET /health", { timeout: 60_000 }, () => {
   it("answers ok with the time of the newest backup", async () => {
     const url = await postgres.createDatabase("health_ok");
     await Effect.runPromise(migrate.pipe(Effect.provide(databaseLayer(url))));
+    // A restore must bring back every table the migrations made, however many there are.
+    const [migrated] = await query<{ tables: number }>(
+      url,
+      "select count(*)::int as tables from information_schema.tables where table_schema = 'public'",
+    );
     const dir = await mkdtemp(join(tmpdir(), "svett-health-"));
 
     const [before, backup, after] = await Effect.runPromise(
@@ -99,7 +104,7 @@ describe("GET /health", { timeout: 60_000 }, () => {
           backup: new Date(backup.takenAt).toISOString(),
           checkedAt: expect.any(String),
           restored: true,
-          tables: 20,
+          tables: migrated?.tables,
         },
       },
     });
