@@ -136,6 +136,20 @@ export interface AssistantRowsShape {
   ) => Effect.Effect<number, SqlError>;
 }
 
+/** A connection's next pair of tokens, with the hashes and ends the database keeps. */
+const newTokens = (nowMillis: number) => {
+  const accessToken = newSecret("at");
+  const refreshToken = newSecret("rt");
+  return {
+    accessToken,
+    refreshToken,
+    accessHash: secretHash(accessToken),
+    refreshHash: secretHash(refreshToken),
+    accessExpires: nowMillis + LIFETIME_MS.access,
+    refreshExpires: nowMillis + LIFETIME_MS.refresh,
+  };
+};
+
 /** The scopes a stored scope list names, in svett's order. */
 const scopesOf = (stored: string): ReadonlyArray<AssistantScope> => {
   const named = new Set(stored.split(" "));
@@ -155,19 +169,6 @@ export class AssistantRows extends Context.Service<AssistantRows, AssistantRowsS
     AssistantRows,
     Effect.gen(function* () {
       const sql = yield* PgClient.PgClient;
-
-      const newTokens = (nowMillis: number) => {
-        const accessToken = newSecret("at");
-        const refreshToken = newSecret("rt");
-        return {
-          accessToken,
-          refreshToken,
-          accessHash: secretHash(accessToken),
-          refreshHash: secretHash(refreshToken),
-          accessExpires: nowMillis + LIFETIME_MS.access,
-          refreshExpires: nowMillis + LIFETIME_MS.refresh,
-        };
-      };
 
       return AssistantRows.of({
         registerClient: ({ name, redirectUris, nowMillis }) =>
@@ -290,7 +291,9 @@ export class AssistantRows extends Context.Service<AssistantRows, AssistantRowsS
               where access_hash = ${secretHash(accessToken)} and access_expires_ms > ${nowMillis}
             `,
             ([row]) =>
-              row === undefined ? Option.none() : Option.some({ ...row, scopes: scopesOf(row.scopes) }),
+              row === undefined
+                ? Option.none()
+                : Option.some({ ...row, scopes: scopesOf(row.scopes) }),
           ),
         holdConnection: (connectionId) =>
           Effect.map(

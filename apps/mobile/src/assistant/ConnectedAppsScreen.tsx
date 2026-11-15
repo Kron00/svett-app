@@ -54,10 +54,7 @@ function Connection({
       ],
     );
   return (
-    <View
-      className="mx-gutter gap-2 rounded-card bg-surface p-gutter"
-      testID={`connection-${id}`}
-    >
+    <View className="mx-gutter gap-2 rounded-card bg-surface p-gutter" testID={`connection-${id}`}>
       <AppText variant="headline" accessibilityRole="header">
         {name}
       </AppText>
@@ -123,8 +120,8 @@ export function ConnectedAppsScreen() {
   return (
     <Screen testID="connected-apps-screen">
       <AppText tone="secondary" className="mx-gutter">
-        Apps you connect can only do what you allowed when you connected them. They never see
-        anyone else&apos;s data, and connecting one changes nothing about what your followers see.
+        Apps you connect can only do what you allowed when you connected them. They never see anyone
+        else&apos;s data, and connecting one changes nothing about what your followers see.
       </AppText>
       {standIn === undefined ? (
         <SignedInOnly signedOut={SIGNED_OUT}>{(api) => <Connections api={api} />}</SignedInOnly>

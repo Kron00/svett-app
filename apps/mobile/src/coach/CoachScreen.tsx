@@ -196,13 +196,12 @@ function Coach() {
       () => setStatusFailed(true),
     );
   }, []);
-  useFocusEffect(checkStatus);
   // Proposals a connected app such as ChatGPT made arrive with a sync.
-  useFocusEffect(
-    useCallback(() => {
-      void syncAgain();
-    }, []),
-  );
+  const onFocus = useCallback(() => {
+    checkStatus();
+    void syncAgain();
+  }, [checkStatus]);
+  useFocusEffect(onFocus);
   useEffect(() => {
     const subscription = AppState.addEventListener("change", (state) => {
       if (state === "active") checkStatus();

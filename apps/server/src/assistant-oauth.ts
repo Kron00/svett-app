@@ -170,10 +170,13 @@ const checkRequest = (params: Readonly<Record<string, string>>) =>
   Effect.gen(function* () {
     const base = yield* publicBase;
     const clientId = params["client_id"];
-    if (clientId === undefined) return yield* new BadClient({ message: "The app sent no client ID." });
+    if (clientId === undefined)
+      return yield* new BadClient({ message: "The app sent no client ID." });
     const found = yield* (yield* AssistantRows).client(clientId);
     if (Option.isNone(found)) {
-      return yield* new BadClient({ message: "svett does not know this app. Add svett to it again." });
+      return yield* new BadClient({
+        message: "svett does not know this app. Add svett to it again.",
+      });
     }
     const client = found.value;
     const asked = params["redirect_uri"];

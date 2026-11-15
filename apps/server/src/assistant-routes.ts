@@ -26,7 +26,9 @@ const revoke = route((account) =>
   }),
 ).pipe(
   Effect.catchTag("ConnectionNotFound", () =>
-    Effect.succeed(HttpServerResponse.jsonUnsafe({ error: "connection_not_found" }, { status: 404 })),
+    Effect.succeed(
+      HttpServerResponse.jsonUnsafe({ error: "connection_not_found" }, { status: 404 }),
+    ),
   ),
 );
 

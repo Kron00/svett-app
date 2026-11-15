@@ -82,10 +82,7 @@ const rpcResult = (id: RpcId, result: unknown) =>
   HttpServerResponse.jsonUnsafe({ jsonrpc: "2.0", id, result });
 
 const rpcError = (id: RpcId, code: number, message: string, status = 200) =>
-  HttpServerResponse.jsonUnsafe(
-    { jsonrpc: "2.0", id, error: { code, message } },
-    { status },
-  );
+  HttpServerResponse.jsonUnsafe({ jsonrpc: "2.0", id, error: { code, message } }, { status });
 
 /** A tool's answer as MCP carries it. `isError` tells the model the call did nothing. */
 const toolResult = (text: string, isError: boolean) => ({
@@ -154,10 +151,10 @@ const callTool = (grant: Grant, scoped: ScopedTool, argumentsJson: string) =>
         const { result, plan } = yield* withAccountCopy(
           grant.accountId,
           Effect.gen(function* () {
-            const result = yield* scoped.tool.execute(argumentsJson, { offsetMinutes: 0 });
-            if (result.proposalId === undefined) return { result, plan: undefined };
-            const view = yield* Effect.orDie(proposalView(ProposalId.make(result.proposalId)));
-            return { result, plan: view.plan };
+            const ran = yield* scoped.tool.execute(argumentsJson, { offsetMinutes: 0 });
+            if (ran.proposalId === undefined) return { result: ran, plan: undefined };
+            const view = yield* Effect.orDie(proposalView(ProposalId.make(ran.proposalId)));
+            return { result: ran, plan: view.plan };
           }),
         );
         const now = yield* Clock.currentTimeMillis;
@@ -217,7 +214,8 @@ const handle = Effect.gen(function* () {
       const call = decodeToolCall(message.params);
       if (Option.isNone(call)) return rpcError(id, -32602, "tools/call needs a tool name.");
       const scoped = TOOLS.find(({ tool }) => tool.name === call.value.name);
-      if (scoped === undefined) return rpcError(id, -32602, `svett has no tool ${call.value.name}.`);
+      if (scoped === undefined)
+        return rpcError(id, -32602, `svett has no tool ${call.value.name}.`);
       if (!grant.scopes.includes(scoped.scope)) {
         return rpcResult(
           id,
