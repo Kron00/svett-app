@@ -13,7 +13,7 @@ import {
   type PostRows,
   type PostRowsExercise,
   type RouteDetail,
-  type RoutePoint,
+  type PostRoutePoint,
   thinRoute,
   viewPostDetail,
   visibleRoute,
@@ -57,6 +57,8 @@ const activity = (kind: Activity["kind"], durationS = 1800): Activity => ({
   id: ActivityId.make(uuid(1)),
   ...ROW,
   kind,
+  status: "finished",
+  routineId: null,
   startedAt: EpochMillis.make(1_790_000_000_000),
   durationS: DurationSeconds.make(durationS),
   title: "Session",
@@ -78,6 +80,8 @@ const exercise = (n: number, position: number): ActivityExercise => ({
   position,
   supersetGroup: null,
   notes: "",
+  setFields: "weight_reps",
+  restS: null,
 });
 
 const set = (
@@ -97,6 +101,9 @@ const set = (
   durationS: null,
   distanceM: null,
   rpe: null,
+  done: true,
+  targetRepsMin: null,
+  targetRepsMax: null,
 });
 
 const lifting: PostRows = {
@@ -142,6 +149,7 @@ const samples = (): ReadonlyArray<ActivitySample> => [
     activityTrackId: track.id,
     recordedAt: EpochMillis.make(1_790_000_000_000 + index * 1000),
     kind: "location",
+    segment: 0,
     latitude: point.latitude,
     longitude: point.longitude,
     altitudeM: 12,
@@ -376,14 +384,14 @@ describe("viewPostDetail", () => {
 });
 
 // About 111 m per 0.001 degree of latitude, at this longitude about 56 m per 0.001 degree.
-const metresFrom = (a: RoutePoint, b: RoutePoint) =>
+const metresFrom = (a: PostRoutePoint, b: PostRoutePoint) =>
   Math.hypot(
     (a.latitude - b.latitude) * 111_195,
     (a.longitude - b.longitude) * 111_195 * Math.cos((a.latitude * Math.PI) / 180),
   );
 
 /** Every point on every drawn line, the lines' own points and 20 between each pair. */
-const drawn = (lines: ReadonlyArray<ReadonlyArray<RoutePoint>>) =>
+const drawn = (lines: ReadonlyArray<ReadonlyArray<PostRoutePoint>>) =>
   lines.flatMap((line) =>
     line.slice(1).flatMap((to, index) => {
       const from = line[index]!;
@@ -395,27 +403,27 @@ const drawn = (lines: ReadonlyArray<ReadonlyArray<RoutePoint>>) =>
   );
 
 /** `steps` positions along `to`, from its first step out. */
-const leg = (to: (index: number) => RoutePoint, steps: number) =>
+const leg = (to: (index: number) => PostRoutePoint, steps: number) =>
   Array.from({ length: steps }, (_, index) => to(index + 1));
 /** `steps` positions along `to`, from its last step back to its start. */
-const back = (to: (index: number) => RoutePoint, steps: number) =>
+const back = (to: (index: number) => PostRoutePoint, steps: number) =>
   Array.from({ length: steps }, (_, index) => to(steps - index - 1));
 
 describe("visibleRoute", () => {
   it("drops every reading inside either circle", () => {
-    expect(visibleRoute(north(10), 200, 300)).toEqual([north(10).slice(2, 8)]);
-    expect(visibleRoute(north(10), 0, 0)).toEqual([north(10).slice(1, 10)]);
+    expect(visibleRoute([north(10)], 200, 300)).toEqual([north(10).slice(2, 8)]);
+    expect(visibleRoute([north(10)], 0, 0)).toEqual([north(10).slice(1, 10)]);
   });
 
   it("shows nothing when the circles cover the route", () => {
-    expect(visibleRoute(north(4), 300, 300)).toEqual([]);
-    expect(visibleRoute(north(0), 0, 0)).toEqual([]);
+    expect(visibleRoute([north(4)], 300, 300)).toEqual([]);
+    expect(visibleRoute([north(0)], 0, 0)).toEqual([]);
   });
 
   it("keeps a loop's middle when it starts and ends at the door", () => {
     const out = north(5);
     const loop = [...out, ...out.slice(0, -1).toReversed()];
-    expect(visibleRoute(loop, 250, 250)).toEqual([loop.slice(3, 8)]);
+    expect(visibleRoute([loop], 250, 250)).toEqual([loop.slice(3, 8)]);
   });
 
   it("cuts a run that passes home twice midway into stretches, none of them near home", () => {
@@ -435,7 +443,7 @@ describe("visibleRoute", () => {
       ...leg(step(0, 0.002), 18),
     ];
     const end = run.at(-1)!;
-    const lines = visibleRoute(run, 300, 300);
+    const lines = visibleRoute([run], 300, 300);
     // Out and back north, out and back south, and east, each cut where it reaches home.
     expect(lines.length).toBe(3);
     for (const point of [...lines.flat(), ...drawn(lines)]) {
@@ -444,7 +452,7 @@ describe("visibleRoute", () => {
     }
     expect(lines.flat()).not.toContainEqual(home);
     // Thinned to a few positions, the stretches still never join across home.
-    const thin = visibleRoute(run, 300, 300, 12);
+    const thin = visibleRoute([run], 300, 300, 12);
     expect(thin.flat().length).toBeLessThanOrEqual(12);
     for (const point of drawn(thin)) {
       expect(metresFrom(point, home)).toBeGreaterThan(300);
@@ -462,8 +470,16 @@ describe("visibleRoute", () => {
       { latitude: 59.91, longitude: 10.7 },
       { latitude: 59.92, longitude: 10.7 },
     ];
-    const lines = visibleRoute([home, ...run.slice(1), home], 100, 100);
+    const lines = visibleRoute([[home, ...run.slice(1), home]], 100, 100);
     expect(lines).toEqual([run.slice(1, 3), run.slice(3)]);
+  });
+
+  it("never joins two stretches recorded either side of a pause", () => {
+    const route = north(10);
+    expect(visibleRoute([route.slice(0, 5), route.slice(5)], 0, 0)).toEqual([
+      route.slice(1, 5),
+      route.slice(5, 10),
+    ]);
   });
 });
 
@@ -488,8 +504,15 @@ describe("thinRoute", () => {
   });
 });
 
-/** A run over `positions` as a follower sees it, its start and end hidden `hideM` around. */
-const runOver = (positions: ReadonlyArray<RoutePoint>, hideM: number) =>
+/**
+ * A run over `positions` as a follower sees it, its start and end hidden `hideM` around, each
+ * position recorded in the stretch `segmentOf` gives it.
+ */
+const runOver = (
+  positions: ReadonlyArray<PostRoutePoint>,
+  hideM: number,
+  segmentOf: (index: number) => number = () => 0,
+) =>
   viewPostDetail(
     activity("run", 1500),
     {
@@ -502,6 +525,7 @@ const runOver = (positions: ReadonlyArray<RoutePoint>, hideM: number) =>
           activityTrackId: track.id,
           recordedAt: EpochMillis.make(1_790_000_000_000 + index * 1000),
           kind: "location",
+          segment: segmentOf(index),
           latitude: point.latitude,
           longitude: point.longitude,
           altitudeM: null,
@@ -510,6 +534,16 @@ const runOver = (positions: ReadonlyArray<RoutePoint>, hideM: number) =>
     },
     seen([]),
   ) as RouteDetail;
+
+describe("a post's route", () => {
+  it("never draws a line across a pause", () => {
+    const route = north(10);
+    expect(runOver(route, 0, (index) => (index < 5 ? 0 : 1)).route).toEqual([
+      route.slice(1, 5),
+      route.slice(5, 10),
+    ]);
+  });
+});
 
 describe("routeMap", () => {
   it("shows the map when a stretch is left", () => {
@@ -615,8 +649,11 @@ describe("feed lines", () => {
   it("sums up a post", () => {
     const detail = viewPostDetail(activity("strength"), lifting, seen([]));
     if (detail?.type !== "lifting") throw new Error("expected a lifting detail");
-    expect(liftingLine(detail)).toBe("2 exercises · 4 sets · 1,800 kg");
-    expect(liftingLine({ ...detail, volumeKg: null })).toBe("2 exercises · 4 sets · Weight hidden");
+    expect(liftingLine(detail, "kg")).toBe("2 exercises · 4 sets · 1,800 kg");
+    expect(liftingLine(detail, "lb")).toBe("2 exercises · 4 sets · 3,968 lb");
+    expect(liftingLine({ ...detail, volumeKg: null }, "kg")).toBe(
+      "2 exercises · 4 sets · Weight hidden",
+    );
     expect(
       routeLine({
         type: "route",
@@ -649,7 +686,7 @@ describe("post details", () => {
   it("numbers normal sets and letters the others, as P1's detail does", () => {
     const detail = viewPostDetail(activity("strength"), lifting, seen(["weight"]));
     if (detail?.type !== "lifting") throw new Error("expected a lifting detail");
-    expect(postSetLines(detail.exercises[0]!.sets)).toEqual([
+    expect(postSetLines(detail.exercises[0]!.sets, "kg")).toEqual([
       {
         position: 0,
         setType: "warm_up",

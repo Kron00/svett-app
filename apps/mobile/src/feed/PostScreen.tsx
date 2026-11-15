@@ -30,6 +30,7 @@ import { SET_TYPE_COLOR } from "../design/tokens";
 import type { RootStackParamList } from "../navigation";
 import { formatDayAndTime } from "../progress/dates";
 import { MuscleSplitCard } from "../progress/MuscleSplitCard";
+import { useWorkoutSettings } from "../settings/store";
 import { AppText } from "../ui/AppText";
 import { Button } from "../ui/Button";
 import { ListRow, ListSection, SectionHeader } from "../ui/List";
@@ -74,7 +75,8 @@ function ExerciseSets({ exercise }: { readonly exercise: LiftingDetail["exercise
     failure: useColor(SET_TYPE_COLOR.failure),
     drop: useColor(SET_TYPE_COLOR.drop),
   };
-  const lines = postSetLines(exercise.sets);
+  const { unit } = useWorkoutSettings();
+  const lines = postSetLines(exercise.sets, unit);
   return (
     <View className="mx-gutter gap-1 rounded-card bg-surface px-4 py-3">
       <AppText variant="headline" accessibilityRole="header">
@@ -93,6 +95,7 @@ function ExerciseSets({ exercise }: { readonly exercise: LiftingDetail["exercise
 }
 
 function LiftingSection({ post, detail }: { readonly post: Post; readonly detail: LiftingDetail }) {
+  const { unit } = useWorkoutSettings();
   return (
     <>
       <View className="flex-row flex-wrap gap-3 px-gutter">
@@ -104,7 +107,7 @@ function LiftingSection({ post, detail }: { readonly post: Post; readonly detail
         />
         <StatTile
           label="Volume"
-          value={detail.volumeKg === null ? "Hidden" : formatVolumeKg(detail.volumeKg)}
+          value={detail.volumeKg === null ? "Hidden" : formatVolumeKg(detail.volumeKg, unit)}
           symbol="scalemass"
           testID="post-volume"
         />

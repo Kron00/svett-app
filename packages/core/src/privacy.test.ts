@@ -74,6 +74,8 @@ const activity = (hiddenFields: ReadonlyArray<HiddenField>, audience: Audience):
   updatedAt: EpochMillis.make(2),
   deletedAt: null,
   kind: "run",
+  status: "finished",
+  routineId: null,
   startedAt: EpochMillis.make(1_790_000_000_000),
   durationS: DurationSeconds.make(1800),
   title: "Morning run",

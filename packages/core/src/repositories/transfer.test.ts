@@ -17,13 +17,22 @@ import {
   SourceIdentity,
 } from "../schema.ts";
 import { MIGRATIONS, migrate } from "../migrations.ts";
+import { NO_CHOICES } from "../source-import.ts";
 import { Sql } from "../sql.ts";
 import { decodeSvettFile, type SvettFile } from "../svett-file.ts";
 import { TABLES } from "../table.ts";
 import { openTestDatabase, pointersToDeleted, T0 } from "../test-database.ts";
-import { PARENT, REFERENCES, TABLE_KEYS, undoSelection } from "../transfer.ts";
+import {
+  PARENT,
+  REFERENCES,
+  TABLE_KEYS,
+  type TableRows,
+  undoSelection,
+  writtenOf,
+} from "../transfer.ts";
 import { type ActivityDraft, ActivityRepository } from "./activities.ts";
 import { ExerciseAliasRepository, ExerciseRepository } from "./exercises.ts";
+import { GearRepository } from "./gear.ts";
 import { MADE_HERE, type Origin } from "./origin.ts";
 import {
   CoachMessageRepository,
@@ -33,6 +42,8 @@ import {
 } from "./records.ts";
 import { RoutineRepository } from "./routines.ts";
 import { TransferRepository } from "./transfer.ts";
+import { EMPTY_TARGET } from "../routine-plan.ts";
+import { startWorkoutFromRoutine } from "../start-workout.ts";
 
 type Database = Pick<ReturnType<typeof openTestDatabase>, "database" | "runtime">;
 
@@ -209,6 +220,7 @@ const fillEveryTable = async (database: Database) => {
             {
               kind: "location",
               recordedAt: EpochMillis.make(T0 - 86_000_000),
+              segment: 0,
               latitude: 59.33,
               longitude: 18.06,
               altitudeM: 12,
@@ -254,6 +266,10 @@ const fillEveryTable = async (database: Database) => {
         value: 81.4,
         origin: MADE_HERE,
       });
+      yield* (yield* GearRepository).save("kg", {
+        plates: [{ weight: 20, pairs: 3 }],
+        bars: [{ name: "Safety squat bar", weight: 30 }],
+      });
       const messageId = yield* coach.append({
         conversationId: ConversationId.make("01900000-0000-7000-8000-000000000001"),
         role: "user",
@@ -276,6 +292,27 @@ const fillEveryTable = async (database: Database) => {
           importBatchId: hevy,
         }),
       );
+      // A watch's copy of a workout here links to it, which fills activity_source.
+      yield* transfers.applySourceImport(
+        "gpx",
+        [
+          {
+            source: "gpx",
+            identity: SourceIdentity.make("2025-12-30T08:01:00.000Z"),
+            fingerprint: Fingerprint.make(contentFingerprint({ title: "Watch copy" })),
+            kind: "strength",
+            title: "Watch copy",
+            startedAt: EpochMillis.make(T0 - 86_400_000 + 60_000),
+            endedAt: EpochMillis.make(T0 - 86_400_000 + 600_000),
+            durationS: DurationSeconds.make(540),
+            distanceM: null,
+            energyKcal: null,
+            route: [],
+            heartRate: [],
+          },
+        ],
+        NO_CHOICES,
+      );
       yield* transfers.applyImport(fromOtherPhone, []);
 
       const gone = yield* activities.create(workout("Deleted later"));
@@ -284,6 +321,311 @@ const fillEveryTable = async (database: Database) => {
     }),
   );
 };
+
+/** A run whose route has one location sample in each of `segments`. */
+const routeRun = (title: string, segments: ReadonlyArray<number>): ActivityDraft => ({
+  ...workout(title),
+  kind: "run",
+  exercises: [],
+  track: {
+    distanceM: 3_000,
+    elevationGainM: 5,
+    hideStartM: 200,
+    hideEndM: 200,
+    samples: segments.map((segment, index) => ({
+      kind: "location" as const,
+      recordedAt: EpochMillis.make(T0 - 86_000_000 + index * 60_000),
+      segment,
+      latitude: 59.33 + index / 1_000,
+      longitude: 18.06,
+      altitudeM: null,
+    })),
+  },
+});
+
+/** A svett file as a svett of `version` wrote it, before location samples had a segment. */
+const asVersionBeforeSegments = (text: string, version: number): string => {
+  const json = JSON.parse(text);
+  json.version = version;
+  for (const sample of json.tables["activity_sample"]) delete sample.segment;
+  return JSON.stringify(json);
+};
+
+/** Starts a workout from a new one-exercise routine, as the Train tab does. */
+const startRoutine = (database: Database) =>
+  database.runtime.runPromise(
+    Effect.gen(function* () {
+      const routineId = yield* (yield* RoutineRepository).createRoutine({
+        folderId: null,
+        title: "Push",
+        notes: "",
+        position: 0,
+        exercises: [
+          {
+            exerciseId: libraryExerciseId("Barbell_Bench_Press_-_Medium_Grip"),
+            supersetGroup: null,
+            restS: null,
+            notes: "",
+            sets: [
+              { ...EMPTY_TARGET, weightKg: 80, repsMin: 5, repsMax: 5 },
+              { ...EMPTY_TARGET, weightKg: 80, repsMin: 5, repsMax: 8 },
+            ],
+          },
+        ],
+      });
+      return yield* startWorkoutFromRoutine(routineId);
+    }),
+  );
+
+const workoutInProgress = (database: Database) =>
+  database.runtime.runPromise(
+    Effect.flatMap(Effect.service(ActivityRepository), (activities) => activities.inProgress),
+  );
+
+const logged = (database: Database, title: string) =>
+  database.runtime.runPromise(
+    Effect.flatMap(Effect.service(ActivityRepository), (activities) =>
+      activities.create(workout(title)),
+    ),
+  );
+
+/** The file with every workout in it changed, as a file edited by hand. */
+const withWorkouts = (file: SvettFile, fields: Record<string, unknown>): SvettFile => ({
+  ...file,
+  tables: {
+    ...file.tables,
+    activity: (file.tables.activity ?? []).map((row) => Object.assign(row, fields)),
+  },
+});
+
+describe("TransferRepository and a workout in progress", () => {
+  it("leaves a workout in progress out of an export taken during it", async () => {
+    const phone = openTestDatabase(1);
+    await logged(phone, "Legs");
+    const draft = await startRoutine(phone);
+
+    const file = await exportFile(phone);
+    expect((file.tables.activity ?? []).map((row) => row["title"])).toEqual(["Legs"]);
+    expect((file.tables.activityExercise ?? []).map((row) => row["activityId"])).not.toContain(
+      draft,
+    );
+    expect(file.tables.activitySet).toHaveLength(2);
+    expect(file.tables.routine).toHaveLength(1);
+
+    const wiped = openTestDatabase(2);
+    await transfer(wiped, (repository) => repository.applyImport(file, []));
+    expect(await workoutInProgress(wiped)).toEqual(Option.none());
+    expect(pointersToDeleted(wiped)).toEqual([]);
+  });
+
+  it("skips a workout in progress in a file, counts it, and never puts a workout here in progress", async () => {
+    const other = openTestDatabase(2);
+    await logged(other, "Back");
+    const backInProgress = withWorkouts(await exportFile(other), { status: "in_progress" });
+    const phone = openTestDatabase(1);
+    const legs = await logged(phone, "Legs");
+    const legsInProgress = withWorkouts(await exportFile(phone), { status: "in_progress" });
+    const before = allRows(phone);
+
+    expect(
+      await transfer(phone, (repository) => repository.previewImport(backInProgress)),
+    ).toMatchObject({ added: [], changed: [], deleted: 0, skipped: 1 });
+    expect(
+      await transfer(phone, (repository) => repository.applyImport(backInProgress, [])),
+    ).toEqual(Option.none());
+    expect(
+      await transfer(phone, (repository) => repository.previewImport(legsInProgress)),
+    ).toMatchObject({ added: [], changed: [], skipped: 1 });
+    expect(
+      await transfer(phone, (repository) =>
+        repository.applyImport(legsInProgress, [`activity/${legs}`]),
+      ),
+    ).toEqual(Option.none());
+    expect(allRows(phone)).toEqual(before);
+    expect(await workoutInProgress(phone)).toEqual(Option.none());
+  });
+
+  it("keeps a workout discarded when Undo would put it back in progress beside another", async () => {
+    const phone = openTestDatabase(1);
+    const legs = await logged(phone, "Legs");
+    const renamed = withWorkouts(await exportFile(phone), { title: "Leg day" });
+    const { importBatchId } = Option.getOrThrow(
+      await transfer(phone, (repository) => repository.applyImport(renamed, [`activity/${legs}`])),
+    );
+    // A journal that holds a workout in progress, as one from a hand-edited file can.
+    phone.database
+      .prepare(
+        "UPDATE import_change SET replaced = json_set(replaced, '$.activity[0].status', 'in_progress') WHERE import_batch_id = ?",
+      )
+      .run(importBatchId);
+    const draft = await startRoutine(phone);
+
+    const undone = await transfer(phone, (repository) => repository.undoImport(importBatchId, []));
+    expect(undone).toEqual({ removed: 0, restored: 1, left: 0, kept: 0, discarded: 1 });
+    expect(Option.getOrThrow(await workoutInProgress(phone)).activity.id).toBe(draft);
+    expect(
+      phone.database
+        .prepare("SELECT title, status, deleted_at IS NOT NULL AS gone FROM activity WHERE id = ?")
+        .all(legs),
+    ).toEqual([{ title: "Legs", status: "in_progress", gone: 1 }]);
+    expect(pointersToDeleted(phone)).toEqual([]);
+  });
+
+  it("undoes an import whose journal was written before workouts had a status", async () => {
+    const phone = openTestDatabase(1);
+    const legs = await logged(phone, "Legs");
+    const renamed = withWorkouts(await exportFile(phone), { title: "Leg day" });
+    const { importBatchId } = Option.getOrThrow(
+      await transfer(phone, (repository) => repository.applyImport(renamed, [`activity/${legs}`])),
+    );
+    phone.database
+      .prepare(
+        "UPDATE import_change SET replaced = json_remove(replaced, '$.activity[0].status', '$.activity[0].routineId') WHERE import_batch_id = ?",
+      )
+      .run(importBatchId);
+
+    const preview = await transfer(phone, (repository) => repository.previewUndo(importBatchId));
+    expect(preview.changes.map(({ edited }) => edited)).toEqual([false]);
+    expect(await transfer(phone, (repository) => repository.undoImport(importBatchId, []))).toEqual(
+      { removed: 0, restored: 1, left: 0, kept: 0, discarded: 0 },
+    );
+    expect(
+      phone.database.prepare("SELECT title, status FROM activity WHERE deleted_at IS NULL").all(),
+    ).toEqual([{ title: "Legs", status: "finished" }]);
+  });
+});
+
+const timedSet = {
+  setType: "normal",
+  weightKg: null,
+  reps: null,
+  distanceM: null,
+  rpe: null,
+} as const;
+
+/** The row as svett wrote it before set fields. */
+const withoutSetFieldsKey = <A extends Readonly<Record<string, unknown>>>(row: A): A =>
+  Object.fromEntries(Object.entries(row).filter(([field]) => field !== "setFields")) as A;
+
+/** A workout with a lift logged by weight and reps and a plank logged by time. */
+const liftAndPlank = (title: string): ActivityDraft => ({
+  ...workout(title),
+  exercises: [
+    ...workout(title).exercises,
+    {
+      exerciseId: libraryExerciseId("Plank"),
+      supersetGroup: null,
+      notes: "",
+      sets: [
+        { ...timedSet, durationS: DurationSeconds.make(60) },
+        { ...timedSet, durationS: DurationSeconds.make(45) },
+      ],
+    },
+  ],
+});
+
+/** The file as svett wrote it before exercises had set fields. */
+const withoutSetFields = (file: SvettFile): string =>
+  JSON.stringify({
+    format: "svett",
+    version: 2,
+    exportedAt: file.exportedAt,
+    tables: Object.fromEntries(
+      TABLE_KEYS.map((key) => [
+        TABLES[key].name,
+        (file.tables[key] ?? []).map(withoutSetFieldsKey),
+      ]),
+    ),
+  });
+
+describe("TransferRepository and rows made before set fields", () => {
+  it("imports a version 2 file into a new install with the set fields migration 5 gave the rows", async () => {
+    const original = openTestDatabase(1);
+    await logged(original, "Legs");
+    await original.runtime.runPromise(
+      Effect.flatMap(Effect.service(ActivityRepository), (activities) =>
+        activities.create(liftAndPlank("Core")),
+      ),
+    );
+    const old = decodeSvettFile(withoutSetFields(await exportFile(original)));
+    if (Result.isFailure(old)) throw new Error(old.failure.message);
+
+    const fresh = openTestDatabase(2);
+    const imported = await transfer(fresh, (repository) => repository.applyImport(old.success, []));
+    const batch = Option.getOrThrow(imported).importBatchId;
+    expect(everyRow(fresh, batch)).toEqual(allRows(original));
+    expect(
+      fresh.database.prepare("SELECT set_fields FROM activity_exercise ORDER BY position").all(),
+    ).toEqual([
+      { set_fields: "weight_reps" },
+      { set_fields: "weight_reps" },
+      { set_fields: "time" },
+    ]);
+  });
+
+  it("undoes an import whose journal was written before exercises had set fields", async () => {
+    const phone = openTestDatabase(1);
+    const core = await phone.runtime.runPromise(
+      Effect.flatMap(Effect.service(ActivityRepository), (activities) =>
+        activities.create(liftAndPlank("Core")),
+      ),
+    );
+    const file = await exportFile(phone);
+    const changed: SvettFile = {
+      ...file,
+      tables: {
+        ...file.tables,
+        activity: (file.tables.activity ?? []).map((row) =>
+          Object.assign({}, row, { title: "Core day" }),
+        ),
+        activityExercise: (file.tables.activityExercise ?? []).map((row) =>
+          Object.assign({}, row, { notes: "Hold longer" }),
+        ),
+      },
+    };
+    const { importBatchId } = Option.getOrThrow(
+      await transfer(phone, (repository) => repository.applyImport(changed, [`activity/${core}`])),
+    );
+    // The journal as svett wrote it then: kept exercises without set fields, and the
+    // fingerprint of the record's rows without them.
+    const record = await exportFile(phone);
+    const before: TableRows = {
+      activity: record.tables.activity ?? [],
+      activityExercise: (record.tables.activityExercise ?? []).map(withoutSetFieldsKey),
+      activitySet: record.tables.activitySet ?? [],
+    };
+    phone.database
+      .prepare(
+        "UPDATE import_change SET written = ?, replaced = json_remove(replaced, '$.activity_exercise[0].setFields', '$.activity_exercise[1].setFields') WHERE import_batch_id = ?",
+      )
+      .run(writtenOf(before), importBatchId);
+    expect(
+      phone.database
+        .prepare(
+          "SELECT json_extract(replaced, '$.activity_exercise[1]') AS kept FROM import_change",
+        )
+        .all()
+        .map((row) => JSON.parse(String(row["kept"]))),
+    ).toEqual([expect.not.objectContaining({ setFields: expect.anything() })]);
+
+    const preview = await transfer(phone, (repository) => repository.previewUndo(importBatchId));
+    expect(preview.changes.map(({ edited }) => edited)).toEqual([false]);
+    expect(await transfer(phone, (repository) => repository.undoImport(importBatchId, []))).toEqual(
+      { removed: 0, restored: 1, left: 0, kept: 0, discarded: 0 },
+    );
+    expect(
+      phone.database
+        .prepare(
+          "SELECT notes, set_fields FROM activity_exercise WHERE deleted_at IS NULL ORDER BY position",
+        )
+        .all(),
+    ).toEqual([
+      { notes: "", set_fields: "weight_reps" },
+      { notes: "", set_fields: "time" },
+    ]);
+    expect(liveTitles(phone)).toEqual(["Core"]);
+  });
+});
 
 describe("TransferRepository", () => {
   it("exports every table, and a wiped database that imports the file equals the original row for row", async () => {
@@ -390,6 +732,176 @@ describe("TransferRepository", () => {
     expect(everyRow(fresh, batch)).toEqual(allRows(upgraded));
   });
 
+  it.each([1, 2, 3, 4, 5])(
+    "imports a route from a version %i file as one stretch",
+    async (version) => {
+      const original = openTestDatabase(1);
+      await original.runtime.runPromise(
+        Effect.flatMap(Effect.service(ActivityRepository), (activities) =>
+          activities.create(routeRun("Morning run", [0, 0, 0])),
+        ),
+      );
+      const { text } = await transfer(original, (repository) => repository.exportFile);
+      const file = Result.getOrThrow(decodeSvettFile(asVersionBeforeSegments(text, version)));
+      expect(file.version).toBe(version);
+
+      const wiped = openTestDatabase(2);
+      const imported = await transfer(wiped, (repository) => repository.applyImport(file, []));
+      const batch = Option.getOrThrow(imported).importBatchId;
+      expect(everyRow(wiped, batch)).toEqual(allRows(original));
+      // The same file again finds nothing new or changed.
+      const again = await transfer(wiped, (repository) => repository.previewImport(file));
+      expect({ added: again.added, changed: again.changed }).toEqual({ added: [], changed: [] });
+    },
+  );
+
+  it("writes version 7 and keeps each location sample's stretch through export and import", async () => {
+    const original = openTestDatabase(1);
+    await original.runtime.runPromise(
+      Effect.flatMap(Effect.service(ActivityRepository), (activities) =>
+        activities.create(routeRun("Intervals", [0, 0, 1, 2])),
+      ),
+    );
+    const { text } = await transfer(original, (repository) => repository.exportFile);
+    expect(JSON.parse(text).version).toBe(7);
+    const file = Result.getOrThrow(decodeSvettFile(text));
+
+    const wiped = openTestDatabase(2);
+    const imported = await transfer(wiped, (repository) => repository.applyImport(file, []));
+    const batch = Option.getOrThrow(imported).importBatchId;
+    expect(everyRow(wiped, batch)).toEqual(allRows(original));
+    expect(
+      wiped.database
+        .prepare("SELECT segment FROM activity_sample ORDER BY recorded_at")
+        .all()
+        .map((row) => row["segment"]),
+    ).toEqual([0, 0, 1, 2]);
+  });
+
+  it("imports a version 6 file, written before linked sources, with none", async () => {
+    const original = openTestDatabase(1);
+    await original.runtime.runPromise(
+      Effect.flatMap(Effect.service(ActivityRepository), (activities) =>
+        activities.create(routeRun("Morning run", [0, 0, 1])),
+      ),
+    );
+    const { text } = await transfer(original, (repository) => repository.exportFile);
+    const json = JSON.parse(text);
+    json.version = 6;
+    delete json.tables["activity_source"];
+    const file = Result.getOrThrow(decodeSvettFile(JSON.stringify(json)));
+    expect(file.version).toBe(6);
+    expect(file.tables.activitySource).toEqual([]);
+
+    const wiped = openTestDatabase(2);
+    const imported = await transfer(wiped, (repository) => repository.applyImport(file, []));
+    const batch = Option.getOrThrow(imported).importBatchId;
+    expect(everyRow(wiped, batch)).toEqual(allRows(original));
+    const again = await transfer(wiped, (repository) => repository.previewImport(file));
+    expect({ added: again.added, changed: again.changed }).toEqual({ added: [], changed: [] });
+  });
+
+  it("undoes an import whose journal was written before linked sources", async () => {
+    const phone = openTestDatabase(1);
+    const runId = await phone.runtime.runPromise(
+      Effect.flatMap(Effect.service(ActivityRepository), (activities) =>
+        activities.create(routeRun("Morning run", [0, 0])),
+      ),
+    );
+    const own = await exportFile(phone);
+    const file: SvettFile = {
+      ...own,
+      tables: {
+        ...own.tables,
+        activity: (own.tables.activity ?? []).map((row) =>
+          Object.assign(row, { title: "Long run" }),
+        ),
+      },
+    };
+    const before = liveRows(phone);
+    const imported = await transfer(phone, (transfers) =>
+      transfers.applyImport(file, [`activity/${runId}`]),
+    );
+    const { importBatchId } = Option.getOrThrow(imported);
+
+    // The journal as a svett before linked sources wrote it, with no such table.
+    for (const row of phone.database
+      .prepare("SELECT id, replaced FROM import_change WHERE import_batch_id = ?")
+      .all(importBatchId)) {
+      const replaced = JSON.parse(String(row["replaced"]));
+      expect(replaced["activity"]).toHaveLength(1);
+      delete replaced["activity_source"];
+      phone.database
+        .prepare("UPDATE import_change SET replaced = ? WHERE id = ?")
+        .run(JSON.stringify(replaced), String(row["id"]));
+    }
+
+    const preview = await transfer(phone, (transfers) => transfers.previewUndo(importBatchId));
+    expect(preview.changes.map(({ change, edited }) => [change.title, edited])).toEqual([
+      ["Long run", false],
+    ]);
+    expect(
+      await transfer(phone, (transfers) => transfers.undoImport(importBatchId, [])),
+    ).toMatchObject({ restored: 1, left: 0 });
+    expect(liveTitles(phone)).toEqual(["Morning run"]);
+    expect(liveRows(phone, importBatchId)["activity_sample"]).toEqual(before["activity_sample"]);
+  });
+
+  it("undoes an import made before location samples had a segment", async () => {
+    const phone = openTestDatabase(1);
+    const runId = await phone.runtime.runPromise(
+      Effect.flatMap(Effect.service(ActivityRepository), (activities) =>
+        activities.create(routeRun("Morning run", [0, 0])),
+      ),
+    );
+    const own = await exportFile(phone);
+    const file: SvettFile = {
+      ...own,
+      tables: {
+        ...own.tables,
+        activity: (own.tables.activity ?? []).map((row) =>
+          Object.assign(row, { title: "Long run" }),
+        ),
+        activitySample: (own.tables.activitySample ?? []).map((row) =>
+          Object.assign(row, { longitude: 18.07 }),
+        ),
+      },
+    };
+    const before = liveRows(phone);
+    const imported = await transfer(phone, (transfers) =>
+      transfers.applyImport(file, [`activity/${runId}`]),
+    );
+    const { importBatchId } = Option.getOrThrow(imported);
+
+    // The journal as a svett before segments wrote it: kept samples with no segment.
+    for (const row of phone.database
+      .prepare("SELECT id, replaced FROM import_change WHERE import_batch_id = ?")
+      .all(importBatchId)) {
+      const replaced = JSON.parse(String(row["replaced"]));
+      expect(replaced["activity_sample"]).toHaveLength(2);
+      for (const sample of replaced["activity_sample"]) delete sample.segment;
+      phone.database
+        .prepare("UPDATE import_change SET replaced = ? WHERE id = ?")
+        .run(JSON.stringify(replaced), String(row["id"]));
+    }
+
+    const preview = await transfer(phone, (transfers) => transfers.previewUndo(importBatchId));
+    expect(preview.changes.map(({ change, edited }) => [change.title, edited])).toEqual([
+      ["Long run", false],
+    ]);
+    expect(
+      await transfer(phone, (transfers) => transfers.undoImport(importBatchId, [])),
+    ).toMatchObject({ restored: 1, left: 0 });
+    const withoutTimes = (rows: ReturnType<typeof liveRows>) =>
+      Object.fromEntries(
+        Object.entries(rows).map(([name, list]) => [
+          name,
+          (list ?? []).map((row) => Object.assign(row, { updated_at: null })),
+        ]),
+      );
+    expect(withoutTimes(liveRows(phone, importBatchId))).toEqual(withoutTimes(before));
+  });
+
   it("takes a file that holds only an existing set without touching its workout", async () => {
     const phone = openTestDatabase(1);
     await phone.runtime.runPromise(
@@ -442,10 +954,12 @@ describe("TransferRepository", () => {
       restored: 0,
       left: 0,
       kept: 0,
+      discarded: 0,
     });
     expect(liveRows(phone)["activity_set"]).toEqual([]);
   });
 
+  // Builds and imports 6,000 sets, which takes several seconds on a busy CI runner.
   it("imports the 300-workout fixture back into an empty database unchanged", async () => {
     const { database, driver } = openNodeDatabase();
     await buildFixture(driver);
@@ -471,7 +985,7 @@ describe("TransferRepository", () => {
     const imported = await transfer(wiped, (repository) => repository.applyImport(file, []));
     const batch = Option.getOrThrow(imported).importBatchId;
     expect(liveRows(wiped, batch)).toEqual(liveRows(original));
-  });
+  }, 30_000);
 
   it("adds nothing when the same file is imported twice", async () => {
     const original = openTestDatabase(1);
@@ -572,7 +1086,7 @@ describe("TransferRepository", () => {
       ["Legs", "replaced", false],
     ]);
     const undone = await transfer(phone, (transfers) => transfers.undoImport(importBatchId, []));
-    expect(undone).toEqual({ removed: 1, restored: 1, left: 0, kept: 0 });
+    expect(undone).toEqual({ removed: 1, restored: 1, left: 0, kept: 0, discarded: 0 });
 
     // Undo writes the restored rows anew, so only their times differ from before.
     const withoutTimes = (rows: ReturnType<typeof liveRows>) =>
@@ -619,6 +1133,7 @@ describe("TransferRepository", () => {
       restored: 0,
       left: 1,
       kept: 0,
+      discarded: 0,
     });
     expect(liveTitles(leave)).toEqual(["Chest"]);
 
@@ -669,6 +1184,7 @@ describe("TransferRepository", () => {
       restored: 0,
       left: 1,
       kept: 0,
+      discarded: 0,
     });
     expect(workoutNow(leave)).toEqual({ notes: ["Felt strong"], reps: [6, 8] });
 
@@ -682,6 +1198,7 @@ describe("TransferRepository", () => {
       restored: 1,
       left: 0,
       kept: 0,
+      discarded: 0,
     });
     expect(workoutNow(both)).toEqual({ notes: ["Felt strong"], reps: [5, 8] });
   });
@@ -802,6 +1319,7 @@ describe("TransferRepository", () => {
       restored: 0,
       left: 0,
       kept: 1,
+      discarded: 0,
     });
     expect(liveTitles(phone)).toEqual(["Later push"]);
     expect(liveExercise(phone, "Landmine press")).toEqual([null]);
@@ -823,6 +1341,7 @@ describe("TransferRepository", () => {
       restored: 0,
       left: 1,
       kept: 1,
+      discarded: 0,
     });
     expect(liveTitles(leave)).toEqual(["Push Day"]);
     expect(liveExercise(leave, "Landmine press")).toEqual([null]);
@@ -838,6 +1357,7 @@ describe("TransferRepository", () => {
       restored: 0,
       left: 0,
       kept: 0,
+      discarded: 0,
     });
     expect(liveTitles(both)).toEqual([]);
     expect(liveExercise(both, "Landmine press")).toHaveLength(1);
@@ -869,6 +1389,7 @@ describe("TransferRepository", () => {
       restored: 0,
       left: 1,
       kept: 1,
+      discarded: 0,
     });
     expect(liveTitles(phone)).toEqual(["Push Day"]);
     expect(liveRows(phone)["activity_set"]).toHaveLength(2);
@@ -943,7 +1464,7 @@ describe("TransferRepository", () => {
       await transfer(phone, (transfers) =>
         transfers.undoImport(Option.getOrThrow(imported).importBatchId, []),
       ),
-    ).toEqual({ removed: 0, restored: 0, left: 0, kept: 1 });
+    ).toEqual({ removed: 0, restored: 0, left: 0, kept: 1, discarded: 0 });
     expect(liveRows(phone)["folder"]).toHaveLength(1);
     expect(pointersToDeleted(phone)).toEqual([]);
   });

@@ -1,5 +1,12 @@
-import { DeletionReceipt, exportFileName, EpochMillis, SyncPush } from "@svett/core";
-import { Clock, Effect, Layer, Schema } from "effect";
+import {
+  DeletionReceipt,
+  EpochMillis,
+  exportFileName,
+  SYNC_PROTOCOL_VERSION,
+  SYNC_VERSION_HEADER,
+  SyncPush,
+} from "@svett/core";
+import { Clock, Data, Effect, Layer, Schema } from "effect";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 
 import { AccountDeletion } from "./account-deletion.ts";
@@ -7,6 +14,26 @@ import { AccountRows, checkRows } from "./account-rows.ts";
 import { signedInAccount } from "./auth.ts";
 import { Safety } from "./safety.ts";
 import { answerRefusals, route } from "./social-routes.ts";
+
+class OutdatedSync extends Data.TaggedError("OutdatedSync")<{}> {}
+
+/**
+ * Refuses a push or pull from a phone that speaks an older sync API, or none, before it reads
+ * or stores any rows, so that phone keeps its changes until svett is updated.
+ */
+const currentSync = Effect.gen(function* () {
+  const request = yield* HttpServerRequest.HttpServerRequest;
+  const sent = Number(request.headers[SYNC_VERSION_HEADER] ?? Number.NaN);
+  if (!Number.isInteger(sent) || sent < SYNC_PROTOCOL_VERSION) return yield* new OutdatedSync();
+});
+
+const outdatedSync = () =>
+  Effect.succeed(
+    HttpServerResponse.jsonUnsafe(
+      { error: "update_required", message: "Update svett to sync." },
+      { status: 426 },
+    ),
+  );
 
 const me = route((account) =>
   Effect.gen(function* () {
@@ -24,20 +51,22 @@ const PullQuery = Schema.Struct({
 /** The account's rows applied after the change number `after`, a page at a time. */
 const pullRows = route((account) =>
   Effect.gen(function* () {
+    yield* currentSync;
     const { after } = yield* HttpServerRequest.schemaSearchParams(PullQuery);
     return yield* (yield* AccountRows).changes(account, after ?? 0);
   }),
-);
+).pipe(Effect.catchTag("OutdatedSync", outdatedSync));
 
 const pushRows = route(
   (account) =>
     Effect.gen(function* () {
+      yield* currentSync;
       const push = yield* HttpServerRequest.schemaBodyJson(SyncPush);
       const checked = yield* checkRows(push);
       return yield* (yield* AccountRows).write(account, checked, yield* Clock.currentTimeMillis);
     }),
   "sync_push",
-);
+).pipe(Effect.catchTag("OutdatedSync", outdatedSync));
 
 /** Every row the server holds for the account, as a svett file the app imports. */
 const exportRows = answerRefusals(

@@ -15,6 +15,8 @@
  */
 import { randomUUID } from "node:crypto";
 
+import { SYNC_PROTOCOL_VERSION, SYNC_VERSION_HEADER } from "@svett/core";
+
 import { clerkTokens } from "./social-proof.ts";
 
 export type SafetyAccount = "owner" | "blocked" | "leaver";
@@ -50,6 +52,7 @@ export const safetyProof = async (options: SafetyProofOptions) => {
       method,
       headers: {
         authorization: `Bearer ${token}`,
+        [SYNC_VERSION_HEADER]: String(SYNC_PROTOCOL_VERSION),
         ...(body === undefined ? {} : { "content-type": "application/json" }),
       },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
@@ -82,6 +85,8 @@ export const safetyProof = async (options: SafetyProofOptions) => {
     updatedAt: now(),
     deletedAt: null,
     kind: "run",
+    status: "finished",
+    routineId: null,
     startedAt: now() - 3_600_000,
     durationS: 1800,
     title,

@@ -54,7 +54,16 @@ describe("formatVolumeKg", () => {
     [12_450.4, "12,450 kg"],
     [1_234_567, "1,234,567 kg"],
   ])("shows %d as %s", (kg, expected) => {
-    expect(formatVolumeKg(kg)).toBe(expected);
+    expect(formatVolumeKg(kg, "kg")).toBe(expected);
+  });
+
+  it.each([
+    [0, "0 lb"],
+    [980, "2,161 lb"],
+    [12_450.4, "27,448 lb"],
+    [1_234_567, "2,721,754 lb"],
+  ])("shows %d kg as %s when weights show in pounds", (kg, expected) => {
+    expect(formatVolumeKg(kg, "lb")).toBe(expected);
   });
 });
 

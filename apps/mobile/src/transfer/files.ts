@@ -5,8 +5,21 @@ import { File, Paths } from "expo-file-system";
 import * as Sharing from "expo-sharing";
 
 import { currentDatabase, type OpenDatabase, stillOpen } from "../data/current";
-import { write } from "../data/store";
+import { writeTo } from "../data/store";
 import { transferInTurn } from "../data/turns";
+
+// Each open database gets its own key, so a match screen or plan read from other data starts
+// over instead of keeping choices made for it.
+const databaseKeys = new WeakMap<object, string>();
+let nextKey = 0;
+export const databaseKey = ({ handle }: OpenDatabase) => {
+  let key = databaseKeys.get(handle);
+  if (key === undefined) {
+    key = String(nextKey++);
+    databaseKeys.set(handle, key);
+  }
+  return key;
+};
 
 /** Runs `body` with the transfer repository of `database`, by default the open one. */
 export const withTransfers = <A, E>(
@@ -29,7 +42,7 @@ export const changeTransfers = <A, E>(
 ) =>
   transferInTurn(() =>
     stillOpen(database)
-      ? write(Effect.flatMap(Effect.service(TransferRepository), body))
+      ? writeTo(database, Effect.flatMap(Effect.service(TransferRepository), body))
       : Promise.reject(new Error(DATABASE_SWITCHED)),
   );
 
@@ -51,7 +64,7 @@ export const changeAliases = <A, E>(
 ) =>
   transferInTurn(() =>
     stillOpen(database)
-      ? write(Effect.flatMap(Effect.service(ExerciseAliasRepository), body))
+      ? writeTo(database, Effect.flatMap(Effect.service(ExerciseAliasRepository), body))
       : Promise.reject(new Error(DATABASE_SWITCHED)),
   );
 

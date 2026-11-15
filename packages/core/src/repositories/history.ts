@@ -16,6 +16,9 @@ import { RoutineRepository } from "./routines.ts";
 
 const inList = (column: string) => `${column} IN (SELECT value FROM json_each(?))`;
 
+/** A workout in progress is not history until it is finished. */
+const FINISHED = "status = 'finished'";
+
 const groupBy = <A, K>(items: ReadonlyArray<A>, key: (item: A) => K) => {
   const groups = new Map<K, Array<A>>();
   for (const item of items) groups.set(key(item), [...(groups.get(key(item)) ?? []), item]);
@@ -35,7 +38,7 @@ const details = (activities: ReadonlyArray<Activity>) =>
     );
     const sets = yield* selectRows(
       TABLES.activitySet,
-      inList("activity_exercise_id"),
+      `done = 1 AND ${inList("activity_exercise_id")}`,
       [JSON.stringify(exercises.map((exercise) => exercise.id))],
       "activity_exercise_id, position",
     );
@@ -72,7 +75,7 @@ const makeHistoryRepository = Effect.gen(function* () {
         Effect.gen(function* () {
           const activities = yield* selectRows(
             TABLES.activity,
-            "1 = 1",
+            FINISHED,
             [options.limit],
             "started_at DESC, id DESC LIMIT ?",
           );
@@ -87,7 +90,9 @@ const makeHistoryRepository = Effect.gen(function* () {
       run(
         Effect.gen(function* () {
           const activity = yield* selectById(TABLES.activity, id);
-          if (Option.isNone(activity)) return Option.none<WorkoutView>();
+          if (Option.isNone(activity) || activity.value.status !== "finished") {
+            return Option.none<WorkoutView>();
+          }
           const { library, details: found } = yield* details([activity.value]);
           const [detail] = found;
           if (detail === undefined) return Option.none<WorkoutView>();
@@ -116,10 +121,10 @@ const makeHistoryRepository = Effect.gen(function* () {
         }),
       ),
 
-    /** Every live workout's start, newest first, for the calendar and the streak. */
+    /** Every finished workout's start, newest first, for the calendar and the streak. */
     starts: run(
       Effect.map(
-        selectRows(TABLES.activity, "1 = 1", [], "started_at DESC, id DESC"),
+        selectRows(TABLES.activity, FINISHED, [], "started_at DESC, id DESC"),
         (activities): ReadonlyArray<WorkoutStart> =>
           activities.map(({ id, startedAt, title, kind }) => ({ id, startedAt, title, kind })),
       ),

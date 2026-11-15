@@ -12,7 +12,7 @@
  * SVETT_PROOF_KEEP=1 asks it to keep both posts, their like and comments, and the follows,
  * for scripts/sim/feed.sh to show. It prints both posts' svett:// links either way.
  */
-import { libraryExerciseId } from "@svett/core";
+import { libraryExerciseId, SYNC_PROTOCOL_VERSION, SYNC_VERSION_HEADER } from "@svett/core";
 
 import { clerkTokens, type ProofAccount } from "./social-proof.ts";
 
@@ -61,6 +61,8 @@ const rowOf =
   });
 
 const activityFields = {
+  status: "finished",
+  routineId: null,
   notes: "",
   audience: "followers",
   source: "svett",
@@ -114,6 +116,8 @@ export const liftingRows = (startedAt: number, updatedAt: number): ReadonlyArray
         position,
         supersetGroup: null,
         notes: "",
+        setFields: "weight_reps",
+        restS: null,
       }),
     );
     for (const [index, [weightKg, reps, setType]] of lift.sets.entries()) {
@@ -128,6 +132,9 @@ export const liftingRows = (startedAt: number, updatedAt: number): ReadonlyArray
           durationS: null,
           distanceM: null,
           rpe: null,
+          done: 1,
+          targetRepsMin: null,
+          targetRepsMax: null,
         }),
       );
     }
@@ -178,6 +185,7 @@ export const runRows = (
     ...runPositions().map((point, index) =>
       sample(1000 + index, startedAt + index * 36_000, {
         kind: "location",
+        segment: 0,
         latitude: point.latitude,
         longitude: point.longitude,
         altitudeM: 10,
@@ -224,6 +232,7 @@ export const feedProof = async (options: FeedProofOptions) => {
       method,
       headers: {
         authorization: `Bearer ${await options.token(as)}`,
+        [SYNC_VERSION_HEADER]: String(SYNC_PROTOCOL_VERSION),
         ...(body === undefined ? {} : { "content-type": "application/json" }),
       },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),

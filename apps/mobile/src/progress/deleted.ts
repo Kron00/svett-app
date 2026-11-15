@@ -3,7 +3,7 @@ import { Effect } from "effect";
 import { useSyncExternalStore } from "react";
 import { AccessibilityInfo } from "react-native";
 
-import { currentDatabase, type OpenDatabase, stillOpen, subscribeDatabase } from "../data/current";
+import { type OpenDatabase, stillOpen, subscribeDatabase } from "../data/current";
 import { writeTo } from "../data/store";
 
 export type DeletedWorkout = { readonly id: ActivityId; readonly title: string };
@@ -41,9 +41,11 @@ export const useDeletedWorkout = (): UndoableDelete | null =>
     };
   }, deletedWorkout);
 
-/** Deletes a workout and offers Undo at the bottom of history. */
-export const deleteWorkout = async (workout: DeletedWorkout) => {
-  const database = currentDatabase();
+/**
+ * Deletes a workout from `database`, the one it was read from, and offers Undo at the bottom
+ * of history.
+ */
+export const deleteWorkout = async (database: OpenDatabase, workout: DeletedWorkout) => {
   await writeTo(
     database,
     Effect.flatMap(Effect.service(ActivityRepository), (activities) =>

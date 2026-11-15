@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { SYNC_PROTOCOL_VERSION, SYNC_VERSION_HEADER } from "@svett/core";
 import { Effect, Layer, Redacted } from "effect";
 import * as Migrator from "effect/sql/Migrator";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vite-plus/test";
@@ -94,6 +95,7 @@ const startServer = async (env: Record<string, string>) => {
       method,
       headers: {
         "content-type": "application/json",
+        [SYNC_VERSION_HEADER]: String(SYNC_PROTOCOL_VERSION),
         ...(token === undefined ? {} : { authorization: `Bearer ${token}` }),
       },
       ...(sent === undefined ? {} : { body: JSON.stringify(sent) }),
@@ -261,6 +263,8 @@ describe("the deletion ledger", { timeout: 120_000 }, () => {
             updatedAt: 1,
             deletedAt: null,
             kind: "run",
+            status: "finished",
+            routineId: null,
             startedAt: 1_790_000_000_000,
             durationS: 1800,
             title: "Anna's run",

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { formatSetLoad, formatWeightKg, setBadge } from "./set-format.ts";
+import { formatSetLoad, formatWeightKg, setBadge, setBadges } from "./set-format.ts";
 
 describe("formatWeightKg", () => {
   it.each([
@@ -44,5 +44,13 @@ describe("setBadge", () => {
     ["drop", "D", "Drop set"],
   ] as const)("gives a %s set a letter", (type, text, label) => {
     expect(setBadge(type, 2)).toEqual({ text, label });
+  });
+});
+
+describe("setBadges", () => {
+  it("numbers the normal sets and letters the others", () => {
+    expect(setBadges(["warm_up", "normal", "normal", "drop", "normal"]).map((b) => b.text)).toEqual(
+      ["W", "1", "2", "D", "3"],
+    );
   });
 });

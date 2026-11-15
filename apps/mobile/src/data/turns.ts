@@ -11,19 +11,30 @@ export const inTurn = <A>(task: () => Promise<A>): Promise<A> => {
   return run;
 };
 
-/** Like `inTurn`, for an import, an undo or a sync, which `transfersSettled` then waits for. */
+/**
+ * Like `inTurn`, for an import, an undo, a coach answer or a sync, which `transfersSettled`
+ * then waits for.
+ */
 export const transferInTurn = <A>(task: () => Promise<A>): Promise<A> =>
-  inTurn(() => {
-    const run = task();
-    applying.add(run);
-    const done = () => {
-      applying.delete(run);
-    };
-    run.then(done, done);
-    return run;
-  });
+  inTurn(() => holdOpen(task()));
 
-/** Waits for the import, undo or sync running now, so its database is not closed under it. */
+/**
+ * Has `transfersSettled` wait for `run`, such as a change to the workout in progress that was
+ * made before someone signed in or out and is still to be saved into its database.
+ */
+export const holdOpen = <A>(run: Promise<A>): Promise<A> => {
+  applying.add(run);
+  const done = () => {
+    applying.delete(run);
+  };
+  run.then(done, done);
+  return run;
+};
+
+/**
+ * Waits for the import, undo, coach answer, sync or workout change running now, so its
+ * database is not closed under it.
+ */
 export const transfersSettled = async () => {
   await Promise.all([...applying].map((run) => run.catch(() => undefined)));
 };
