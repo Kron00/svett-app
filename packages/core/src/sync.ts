@@ -196,8 +196,9 @@ export const needsDeletionsAbove = (
  * deletes its exercises, sets and route with it, and a later change to one of those from a
  * phone that had not seen the delete is dropped. So a live copy of a workout row that would
  * bring back a deleted copy, or that sits under a deleted row, is taken only as an Undo of
- * that very deletion: `restores` names the `deletedAt` it reverses, and it must be the stored
- * copy's and every deleted row's above it. Otherwise the change is refused. Every other
+ * that very deletion: `restores` lists the `deletedAt` of each deletion the phone reversed,
+ * and it must hold the stored copy's and every deleted row's above it. Otherwise the change
+ * is refused. Every other
  * change follows `mergeChange`. `deletedAbove` lists the `deletedAt` of each deleted row
  * above, from `deletionsAboveOf`, and only matters when `needsDeletionsAbove` is true.
  *
@@ -208,13 +209,13 @@ export const mergePushed = (
   table: SyncedTable,
   stored: RowCopy | undefined,
   incoming: RowCopy,
-  restores: number | null,
+  restores: ReadonlyArray<number>,
   deletedAbove: ReadonlyArray<number>,
 ): "take" | "keep" | "refuse" => {
   const plain = mergeRow(stored, incoming);
   if (WORKOUT_TABLES.has(table) && incoming.deletedAt === null) {
     if (plain === "keep") return "keep";
-    const reverses = (deletedAt: number) => restores === deletedAt;
+    const reverses = (deletedAt: number) => restores.includes(deletedAt);
     if (stored !== undefined && stored.deletedAt !== null && !reverses(stored.deletedAt)) {
       return "refuse";
     }
@@ -276,15 +277,26 @@ export const MAX_SYNC_ROWS = 500;
 const RowRef = Schema.Struct({ table: SyncedTable, id: Schema.String });
 export type RowRef = typeof RowRef.Type;
 
-/** What a phone sends. Any owner it names is ignored: the server takes it from the session. */
 /**
- * A changed row a phone sends. `restores` marks an Undo on the phone: the `deletedAt` of the
- * deletion that the change reverses, which the phone had when it was undone.
+ * The version of the sync API a phone speaks, sent with every push and pull in the
+ * `SYNC_VERSION_HEADER` header. The server refuses a request without it or with an older one,
+ * before it stores anything, so a build that does not send Undo the way the server expects is
+ * told to update instead of losing its changes. Raise it with any change the server needs from
+ * phones.
+ */
+export const SYNC_PROTOCOL_VERSION = 1;
+export const SYNC_VERSION_HEADER = "svett-sync-version";
+
+/**
+ * A changed row a phone sends. Any owner it names is ignored: the server takes it from the
+ * session. `restores` marks an Undo on the phone: the `deletedAt` of each deletion of the row
+ * that the phone reversed since the server last confirmed it. A push on the way when the row
+ * was undone again may or may not have reached the server, so the phone sends both.
  */
 export const PushedRow = Schema.Struct({
   table: SyncedTable,
   row: Schema.Unknown,
-  restores: Schema.optional(Schema.Int),
+  restores: Schema.optional(Schema.Array(Schema.Int).check(Schema.isMaxLength(MAX_SYNC_ROWS))),
 });
 export type PushedRow = typeof PushedRow.Type;
 

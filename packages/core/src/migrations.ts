@@ -370,19 +370,19 @@ ${Object.entries(inDraft)
 
 // An Undo on this phone, or any write here that brings back a deleted workout row, records the
 // deletion it reverses, so the server can tell it from a change made by a phone that never saw
-// that delete. The first one since the row was last sent stays, since that is the deletion
-// the server knows. Writes sync applies run quietly and record nothing.
+// that delete. Each one stays until the server confirms a copy sent with it, since a push on
+// the way can leave the server with the deletion before or after it, and only the server knows
+// which. Writes sync applies run quietly and record nothing.
 const syncRestores = `
 CREATE TABLE sync_restore (table_name TEXT NOT NULL, row_id TEXT NOT NULL,
-  deleted_at INTEGER NOT NULL, PRIMARY KEY (table_name, row_id)) STRICT;
+  deleted_at INTEGER NOT NULL, PRIMARY KEY (table_name, row_id, deleted_at)) STRICT;
 ${Object.keys(workoutColumns)
   .map(
     (table) => `CREATE TRIGGER ${table}_restore AFTER UPDATE OF deleted_at ON ${table}
 WHEN (SELECT quiet FROM sync_state) = 0 AND OLD.deleted_at IS NOT NULL AND NEW.deleted_at IS NULL
 BEGIN
-  INSERT INTO sync_restore (table_name, row_id, deleted_at)
-    SELECT '${table}', NEW.id, OLD.deleted_at
-    WHERE NOT EXISTS (SELECT 1 FROM sync_restore WHERE table_name = '${table}' AND row_id = NEW.id);
+  INSERT OR IGNORE INTO sync_restore (table_name, row_id, deleted_at)
+    VALUES ('${table}', NEW.id, OLD.deleted_at);
 END;`,
   )
   .join("\n")}

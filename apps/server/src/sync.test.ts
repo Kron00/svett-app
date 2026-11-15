@@ -29,6 +29,9 @@ import {
   type SqlDriver,
   SyncFailed,
   DRAFT_MESSAGE,
+  type PushedRow,
+  SYNC_PROTOCOL_VERSION,
+  SYNC_VERSION_HEADER,
 } from "@svett/core";
 import {
   legDay,
@@ -225,6 +228,56 @@ const queuedChangeId = async (phone: Phone, setId: string) => {
   const copy = queued.find(({ id }) => id === setId);
   if (copy === undefined) throw new Error("The set is not queued");
   return changeIdOf("activity_set", copy.row);
+};
+
+/** True when `rows` holds the workout `id` as deleted. */
+const holdsDeleted = (id: ActivityId) => (rows: ReadonlyArray<PushedRow>) =>
+  rows.some(
+    ({ table, row }) =>
+      table === "activity" &&
+      (row as { id: string }).id === id &&
+      (row as { deletedAt: number | null }).deletedAt !== null,
+  );
+
+/**
+ * `phone`'s sync API, where `during` runs once while the first push that `when` matches is
+ * on the way. It "arrives" at the server and its answer comes back, it arrives and its answer
+ * is lost, or it never arrives.
+ */
+const pushWith = (
+  phone: Phone,
+  when: (rows: ReadonlyArray<PushedRow>) => boolean,
+  during: () => Promise<unknown>,
+  outcome: "confirmed" | "answer lost" | "never arrived",
+) => {
+  const api = phone.api();
+  const lost = new SyncFailed({ problem: "offline", message: "The push was cut off." });
+  let ran = false;
+  const push = (rows: ReadonlyArray<PushedRow>) => {
+    if (ran || !when(rows)) return api.push(rows);
+    ran = true;
+    const meanwhile = Effect.promise(during);
+    if (outcome === "never arrived") return Effect.andThen(meanwhile, Effect.fail(lost));
+    return Effect.flatMap(api.push(rows), (result) =>
+      Effect.andThen(
+        meanwhile,
+        outcome === "confirmed" ? Effect.succeed(result) : Effect.fail(lost),
+      ),
+    );
+  };
+  return { ...api, push };
+};
+
+/** Checks that both phones hold the same rows, the workout `id` with `sets`, and nothing queued. */
+const expectBothKept = async (phones: readonly [Phone, Phone], id: ActivityId, sets: unknown) => {
+  expect(await phones[0].rows()).toEqual(await phones[1].rows());
+  const seen = await Promise.all(
+    phones.map(async (phone) => ({
+      sets: await setsOf(phone, id),
+      queued: await queuedCount(phone),
+    })),
+  );
+  expect(seen).toEqual(phones.map(() => ({ sets, queued: 0 })));
 };
 
 describe("sync", { timeout: 120_000 }, () => {
@@ -648,6 +701,7 @@ describe("sync", { timeout: 120_000 }, () => {
         headers: {
           authorization: `Bearer ${await issuer.sessionToken(ALICE)}`,
           "content-type": "application/json",
+          [SYNC_VERSION_HEADER]: String(SYNC_PROTOCOL_VERSION),
         },
         body: JSON.stringify({ rows: push }),
       });
@@ -1099,4 +1153,124 @@ describe("sync", { timeout: 120_000 }, () => {
     expect((await b.sync()).pushed).toBe(0);
     expect(await queuedCount(b)).toBe(0);
   });
+
+  it.each(["confirmed", "answer lost", "never arrived"] as const)(
+    "keeps a second Undo made while the push of the second delete is on the way, %s",
+    async (outcome) => {
+      const server = await startServer();
+      const a = openPhone(server, ALICE, 1);
+      const b = openPhone(server, ALICE, 2);
+      const id = await sharedLegDay(a, [b]);
+      const before = await setsOf(a, id);
+
+      await a.at(T0 + MINUTE);
+      await remove(a, id);
+      await a.sync();
+      await a.at(T0 + 2 * MINUTE);
+      await undo(a, id);
+      await a.at(T0 + 3 * MINUTE);
+      await remove(a, id);
+      await a.run(
+        Effect.exit(
+          syncOnce(
+            pushWith(
+              a,
+              holdsDeleted(id),
+              async () => {
+                await a.at(T0 + 4 * MINUTE);
+                await undo(a, id);
+              },
+              outcome,
+            ),
+          ),
+        ),
+      );
+      await syncAll([a, b]);
+
+      await expectBothKept([a, b], id, before);
+    },
+  );
+
+  it("keeps a workout deleted, undone, deleted and undone again before the phone syncs", async () => {
+    const server = await startServer();
+    const a = openPhone(server, ALICE, 1);
+    const b = openPhone(server, ALICE, 2);
+    const id = await sharedLegDay(a, [b]);
+    const before = await setsOf(a, id);
+
+    await a.at(T0 + MINUTE);
+    await remove(a, id);
+    await a.sync();
+    await inTurn([2, 3, 4], async (minutes) => {
+      await a.at(T0 + minutes * MINUTE);
+      await (minutes % 2 === 0 ? undo(a, id) : remove(a, id));
+    });
+    await syncAll([a, b]);
+
+    await expectBothKept([a, b], id, before);
+  });
+
+  it.each(["a deletes and b undoes", "b deletes and a undoes"] as const)(
+    "keeps a workout through a delete, Undo, delete and Undo across two phones, when %s",
+    async (roles) => {
+      const server = await startServer();
+      const a = openPhone(server, ALICE, 1);
+      const b = openPhone(server, ALICE, 2);
+      const id = await sharedLegDay(a, [b]);
+      const before = await setsOf(a, id);
+      const [deleting, undoing] = roles === "a deletes and b undoes" ? [a, b] : [b, a];
+
+      await inTurn([1, 3], async (minutes) => {
+        await deleting.sync();
+        await deleting.at(T0 + minutes * MINUTE);
+        await remove(deleting, id);
+        await deleting.sync();
+        await undoing.sync();
+        expect(await detail(undoing, id)).toEqual(Option.none());
+        await undoing.at(T0 + (minutes + 1) * MINUTE);
+        await undo(undoing, id);
+        await undoing.sync();
+      });
+      await syncAll([a, b]);
+
+      await expectBothKept([a, b], id, before);
+    },
+  );
+
+  it.each([
+    ["no sync version", undefined],
+    ["an older sync version", String(SYNC_PROTOCOL_VERSION - 1)],
+  ] as const)(
+    "refuses a push and a pull with %s, before storing or confirming anything",
+    async (_, version) => {
+      const server = await startServer();
+      const a = openPhone(server, ALICE, 1);
+      const id = await logLegDay(a);
+      const old = httpSyncApi({
+        server,
+        accountId: ALICE,
+        token: () => issuer.sessionToken(ALICE),
+        fetch: (input, init) => {
+          const headers = new Headers(init?.headers);
+          if (version === undefined) headers.delete(SYNC_VERSION_HEADER);
+          else headers.set(SYNC_VERSION_HEADER, version);
+          return fetch(input, { ...init, headers });
+        },
+      });
+      const refused = new SyncFailed({
+        problem: "update_required",
+        message: "Update svett to sync.",
+      });
+      expect(await a.run(Effect.exit(syncOnce(old)))).toEqual(Exit.fail(refused));
+      expect(await a.run(Effect.exit(old.pull(0)))).toEqual(Exit.fail(refused));
+      expect(await queuedCount(a)).toBe(7);
+
+      const b = openPhone(server, ALICE, 2);
+      await b.sync();
+      expect(await counts(b)).toEqual({ activities: 0, sets: 0 });
+      await a.sync();
+      await b.sync();
+      expect(await setsOf(b, id)).toEqual(await setsOf(a, id));
+    },
+  );
 });

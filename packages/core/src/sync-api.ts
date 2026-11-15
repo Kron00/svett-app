@@ -1,7 +1,13 @@
 import { Data, Effect, Schema } from "effect";
 
 import type { SyncApi } from "./repositories/sync.ts";
-import { type PushedRow, SyncPull, SyncPushResult } from "./sync.ts";
+import {
+  type PushedRow,
+  SYNC_PROTOCOL_VERSION,
+  SYNC_VERSION_HEADER,
+  SyncPull,
+  SyncPushResult,
+} from "./sync.ts";
 
 export type SyncProblem =
   /** The server did not answer, or the phone has no connection. */
@@ -12,6 +18,8 @@ export type SyncProblem =
   | "sign_in_unavailable"
   /** The session belongs to another account than the open database. Nothing was sent. */
   | "wrong_account"
+  /** The server speaks a newer sync API than this build. Nothing was stored. */
+  | "update_required"
   | "server";
 
 export class SyncFailed extends Data.TaggedError("SyncFailed")<{
@@ -100,6 +108,7 @@ export const httpSyncApi = (options: HttpSyncOptions): SyncApi<SyncFailed> => {
               signal: deadline.signal,
               headers: {
                 authorization: `Bearer ${token}`,
+                [SYNC_VERSION_HEADER]: String(SYNC_PROTOCOL_VERSION),
                 ...(init.body === undefined ? {} : { "content-type": "application/json" }),
               },
             })
@@ -111,6 +120,9 @@ export const httpSyncApi = (options: HttpSyncOptions): SyncApi<SyncFailed> => {
         try: () => response.json(),
         catch: () => failed("server", `The server answered ${response.status} without JSON.`),
       });
+      if (response.status === 426) {
+        return yield* failed("update_required", "Update svett to sync.");
+      }
       if (response.status === 401) return yield* failed("signed_out", "The session has ended.");
       if (response.status === 503) {
         return yield* failed(
@@ -163,6 +175,8 @@ export const syncStatusMessage = (status: SyncStatus): string => {
           return "The svett server has no sign-in set up yet, so nothing syncs.";
         case "wrong_account":
           return "The session belongs to another account, so nothing was sent.";
+        case "update_required":
+          return "Update svett to sync. Everything stays on this phone meanwhile.";
         case "server":
           return "The svett server had a problem. Sync tries again soon.";
       }

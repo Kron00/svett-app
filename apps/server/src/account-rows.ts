@@ -52,15 +52,15 @@ export const checkRows = (push: SyncPush) =>
     }
     return yield* Effect.forEach(push.rows, ({ table, row, restores }, index) =>
       checkSyncRow(table, row).pipe(
-        Effect.map((checked): CheckedPush => ({ ...checked, restores: restores ?? null })),
+        Effect.map((checked): CheckedPush => ({ ...checked, restores: restores ?? [] })),
         Effect.mapError((invalid) => new InvalidRow({ table, index, message: invalid.message })),
       ),
     );
   });
 
-/** A pushed row checked against its table, with the deletion it reverses when it is an Undo. */
+/** A pushed row checked against its table, with the deletions it reverses when it is an Undo. */
 export interface CheckedPush extends CheckedRow {
-  readonly restores: number | null;
+  readonly restores: ReadonlyArray<number>;
 }
 
 /**

@@ -1,5 +1,5 @@
-import { SyncPush } from "@svett/core";
-import { Clock, Effect, Layer, Schema } from "effect";
+import { SYNC_PROTOCOL_VERSION, SYNC_VERSION_HEADER, SyncPush } from "@svett/core";
+import { Clock, Data, Effect, Layer, Schema } from "effect";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 
 import { AccountRows, checkRows } from "./account-rows.ts";
@@ -18,6 +18,26 @@ const signInUnavailable = () =>
           "Sign-in is not set up on this server yet, so accounts and their data are unavailable.",
       },
       { status: 503 },
+    ),
+  );
+
+class OutdatedSync extends Data.TaggedError("OutdatedSync")<{}> {}
+
+/**
+ * Refuses a push or pull from a phone that speaks an older sync API, or none, before it reads
+ * or stores any rows, so that phone keeps its changes until svett is updated.
+ */
+const currentSync = Effect.gen(function* () {
+  const request = yield* HttpServerRequest.HttpServerRequest;
+  const sent = Number(request.headers[SYNC_VERSION_HEADER] ?? Number.NaN);
+  if (!Number.isInteger(sent) || sent < SYNC_PROTOCOL_VERSION) return yield* new OutdatedSync();
+});
+
+const outdatedSync = () =>
+  Effect.succeed(
+    HttpServerResponse.jsonUnsafe(
+      { error: "update_required", message: "Update svett to sync." },
+      { status: 426 },
     ),
   );
 
@@ -45,11 +65,13 @@ const invalidRequest = (error: { readonly message: string }) =>
 /** The account's rows applied after the change number `after`, a page at a time. */
 const pullRows = Effect.gen(function* () {
   const account = yield* signedInAccount;
+  yield* currentSync;
   const { after } = yield* HttpServerRequest.schemaSearchParams(PullQuery);
   const rows = yield* AccountRows;
   return HttpServerResponse.jsonUnsafe(yield* rows.changes(account, after ?? 0));
 }).pipe(
   Effect.catchTags({
+    OutdatedSync: outdatedSync,
     Unauthorized: unauthorized,
     SignInUnavailable: signInUnavailable,
     SchemaError: invalidRequest,
@@ -58,6 +80,7 @@ const pullRows = Effect.gen(function* () {
 
 const pushRows = Effect.gen(function* () {
   const account = yield* signedInAccount;
+  yield* currentSync;
   const push = yield* HttpServerRequest.schemaBodyJson(SyncPush);
   const checked = yield* checkRows(push);
   const rows = yield* AccountRows;
@@ -66,6 +89,7 @@ const pushRows = Effect.gen(function* () {
   );
 }).pipe(
   Effect.catchTags({
+    OutdatedSync: outdatedSync,
     Unauthorized: unauthorized,
     SignInUnavailable: signInUnavailable,
     InvalidRow: (invalid) =>

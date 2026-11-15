@@ -54,7 +54,7 @@ export const storedRows = (table: SyncedTable, ids: ReadonlyArray<string>) =>
 export const lookup = (table: SyncedTable, id: string) =>
   Effect.map(rawRows(table, [id]), ([row]) => row);
 
-/** Drops the row from the queue, with the deletion it was to reverse. */
+/** Drops the row from the queue, with the deletions it was to reverse. */
 export const forget = (table: SyncedTable, id: string) =>
   Effect.gen(function* () {
     const sql = yield* Sql;

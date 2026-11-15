@@ -31,7 +31,7 @@ import { openTestDatabase, T0 } from "../test-database.ts";
 import { ActivityRepository } from "./activities.ts";
 import { MADE_HERE } from "./origin.ts";
 import { CoachMessageRepository } from "./records.ts";
-import { type SyncApi, SyncRepository, syncOnce } from "./sync.ts";
+import { type QueuedRow, type SyncApi, SyncRepository, syncOnce } from "./sync.ts";
 import { TransferRepository } from "./transfer.ts";
 
 const HOUR = 3_600_000;
@@ -220,7 +220,7 @@ describe("SyncRepository", () => {
     await on.run(Effect.flatMap(activities, (repository) => repository.remove(id)));
     const removed = await queued();
     expect(removed).toHaveLength(7);
-    expect(removed.every(({ restores }) => restores === null)).toBe(true);
+    expect(removed.every(({ restores }) => restores.length === 0)).toBe(true);
     const deletedAt = (removed[0]?.row as { deletedAt: number } | undefined)?.deletedAt;
     expect(deletedAt).toBeTypeOf("number");
     await confirmAll();
@@ -233,15 +233,51 @@ describe("SyncRepository", () => {
     );
     const restored = await queued();
     expect(restored).toHaveLength(7);
-    expect(restored.map(({ restores }) => restores)).toEqual(restored.map(() => deletedAt));
+    expect(restored.map(({ restores }) => restores)).toEqual(restored.map(() => [deletedAt]));
 
     await confirmAll();
     await on.run(
       Effect.flatMap(activities, (repository) => repository.updateSet(set.id, { reps: 7 })),
     );
     expect((await queued()).map(({ id: rowId, restores }) => [rowId, restores])).toEqual([
-      [set.id, null],
+      [set.id, []],
     ]);
+  });
+
+  it("sends each deletion an Undo reversed until a push sent with it is confirmed, also while one is on the way", async () => {
+    const on = phone();
+    const id = await logLegDay(on);
+    const queued = () => on.run(Effect.flatMap(sync, (repository) => repository.queued(undefined)));
+    const confirm = (rows: ReadonlyArray<QueuedRow>) =>
+      on.run(Effect.flatMap(sync, (repository) => repository.confirm(rows)));
+    const workout = async () => {
+      const found = (await queued()).find(({ id: rowId }) => rowId === id);
+      if (found === undefined) throw new Error("The workout is not queued");
+      return found;
+    };
+    const step = async (minutes: number, change: "remove" | "restore") => {
+      await on.at(T0 + minutes * MINUTE);
+      await (change === "remove"
+        ? on.run(Effect.flatMap(activities, (repository) => repository.remove(id)))
+        : on.run(Effect.flatMap(activities, (repository) => repository.restore(id))));
+      return T0 + minutes * MINUTE;
+    };
+    await confirm(await queued());
+    const first = await step(1, "remove");
+    await confirm(await queued());
+
+    await step(2, "restore");
+    const second = await step(3, "remove");
+    const onTheWay = await queued();
+    expect((await workout()).restores).toEqual([first]);
+    await step(4, "restore");
+    expect((await workout()).restores).toEqual([first, second]);
+
+    await confirm(onTheWay);
+    expect((await workout()).restores).toEqual([second]);
+    expect((await workout()).row).toMatchObject({ deletedAt: null });
+    await confirm(await queued());
+    expect(await queued()).toEqual([]);
   });
 
   it("takes the server's copy of a row with no unsent change, whatever its time", async () => {

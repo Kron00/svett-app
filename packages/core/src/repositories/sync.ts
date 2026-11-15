@@ -36,8 +36,8 @@ export interface QueuedRow {
   readonly table: SyncedTable;
   readonly id: string;
   readonly row: unknown;
-  /** The deletion this change reverses, when it is an Undo here. See `PushedRow`. */
-  readonly restores: number | null;
+  /** The deletions an Undo here reversed since the server last confirmed the row. See `PushedRow`. */
+  readonly restores: ReadonlyArray<number>;
 }
 
 const makeSyncRepository = Effect.gen(function* () {
@@ -51,8 +51,11 @@ const makeSyncRepository = Effect.gen(function* () {
   const queued = (after: QueuedRow | undefined, limit = MAX_SYNC_ROWS) =>
     Effect.gen(function* () {
       const entries = yield* sql.all(
-        `SELECT o.table_name, o.row_id, o.mark, r.deleted_at AS restores FROM sync_outbox o
-         LEFT JOIN sync_restore r ON r.table_name = o.table_name AND r.row_id = o.row_id
+        `SELECT o.table_name, o.row_id, o.mark,
+           (SELECT json_group_array(deleted_at) FROM (SELECT deleted_at FROM sync_restore r
+              WHERE r.table_name = o.table_name AND r.row_id = o.row_id ORDER BY deleted_at))
+             AS restores
+         FROM sync_outbox o
          WHERE (o.mark, o.table_name, o.row_id) > (?, ?, ?)
          ORDER BY o.mark, o.table_name, o.row_id LIMIT ?`,
         [after?.mark ?? -1, after?.table ?? "", after?.id ?? "", limit],
@@ -81,7 +84,7 @@ const makeSyncRepository = Effect.gen(function* () {
                 table,
                 id: row.id,
                 row: row.encoded,
-                restores: entry["restores"] == null ? null : Number(entry["restores"]),
+                restores: (JSON.parse(String(entry["restores"])) as Array<unknown>).map(Number),
               },
             ];
       });
@@ -89,13 +92,14 @@ const makeSyncRepository = Effect.gen(function* () {
 
   /**
    * Drops the rows the server confirmed, unless they changed again since they were read, and
-   * with them the deletions they reversed.
+   * the deletions sent with them. A deletion an Undo reversed while the push was on the way
+   * stays, since the server may hold it now.
    */
   const confirm = (rows: ReadonlyArray<QueuedRow>) =>
     sql.transaction(
       Effect.forEach(
         rows,
-        ({ table, id, mark }) =>
+        ({ table, id, mark, restores }) =>
           Effect.gen(function* () {
             yield* sql.run(
               "DELETE FROM sync_outbox WHERE table_name = ? AND row_id = ? AND mark = ?",
@@ -103,8 +107,8 @@ const makeSyncRepository = Effect.gen(function* () {
             );
             yield* sql.run(
               `DELETE FROM sync_restore WHERE table_name = ? AND row_id = ?
-                 AND NOT EXISTS (SELECT 1 FROM sync_outbox WHERE table_name = ? AND row_id = ?)`,
-              [table, id, table, id],
+                 AND deleted_at IN (SELECT value FROM json_each(?))`,
+              [table, id, JSON.stringify(restores)],
             );
           }),
         { discard: true },
@@ -319,7 +323,7 @@ export const syncOnce = <E>(api: SyncApi<E>) =>
         if (last === undefined) break;
         const result = yield* api.push(
           page.map(({ table, row, restores }) =>
-            restores === null ? { table, row } : { table, row, restores },
+            restores.length === 0 ? { table, row } : { table, row, restores },
           ),
         );
         const ahead = new Set(result.ahead.map(({ table, id }) => `${table}/${id}`));
