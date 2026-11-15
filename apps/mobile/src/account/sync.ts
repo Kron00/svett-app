@@ -73,9 +73,11 @@ export const syncNow = (accountId: AccountId, token: Token): Promise<void> => {
     if (Exit.isSuccess(exit)) {
       show({ kind: "synced", queued, held: exit.value.held });
       // Proposals a connected app made come with each sync. One that fails comes next time.
+      // Both requests are bound to the account this sync started for, so a session that has
+      // since changed to another account neither takes nor clears that account's proposals.
       const taken = await runtime.runPromiseExit(
         receiveAssistantProposals(
-          httpSocialApi({ server: svettServer(), token, fetch }).assistantProposals,
+          httpSocialApi({ server: svettServer(), accountId, token, fetch }).assistantProposals,
         ),
       );
       const proposed = Exit.isSuccess(taken) && taken.value > 0;

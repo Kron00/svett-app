@@ -202,6 +202,28 @@ describe("httpSocialApi", () => {
     expect(sent).toEqual([]);
   });
 
+  it("sends nothing for an account when the session names another", async () => {
+    const tokenFor = (sub: string) =>
+      `e30.${Buffer.from(JSON.stringify({ sub })).toString("base64url")}.signature`;
+    const sent: Array<string> = [];
+    const api = (session: string) =>
+      httpSocialApi({
+        server: "https://svett.test",
+        accountId: "user_alice",
+        token: async () => tokenFor(session),
+        fetch: async (input) => {
+          sent.push(String(input));
+          return Response.json({ received: 1 });
+        },
+      });
+    const bobs = api("user_bob").assistantProposals;
+    expect((await failure(bobs.waiting)).problem).toBe("wrong_account");
+    expect((await failure(bobs.received(["proposal-1"]))).problem).toBe("wrong_account");
+    expect(sent).toEqual([]);
+    await Effect.runPromise(api("user_alice").assistantProposals.received(["proposal-1"]));
+    expect(sent).toEqual(["https://svett.test/v1/assistant-proposals/received"]);
+  });
+
   it("refuses an answer that does not match its schema", async () => {
     const error = await failure(server(200, { follow: "maybe" }).api.follow("anna"));
     expect(error.problem).toBe("server");

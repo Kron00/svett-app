@@ -9,6 +9,7 @@ import type { AccountId } from "./database.ts";
 import { CommentPage, FeedPage, InboxPage, Likes, PostComment, PostThread } from "./feed.ts";
 import { ActivityView, FollowState, type SocialActivityId } from "./privacy.ts";
 import { rateLimitedMessage, retryAfterSeconds } from "./rate-limit.ts";
+import { tokenSubject } from "./sync-api.ts";
 import { usernamePrefix } from "./username.ts";
 
 /** The signed-in account's own profile. `username` is null until they choose one. */
@@ -204,6 +205,11 @@ export interface HttpSocialOptions {
   readonly server: string;
   /** The signed-in session's token, fetched fresh for each request. */
   readonly token: () => Promise<string | null>;
+  /**
+   * The account these requests are for. When set, a request whose token names another account
+   * is refused with `wrong_account` before anything is sent.
+   */
+  readonly accountId?: string;
   readonly fetch: typeof globalThis.fetch;
 }
 
@@ -238,6 +244,13 @@ export const httpSocialApi = (options: HttpSocialOptions) => {
           })
         : undefined;
       if (token === null) return yield* failed("signed_out", "Nobody is signed in.");
+      if (
+        token !== undefined &&
+        options.accountId !== undefined &&
+        tokenSubject(token) !== options.accountId
+      ) {
+        return yield* failed("wrong_account", "The session is for another account.");
+      }
       const response = yield* Effect.tryPromise({
         try: (interrupted) => {
           const deadline = new AbortController();
