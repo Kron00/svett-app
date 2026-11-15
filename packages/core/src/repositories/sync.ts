@@ -92,24 +92,24 @@ const makeSyncRepository = Effect.gen(function* () {
 
   const recordSent = (rows: ReadonlyArray<QueuedRow>) =>
     Effect.forEach(
-        rows,
-        ({ table, id, row }) =>
-          Effect.gen(function* () {
-            const deletedAt = (row as { readonly deletedAt?: unknown }).deletedAt;
-            if (typeof deletedAt !== "number") return;
-            yield* sql.run(
-              `DELETE FROM sync_unsent_deletion WHERE table_name = ? AND row_id = ? AND deleted_at = ?`,
-              [table, id, deletedAt],
-            );
-            yield* sql.run(
-              `INSERT OR IGNORE INTO sync_restore (table_name, row_id, deleted_at)
+      rows,
+      ({ table, id, row }) =>
+        Effect.gen(function* () {
+          const deletedAt = (row as { readonly deletedAt?: unknown }).deletedAt;
+          if (typeof deletedAt !== "number") return;
+          yield* sql.run(
+            `DELETE FROM sync_unsent_deletion WHERE table_name = ? AND row_id = ? AND deleted_at = ?`,
+            [table, id, deletedAt],
+          );
+          yield* sql.run(
+            `INSERT OR IGNORE INTO sync_restore (table_name, row_id, deleted_at)
                  SELECT ?, ?, ? WHERE NOT EXISTS
                    (SELECT 1 FROM ${table} WHERE id = ? AND deleted_at IS ?)`,
-              [table, id, deletedAt, id, deletedAt],
-            );
-          }),
-        { discard: true },
-      );
+            [table, id, deletedAt, id, deletedAt],
+          );
+        }),
+      { discard: true },
+    );
 
   /**
    * Records that a push of `rows` is about to leave, so the server may hold each deletion one
@@ -129,21 +129,21 @@ const makeSyncRepository = Effect.gen(function* () {
       Effect.andThen(
         recordSent(rows),
         Effect.forEach(
-        rows,
-        ({ table, id, mark, restores }) =>
-          Effect.gen(function* () {
-            yield* sql.run(
-              "DELETE FROM sync_outbox WHERE table_name = ? AND row_id = ? AND mark = ?",
-              [table, id, mark],
-            );
-            yield* sql.run(
-              `DELETE FROM sync_restore WHERE table_name = ? AND row_id = ?
+          rows,
+          ({ table, id, mark, restores }) =>
+            Effect.gen(function* () {
+              yield* sql.run(
+                "DELETE FROM sync_outbox WHERE table_name = ? AND row_id = ? AND mark = ?",
+                [table, id, mark],
+              );
+              yield* sql.run(
+                `DELETE FROM sync_restore WHERE table_name = ? AND row_id = ?
                  AND deleted_at IN (SELECT value FROM json_each(?))`,
-              [table, id, JSON.stringify(restores)],
-            );
-          }),
-        { discard: true },
-      ),
+                [table, id, JSON.stringify(restores)],
+              );
+            }),
+          { discard: true },
+        ),
       ),
     );
 
@@ -345,9 +345,9 @@ export interface SyncOutcome {
 export const pushesOf = (page: ReadonlyArray<QueuedRow>): Array<Array<PushedRow>> => {
   const pushes: Array<Array<PushedRow>> = [];
   for (const { table, row, restores } of page) {
-    const newestFirst = [...restores].reverse();
-    for (let index = 0; index === 0 || index * MAX_SYNC_ROWS < newestFirst.length; index++) {
-      const slice = newestFirst.slice(index * MAX_SYNC_ROWS, (index + 1) * MAX_SYNC_ROWS);
+    for (let index = 0; index === 0 || index * MAX_SYNC_ROWS < restores.length; index++) {
+      const end = restores.length - index * MAX_SYNC_ROWS;
+      const slice = restores.slice(Math.max(0, end - MAX_SYNC_ROWS), Math.max(0, end));
       const push = pushes[index] ?? [];
       pushes[index] = push;
       push.push(slice.length === 0 ? { table, row } : { table, row, restores: slice });

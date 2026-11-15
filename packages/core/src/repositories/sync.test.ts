@@ -299,10 +299,11 @@ describe("SyncRepository", () => {
     const on = phone();
     const { queued, confirm, step } = undoSteps(on, await logLegDay(on));
     await confirm(await queued());
-    for (let cycle = 0; cycle < 1_000; cycle++) {
-      await step(2 * cycle + 1, "remove");
-      await step(2 * cycle + 2, "restore");
-    }
+    await Array.from({ length: 1_000 }, (_, cycle) => cycle).reduce<Promise<unknown>>(
+      (done, cycle) =>
+        done.then(() => step(2 * cycle + 1, "remove")).then(() => step(2 * cycle + 2, "restore")),
+      Promise.resolve(),
+    );
 
     const left = await queued();
     expect(left).toHaveLength(7);
@@ -382,7 +383,11 @@ describe("SyncRepository", () => {
     expect(pushes.flat().every(({ restores: sent = [] }) => sent.length <= MAX_SYNC_ROWS)).toBe(
       true,
     );
-    expect(pushes.flatMap((rows) => rows[0]?.restores ?? [])).toEqual([...restores].reverse());
+    expect(pushes.map((rows) => rows[0]?.restores)).toEqual([
+      restores.slice(MAX_SYNC_ROWS + 3),
+      restores.slice(3, MAX_SYNC_ROWS + 3),
+      restores.slice(0, 3),
+    ]);
     expect(pushes[0]?.slice(1)).toEqual([
       { table: "activity", row: { id: "b" }, restores: [7] },
       { table: "activity", row: { id: "c" } },
