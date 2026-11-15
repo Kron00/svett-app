@@ -222,6 +222,28 @@ const showsLine = async (tree: ReactTestRenderer, line: string, tries = 50): Pro
   return showsLine(tree, line, tries - 1);
 };
 
+const streak = (tree: ReactTestRenderer, testID = "streak-current") => {
+  const tiles = tree.root.findAll(
+    (node) => typeof node.type === "string" && node.props.testID === testID,
+  );
+  return tiles.length === 0 ? "" : String(tiles[0]?.props.accessibilityLabel);
+};
+
+/** Lets reads finish until the streak tile with `testID` reads `label`. */
+const streakReads = async (
+  tree: ReactTestRenderer,
+  label: RegExp,
+  testID = "streak-current",
+  tries = 50,
+): Promise<void> => {
+  if (tries === 0 || label.test(streak(tree, testID))) {
+    expect(streak(tree, testID)).toMatch(label);
+    return;
+  }
+  await settle();
+  return streakReads(tree, label, testID, tries - 1);
+};
+
 const calendar = () => render(<CalendarScreen {...screenProps("Calendar", undefined)} />);
 
 let older: ActivityId;
@@ -244,6 +266,7 @@ beforeEach(() => {
 describe("a past workout", () => {
   it("shows its sets with record badges and its muscle split", async () => {
     const tree = await render(<WorkoutScreen {...screenProps("Workout", { id: newest })} />);
+    await showsTestId(tree, "workout-detail");
     const shown = lines(tree);
     expect(shown).toEqual(expect.arrayContaining(["60 kg × 8", "105 kg × 5", "100 kg × 5"]));
     expect(shown).toEqual(
@@ -255,12 +278,14 @@ describe("a past workout", () => {
 
   it("shows an edited set on its detail screen", async () => {
     const detail = await render(<WorkoutScreen {...screenProps("Workout", { id: older })} />);
+    await showsTestId(detail, "workout-detail");
     expect(lines(detail).filter((line) => line === "100 kg × 5")).toHaveLength(2);
     const [setId = ""] = setIds(detail);
 
     const edit = await render(
       <SetEditScreen {...screenProps("SetEdit", { activityId: older, setId })} />,
     );
+    await showsTestId(edit, "set-edit");
     await pressLabels(edit, ["Delete", "Delete", "Delete", "1", "2", "2", "Decimal point", "5"]);
     await pressLabels(edit, ["Reps", "Delete", "4"]);
     await press(byTestId(edit, "set-edit-save"));
@@ -272,10 +297,12 @@ describe("a past workout", () => {
 
   it("saves a set once and goes back once however often Save is pressed", async () => {
     const detail = await render(<WorkoutScreen {...screenProps("Workout", { id: older })} />);
+    await showsTestId(detail, "workout-detail");
     const setId = setIds(detail)[1] ?? "";
     const edit = await render(
       <SetEditScreen {...screenProps("SetEdit", { activityId: older, setId })} />,
     );
+    await showsTestId(edit, "set-edit");
     await pressLabels(edit, ["Reps", "Delete", "7"]);
     act(() => {
       for (let tap = 0; tap < 3; tap++) byTestId(edit, "set-edit-save").props.onPress();
@@ -290,12 +317,15 @@ describe("a past workout", () => {
 
   it("refuses a set left with no reps and saves nothing", async () => {
     const detail = await render(<WorkoutScreen {...screenProps("Workout", { id: newest })} />);
+    await showsTestId(detail, "workout-detail");
     const setId = setIds(detail)[1] ?? "";
     const edit = await render(
       <SetEditScreen {...screenProps("SetEdit", { activityId: newest, setId })} />,
     );
+    await showsTestId(edit, "set-edit");
     await pressLabels(edit, ["Reps", "Delete"]);
     await press(byTestId(edit, "set-edit-save"));
+    await showsTestId(edit, "set-edit-error");
     expect(textOf(byTestId(edit, "set-edit-error"))).toBe(
       "A set needs reps. Enter how many you did.",
     );
@@ -305,7 +335,9 @@ describe("a past workout", () => {
 
   it("saves as a routine with its sets as targets", async () => {
     const tree = await render(<WorkoutScreen {...screenProps("Workout", { id: newest })} />);
+    await showsTestId(tree, "workout-save-routine");
     await press(byTestId(tree, "workout-save-routine"));
+    await showsTestId(tree, "routine-saved");
     expect(textOf(byTestId(tree, "routine-saved"))).toContain("Heavy legs");
     const routines = await appDatabase().runPromise(
       Effect.flatMap(Effect.service(RoutineRepository), (repository) => repository.listRoutines),
@@ -351,6 +383,7 @@ describe("history", () => {
     expect(() => byTestId(history, `workout-${newest}`)).not.toThrow();
 
     const detail = await render(<WorkoutScreen {...screenProps("Workout", { id: newest })} />);
+    await showsTestId(detail, "workout-delete");
     await press(byTestId(detail, "workout-delete"));
     expect(navigation.navigate).toHaveBeenCalledWith("Tabs", { screen: "Progress" });
     // The screen keeps showing the workout while it slides away.
@@ -360,6 +393,7 @@ describe("history", () => {
     expect(textOf(byTestId(history, "workout-counts"))).toBe("1 workouts, 2 sets");
     await showsTestId(history, `workout-${newest}`, false);
     expect(() => byTestId(history, `workout-${newest}`)).toThrow();
+    await showsTestId(history, "undo-delete-banner");
     expect(textOf(byTestId(history, "undo-delete-banner"))).toContain("Deleted Heavy legs.");
 
     await press(byTestId(history, "undo-delete"));
@@ -372,6 +406,7 @@ describe("history", () => {
 
   it("deletes once when Delete workout is tapped twice in the same frame", async () => {
     const detail = await render(<WorkoutScreen {...screenProps("Workout", { id: newest })} />);
+    await showsTestId(detail, "workout-delete");
     const remove = byTestId(detail, "workout-delete");
     await act(async () => {
       remove.props.onPress();
@@ -383,14 +418,17 @@ describe("history", () => {
     expect(navigation.navigate).toHaveBeenCalledWith("Tabs", { screen: "Progress" });
 
     const history = await render(<ProgressScreen />);
+    await showsTestId(history, "undo-delete");
     await press(byTestId(history, "undo-delete"));
     await showsLine(history, "2 workouts, 5 sets");
   });
 
   it("brings a workout back once and keeps Close disabled while Undo runs", async () => {
     const detail = await render(<WorkoutScreen {...screenProps("Workout", { id: newest })} />);
+    await showsTestId(detail, "workout-delete");
     await press(byTestId(detail, "workout-delete"));
     const history = await render(<ProgressScreen />);
+    await showsTestId(history, "undo-delete-close");
     expect(byTestId(history, "undo-delete-close").props.disabled).toBe(false);
 
     const undo = byTestId(history, "undo-delete");
@@ -408,15 +446,15 @@ describe("history", () => {
 describe("the calendar", () => {
   it("shows the month as a grid with the weekly streak", async () => {
     const tree = await calendar();
+    // The clock and the workouts are separate reads, so wait for the streak they make.
+    await streakReads(tree, /^Streak, [12] weeks?$/, "calendar-streak");
     expect(lines(tree)).toEqual(expect.arrayContaining(["M", "T", "W", "F", "S"]));
-    expect(byTestId(tree, "calendar-streak").props.accessibilityLabel).toMatch(
-      /^Streak, [12] weeks?$/,
-    );
   });
 
   it("lists the month's workouts instead of a grid at accessibility text sizes", async () => {
     screen.fontScale = 3.1;
     const tree = await calendar();
+    await showsLine(tree, "Legs");
     expect(lines(tree)).not.toContain("M");
     const rows = tree.root.findAll(
       (node) =>
@@ -431,19 +469,6 @@ const lastMinute = () => {
   const day = new Date(newestAt);
   const monday = day.getDate() - ((day.getDay() + 6) % 7);
   return new Date(day.getFullYear(), day.getMonth(), monday + 14).getTime() - 30_000;
-};
-
-const streak = (tree: ReactTestRenderer) =>
-  String(byTestId(tree, "streak-current").props.accessibilityLabel);
-
-/** Lets reads finish until the streak reads `label`. */
-const streakReads = async (tree: ReactTestRenderer, label: RegExp, tries = 50): Promise<void> => {
-  if (tries === 0 || label.test(streak(tree))) {
-    expect(streak(tree)).toMatch(label);
-    return;
-  }
-  await settle();
-  return streakReads(tree, label, tries - 1);
 };
 
 describe("the streak across midnight", () => {
@@ -479,8 +504,7 @@ describe("the streak across midnight", () => {
     await settle();
     expect(streak(history)).toMatch(/^Streak, [12] weeks?$/);
     for (const listener of appState.listeners) listener("active");
-    await settle();
-    expect(streak(history)).toBe("Streak, 0 weeks");
+    await streakReads(history, /^Streak, 0 weeks$/);
     await act(async () => history.unmount());
   });
 });
@@ -510,6 +534,7 @@ describe("a recorded run in history", () => {
 
     await press(byTestId(history, `workout-${run}`));
     expect(navigation.navigate).toHaveBeenCalledWith("Activity", { id: run });
+    await showsTestId(history, `workout-${newest}`);
     await press(byTestId(history, `workout-${newest}`));
     expect(navigation.navigate).toHaveBeenLastCalledWith("Workout", { id: newest });
     await act(async () => history.unmount());
