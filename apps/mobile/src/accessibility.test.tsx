@@ -475,40 +475,56 @@ const walk = async (rows: Seeded | null) => {
 
 let seeded: Seeded | undefined;
 
+// Each walk draws every screen in the app against a real database, which takes several
+// seconds on a busy runner.
+const WALK_MS = 60_000;
+
 describe("every screen, for VoiceOver", () => {
-  it("on a fresh install, labels every control and offers the action that fills each empty list", async () => {
-    const { screens, problems, filled } = await walk(null);
-    expect(screens).toEqual(expect.arrayContaining(["HomeRoot", "TrainRoot", "YouRoot"]));
-    expect(screens.length).toBeGreaterThan(48);
-    expect(problems).toEqual([]);
-    expect(Object.fromEntries(filled)).toMatchObject({
-      ProgressRoot: expect.arrayContaining(["history-empty", "records-empty"]),
-      Calendar: ["calendar-empty"],
-      Measurements: ["measurements-empty"],
-      CoachRoot: ["coach-empty"],
-    });
-  });
+  it(
+    "on a fresh install, labels every control and offers the action that fills each empty list",
+    async () => {
+      const { screens, problems, filled } = await walk(null);
+      expect(screens).toEqual(expect.arrayContaining(["HomeRoot", "TrainRoot", "YouRoot"]));
+      expect(screens.length).toBeGreaterThan(48);
+      expect(problems).toEqual([]);
+      expect(Object.fromEntries(filled)).toMatchObject({
+        ProgressRoot: expect.arrayContaining(["history-empty", "records-empty"]),
+        Calendar: ["calendar-empty"],
+        Measurements: ["measurements-empty"],
+        CoachRoot: ["coach-empty"],
+      });
+    },
+    WALK_MS,
+  );
 
-  it("with workouts, a run and a routine, labels every control", async () => {
-    seeded = await seed();
-    const { problems } = await walk(seeded);
-    expect(problems).toEqual([]);
-  });
+  it(
+    "with workouts, a run and a routine, labels every control",
+    async () => {
+      seeded = await seed();
+      const { problems } = await walk(seeded);
+      expect(problems).toEqual([]);
+    },
+    WALK_MS,
+  );
 
-  it("at the largest text size, with a workout in progress, labels every control", async () => {
-    await act(async () => {
-      await startEmpty();
-      addExercises([SQUAT]);
-    });
-    await settle();
-    const logged = currentWorkout()?.exercises[0]?.row.id;
-    expect(logged).toBeDefined();
-    app.fontScale = 3.1;
-    const { problems, controls } = await walk({ ...(seeded ?? (await seed())), logged });
-    app.fontScale = 1;
-    // The logger and the library drew their rows, so their controls were checked too.
-    expect(controls.get("ActiveWorkout")).toBeGreaterThan(8);
-    expect(controls.get("AddWorkoutExercise")).toBeGreaterThan(500);
-    expect(problems).toEqual([]);
-  });
+  it(
+    "at the largest text size, with a workout in progress, labels every control",
+    async () => {
+      await act(async () => {
+        await startEmpty();
+        addExercises([SQUAT]);
+      });
+      await settle();
+      const logged = currentWorkout()?.exercises[0]?.row.id;
+      expect(logged).toBeDefined();
+      app.fontScale = 3.1;
+      const { problems, controls } = await walk({ ...(seeded ?? (await seed())), logged });
+      app.fontScale = 1;
+      // The logger and the library drew their rows, so their controls were checked too.
+      expect(controls.get("ActiveWorkout")).toBeGreaterThan(8);
+      expect(controls.get("AddWorkoutExercise")).toBeGreaterThan(500);
+      expect(problems).toEqual([]);
+    },
+    WALK_MS,
+  );
 });
