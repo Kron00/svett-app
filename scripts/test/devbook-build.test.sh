@@ -5144,4 +5144,169 @@ check "safety.sh fails on a build without a Clerk key" test "$safety_status" -ne
 check "safety.sh says to build with the publishable key" \
   grep -qF "Build it with EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY set" "$output"
 
+# Stands in for the bound command while connected-apps.sh revokes the stand-in
+# connection. It keeps the screen in front, what came on screen since, whether
+# svett's confirmation is up and whether the connection was revoked, as files under
+# $FAKE_STATE. The You tab's Connected apps row and every part of the connection
+# start below the fold, so only a scroll finds them. Revoke sits at the bottom edge
+# until a drag moves it up. FAKE_NO_STUB launches without the stand-in, and
+# FAKE_REVOKE_IGNORED makes Revoke access do nothing. alert accept is refused, as
+# agent-device refuses it for svett's own alert.
+cat >"$fake/apps-device" <<'EOF'
+#!/usr/bin/env bash
+echo "$*" >>"$FAKE_ROOT/bound-calls"
+state=$FAKE_STATE
+mkdir -p "$state"
+get() { cat "$state/$1" 2>/dev/null || echo "$2"; }
+put() { echo "$2" >"$state/$1"; }
+has() { [[ -e "$state/$1" ]]; }
+screen=$(get screen home)
+args=" $* "
+selector() { sed -E 's/^.* (is visible|--until|get attrs|get text|wait) (.*) $/\2/; s/ [0-9]+ $//' <<<"$args"; }
+# The elements the screen in front holds, one per line.
+elements() {
+  case $screen in
+    you) echo 'id="connected-apps-row"' ;;
+    apps)
+      if ! has stub; then return; fi
+      if has revoked; then
+        echo 'id="connected-apps-empty"'
+      else
+        printf '%s\n' 'id="connection-stand-in-chatgpt"' \
+          'id="connection-stand-in-chatgpt-access"' 'id="connection-stand-in-chatgpt-read"' \
+          'id="revoke-stand-in-chatgpt"'
+      fi ;;
+  esac
+  if has alert; then echo 'label="Revoke access"'; fi
+}
+holds() { elements | grep -qxF -- "$1"; }
+seen() { grep -qxF -- "$1" "$state/seen" 2>/dev/null; }
+case "$args" in
+  *" open com.kron00.svett --relaunch "*)
+    rm -f "$state/revoked" "$state/alert" "$state/seen" "$state/stub" "$state/dragged"
+    [[ -n "${FAKE_NO_STUB:-}" || "$args" != *" --launch-args=-svettConnectionsStub --launch-args=one "* ]] ||
+      touch "$state/stub"
+    put screen tabs ;;
+  *" open com.kron00.svett svett://connected-apps "*)
+    rm -f "$state/seen"
+    put screen apps ;;
+  *' wait label="You, tab, 5 of 5" selected=true '*) [[ "$screen" == you ]] ;;
+  *' wait label="You, tab, 5 of 5" '*) [[ "$screen" != home ]] ;;
+  *' press label="You, tab, 5 of 5" '*) rm -f "$state/seen"; put screen you ;;
+  *' wait id="connected-apps-screen" '*) [[ "$screen" == apps ]] ;;
+  *" alert wait "*) has alert ;;
+  *" alert accept "* | *" alert dismiss "*) echo "agent-device answers system alerts only" >&2; exit 1 ;;
+  *" is visible "*)
+    target=$(selector)
+    holds "$target" && { seen "$target" || [[ "$target" == 'label="Revoke access"' ]]; } ;;
+  *" scroll "*" --until "*)
+    target=$(selector)
+    holds "$target" || exit 1
+    echo "$target" >>"$state/seen" ;;
+  *" get text "*)
+    target=$(selector)
+    holds "$target" && seen "$target" || exit 1
+    case $target in
+      *-access*) echo "${FAKE_ACCESS:-Read your training and propose routines and programs}" ;;
+      *-read*) echo "Last read your data on Fri, 13 Nov 2026, 18:05" ;;
+    esac ;;
+  *" get attrs "*)
+    target=$(selector)
+    holds "$target" || exit 1
+    echo "$target" >"$state/target"
+    case $target in
+      'label="Revoke access"') echo '{"rect": {"x": 40, "y": 476, "width": 360, "height": 48}}' ;;
+      'id="revoke-stand-in-chatgpt"')
+        if has dragged; then y=556; else y=856; fi
+        echo "{\"rect\": {\"x\": 16, \"y\": $y, \"width\": 408, \"height\": 48}}" ;;
+      *) echo '{"rect": {"x": 16, "y": 300, "width": 408, "height": 48}}' ;;
+    esac ;;
+  *" gesture pan "*) touch "$state/dragged" ;;
+  *" press "[0-9]*)
+    case $(get target none) in
+      'id="revoke-stand-in-chatgpt"') touch "$state/alert" ;;
+      'label="Revoke access"')
+        rm -f "$state/alert"
+        [[ -n "${FAKE_REVOKE_IGNORED:-}" ]] || touch "$state/revoked" ;;
+      *) exit 1 ;;
+    esac ;;
+esac
+EOF
+chmod +x "$fake/apps-device"
+
+# run_apps [VAR=value...] [connected-apps.sh args...] leaves the exit status in apps_status.
+run_apps() {
+  local -a vars=()
+  while [[ "${1:-}" == *=* ]]; do
+    vars+=("$1")
+    shift
+  done
+  rm -rf "$root/simctl-calls" "$root/bound-calls" "$root/apps-state"
+  apps_status=0
+  env PATH="$fake:$PATH" FAKE_ROOT="$root" FAKE_STATE="$root/apps-state" \
+    SVETT_DEVICE_CMD="apps-device --session 't3-test session' --device FAKE-UDID" \
+    "${vars[@]}" "$repo/scripts/sim/connected-apps.sh" "$@" >"$output" 2>&1 || apps_status=$?
+}
+
+apps_launch="com.kron00.svett --relaunch --launch-args=-svettConnectionsStub --launch-args=one"
+
+case_name="connected-apps.sh Debug with SVETT_DEVICE_CMD"
+run_apps "$root/connected-apps"
+[[ "$apps_status" == 0 ]] || fail "connected-apps.sh failed"
+check "connected-apps.sh relaunches with the stand-in into the dev client, then opens Connected apps" \
+  only_open "$apps_launch --launch-url $local_dev_client_url" "com.kron00.svett svett://connected-apps"
+check "connected-apps.sh shoots at the largest text size, then restores the default" \
+  only_calls "settings" "$largest_text" "settings text-size large"
+check "connected-apps.sh scrolls to the You tab's row and to every part of the connection" \
+  only_calls "scroll" \
+  'scroll down --until id="connected-apps-row"' \
+  'scroll down --until id="connection-stand-in-chatgpt"' \
+  'scroll down --until id="connection-stand-in-chatgpt-access"' \
+  'scroll down --until id="connection-stand-in-chatgpt-read"' \
+  'scroll down --until id="revoke-stand-in-chatgpt"' \
+  'scroll down --until id="connected-apps-empty"' \
+  'scroll down --until id="connection-stand-in-chatgpt"' \
+  'scroll up --until id="connection-stand-in-chatgpt"'
+check "connected-apps.sh drags Revoke clear of the bottom edge before it presses it" \
+  only_calls "press|gesture" 'press label="You, tab, 5 of 5"' "gesture pan 20 600 0 -300 400" \
+  "press 220 580" "press 220 500"
+check "connected-apps.sh answers svett's own confirmation by its button, never alert accept" \
+  bash -c '! grep -qF "alert accept" "$1"' _ "$root/bound-calls"
+check "connected-apps.sh screenshots each step" \
+  only_calls "screenshot" \
+  "screenshot $root/connected-apps/01-you-tab.png" "screenshot $root/connected-apps/02-connection.png" \
+  "screenshot $root/connected-apps/03-confirm.png" "screenshot $root/connected-apps/04-revoked.png"
+check "connected-apps.sh with SVETT_DEVICE_CMD never calls simctl" test ! -e "$root/simctl-calls"
+
+case_name="connected-apps.sh Release with SVETT_DEVICE_CMD"
+run_apps --release "$root/connected-apps-release"
+[[ "$apps_status" == 0 ]] || fail "connected-apps.sh --release failed"
+check "connected-apps.sh Release relaunches the installed app with the stand-in and no Metro" \
+  only_open "$apps_launch" "com.kron00.svett svett://connected-apps"
+
+case_name="connected-apps.sh when svett launches without the stand-in"
+run_apps FAKE_NO_STUB=1 "$root/connected-apps-no-stub"
+check "connected-apps.sh fails when the stand-in connection never shows" test "$apps_status" -ne 0
+check "connected-apps.sh says the connection is missing" \
+  grep -qxF "The stand-in ChatGPT connection did not show." "$output"
+check "connected-apps.sh restores the default text size after a failure" \
+  only_calls "settings" "$largest_text" "settings text-size large"
+
+case_name="connected-apps.sh when the connection says it may do something else"
+run_apps FAKE_ACCESS="Read your training" "$root/connected-apps-access"
+check "connected-apps.sh fails when the connection's access is wrong" test "$apps_status" -ne 0
+check "connected-apps.sh shows what the connection said" \
+  grep -qF 'but it shows "Read your training"' "$output"
+
+case_name="connected-apps.sh when Revoke access does nothing"
+run_apps FAKE_REVOKE_IGNORED=1 "$root/connected-apps-ignored"
+check "connected-apps.sh fails when the connection is still there after Revoke" test "$apps_status" -ne 0
+check "connected-apps.sh says the list did not empty" \
+  grep -qxF "The list without the revoked connection did not show." "$output"
+check "connected-apps.sh shoots nothing after the failed revoke" \
+  only_calls "screenshot" \
+  "screenshot $root/connected-apps-ignored/01-you-tab.png" \
+  "screenshot $root/connected-apps-ignored/02-connection.png" \
+  "screenshot $root/connected-apps-ignored/03-confirm.png"
+
 echo "$passed passed"
