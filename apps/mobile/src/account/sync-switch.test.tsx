@@ -151,9 +151,9 @@ const standInServer = () => {
   const proposals = new Map<string, Array<AssistantProposal>>();
   let held: { account: string; answer: Promise<void> } | undefined;
   const hold = (account: string) => {
-    let release = () => {};
-    held = { account, answer: new Promise<void>((resolve) => (release = resolve)) };
-    return release;
+    const { promise, resolve } = Promise.withResolvers<void>();
+    held = { account, answer: promise };
+    return resolve;
   };
   const fetch = async (url: string | URL | Request, init?: RequestInit) => {
     const token = String(new Headers(init?.headers).get("authorization")).replace("Bearer ", "");

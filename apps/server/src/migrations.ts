@@ -214,7 +214,8 @@ export const MIGRATIONS: Record<string, Effect.Effect<void, unknown, SqlClient>>
     yield* sql`create table deletion_ledger (id text primary key)`;
   }),
   // Apps the person connects, such as ChatGPT, sign in with the server's own OAuth. A client
-  // names no account. A code, a connection and its tokens do, and only hashes of the codes and
+  // names no account. A client that never connected an account is removed after a day. A code, a
+  // connection and its tokens do name one, and only hashes of the codes and
   // tokens are kept. A connection holds one access token and one refresh token at a time, so
   // deleting the row cuts the app off at once. The access log records each tool call, and the
   // proposals an app made wait here until the phone takes them.
@@ -225,7 +226,8 @@ export const MIGRATIONS: Record<string, Effect.Effect<void, unknown, SqlClient>>
         id text primary key,
         name text not null,
         redirect_uris jsonb not null,
-        created_ms bigint not null
+        created_ms bigint not null,
+        connected_ms bigint
       )
     `;
     yield* sql`

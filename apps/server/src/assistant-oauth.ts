@@ -6,11 +6,16 @@ import {
   requestedScopes,
   scopeText,
 } from "@svett/core";
-import { Clock, Data, Effect, Layer, Option, Schema } from "effect";
+import { Clock, Data, Effect, Layer, Option, Schedule, Schema } from "effect";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 
 import { AssistantConfig, publicBase } from "./assistant-config.ts";
-import { AssistantRows, type OAuthClient, type Tokens } from "./assistant-rows.ts";
+import {
+  AssistantRows,
+  type OAuthClient,
+  type Tokens,
+  UNCONNECTED_CLIENT_MS,
+} from "./assistant-rows.ts";
 import { Sessions } from "./auth.ts";
 import { consentPage, PAGE_HEADERS, problemPage } from "./consent-page.ts";
 import { MCP_PATH, RESOURCE_METADATA_PATH } from "./mcp.ts";
@@ -84,6 +89,14 @@ export const redirectProblem = (uri: string): string | undefined => {
   return "A redirect address must use HTTPS, or HTTP on this computer.";
 };
 
+/**
+ * The address a request came from. The proxy in front of the server adds the address it saw at
+ * the end of X-Forwarded-For, so only the last entry is one a client cannot write itself.
+ */
+export const clientAddress = (request: HttpServerRequest.HttpServerRequest) =>
+  request.headers["x-forwarded-for"]?.split(",").at(-1)?.trim() ||
+  Option.getOrElse(request.remoteAddress, () => "unknown");
+
 const Registration = Schema.Struct({
   redirect_uris: Schema.Array(Schema.String),
   client_name: Schema.optional(Schema.String),
@@ -97,6 +110,30 @@ const decodeRegistration = Schema.decodeUnknownOption(Registration);
  */
 const register = Effect.gen(function* () {
   const request = yield* HttpServerRequest.HttpServerRequest;
+  // Anyone may register, so each address gets a few registrations an hour, checked before
+  // anything is stored.
+  const limited = yield* (yield* Safety)
+    .limitAddress(clientAddress(request), "client_register")
+    .pipe(
+      Effect.as(undefined),
+      Effect.catchTag("RateLimited", (refused) => Effect.succeed(refused)),
+    );
+  if (limited !== undefined) {
+    return HttpServerResponse.jsonUnsafe(
+      {
+        error: "rate_limited",
+        error_description: "Too many apps registered from this address. Try again later.",
+      },
+      {
+        status: 429,
+        headers: {
+          "cache-control": "no-store",
+          "access-control-allow-origin": "*",
+          "retry-after": String(limited.retryAfterSeconds),
+        },
+      },
+    );
+  }
   const body = yield* Effect.orElseSucceed(request.json, () => undefined);
   const registration = decodeRegistration(body);
   if (Option.isNone(registration)) {
@@ -417,4 +454,27 @@ export const AssistantOAuthRoutes = Layer.mergeAll(
   HttpRouter.add("GET", OAUTH_PATHS.authorize, authorizePage),
   HttpRouter.add("POST", OAUTH_PATHS.authorize, decide),
   HttpRouter.add("POST", OAUTH_PATHS.token, token),
+);
+
+/**
+ * Removes app registrations that never connected an account within a day, and the buckets of
+ * addresses that registered nothing for as long.
+ */
+export const expireRegistrations = Effect.gen(function* () {
+  const now = yield* Clock.currentTimeMillis;
+  const clients = yield* (yield* AssistantRows).expireClients(now);
+  yield* (yield* Safety).forgetAddresses(now - UNCONNECTED_CLIENT_MS);
+  if (clients > 0) yield* Effect.logInfo(`Removed ${clients} apps that never connected`);
+});
+
+/** Expires registrations when the server starts and every hour after. */
+export const ExpireRegistrations = Layer.effectDiscard(
+  Effect.forkScoped(
+    Effect.repeat(
+      expireRegistrations.pipe(
+        Effect.catchCause((cause) => Effect.logError("Could not expire app registrations", cause)),
+      ),
+      Schedule.spaced("1 hour"),
+    ),
+  ),
 );

@@ -8,7 +8,7 @@ import { AccountDeletion, readyToServe } from "./account-deletion.ts";
 import { AccountRoutes, DeletionRoutes } from "./account-routes.ts";
 import { AccountRows } from "./account-rows.ts";
 import { AssistantConfig } from "./assistant-config.ts";
-import { AssistantOAuthRoutes } from "./assistant-oauth.ts";
+import { AssistantOAuthRoutes, ExpireRegistrations } from "./assistant-oauth.ts";
 import { AssistantRoutes } from "./assistant-routes.ts";
 import { AssistantRows } from "./assistant-rows.ts";
 import { Sessions } from "./auth.ts";
@@ -72,6 +72,7 @@ const App = Layer.mergeAll(
     ),
   ),
   NightlyBackups,
+  ExpireRegistrations,
 ).pipe(Layer.provide(Prepared), Layer.provide(HttpServer), Layer.provide(Services));
 
 NodeRuntime.runMain(Layer.launch(App));

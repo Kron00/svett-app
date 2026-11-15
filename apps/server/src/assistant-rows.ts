@@ -20,6 +20,9 @@ export const LIFETIME_MS = {
   refresh: 60 * 24 * 60 * 60_000,
 } as const;
 
+/** How long a registered client may wait for its first connection before it is removed. */
+export const UNCONNECTED_CLIENT_MS = 24 * 60 * 60_000;
+
 /** How long the access log keeps an entry. */
 export const ACCESS_LOG_MS = 90 * 24 * 60 * 60_000;
 
@@ -67,6 +70,11 @@ export interface AssistantRowsShape {
     readonly nowMillis: number;
   }) => Effect.Effect<string, SqlError>;
   readonly client: (id: string) => Effect.Effect<Option.Option<OAuthClient>, SqlError>;
+  /**
+   * Removes the clients registered before `nowMillis` less `UNCONNECTED_CLIENT_MS` that never
+   * connected an account, with their codes. Gives back how many it removed.
+   */
+  readonly expireClients: (nowMillis: number) => Effect.Effect<number, SqlError>;
   /** Stores a new authorization code and gives back the code itself, which is never stored. */
   readonly createCode: (
     code: Omit<AuthorizationCode, "expiresMs">,
@@ -196,6 +204,20 @@ export class AssistantRows extends Context.Service<AssistantRows, AssistantRowsS
                       : [],
                   }),
           ),
+        expireClients: (nowMillis) =>
+          sql.withTransaction(
+            Effect.gen(function* () {
+              const removed = yield* sql<{ readonly id: string }>`
+                delete from oauth_client
+                where connected_ms is null and created_ms < ${nowMillis - UNCONNECTED_CLIENT_MS}
+                returning id
+              `;
+              const ids = removed.map(({ id }) => id);
+              if (ids.length > 0)
+                yield* sql`delete from oauth_code where client_id in ${sql.in(ids)}`;
+              return ids.length;
+            }),
+          ),
         createCode: (code, nowMillis) =>
           Effect.gen(function* () {
             const secret = newSecret("code");
@@ -235,6 +257,10 @@ export class AssistantRows extends Context.Service<AssistantRows, AssistantRowsS
         connect: (code, client, nowMillis) =>
           Effect.gen(function* () {
             const tokens = newTokens(nowMillis);
+            yield* sql`
+              update oauth_client set connected_ms = coalesce(connected_ms, ${nowMillis})
+              where id = ${client.id}
+            `;
             yield* sql`
               delete from assistant_connection
               where account_id = ${code.accountId} and client_id = ${client.id}

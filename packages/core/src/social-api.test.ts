@@ -35,6 +35,9 @@ const server = (status: number, body: unknown, token: string | null = "token-1")
   return { api, sent };
 };
 
+const tokenFor = (sub: string) =>
+  `e30.${Buffer.from(JSON.stringify({ sub })).toString("base64url")}.signature`;
+
 const failure = async <A>(effect: Effect.Effect<A, SocialFailed>) => {
   const exit = await Effect.runPromiseExit(effect);
   if (Exit.isSuccess(exit)) throw new Error("expected a failure");
@@ -203,8 +206,6 @@ describe("httpSocialApi", () => {
   });
 
   it("sends nothing for an account when the session names another", async () => {
-    const tokenFor = (sub: string) =>
-      `e30.${Buffer.from(JSON.stringify({ sub })).toString("base64url")}.signature`;
     const sent: Array<string> = [];
     const api = (session: string) =>
       httpSocialApi({
