@@ -91,6 +91,18 @@ describe("RestTimerBar", () => {
       ),
     ).toEqual(["gobackward.15", "goforward.15"]);
 
+    // Each is a 44 point target that names what it does, though its symbol is smaller.
+    expect(
+      [byTestID(root, "rest-less"), byTestID(root, "rest-more")].map((button) => [
+        button.props.accessibilityRole,
+        button.props.accessibilityLabel,
+        button.props.className.split(" ").filter((name: string) => name.endsWith("-target")),
+      ]),
+    ).toEqual([
+      ["button", "15 seconds less", ["min-h-target", "min-w-target"]],
+      ["button", "15 seconds more", ["min-h-target", "min-w-target"]],
+    ]);
+
     for (const id of ["rest-less", "rest-more", "rest-skip"]) {
       act(() => byTestID(root, id).props.onPress());
     }

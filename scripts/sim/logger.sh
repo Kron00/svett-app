@@ -38,10 +38,12 @@
 # opens screens through svett:// links and presses an element at the centre of
 # its frame, because agent-device 0.21.37 refuses a selector press inside
 # screen content on iOS 27. It reads that frame until two reads agree, because
-# the screen glides on after a scroll or a drag. It presses only where nothing
-# covers the workout: above the bottom edge, the open keypad and the running
-# rest. An element below that line is dragged up first. So it never presses the
-# keypad's Next and Done, which sit at the bottom edge. It moves to a set's reps
+# the screen glides on after a scroll or a drag. It presses an element only when
+# its whole frame shows where nothing covers the workout: below the navigation
+# bar, and above the bottom edge, the open keypad and the running rest. An
+# element outside that space is dragged into it, slowly and only as far as it
+# needs. So it never presses the keypad's Next and Done, which sit at the bottom
+# edge. It moves to a set's reps
 # by pressing the field, and leaves the keypad open. It types only once the field
 # it pressed is selected with the keypad open.
 #
@@ -203,15 +205,27 @@ centre_of() {
   ' "$frame"
 }
 
-# settled_centre <selector>: the centre of the element's frame once two reads in
-# a row agree, because the workout keeps gliding for a moment after a scroll or a
-# drag, and a press at a frame read during the glide lands beside the element.
-settled_centre() {
+# frame_of <selector>: the top and bottom of the element's frame and its centre, as
+# "top bottom x y", or nothing and a failure when it is not on screen.
+frame_of() {
+  local frame
+  frame=$(agent_device get attrs "$1" 2>/dev/null) || return 1
+  node -e '
+    const { x, y, width, height } = JSON.parse(process.argv[1]).rect;
+    console.log(Math.round(y), Math.round(y + height), Math.round(x + width / 2), Math.round(y + height / 2));
+  ' "$frame"
+}
+
+# settled <reader> <selector>: what the reader prints for the element once two reads in
+# a row agree, because the workout keeps gliding for a moment after a scroll or a drag,
+# and a press at a frame read during the glide lands beside the element. It fails
+# without a message when the element is not on screen.
+settled() {
   local before after reads=0
-  before=$(centre_of "$1") || fail "$1 is not on screen"
+  before=$("$1" "$2") || return 1
   while ((reads < 10)); do
     agent_device wait 250 >/dev/null
-    after=$(centre_of "$1") || fail "$1 is not on screen"
+    after=$("$1" "$2") || return 1
     if [[ "$after" == "$before" ]]; then
       echo "$after"
       return 0
@@ -219,7 +233,12 @@ settled_centre() {
     before=$after
     reads=$((reads + 1))
   done
-  fail "$1 kept moving on screen"
+  fail "$2 kept moving on screen"
+}
+
+# settled_centre <selector>: the centre of the element's frame once two reads agree.
+settled_centre() {
+  settled centre_of "$1" || fail "$1 is not on screen"
 }
 
 # top_of <selector>: the top of the element's frame, or nothing when it is not on screen.
@@ -242,26 +261,46 @@ clear_bottom() {
   echo "$bottom"
 }
 
-# clear_point <selector>: prints the centre of the element's frame once nothing
-# covers it and two reads agree. An element below the clear bottom is dragged up
-# from just above that line toward the middle of the workout. The frame is read
-# last, after any other element's, so the press goes where it was read.
+# clear_point <selector>: prints the centre of the element's frame once the whole
+# frame shows where a person sees it, below the navigation bar and above the clear
+# bottom, and two reads agree. An element out of that space is dragged into it, just
+# far enough and slowly, so the workout stops where the finger lifts instead of
+# gliding on. A fast drag on the Mac flung the field it was for off the top of the
+# screen. A drag that still overshoots is corrected by the next, and an element it
+# carried off screen is brought back first. The frame is read last, after any other
+# element's, so the press goes where it was read.
 clear_point() {
-  local point bottom y start by drags=0
+  local frame top bottom edge by start drags=0
   while :; do
-    bottom=$(clear_bottom)
-    point=$(settled_centre "$1") || exit 1
-    y=${point#* }
-    ((y > bottom)) || break
-    ((drags < 4)) || fail "$1 stayed under the keypad, the rest timer or the bottom edge of the screen"
-    ((bottom - 20 > safe_top)) || fail "The keypad and the rest timer leave no room to drag $1 into"
-    start=$((bottom - 20))
-    by=$(((safe_top + bottom) / 2 - y))
-    ((start + by >= 60)) || by=$((60 - start))
-    agent_device gesture pan 20 "$start" 0 "$by" 400 >/dev/null
+    edge=$(clear_bottom)
+    if ! frame=$(settled frame_of "$1"); then
+      ((drags > 0)) || fail "$1 is not on screen"
+      bring "$1" "$1 went off screen after a drag and never came back"
+      frame=$(settled frame_of "$1") || fail "$1 is not on screen"
+    fi
+    read -r top bottom _ <<<"$frame"
+    if ((top >= safe_top && bottom <= edge)); then
+      echo "${frame#* * }"
+      return 0
+    fi
+    ((drags < 6)) || fail "$1 stayed under the navigation bar, the keypad, the rest timer or the bottom edge of the screen"
+    ((bottom - top <= edge - safe_top)) || fail "$1 is taller than the space the keypad and the rest timer leave, y=$safe_top to y=$edge"
+    if ((bottom > edge)); then
+      start=$((edge - 20))
+      by=$((edge - 16 - bottom))
+      ((start + by >= 60)) || by=$((60 - start))
+    else
+      start=$((safe_top + 20))
+      by=$((safe_top + 16 - top))
+      ((start + by <= edge - 10)) || by=$((edge - 10 - start))
+    fi
+    # At most 300 points a drag, at 50 points a second, which leaves the workout no speed
+    # to glide on with when the finger lifts.
+    ((by <= 300)) || by=300
+    ((by >= -300)) || by=-300
+    agent_device gesture pan 20 "$start" 0 "$by" "$((${by#-} * 20 > 600 ? ${by#-} * 20 : 600))" >/dev/null
     drags=$((drags + 1))
   done
-  echo "$point"
 }
 
 # tap <selector> [what is missing]: brings the element on screen and presses the
@@ -272,6 +311,14 @@ tap() {
   local point
   bring "$@"
   point=$(clear_point "$1")
+  agent_device press "${point% *}" "${point#* }"
+}
+
+# tap_bar <selector>: presses an item of the navigation bar, which sits above the
+# workout and never scrolls with it, at its centre once two reads agree.
+tap_bar() {
+  local point
+  point=$(settled_centre "$1")
   agent_device press "${point% *}" "${point#* }"
 }
 
@@ -415,7 +462,7 @@ check_rows() {
 
 finish_workout() {
   # Finish is a native bar item, which carries its label but no identifier.
-  tap 'label="Finish"'
+  tap_bar 'label="Finish"'
   agent_device alert wait 5000 >/dev/null || fail "Finish asked nothing"
   # The confirmation is svett's own alert, which agent-device's alert accept cannot
   # answer, so its button is pressed by its label like any other control. The

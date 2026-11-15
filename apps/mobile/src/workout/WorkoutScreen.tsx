@@ -183,7 +183,7 @@ function Logger({
   });
   const scroll = useRef<ScrollViewInstance>(null);
   const content = useRef<HostInstance>(null);
-  const focusedRow = useRef<HostInstance>(null);
+  const focused = useRef<{ row: HostInstance; field: HostInstance } | null>(null);
   const headerHeight = useHeaderHeight();
   const safeBottom = useSafeAreaInsets().bottom;
 
@@ -197,40 +197,48 @@ function Logger({
   // iOS already keeps the home indicator's strip clear, and the cover reaches over it.
   const inset = Math.max(0, (covered ?? cover.height) - safeBottom);
 
-  // Scrolls the set being typed into until it shows whole between the navigation bar and what
-  // covers the workout. It reads every position on screen, so it holds at any scroll.
+  // Scrolls until the field being typed into shows whole between the navigation bar and what
+  // covers the workout, with its whole set when that fits. It reads every position on screen,
+  // so it holds at any scroll.
   const reveal = useCallback(
-    (row: HostInstance, coveredHeight: number) => {
+    (row: HostInstance, field: HostInstance, coveredHeight: number) => {
       const list = scroll.current;
       const inner = content.current;
       if (list === null || inner === null) return;
       list.measureInWindow((_x, listTop, _width, listHeight) =>
         inner.measureInWindow((_innerX, contentTop) =>
-          row.measureLayout(inner, (_rowX, rowY, _rowWidth, rowHeight) => {
-            const top = contentTop + rowY;
-            const by = revealDistance(
-              { top, bottom: top + rowHeight },
-              {
-                top: Math.max(headerHeight, listTop),
-                bottom: listTop + listHeight - coveredHeight,
-              },
-            );
-            if (by !== 0) list.scrollTo({ y: listTop - contentTop + by, animated: true });
-          }),
+          row.measureLayout(inner, (_rowX, rowY, _rowWidth, rowHeight) =>
+            field.measureLayout(inner, (_fieldX, fieldY, _fieldWidth, fieldHeight) => {
+              const span = (y: number, height: number) => ({
+                top: contentTop + y,
+                bottom: contentTop + y + height,
+              });
+              const by = revealDistance(
+                span(rowY, rowHeight),
+                {
+                  top: Math.max(headerHeight, listTop),
+                  bottom: listTop + listHeight - coveredHeight,
+                },
+                span(fieldY, fieldHeight),
+              );
+              if (by !== 0) list.scrollTo({ y: listTop - contentTop + by, animated: true });
+            }),
+          ),
         ),
       );
     },
     [headerHeight],
   );
-  const onFocusedRow = useCallback((row: HostInstance) => {
-    focusedRow.current = row;
+  const onFocusedRow = useCallback((row: HostInstance, field: HostInstance) => {
+    focused.current = { row, field };
   }, []);
-  const focusedSet = focus?.setId ?? null;
-  // Runs as the keypad opens, as it moves to another set, and as the rest timer comes or goes.
+  // Runs whenever the field being typed into changes or takes a key, by Next or a press, and as
+  // the keypad opens and the rest timer comes or goes. The set row's own effect has already
+  // passed it the field by then.
   useEffect(() => {
-    if (focusedSet === null || covered === null || focusedRow.current === null) return;
-    reveal(focusedRow.current, covered);
-  }, [focusedSet, covered, reveal]);
+    if (focus === null || covered === null || focused.current === null) return;
+    reveal(focused.current.row, focused.current.field, covered);
+  }, [focus, covered, reveal]);
 
   const press = (key: KeypadKey) => {
     const typed = pressKey(log, focus, key, failures);

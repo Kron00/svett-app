@@ -70,21 +70,30 @@ vi.mock("./rest", () => ({
 /**
  * The screen as UIKit lays it out at the largest text size. The workout fills the screen under
  * the navigation bar and scrolls by `offset`, starting with its top just below the bar. Each set
- * row is as tall as one there, with its weight on a line of its own.
+ * row is as tall as one there: its badge, then its weight on a line of its own, then its reps
+ * and done box. `set` gives every row's height and where its fields sit in it.
  */
 const screen = { offset: -HEADER, scrolls: [] as Array<number> };
 const SCREEN_HEIGHT = 956;
-const ROW_HEIGHT = 256;
+const SET = { height: 256, weight: { top: 66, bottom: 146 }, reps: { top: 154, bottom: 234 } };
+// A set whose badge line wraps over several lines, so it is taller than what the keypad and
+// the rest timer leave of the screen.
+const TALL_SET = {
+  height: 420,
+  weight: { top: 226, bottom: 306 },
+  reps: { top: 318, bottom: 398 },
+};
+let set = SET;
 const FIRST_ROW = 640;
-const ROW_STEP = 280;
+const rowStep = () => set.height + 24;
 // What the keypad and the rest timer above it take at that size.
 const KEYPAD = 436;
 const COMPACT_REST = 124;
 
 const rowTop = (testID: string) => {
-  const [, set] = /^workout-set-row-0-(\d+)$/.exec(testID) ?? [];
-  if (set === undefined) throw new Error(`no row ${testID}`);
-  return FIRST_ROW + Number(set) * ROW_STEP;
+  const [, index] = /^workout-set(?:-row)?-0-(\d+)/.exec(testID) ?? [];
+  if (index === undefined) throw new Error(`no row ${testID}`);
+  return FIRST_ROW + Number(index) * rowStep();
 };
 
 type Measured = (x: number, y: number, width: number, height: number) => void;
@@ -100,6 +109,16 @@ const nodeMock = (element: ReactElement) => {
       },
     };
   }
+  // A set row's field box holds the field, whose id names the set and the column.
+  const child = props.children as ReactElement<{ testID?: unknown }> | undefined;
+  const fieldID = child?.props?.testID;
+  if (typeof fieldID === "string" && /^set-0-\d+-(weight|reps)$/.test(fieldID)) {
+    const column = fieldID.endsWith("weight") ? set.weight : set.reps;
+    return {
+      measureLayout: (_relativeTo: unknown, done: Measured) =>
+        done(0, rowTop(`workout-${fieldID}`) + column.top, 200, column.bottom - column.top),
+    };
+  }
   if (props.collapsable === false) {
     return { measureInWindow: (done: Measured) => done(0, -screen.offset, 440, 9000) };
   }
@@ -107,16 +126,22 @@ const nodeMock = (element: ReactElement) => {
   if (typeof testID === "string" && testID.startsWith("workout-set-row-")) {
     return {
       measureLayout: (_relativeTo: unknown, done: Measured) =>
-        done(0, rowTop(testID), 440, ROW_HEIGHT),
+        done(0, rowTop(testID), 440, set.height),
     };
   }
   return {};
 };
 
 /** Where a set's row shows on screen now. */
-const shownAt = (set: number) => {
-  const top = rowTop(`workout-set-row-0-${set}`) - screen.offset;
-  return { top, bottom: top + ROW_HEIGHT };
+const shownAt = (index: number) => {
+  const top = rowTop(`workout-set-row-0-${index}`) - screen.offset;
+  return { top, bottom: top + set.height };
+};
+
+/** Where a set's field shows on screen now. */
+const fieldAt = (index: number, column: "weight" | "reps") => {
+  const row = shownAt(index);
+  return { top: row.top + set[column].top, bottom: row.top + set[column].bottom };
 };
 
 const byTestID = (id: string) => (node: ReactTestInstance) =>
@@ -161,6 +186,22 @@ const openWorkout = async () => {
   return { database, runtime, store, WorkoutScreen };
 };
 
+/** Starts a rest after the workout's first exercise, as marking a set done does. */
+const startRest = (store: Awaited<ReturnType<typeof openWorkout>>["store"]) => {
+  const activityExercise = store.currentWorkout()!.exercises[0]!.row;
+  rest.timer = {
+    endsAt: Date.now() + 102_000,
+    totalS: 120,
+    exercise: "Barbell Squat",
+    activityId: activityExercise.activityId,
+    activityExerciseId: activityExercise.id,
+  };
+};
+
+/** Whether a span shows whole between the navigation bar and what covers the workout. */
+const clear = (span: { top: number; bottom: number }, covered: number) =>
+  span.top >= HEADER && span.bottom <= SCREEN_HEIGHT - covered;
+
 let opened: Awaited<ReturnType<typeof openWorkout>> | null = null;
 let tree: ReactTestRenderer | null = null;
 
@@ -172,6 +213,7 @@ afterEach(async () => {
   act(() => tree?.unmount());
   tree = null;
   rest.timer = null;
+  set = SET;
   await opened?.runtime.dispose();
   opened?.database.close();
   opened = null;
@@ -205,14 +247,7 @@ describe("the workout at the largest text size", () => {
     expect(shownAt(1).bottom).toBeLessThanOrEqual(SCREEN_HEIGHT - KEYPAD);
 
     // The rest timer appears above the keypad, as it does when a set is marked done.
-    const activityExercise = store.currentWorkout()!.exercises[0]!.row;
-    rest.timer = {
-      endsAt: Date.now() + 102_000,
-      totalS: 120,
-      exercise: "Barbell Squat",
-      activityId: activityExercise.activityId,
-      activityExerciseId: activityExercise.id,
-    };
+    startRest(store);
     act(() => tree!.update(<WorkoutScreen />));
     // It keeps to one row there, without the word "Rest" above the time.
     const texts = root
@@ -235,6 +270,60 @@ describe("the workout at the largest text size", () => {
     layOutCover(root, KEYPAD);
     expect(screen.scrolls).toHaveLength(scrolled);
     expect(shownAt(1).bottom).toBeLessThanOrEqual(SCREEN_HEIGHT - KEYPAD);
+  });
+
+  it("keeps the field being typed into on screen when its set is taller than the space left", async () => {
+    set = TALL_SET;
+    opened = await openWorkout();
+    screen.offset = -HEADER;
+    screen.scrolls = [];
+    const { WorkoutScreen, store } = opened;
+    act(() => {
+      tree = create(<WorkoutScreen />, { createNodeMock: nodeMock });
+    });
+    const root = tree!.root;
+    const selected = (id: string) =>
+      expect(root.find(byTestID(id)).props.accessibilityState).toEqual({ selected: true });
+
+    press(root, "set-0-0-weight");
+    layOutCover(root, KEYPAD);
+    expect(set.height).toBeGreaterThan(SCREEN_HEIGHT - KEYPAD - HEADER);
+    expect(clear(fieldAt(0, "weight"), KEYPAD)).toBe(true);
+
+    // Next within the set moves to its reps, lower in the same row.
+    press(root, "keypad-next");
+    selected("set-0-0-reps");
+    expect(clear(fieldAt(0, "reps"), KEYPAD)).toBe(true);
+
+    // The rest timer appearing shrinks the space, and the reps stay in it.
+    startRest(store);
+    act(() => tree!.update(<WorkoutScreen />));
+    layOutCover(root, KEYPAD + COMPACT_REST);
+    expect(clear(fieldAt(0, "reps"), KEYPAD + COMPACT_REST)).toBe(true);
+
+    // Next across sets goes to the second set's weight.
+    press(root, "keypad-next");
+    selected("set-0-1-weight");
+    expect(clear(fieldAt(1, "weight"), KEYPAD + COMPACT_REST)).toBe(true);
+
+    // A press on a field below the space brings it up.
+    press(root, "set-0-2-reps");
+    selected("set-0-2-reps");
+    expect(clear(fieldAt(2, "reps"), KEYPAD + COMPACT_REST)).toBe(true);
+
+    // A key typed after the workout was scrolled away brings the field back.
+    act(() => {
+      screen.offset = -HEADER;
+    });
+    expect(clear(fieldAt(2, "reps"), KEYPAD + COMPACT_REST)).toBe(false);
+    press(root, "key-5");
+    expect(clear(fieldAt(2, "reps"), KEYPAD + COMPACT_REST)).toBe(true);
+
+    // The rest going away leaves more room, and the field still shows.
+    press(root, "rest-timer-skip");
+    act(() => tree!.update(<WorkoutScreen />));
+    layOutCover(root, KEYPAD);
+    expect(clear(fieldAt(2, "reps"), KEYPAD)).toBe(true);
   });
 
   it("leaves the workout where it is when the set pressed already shows above the keypad", async () => {

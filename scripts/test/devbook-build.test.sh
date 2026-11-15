@@ -2618,6 +2618,9 @@ check "startup.sh says what SVETT_LAUNCHES must be" \
 # FAKE_LAUNCH_PROMPT puts a system prompt over the first launch, and
 # FAKE_FIRST_LAUNCH_HANGS never shows the tabs on the first launch, with nothing
 # over svett, though a second launch would show them.
+# A drag faster than 100 points a second glides on and carries the element it was
+# for off the top of the screen, as on the Mac. FAKE_FLINGS overshoots the first
+# drag that way however slow it is, and leaves the second under the navigation bar.
 # FAKE_LOSES_WORKOUT forgets the workout when svett is killed, FAKE_DROPS_DONE
 # forgets the last exercise's done sets then, FAKE_KEEPS_UNDONE keeps the sets
 # not done when it finishes, and FAKE_NO_TIMING never times a set marked done.
@@ -2652,7 +2655,8 @@ const stateFile = `${process.env.FAKE_STATE}/state.json`;
 const state = fs.existsSync(stateFile)
   ? JSON.parse(fs.readFileSync(stateFile, "utf8"))
   : { screen: "home", workouts: [], scrolled: [], kills: 0, launches: 0, timing: null, permission: "undetermined",
-    prompt: null, rest: false, focus: null, low: null, panned: false, glide: null };
+    prompt: null, rest: false, focus: null, low: null, panned: false, glide: null, flung: null, under: null,
+    overshoot: null, pans: 0 };
 const save = () => {
   fs.mkdirSync(process.env.FAKE_STATE, { recursive: true });
   fs.writeFileSync(stateFile, JSON.stringify(state));
@@ -2776,7 +2780,9 @@ const find = (selector) => {
 const belowFold = (element) =>
   /^(workout-exercise|workout-set|set|move-exercise-down|add-workout-set)-[1-9]/.test(element.id ?? "") ||
   element.id === "set-done-timing" || element.id === "start-routine" || element.id === "routine-list";
-const visible = (element) => element !== null && (!belowFold(element) || state.scrolled.includes(element.id));
+const flung = (element) => state.flung !== null && state.flung === element.id;
+const visible = (element) => element !== null && !flung(element) &&
+  (!belowFold(element) || state.scrolled.includes(element.id));
 
 // The screen is 956 points tall. The keypad covers it from y=524 down, with Next and Done at
 // its foot. A running rest sits right above the open keypad, or at the foot of the screen.
@@ -2815,6 +2821,7 @@ const inFocusedSet = (id) => state.focus !== null &&
 const centreY = (id) => {
   const glide = state.glide?.id === id ? 20 * Math.max(0, 2 - state.glide.reads) : 0;
   if (state.low === id) return 880;
+  if (state.under === id) return 100 + glide;
   if (state.panned) return 250 + glide;
   if (inFocusedSet(id)) {
     const first = /-weight$|-time$/.test(id);
@@ -2833,7 +2840,7 @@ const frame = (element) => {
 const centre = (rect) => `${Math.round(rect.x + rect.width / 2)} ${Math.round(rect.y + rect.height / 2)}`;
 const show = (screen) => {
   state.screen = screen; state.scrolled = []; state.focus = null; state.low = null; state.panned = false;
-  state.glide = null;
+  state.glide = null; state.flung = null; state.under = null; state.overshoot = null;
 };
 const startWorkout = (title, exercises) => {
   state.workouts.push({ title, status: "in_progress", exercises });
@@ -2914,6 +2921,7 @@ const act = (target) => {
     state.focus = { e: Number(m[1]), s: Number(m[2]), column: m[3], text: "", fresh: true };
     state.low = null;
     state.panned = false;
+    state.under = null;
   } else if ((m = at(/^add-workout-set-(\d+)$/))) {
     const sets = workout.exercises[m[0]].sets;
     sets.push({ ...sets.at(-1), done: false, min: null, max: null });
@@ -2987,10 +2995,13 @@ switch (command[0]) {
     break;
   case "scroll": {
     const element = find(command[3]);
-    if (element === null || (command[1] === "up" && !visible(element))) fail();
+    if (element === null || (command[1] === "up" && !visible(element) && !flung(element))) fail();
     state.scrolled.push(element.id);
     state.low = null;
     state.panned = false;
+    state.flung = null;
+    state.under = null;
+    state.overshoot = null;
     state.glide = { id: null, reads: 0 };
     break;
   }
@@ -3002,17 +3013,37 @@ switch (command[0]) {
     if (state.prompt === null && state.screen === "workout" && y > 110 && y < bottom) {
       state.panned = true;
       state.low = null;
+      state.flung = null;
+      state.under = null;
       state.glide = { id: null, reads: 0 };
+      // A drag faster than 100 points a second leaves the workout gliding on when the finger
+      // lifts, and on the Mac that carried the field it was for off the top of the screen.
+      // FAKE_FLINGS overshoots the first drag that way however slow it is, and the second
+      // under the navigation bar.
+      state.pans += 1;
+      const fast = Math.abs(Number(command[5])) / Number(command[6] ?? 500) > 0.1;
+      state.overshoot = fast || (process.env.FAKE_FLINGS && state.pans === 1) ? "off"
+        : process.env.FAKE_FLINGS && state.pans === 2 ? "under" : null;
     }
     console.log(`Panned (${command[2]}, ${command[3]}) by (${command[4]}, ${command[5]})`);
     break;
   }
   case "get": {
     const element = find(command[2]);
-    if (element === null) fail();
+    if (element === null || flung(element)) fail();
     state.target = element.id;
     // The first element read after a drag is the one it was for.
-    if (state.glide !== null && state.glide.id === null && !/^(key-|rest-timer)/.test(element.id)) state.glide.id = element.id;
+    if (state.glide !== null && state.glide.id === null && !/^(key-|rest-timer)/.test(element.id)) {
+      state.glide.id = element.id;
+      if (state.overshoot === "off") {
+        state.flung = element.id;
+        state.overshoot = null;
+        save();
+        fail();
+      }
+      if (state.overshoot === "under") state.under = element.id;
+      state.overshoot = null;
+    }
     const rect = frame(element);
     if (state.glide?.id === element.id) state.glide.reads += 1;
     console.log(JSON.stringify({ label: element.label, rect }));
@@ -3068,6 +3099,13 @@ logger_from() {
   }
 }
 
+# logger_pans_slow checks every drag moves at most 50 points a second.
+logger_pans_slow() {
+  grep -qE "^$bound_prefix gesture pan " "$root/bound-calls" &&
+    ! grep -E "^$bound_prefix gesture pan " "$root/bound-calls" |
+    awk '{ by = $(NF - 1) < 0 ? -$(NF - 1) : $(NF - 1) } by * 20 > $NF { found = 1 } END { exit !found }'
+}
+
 # logger_presses_clear checks every press point sits above y=840.
 logger_presses_clear() {
   ! grep -E "^$bound_prefix press " "$root/bound-calls" | awk '$NF > 840 { found = 1 } END { exit !found }'
@@ -3100,10 +3138,12 @@ check "logger.sh types each set by pressing its weight, then its reps, and waits
   'wait id="set-0-0-weight" selected=true 3000' 'wait id="set-5-0-time" selected=true 3000'
 check "logger.sh never reads or presses the keypad's Next and Done at the bottom edge" \
   test -z "$(grep -E 'keypad-(next|done)' "$root/bound-calls")"
-check "logger.sh drags the first set's weight field up from the bottom edge before it presses it" \
-  bound_got "$bound_prefix gesture pan 20 820 0 -395 400"
+check "logger.sh drags the first set's weight field up from the bottom edge just far enough before it presses it" \
+  bound_got "$bound_prefix gesture pan 20 820 0 -81 1620"
 check "logger.sh drags a set up from under the keypad and the rest, from just above them" \
-  bound_got "$bound_prefix gesture pan 20 370 0 -310 400"
+  bound_got "$bound_prefix gesture pan 20 370 0 -276 5520"
+check "logger.sh drags no faster than 50 points a second, so the workout stops where the finger lifts" \
+  logger_pans_slow
 check "logger.sh checks each set it typed and marked done where it shows, above the keypad and the rest" \
   grep -qxF "Set 1 of exercise 1 shows above the keypad and the rest timer, from y=235 to y=369" "$output"
 check "logger.sh checks the second and the failure set the same way" \
@@ -3177,6 +3217,19 @@ check "logger.sh keeps the elements of the launch that hung" test -s "$root/logg
 check "logger.sh names the saved files of the launch that hung" \
   grep -qxF "svett hung on launch 1 with no system prompt over it. See $root/logger-hangs/launch-1.png and $root/logger-hangs/launch-1.txt" "$output"
 check "logger.sh does not hide the hang behind a second launch" only_open "$debug_open $logger_args"
+
+case_name="logger.sh when a drag overshoots"
+run_logger FAKE_FLINGS=1 "$root/logger-flings"
+[[ "$logger_status" == 0 ]] || fail "logger.sh failed when a drag overshot"
+check "logger.sh brings back a field a drag carried off screen, before it presses it" \
+  logger_from 'gesture pan 20 820 0 -81 1620' 'is visible id="key-1"' 'is visible id="rest-timer"' \
+  'get attrs id="set-0-0-weight"' 'is visible id="set-0-0-weight"' 'scroll up --until id="set-0-0-weight"' \
+  'get attrs id="set-0-0-weight"' "wait 250" 'get attrs id="set-0-0-weight"' "wait 250" \
+  'get attrs id="set-0-0-weight"' "wait 250" 'get attrs id="set-0-0-weight"' "press 220 625"
+check "logger.sh drags a field a drag left under the navigation bar back down before it presses it" \
+  bound_got "$bound_prefix gesture pan 20 150 0 71 1420"
+check "logger.sh still finds the restored Legs in the database exactly as logged after the overshoots" \
+  diff "$root/logger-flings/restored-expected.txt" "$root/logger-flings/restored.txt"
 
 case_name="logger.sh when the rest covers the set being typed into"
 run_logger FAKE_REST_COVERS_SET=1 "$root/logger-covered"
