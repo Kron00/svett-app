@@ -1,0 +1,26 @@
+name: Feature request
+description: Suggest something svett should do.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: Say what you are trying to do and what stops you today.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you would like
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Other options you considered
+  - type: textarea
+    id: reference
+    attributes:
+      label: How other apps do it
+      description: Name the app and the screen, for example Hevy or Strava.
