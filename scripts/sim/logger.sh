@@ -11,7 +11,9 @@
 #
 #   1. It starts the fixture's Legs routine and logs Barbell Squat on the keypad:
 #      100 kg for 5 twice, a set changed to a failure set for 4, and one added
-#      set that copies it. It moves Barbell Squat below Romanian Deadlift, types
+#      set that copies it. After it marks each typed set done, it checks the set
+#      the way a person sees it, without a scroll: the row reads its values and
+#      shows whole above the keypad and the rest timer. It moves Barbell Squat below Romanian Deadlift, types
 #      80 kg into Romanian Deadlift's first set without marking it done, adds
 #      Plank through the exercise picker and logs it for 1:00.
 #   2. It kills svett with simctl terminate, launches it again, opens the
@@ -330,6 +332,37 @@ log_set() {
   mark_done "$1" "$2"
 }
 
+# edges_of <selector>: the top and bottom of the element's frame.
+edges_of() {
+  local frame
+  frame=$(agent_device get attrs "$1") || fail "$1 is not on screen"
+  node -e '
+    const { y, height } = JSON.parse(process.argv[1]).rect;
+    console.log(Math.round(y), Math.round(y + height));
+  ' "$frame"
+}
+
+# shown_set <exercise> <set> <label>: checks a set just marked done, with the keypad
+# still open on it and the rest running, as a person sees it. Without a scroll, its
+# done box reads its values and state, and the row from its weight down to its done
+# box shows between the navigation bar and the rest timer. The workout scrolls the
+# set up as the rest appears, so the frames are read once they stop moving.
+shown_set() {
+  local name="Set $(($2 + 1)) of exercise $(($1 + 1))" box="id=\"workout-set-$1-$2\""
+  local edges top bottom clear
+  agent_device wait "$box label=\"$3\"" 5000 >/dev/null 2>&1 ||
+    fail "$name does not show on screen reading \"$3\" after it was marked done"
+  settled_centre "$box" >/dev/null
+  edges=$(edges_of "id=\"set-$1-$2-weight\"") || exit 1
+  top=${edges% *}
+  edges=$(edges_of "$box") || exit 1
+  bottom=${edges#* }
+  clear=$(clear_bottom)
+  ((top >= safe_top && bottom <= clear)) ||
+    fail "$name is not whole on screen above the keypad and the rest timer. It reaches from y=$top to y=$bottom, and only y=$safe_top to y=$clear is clear"
+  echo "$name shows above the keypad and the rest timer, from y=$top to y=$bottom"
+}
+
 # expect_set <exercise> <set> <label>: the set's done box reads its values and state.
 expect_set() {
   bring "id=\"workout-set-$1-$2\" label=\"$3\"" "Set $(($2 + 1)) of exercise $(($1 + 1)) does not read \"$3\""
@@ -414,15 +447,15 @@ expect_exercise 0 "Barbell Squat"
 screenshot workout-started
 
 log_set 0 0 100 5
-expect_set 0 0 "Set 1, 100 kg, 5 reps, Done"
+shown_set 0 0 "Set 1, 100 kg, 5 reps, Done"
 log_set 0 1 100 5
-expect_set 0 1 "Set 2, 100 kg, 5 reps, Done"
+shown_set 0 1 "Set 2, 100 kg, 5 reps, Done"
 tap 'id="workout-set-0-2-type"'
 expect 'id="set-type-sheet"' "The set type sheet did not open"
 tap 'id="set-type-sheet-failure"'
 expect 'id="workout"' "Choosing a set type did not close the sheet"
 log_set 0 2 100 4
-expect_set 0 2 "Failure set, 100 kg, 4 reps, Done"
+shown_set 0 2 "Failure set, 100 kg, 4 reps, Done"
 tap 'id="add-workout-set-0"'
 bring 'id="workout-set-0-3"' "Add set added no set"
 mark_done 0 3

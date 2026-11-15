@@ -2780,14 +2780,19 @@ const visible = (element) => element !== null && (!belowFold(element) || state.s
 
 // The screen is 956 points tall. The keypad covers it from y=524 down, with Next and Done at
 // its foot. A running rest sits right above the open keypad, or at the foot of the screen.
+// Above the keypad it keeps to one row. FAKE_REST_COVERS_SET plays the app before that fix,
+// whose full rest covered the set being typed into.
 const KEYPAD_TOP = 524;
 const KEY_ROWS = ["123", "456", "789", ".0<"];
 const KEY_COLUMNS = [16, 155, 294];
+const OLD_REST = process.env.FAKE_REST_COVERS_SET !== undefined;
 const REST_HEIGHT = 196;
+const COMPACT_REST_HEIGHT = 124;
+const restHeight = () => (state.focus && !OLD_REST ? COMPACT_REST_HEIGHT : REST_HEIGHT);
 // A press below this lands on the home indicator. On the Mac a press at y=880 still opened
 // the keypad on the first set's weight field.
 const HOME_INDICATOR = 900;
-const restTop = () => (state.focus ? KEYPAD_TOP : 956) - REST_HEIGHT;
+const restTop = () => (state.focus ? KEYPAD_TOP : 956) - restHeight();
 const keyFrame = (key) => {
   const row = KEY_ROWS.findIndex((keys) => keys.includes(key));
   return { x: KEY_COLUMNS[KEY_ROWS[row].indexOf(key)], y: KEYPAD_TOP + 12 + 75 * row, width: 130, height: 67 };
@@ -2803,22 +2808,26 @@ const fixed = {
 const inFocusedSet = (id) => state.focus !== null &&
   new RegExp(`^(set|workout-set)-${state.focus.e}-${state.focus.s}(-|$)`).test(id ?? "");
 // Where a content element is. The first set's weight field starts at the foot of the screen.
-// Opening the keypad scrolls the set being typed into near the top, and leaves the rest
-// below the keypad. A drag brings the element it was for, the next one read, to y=250. After a
+// The workout keeps the set being typed into right above the keypad, and above the rest once
+// it runs, with its weight on one line and its reps and done box on the next. A drag brings the element it was for, the next one read, to y=250. After a
 // scroll or a drag the next content element read is still gliding 40 and then 20 points below
 // where it stops, so a press at its first read lands beside it.
 const centreY = (id) => {
   const glide = state.glide?.id === id ? 20 * Math.max(0, 2 - state.glide.reads) : 0;
   if (state.low === id) return 880;
   if (state.panned) return 250 + glide;
-  if (inFocusedSet(id)) return (/-weight$|-time$/.test(id) ? 336 : 420) + glide;
+  if (inFocusedSet(id)) {
+    const first = /-weight$|-time$/.test(id);
+    if (OLD_REST) return (first ? 336 : 420) + glide;
+    return (state.rest ? restTop() : KEYPAD_TOP) - (first ? 140 : 56) + glide;
+  }
   return 625 + glide;
 };
 const frame = (element) => {
   const id = element.id ?? "";
   const key = /^key-(\d)$/.exec(id);
   if (key) return keyFrame(key[1]);
-  if (id === "rest-timer") return { x: 0, y: restTop(), width: 440, height: REST_HEIGHT };
+  if (id === "rest-timer") return { x: 0, y: restTop(), width: 440, height: restHeight() };
   return fixed[id] ?? { x: 16, y: centreY(id) - 25, width: 408, height: 50 };
 };
 const centre = (rect) => `${Math.round(rect.x + rect.width / 2)} ${Math.round(rect.y + rect.height / 2)}`;
@@ -2856,7 +2865,7 @@ const press = (x, y) => {
       return;
     }
   }
-  if (state.screen === "workout" && state.rest && y >= restTop() && y < restTop() + REST_HEIGHT) return;
+  if (state.screen === "workout" && state.rest && y >= restTop() && y < restTop() + restHeight()) return;
   if (state.alert && state.target !== "alert-finish") return;
   const target = state.target;
   if (target === null || centre(frame({ id: target })) !== `${x} ${y}`) return;
@@ -2893,7 +2902,9 @@ const act = (target) => {
     if (!one.done) {
       const last = previous(exercise, m[1]);
       if (last !== null) for (const key of ["weight", "reps", "time"]) one[key] ??= last[key];
-      // Every set marked done starts a rest, and the first rest asks for notifications.
+      // Every set marked done starts a rest, and the first rest asks for notifications. A rest
+      // appearing over the open keypad scrolls the set being typed into up above it.
+      if (!state.rest && state.focus && !OLD_REST) state.glide = { id: `workout-set-${m[0]}-${m[1]}`, reads: 0 };
       state.rest = true;
       if (state.permission === "undetermined") state.prompt = "notifications";
     }
@@ -3092,7 +3103,16 @@ check "logger.sh never reads or presses the keypad's Next and Done at the bottom
 check "logger.sh drags the first set's weight field up from the bottom edge before it presses it" \
   bound_got "$bound_prefix gesture pan 20 820 0 -395 400"
 check "logger.sh drags a set up from under the keypad and the rest, from just above them" \
-  bound_got "$bound_prefix gesture pan 20 298 0 -238 400"
+  bound_got "$bound_prefix gesture pan 20 370 0 -310 400"
+check "logger.sh checks each set it typed and marked done where it shows, above the keypad and the rest" \
+  grep -qxF "Set 1 of exercise 1 shows above the keypad and the rest timer, from y=235 to y=369" "$output"
+check "logger.sh checks the second and the failure set the same way" \
+  test "$(grep -cE '^Set [23] of exercise 1 shows above the keypad and the rest timer, from y=235 to y=369$' "$output")" = 2
+check "logger.sh reads the first set marked done where it is, without a scroll" \
+  test -z "$(grep -E 'scroll .*id="workout-set-0-0"' "$root/bound-calls")"
+check "logger.sh reads the first set's frame only once it stops moving as the rest appears" \
+  test "$(sed -n '/wait id="workout-set-0-0" label="Set 1, 100 kg, 5 reps, Done" 5000$/,/get attrs id="set-0-0-weight"$/p' \
+    "$root/bound-calls" | grep -c 'get attrs id="workout-set-0-0"$')" = 4
 check "logger.sh presses nothing at the bottom edge" logger_presses_clear
 check "logger.sh presses Start workout only once two reads agree after the scroll that found it" \
   logger_from 'scroll down --until id="start-routine"' 'is visible id="key-1"' 'is visible id="rest-timer"' \
@@ -3157,6 +3177,17 @@ check "logger.sh keeps the elements of the launch that hung" test -s "$root/logg
 check "logger.sh names the saved files of the launch that hung" \
   grep -qxF "svett hung on launch 1 with no system prompt over it. See $root/logger-hangs/launch-1.png and $root/logger-hangs/launch-1.txt" "$output"
 check "logger.sh does not hide the hang behind a second launch" only_open "$debug_open $logger_args"
+
+case_name="logger.sh when the rest covers the set being typed into"
+run_logger FAKE_REST_COVERS_SET=1 "$root/logger-covered"
+check "logger.sh fails when the set marked done does not show above the keypad and the rest" \
+  test "$logger_status" -ne 0
+check "logger.sh says where the set was and what was clear" \
+  grep -qxF "Set 1 of exercise 1 is not whole on screen above the keypad and the rest timer. It reaches from y=311 to y=445, and only y=130 to y=318 is clear" "$output"
+check "logger.sh shoots the screen with the set under the rest" \
+  only_calls "screenshot $root/logger-covered/failure" "screenshot $root/logger-covered/failure.png"
+check "logger.sh saves the elements of the workout with the set under the rest" \
+  grep -qF '"screen":"workout"' "$root/logger-covered/failure.txt"
 
 case_name="logger.sh when the workout does not survive the kill"
 run_logger FAKE_LOSES_WORKOUT=1 "$root/logger-loses"
