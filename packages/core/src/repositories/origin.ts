@@ -1,13 +1,13 @@
 import { Effect } from "effect";
 
 import { Ids, importedId, type Uuid } from "../ids.ts";
-import type { Fingerprint, ImportBatchId, SourceIdentity } from "../schema.ts";
+import type { Fingerprint, ImportBatchId, ImportedSource, SourceIdentity } from "../schema.ts";
 
 /** Where a new row comes from. It decides both the row's provenance columns and its ID. */
 export type Origin =
   | { readonly source: "svett" }
   | {
-      readonly source: "hevy" | "apple_health";
+      readonly source: ImportedSource;
       readonly sourceId: SourceIdentity;
       readonly fingerprint: Fingerprint;
       readonly importBatchId: ImportBatchId;

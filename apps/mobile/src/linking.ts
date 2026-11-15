@@ -12,6 +12,8 @@ import type { RootStackParamList } from "./navigation";
 // toolbars that cover the whole screen. scripts/sim/data.sh reaches export and import
 // the same way, through svett://data, svett://import?file=<name> and
 // svett://imports/<id>/undo. scripts/sim/hevy.sh adds &kind=hevy for a Hevy CSV.
+// scripts/sim/health.sh uses svett://health-import?file=<name> and
+// svett://manual?kind=...&duration=..., which fills manual entry's fields.
 // scripts/sim/tools.sh opens svett://settings/workout and svett://tools/plates?kg=100.
 //
 // The launch argument `-svettLink <link>` opens svett on that link's screen, as if the link had
@@ -71,6 +73,8 @@ export const linking: LinkingOptions<RootStackParamList> = {
       WarmUp: "train/workout/exercise/:exercise/warm-up",
       Plates: "tools/plates",
       WorkoutSettings: "settings/workout",
+      HealthImport: "health-import",
+      ManualCardio: "manual",
     },
   },
 };

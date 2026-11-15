@@ -161,6 +161,10 @@ vi.mock("./transfer/files", () => ({
   pickImportFile: () => Promise.resolve(undefined),
   withTransfers: () => Promise.resolve([]),
 }));
+vi.mock("./health/files", () => ({
+  pickSourceFile: () => Promise.resolve(null),
+  readWorkoutFile: () => new Promise(() => {}),
+}));
 vi.mock("expo-sqlite", () => ({}));
 vi.mock("expo-sqlite/kv-store", () => ({
   default: { getItemSync: () => null, setItemSync: () => {}, removeItemSync: () => {} },
@@ -182,6 +186,7 @@ vi.mock("./ui/Chart", () => ({
 }));
 vi.mock("./ui/WorkoutBar", () => ({ WorkoutBar: "WorkoutBar" }));
 // Screens without a large title are not drawn.
+vi.mock("./cardio/ManualCardioScreen", () => ({ ManualCardioScreen: () => null }));
 vi.mock("./chatgpt/ChatGPTScreen", () => ({ ChatGPTScreen: () => null }));
 vi.mock("./chatgpt/ChatGPTRow", () => ({ ChatGPTRow: () => null }));
 vi.mock("./account/AccountScreen", () => ({ AccountScreen: () => null }));

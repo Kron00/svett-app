@@ -475,6 +475,45 @@ const MOVEMENT: ReadonlyArray<MovementCase> = [
     events: stopping(30, seed).events,
     expect: { near: 600, within: 0.02, live: 0.03 },
   })),
+  // The same runs and stops with no speeds, as a GPX file or an Apple Health route has them.
+  ...SEEDS.map((seed): MovementCase => {
+    const { before, stop, events } = stopping(120, seed);
+    return {
+      name: `a two minute stop mid-run with no speeds adds at most 8 m, and the run comes within 3% of 600 m (seed ${seed})`,
+      kind: "run",
+      events: withSpeeds(events, () => null),
+      expect: { near: 600, within: 0.03 },
+      also: ({ shown }) => {
+        const arrived = shown[before.length + 1]!;
+        const aMinuteIn = shown[before.length + 60]!;
+        const leaving = shown[before.length + stop.length]!;
+        expect(leaving - arrived).toBeLessThanOrEqual(8);
+        expect(leaving).toBe(aMinuteIn);
+      },
+    };
+  }),
+  ...SEEDS.map((seed): MovementCase => ({
+    name: `a 30 s stop on a 600 m run with no speeds comes within 2% saved and 3% shown (seed ${seed})`,
+    kind: "run",
+    events: withSpeeds(stopping(30, seed).events, () => null),
+    expect: { near: 600, within: 0.02, live: 0.03 },
+  })),
+  ...SEEDS.map((seed): MovementCase => {
+    const error = wandering(seed);
+    return {
+      name: `a 600 m run with no speeds and no stop, its error wandering 3 m to 8 m, comes within 3% (seed ${seed})`,
+      kind: "run",
+      events: along([point(0, 0), point(0, 600)], 3).map((event) => {
+        const { east, north } = error();
+        const { latitude, longitude } = (event as Extract<RecordingEvent, { type: "fix" }>).fix;
+        return fixAt(secondsOf(event), {
+          latitude: latitude + north / DEGREE_M,
+          longitude: longitude + east / DEGREE_M,
+        });
+      }),
+      expect: { near: 600, within: 0.03 },
+    };
+  }),
   {
     name: "one reading 100 m off after standing still, then a 60 m walk read every 10 s, saves within 5 m of 60 m",
     kind: "walk",

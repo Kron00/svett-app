@@ -4,6 +4,7 @@ import {
   ActivityId,
   ActivityRepository,
   type ActivitySample,
+  type ActivitySource,
   type CardioKind,
   CardioKind as CardioKindSchema,
   elevationProfile,
@@ -11,9 +12,11 @@ import {
   formatDuration,
   formatKm,
   formatPace,
+  heartRateSummary,
   nearestHideChoiceM,
   paceMeasure,
   type RouteLines,
+  sourceName,
   trackParts,
 } from "@svett/core";
 import { Effect, Option, Schema } from "effect";
@@ -41,6 +44,7 @@ type Loaded =
       readonly kind: "found";
       readonly detail: ActivityDetail;
       readonly samples: ReadonlyArray<ActivitySample>;
+      readonly sources: ReadonlyArray<ActivitySource>;
     };
 
 const HIDE_OPTIONS = [
@@ -69,7 +73,8 @@ const fetchActivity = (database: OpenDatabase, id: ActivityId): Promise<Loaded> 
         if (Option.isNone(detail)) return MISSING;
         const track = detail.value.track;
         const samples = track === null ? [] : yield* activities.samples(track.id);
-        return { kind: "found", detail: detail.value, samples } as const;
+        const sources = yield* activities.sources(id);
+        return { kind: "found", detail: detail.value, samples, sources } as const;
       }),
     ),
   ).catch(() => MISSING);
@@ -153,19 +158,55 @@ function Elevation({ lines }: { readonly lines: RouteLines }) {
   );
 }
 
+function Sources({
+  activity,
+  linked,
+}: {
+  readonly activity: ActivityDetail["activity"];
+  readonly linked: ReadonlyArray<ActivitySource>;
+}) {
+  if (activity.source === "svett" && linked.length === 0) return null;
+  return (
+    <View testID="activity-sources">
+      <ListSection
+        header="Sources"
+        footer={
+          linked.length > 0
+            ? "One workout from more than one source. Neither imports it again."
+            : undefined
+        }
+      >
+        <ListRow
+          key="first"
+          title={
+            activity.source === "svett" ? "Logged in svett" : `From ${sourceName(activity.source)}`
+          }
+          value="First"
+        />
+        {linked.map((link) => (
+          <ListRow key={link.id} title={`From ${sourceName(link.source)}`} value="Linked" />
+        ))}
+      </ListSection>
+    </View>
+  );
+}
+
 type Props = NativeStackScreenProps<RootStackParamList, "Activity">;
 
-/** A recorded run, walk, hike or ride: its map, numbers, splits and elevation. */
+/** An activity: its map, numbers, splits and elevation for cardio, and its heart rate and sources. */
 export function ActivityScreen({ route, navigation }: Props) {
   const { loaded, database, reload } = useActivity(route.params.id);
   const title = loaded.kind === "found" ? loaded.detail.activity.title : "";
   useLayoutEffect(() => navigation.setOptions({ title }), [navigation, title]);
 
   const parts = useMemo(() => trackParts(loaded.kind === "found" ? loaded.samples : []), [loaded]);
+  const heart = useMemo(
+    () => heartRateSummary(loaded.kind === "found" ? loaded.samples : []),
+    [loaded],
+  );
 
   if (loaded.kind === "loading") return <View className="flex-1 bg-background" />;
-  const kind = loaded.kind === "found" ? loaded.detail.activity.kind : undefined;
-  if (loaded.kind === "missing" || !isCardio(kind)) {
+  if (loaded.kind === "missing") {
     return (
       <View className="flex-1 justify-center bg-background">
         <EmptyState
@@ -177,10 +218,13 @@ export function ActivityScreen({ route, navigation }: Props) {
     );
   }
 
-  const { activity, track } = loaded.detail;
+  const { activity, track, exercises } = loaded.detail;
+  const kind = activity.kind;
+  const cardio = isCardio(kind) ? kind : undefined;
   const sport = SPORTS[kind];
-  const distanceM = track?.distanceM ?? 0;
-  const measure = paceMeasure(kind);
+  const distanceM = track?.distanceM ?? (cardio ? 0 : null);
+  const sets = exercises.reduce((total, exercise) => total + exercise.sets.length, 0);
+  const hasRoute = cardio !== undefined && parts.route.length > 0 && track !== null;
   const hidden = String(nearestHideChoiceM(track?.hideStartM ?? 0)) as HideOption;
 
   const hide = async (value: HideOption) => {
@@ -213,42 +257,79 @@ export function ActivityScreen({ route, navigation }: Props) {
           {new Date(activity.startedAt).toLocaleString()}
         </AppText>
       </View>
-      {parts.route.length > 0 && track !== null ? (
+      {hasRoute ? (
         <RouteMap
           lines={parts.lines}
           hideStartM={track.hideStartM}
           hideEndM={track.hideEndM}
           color={sport.color}
-          accessibilityLabel={`Map of the ${sport.label.toLowerCase()} route, ${formatKm(distanceM)} kilometres`}
+          accessibilityLabel={`Map of the ${sport.label.toLowerCase()} route, ${formatKm(distanceM ?? 0)} kilometres`}
         />
       ) : null}
       <View className="flex-row flex-wrap gap-3 px-gutter">
-        <StatTile
-          label="Distance"
-          value={formatKm(distanceM)}
-          unit="km"
-          testID="activity-distance"
-        />
+        {distanceM === null ? null : (
+          <StatTile
+            label="Distance"
+            value={formatKm(distanceM)}
+            unit="km"
+            testID="activity-distance"
+          />
+        )}
         <StatTile label="Time" value={formatDuration(activity.durationS)} testID="activity-time" />
-        <StatTile
-          label={measure.label}
-          value={formatPace(kind, distanceM, activity.durationS)}
-          unit={measure.unit}
-          testID="activity-pace"
-        />
-        <StatTile
-          label="Climb"
-          value={formatClimbM(track?.elevationGainM ?? null)}
-          unit="m"
-          testID="activity-climb"
-        />
+        {cardio === undefined ? null : (
+          <>
+            <StatTile
+              label={paceMeasure(cardio).label}
+              value={formatPace(cardio, distanceM ?? 0, activity.durationS)}
+              unit={paceMeasure(cardio).unit}
+              testID="activity-pace"
+            />
+            <StatTile
+              label="Climb"
+              value={formatClimbM(track?.elevationGainM ?? null)}
+              unit="m"
+              testID="activity-climb"
+            />
+          </>
+        )}
+        {sets > 0 ? <StatTile label="Sets" value={String(sets)} testID="activity-sets" /> : null}
+        {heart === null ? null : (
+          <>
+            <StatTile
+              label="Average heart rate"
+              value={String(heart.averageBpm)}
+              unit="bpm"
+              symbol="heart.fill"
+              color="destructive"
+              testID="activity-heart-average"
+            />
+            <StatTile
+              label="Max heart rate"
+              value={String(heart.maxBpm)}
+              unit="bpm"
+              symbol="heart.fill"
+              color="destructive"
+              testID="activity-heart-max"
+            />
+          </>
+        )}
       </View>
-      {parts.splits.length > 0 ? <Splits kind={kind} splits={parts.splits} /> : null}
-      <View className="gap-3">
-        <SectionHeader title="Elevation" />
-        <Elevation lines={parts.lines} />
-      </View>
-      {track !== null ? (
+      {activity.notes === "" ? null : (
+        <AppText className="px-gutter" testID="activity-notes">
+          {activity.notes}
+        </AppText>
+      )}
+      <Sources activity={activity} linked={loaded.sources} />
+      {cardio !== undefined && parts.splits.length > 0 ? (
+        <Splits kind={cardio} splits={parts.splits} />
+      ) : null}
+      {hasRoute ? (
+        <View className="gap-3">
+          <SectionHeader title="Elevation" />
+          <Elevation lines={parts.lines} />
+        </View>
+      ) : null}
+      {hasRoute ? (
         <View className="gap-3 px-gutter" testID="activity-hide">
           <AppText variant="title3" accessibilityRole="header">
             Hide start and end

@@ -122,6 +122,13 @@ ALTER TABLE activity_sample ADD COLUMN segment INTEGER;
 UPDATE activity_sample SET segment = 0 WHERE kind = 'location';
 `;
 
+const activitySources = `
+CREATE TABLE activity_source (${row}, activity_id TEXT NOT NULL, source TEXT NOT NULL, source_id TEXT NOT NULL,
+  fingerprint TEXT NOT NULL, import_batch_id TEXT) STRICT;
+CREATE INDEX activity_source_activity ON activity_source (activity_id);
+CREATE INDEX activity_source_identity ON activity_source (source, source_id);
+`;
+
 /** Applied in order and never edited once released. A change to the schema is a new migration. */
 export const MIGRATIONS: ReadonlyArray<Migration> = [
   { version: 1, name: "initial", sql: initial },
@@ -132,6 +139,7 @@ export const MIGRATIONS: ReadonlyArray<Migration> = [
   { version: 6, name: "rest timer", sql: restTimer },
   { version: 7, name: "plates and bars", sql: gear },
   { version: 8, name: "sample segment", sql: sampleSegment },
+  { version: 9, name: "activity sources", sql: activitySources },
 ];
 
 export class DatabaseTooNewError extends Data.TaggedError("DatabaseTooNewError")<{
