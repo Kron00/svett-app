@@ -351,10 +351,11 @@ describe("fromGpx", () => {
     expect(splits).toHaveLength(3);
   });
 
+  // Reads a 300,000-reading track, which takes several seconds on a busy machine.
   it("reads a track too long to spread into Math.max", () => {
     const long = ride([northward(T, 0, 300_000, 0)]);
     expect(long.endedAt).toBe(T + 299_999 * MINUTE);
-  });
+  }, 30_000);
 
   it("counts a renamed track as other content", () => {
     const points = [northward(T, 59, 3)];
