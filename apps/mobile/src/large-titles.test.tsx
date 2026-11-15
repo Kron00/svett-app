@@ -186,6 +186,7 @@ vi.mock("./ui/WorkoutBar", () => ({ WorkoutBar: "WorkoutBar" }));
 vi.mock("./cardio/ManualCardioScreen", () => ({ ManualCardioScreen: () => null }));
 vi.mock("./chatgpt/ChatGPTScreen", () => ({ ChatGPTScreen: () => null }));
 vi.mock("./chatgpt/ChatGPTRow", () => ({ ChatGPTRow: () => null }));
+vi.mock("./assistant/ConnectedAppsRow", () => ({ ConnectedAppsRow: () => null }));
 vi.mock("./account/AccountScreen", () => ({ AccountScreen: () => null }));
 vi.mock("./account/AccountRow", () => ({ AccountRow: () => null }));
 vi.mock("./checks/PhoneChecksScreen", () => ({ PhoneChecksScreen: () => null }));
