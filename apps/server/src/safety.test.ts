@@ -1226,10 +1226,17 @@ describe("deleting an account", { timeout: 60_000 }, () => {
     expect(await query(url, "select id from deleted_account")).toEqual([]);
     expect(await rowsNaming(url, anna)).toMatchObject({ account: 1, account_row: 1 });
 
+    // The first read of the ledger hands the entry to this server's own finish, which runs in
+    // the background. Holding its commits keeps the rows still while the refusal is checked,
+    // so the refusal comes from the ledger alone.
+    await failCommits(url, anna);
     expect((await api.call(held, "GET", `/v1/deletions/${receipt}`)).body).toEqual({
       deleted: true,
     });
     await expectRefused(api, held, url, anna);
+    expect(await query(url, "select id from deleted_account")).toEqual([]);
+
+    await commitAgain(url);
     await eventually(async () => (await sessionsEnded(url, anna)) === true);
 
     expect(nothingLeft(await rowsNaming(url, anna))).toBe(true);
