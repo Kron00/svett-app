@@ -1,6 +1,7 @@
-import { Effect, Layer, Schema } from "effect";
+import { Effect, Layer } from "effect";
 
 import { Ids } from "./ids.ts";
+import type { DatabaseOwner } from "./owner.ts";
 import { migrate } from "./migrations.ts";
 import { ActivityRepository } from "./repositories/activities.ts";
 import { ExerciseAliasRepository, ExerciseRepository } from "./repositories/exercises.ts";
@@ -19,19 +20,7 @@ import { TrainingReads } from "./repositories/training.ts";
 import { TransferRepository } from "./repositories/transfer.ts";
 import { Sql, type SqlDriver } from "./sql.ts";
 
-export const AccountId = Schema.String.check(Schema.isPattern(/^[A-Za-z0-9_-]{1,128}$/)).pipe(
-  Schema.brand("AccountId"),
-);
-export type AccountId = typeof AccountId.Type;
-
-/** Whose data a database holds. Each owner has its own file, so accounts never mix. */
-export const DatabaseOwner = Schema.Union([
-  Schema.Struct({ kind: Schema.Literal("anonymous") }),
-  Schema.Struct({ kind: Schema.Literal("account"), accountId: AccountId }),
-]);
-export type DatabaseOwner = typeof DatabaseOwner.Type;
-
-export const ANONYMOUS: DatabaseOwner = { kind: "anonymous" };
+export { AccountId, ANONYMOUS, DatabaseOwner } from "./owner.ts";
 
 export const databaseFileName = (owner: DatabaseOwner): string =>
   owner.kind === "anonymous" ? "svett-anonymous.db" : `svett-account-${owner.accountId}.db`;

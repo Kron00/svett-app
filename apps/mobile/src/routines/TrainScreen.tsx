@@ -3,6 +3,7 @@ import { useNavigation } from "@react-navigation/native";
 import { type ReactNode, useEffect } from "react";
 import { ActionSheetIOS, Alert, ScrollView, View } from "react-native";
 
+import { ManualCardioRow } from "../cardio/ManualCardioRow";
 import { RecordCardioRow } from "../cardio/RecordCardioRow";
 import type { OpenDatabase } from "../data/current";
 import {
@@ -289,6 +290,7 @@ export function TrainScreen() {
       ) : null}
       <ListSection header="Cardio">
         <RecordCardioRow key="record" />
+        <ManualCardioRow key="manual" />
       </ListSection>
       <View className="gap-3">
         <SectionHeader title="Routines" action={{ label: "New folder", onPress: newFolder }} />

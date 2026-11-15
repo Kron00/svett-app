@@ -1,6 +1,6 @@
 import { Data, Effect, Option, Schema } from "effect";
 
-import { AccountId } from "./database.ts";
+import { AccountId } from "./owner.ts";
 
 /**
  * What the phone did with its own data on the first sign-in. It lives outside every database,

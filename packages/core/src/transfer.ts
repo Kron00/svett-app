@@ -48,6 +48,7 @@ export const PARENT: Readonly<
   activitySet: { table: "activityExercise", key: "activityExerciseId" },
   activityTrack: { table: "activity", key: "activityId" },
   activitySample: { table: "activityTrack", key: "activityTrackId" },
+  activitySource: { table: "activity", key: "activityId" },
   folder: null,
   routine: null,
   routineExercise: { table: "routine", key: "routineId" },
@@ -77,6 +78,7 @@ export const REFERENCES: ReadonlyArray<{
   { table: "activity", key: "importBatchId", target: "importBatch" },
   { table: "exercise", key: "importBatchId", target: "importBatch" },
   { table: "measurement", key: "importBatchId", target: "importBatch" },
+  { table: "activitySource", key: "importBatchId", target: "importBatch" },
 ];
 
 export const CHILDREN: Readonly<Record<TableKey, ReadonlyArray<TableKey>>> = Object.fromEntries(
@@ -232,6 +234,7 @@ const NOUN: Readonly<Record<TableKey, readonly [one: string, other: string]>> = 
   activitySet: ["workout set", "workout sets"],
   activityTrack: ["route", "routes"],
   activitySample: ["route point", "route points"],
+  activitySource: ["linked source", "linked sources"],
   folder: ["folder", "folders"],
   routine: ["routine", "routines"],
   routineExercise: ["routine exercise", "routine exercises"],
@@ -339,6 +342,7 @@ const MEASUREMENT_TITLE: Readonly<Record<MeasurementKind, string>> = {
 const IMPORT_SOURCE_TITLE: Readonly<Record<ImportSource, string>> = {
   hevy: "Hevy import",
   apple_health: "Apple Health import",
+  gpx: "GPX import",
   svett_file: "svett file import",
 };
 

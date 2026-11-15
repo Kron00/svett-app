@@ -122,9 +122,16 @@ ALTER TABLE activity_sample ADD COLUMN segment INTEGER;
 UPDATE activity_sample SET segment = 0 WHERE kind = 'location';
 `;
 
-// The tables migration 9 syncs, frozen as they were then. A table added later needs its own
+const activitySources = `
+CREATE TABLE activity_source (${row}, activity_id TEXT NOT NULL, source TEXT NOT NULL, source_id TEXT NOT NULL,
+  fingerprint TEXT NOT NULL, import_batch_id TEXT) STRICT;
+CREATE INDEX activity_source_activity ON activity_source (activity_id);
+CREATE INDEX activity_source_identity ON activity_source (source, source_id);
+`;
+
+// The tables migration 10 syncs, frozen as they were then. A table added later needs its own
 // triggers in its own migration.
-const syncedAtVersion9 = [
+const syncedAtVersion10 = [
   "import_batch",
   "import_change",
   "exercise",
@@ -133,6 +140,7 @@ const syncedAtVersion9 = [
   "activity_set",
   "activity_track",
   "activity_sample",
+  "activity_source",
   "folder",
   "routine",
   "routine_exercise",
@@ -164,7 +172,7 @@ CREATE TABLE sync_state (id INTEGER PRIMARY KEY NOT NULL, quiet INTEGER NOT NULL
   mark INTEGER NOT NULL, cursor INTEGER NOT NULL, clock INTEGER NOT NULL,
   newest_seen INTEGER NOT NULL) STRICT;
 INSERT INTO sync_state (id, quiet, mark, cursor, clock, newest_seen) VALUES (1, 0, 0, 0, max(0, ${[
-  ...syncedAtVersion9,
+  ...syncedAtVersion10,
   "proposal",
   "coach_message",
 ]
@@ -173,7 +181,7 @@ INSERT INTO sync_state (id, quiet, mark, cursor, clock, newest_seen) VALUES (1, 
 CREATE TABLE sync_outbox (table_name TEXT NOT NULL, row_id TEXT NOT NULL, mark INTEGER NOT NULL,
   PRIMARY KEY (table_name, row_id)) STRICT;
 CREATE INDEX sync_outbox_mark ON sync_outbox (mark);
-${syncedAtVersion9
+${syncedAtVersion10
   .map(
     (table) =>
       `INSERT INTO sync_outbox (table_name, row_id, mark) SELECT '${table}', id, 0 FROM ${table}${
@@ -182,11 +190,11 @@ ${syncedAtVersion9
       };`,
   )
   .join("\n")}
-${syncedAtVersion9.flatMap((table) => [queueTrigger(table, "INSERT"), queueTrigger(table, "UPDATE")]).join("\n")}
+${syncedAtVersion10.flatMap((table) => [queueTrigger(table, "INSERT"), queueTrigger(table, "UPDATE")]).join("\n")}
 `;
 
 // A workout in progress is a draft that stays on the phone until it is finished. These say,
-// for a row of each workout table, frozen as they were at migration 10, whether the workout it
+// for a row of each workout table, frozen as they were at migration 11, whether the workout it
 // belongs to is in progress.
 const inDraft: Readonly<Record<string, (row: string) => string>> = {
   activity: (target) => `${target}.status = 'in_progress'`,
@@ -200,6 +208,8 @@ const inDraft: Readonly<Record<string, (row: string) => string>> = {
   activity_sample: (target) =>
     `EXISTS (SELECT 1 FROM activity_track t JOIN activity a ON a.id = t.activity_id
       WHERE t.id = ${target}.activity_track_id AND a.status = 'in_progress')`,
+  activity_source: (target) =>
+    `EXISTS (SELECT 1 FROM activity WHERE id = ${target}.activity_id AND status = 'in_progress')`,
 };
 
 /** Every table of a workout but the activity, and the rows of each under the workout `id`. */
@@ -214,6 +224,7 @@ const workoutChildren = (id: string): ReadonlyArray<readonly [string, string]> =
     "activity_sample",
     `activity_track_id IN (SELECT id FROM activity_track WHERE activity_id = ${id})`,
   ],
+  ["activity_source", `activity_id = ${id}`],
 ];
 
 /** Every row of the workout `id`, deleted ones too, as (table_name, row_id). */
@@ -223,7 +234,7 @@ ${workoutChildren(id)
   .map(([table, where]) => `  UNION ALL SELECT '${table}', id FROM ${table} WHERE ${where}`)
   .join("\n")}`;
 
-// The columns of each workout table at migration 10, frozen, for the copies kept aside.
+// The columns of each workout table at migration 11, frozen, for the copies kept aside.
 const workoutColumns: Readonly<Record<string, ReadonlyArray<string>>> = {
   activity: [
     "id",
@@ -296,6 +307,16 @@ const workoutColumns: Readonly<Record<string, ReadonlyArray<string>>> = {
     "distance_m",
     "duration_s",
     "segment",
+  ],
+  activity_source: [
+    "id",
+    "updated_at",
+    "deleted_at",
+    "activity_id",
+    "source",
+    "source_id",
+    "fingerprint",
+    "import_batch_id",
   ],
 };
 
@@ -421,9 +442,10 @@ export const MIGRATIONS: ReadonlyArray<Migration> = [
   { version: 6, name: "rest timer", sql: restTimer },
   { version: 7, name: "plates and bars", sql: gear },
   { version: 8, name: "sample segment", sql: sampleSegment },
-  { version: 9, name: "sync", sql: sync },
-  { version: 10, name: "workout drafts stay on the phone", sql: localDrafts },
-  { version: 11, name: "sync restores", sql: syncRestores },
+  { version: 9, name: "activity sources", sql: activitySources },
+  { version: 10, name: "sync", sql: sync },
+  { version: 11, name: "workout drafts stay on the phone", sql: localDrafts },
+  { version: 12, name: "sync restores", sql: syncRestores },
 ];
 
 export class DatabaseTooNewError extends Data.TaggedError("DatabaseTooNewError")<{

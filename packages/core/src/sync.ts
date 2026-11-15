@@ -174,6 +174,7 @@ export const WORKOUT_TABLES: ReadonlySet<SyncedTable> = new Set([
   TABLES.activitySet.name,
   TABLES.activityTrack.name,
   TABLES.activitySample.name,
+  TABLES.activitySource.name,
 ]);
 
 /**

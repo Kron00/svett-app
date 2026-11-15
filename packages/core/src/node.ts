@@ -4,3 +4,4 @@ export type { FixtureSummary } from "./fixture.ts";
 export { manualClock } from "./manual-clock.ts";
 export { openTestDatabase, T0 } from "./test-database.ts";
 export { legDay, startPushDay, syncedRows, workoutRows } from "./sync-testing.ts";
+export * from "./health-sample.ts";

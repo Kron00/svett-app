@@ -1,6 +1,6 @@
 import { Clock, Data, Effect, Semaphore } from "effect";
 
-import type { DatabaseOwner } from "./database.ts";
+import type { DatabaseOwner } from "./owner.ts";
 import { cardioDraft, cardioTitle, summarizeRecording } from "./cardio.ts";
 import { Ids } from "./ids.ts";
 import {

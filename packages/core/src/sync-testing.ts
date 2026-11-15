@@ -132,6 +132,7 @@ export const workoutRows = (
           "activity_sample",
           "activity_track_id IN (SELECT id FROM activity_track WHERE activity_id = ?)",
         ],
+        ["activity_source", "activity_id = ?"],
       ];
       const rows: Array<{ readonly table: SyncedTable; readonly row: Record<string, unknown> }> =
         [];

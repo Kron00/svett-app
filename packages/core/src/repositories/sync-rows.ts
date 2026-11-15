@@ -173,6 +173,7 @@ const DEPTH: Readonly<Record<string, number>> = {
   [TABLES.activityTrack.name]: 1,
   [TABLES.activitySet.name]: 2,
   [TABLES.activitySample.name]: 2,
+  [TABLES.activitySource.name]: 1,
 };
 
 /** The rows under a workout, parents before children, each with the rows of the workout `?`. */
@@ -187,6 +188,7 @@ const UNDER_WORKOUT: ReadonlyArray<readonly [SyncedTable, string]> = [
     TABLES.activitySample.name,
     "activity_track_id IN (SELECT id FROM activity_track WHERE activity_id = ?)",
   ],
+  [TABLES.activitySource.name, "activity_id = ?"],
 ];
 
 /**
