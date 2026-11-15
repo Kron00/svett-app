@@ -67,8 +67,9 @@ export const LiftingDetail = Schema.Struct({
 });
 export type LiftingDetail = typeof LiftingDetail.Type;
 
-export const RoutePoint = Schema.Struct({ latitude: Schema.Finite, longitude: Schema.Finite });
-export type RoutePoint = typeof RoutePoint.Type;
+/** A position on a post's route, without a time or an altitude. */
+export const PostRoutePoint = Schema.Struct({ latitude: Schema.Finite, longitude: Schema.Finite });
+export type PostRoutePoint = typeof PostRoutePoint.Type;
 
 /** A run, ride, walk or hike as others see it: the route without its hidden ends, and no times. */
 export const RouteDetail = Schema.Struct({
@@ -93,7 +94,7 @@ export const RouteDetail = Schema.Struct({
    * The visible stretches, each a line of positions. A gap between two lines is a hidden circle
    * the route passed through, and no line may be drawn across it.
    */
-  route: Schema.Array(Schema.Array(RoutePoint)),
+  route: Schema.Array(Schema.Array(PostRoutePoint)),
   /** The activity recorded positions, and the hidden start and end leave none to show. */
   routeHidden: Schema.Boolean,
   /** Null without readings, and when the owner hides heart rate. */
@@ -269,7 +270,7 @@ export interface PostRows {
 const EARTH_RADIUS_M = 6_371_008.8;
 const radians = (degrees: number) => (degrees * Math.PI) / 180;
 
-const metresBetween = (a: RoutePoint, b: RoutePoint): number => {
+const metresBetween = (a: PostRoutePoint, b: PostRoutePoint): number => {
   const dLat = radians(b.latitude - a.latitude);
   const dLon = radians(b.longitude - a.longitude);
   const h =
@@ -278,14 +279,14 @@ const metresBetween = (a: RoutePoint, b: RoutePoint): number => {
   return 2 * EARTH_RADIUS_M * Math.asin(Math.min(1, Math.sqrt(h)));
 };
 
-type Circle = { readonly centre: RoutePoint; readonly radiusM: number };
+type Circle = { readonly centre: PostRoutePoint; readonly radiusM: number };
 
 const METRES_PER_DEGREE = (EARTH_RADIUS_M * Math.PI) / 180;
 
 /** How close the straight step from `a` to `b` comes to `centre`, in metres, on a flat local map. */
-const closestApproachM = (centre: RoutePoint, a: RoutePoint, b: RoutePoint): number => {
+const closestApproachM = (centre: PostRoutePoint, a: PostRoutePoint, b: PostRoutePoint): number => {
   const squeeze = Math.cos(radians(centre.latitude));
-  const local = (point: RoutePoint) => ({
+  const local = (point: PostRoutePoint) => ({
     x: (point.longitude - centre.longitude) * squeeze * METRES_PER_DEGREE,
     y: (point.latitude - centre.latitude) * METRES_PER_DEGREE,
   });
@@ -307,12 +308,12 @@ const closestApproachM = (centre: RoutePoint, a: RoutePoint, b: RoutePoint): num
  * positions draw nothing and are left out.
  */
 const outsideCircles = (
-  lines: ReadonlyArray<ReadonlyArray<RoutePoint>>,
+  lines: ReadonlyArray<ReadonlyArray<PostRoutePoint>>,
   circles: ReadonlyArray<Circle>,
-): ReadonlyArray<ReadonlyArray<RoutePoint>> => {
-  const stretches: Array<Array<RoutePoint>> = [];
+): ReadonlyArray<ReadonlyArray<PostRoutePoint>> => {
+  const stretches: Array<Array<PostRoutePoint>> = [];
   for (const line of lines) {
-    let current: Array<RoutePoint> = [];
+    let current: Array<PostRoutePoint> = [];
     const cut = () => {
       if (current.length >= 2) stretches.push(current);
       current = [];
@@ -337,7 +338,10 @@ const outsideCircles = (
 };
 
 /** `count` positions of a line, evenly picked, always keeping its first and last. */
-const pick = (line: ReadonlyArray<RoutePoint>, count: number): ReadonlyArray<RoutePoint> => {
+const pick = (
+  line: ReadonlyArray<PostRoutePoint>,
+  count: number,
+): ReadonlyArray<PostRoutePoint> => {
   if (line.length <= count) return line;
   const step = (line.length - 1) / (count - 1);
   return Array.from({ length: count }, (_, index) => line[Math.round(index * step)]!);
@@ -348,10 +352,10 @@ const pick = (line: ReadonlyArray<RoutePoint>, count: number): ReadonlyArray<Rou
  * the rest by its length. A line needs two positions, so past `max / 2` lines the shortest go.
  */
 export const thinRoute = (
-  lines: ReadonlyArray<ReadonlyArray<RoutePoint>>,
+  lines: ReadonlyArray<ReadonlyArray<PostRoutePoint>>,
   max = ROUTE_POINTS_MAX,
-): ReadonlyArray<ReadonlyArray<RoutePoint>> => {
-  const total = (some: ReadonlyArray<ReadonlyArray<RoutePoint>>) =>
+): ReadonlyArray<ReadonlyArray<PostRoutePoint>> => {
+  const total = (some: ReadonlyArray<ReadonlyArray<PostRoutePoint>>) =>
     some.reduce((sum, line) => sum + line.length, 0);
   if (total(lines) <= max) return lines;
   const longest = new Set(
@@ -369,25 +373,29 @@ export const thinRoute = (
 };
 
 /**
- * The route others may see, as separate stretches of at most `max` positions in all. Every
- * position within `hideStartM` of the start or `hideEndM` of the end is dropped, wherever in
- * the route it falls, and the route is cut at each gap, so a run that passes its start or end
- * midway shows neither. A cut is also made wherever a straight step would cross either circle,
- * before and after thinning, so no line drawn between two shown positions passes through one.
- * Every view of another account's route must come from here.
+ * The route others may see, as separate stretches of at most `max` positions in all. `lines`
+ * are the stretches recorded between start or resume and the next pause, which never join.
+ * Every position within `hideStartM` of the route's start or `hideEndM` of its end is dropped,
+ * wherever in the route it falls, and the route is cut at each gap, so a run that passes its
+ * start or end midway shows neither. A cut is also made wherever a straight step would cross
+ * either circle, before and after thinning, so no line drawn between two shown positions
+ * passes through one. Every view of another account's route must come from here.
  */
 export const visibleRoute = (
-  points: ReadonlyArray<RoutePoint>,
+  lines: ReadonlyArray<ReadonlyArray<PostRoutePoint>>,
   hideStartM: number,
   hideEndM: number,
   max = ROUTE_POINTS_MAX,
-): ReadonlyArray<ReadonlyArray<RoutePoint>> => {
-  if (points.length < 2) return [];
+): ReadonlyArray<ReadonlyArray<PostRoutePoint>> => {
+  const recorded = lines.filter((line) => line.length > 0);
+  const start = recorded[0]?.[0];
+  const end = recorded.at(-1)?.at(-1);
+  if (start === undefined || end === undefined || recorded.flat().length < 2) return [];
   const circles: ReadonlyArray<Circle> = [
-    { centre: points[0]!, radiusM: hideStartM },
-    { centre: points.at(-1)!, radiusM: hideEndM },
+    { centre: start, radiusM: hideStartM },
+    { centre: end, radiusM: hideEndM },
   ];
-  return outsideCircles(thinRoute(outsideCircles([points], circles), max), circles);
+  return outsideCircles(thinRoute(outsideCircles(recorded, circles), max), circles);
 };
 
 const liftingDetail = (rows: PostRows, withheld: ReadonlySet<Withheld>): LiftingDetail => {
@@ -435,11 +443,16 @@ const routeDetail = (
   withheld: ReadonlySet<Withheld>,
 ): RouteDetail => {
   const byTime = [...samples].sort((a, b) => a.recordedAt - b.recordedAt);
-  const positions = byTime.flatMap((sample) =>
-    sample.kind === "location" ? [{ latitude: sample.latitude, longitude: sample.longitude }] : [],
-  );
+  const segments = new Map<number, Array<PostRoutePoint>>();
+  for (const sample of byTime) {
+    if (sample.kind !== "location") continue;
+    const line = segments.get(sample.segment) ?? [];
+    line.push({ latitude: sample.latitude, longitude: sample.longitude });
+    segments.set(sample.segment, line);
+  }
+  const lines = [...segments].sort(([a], [b]) => a - b).map(([, line]) => line);
   const beats = byTime.flatMap((sample) => (sample.kind === "heart_rate" ? [sample.bpm] : []));
-  const route = visibleRoute(positions, track.hideStartM, track.hideEndM);
+  const route = visibleRoute(lines, track.hideStartM, track.hideEndM);
   const pace =
     track.distanceM === null || track.distanceM < 10 || activity.durationS <= 0
       ? null
@@ -451,7 +464,7 @@ const routeDetail = (
     paceSPerKm: withheld.has("pace") ? null : pace,
     splits: splitsOf(byTime, withheld.has("duration")),
     route,
-    routeHidden: positions.length > 0 && route.length === 0,
+    routeHidden: lines.length > 0 && route.length === 0,
     averageHeartRateBpm:
       withheld.has("heart_rate") || beats.length === 0
         ? null

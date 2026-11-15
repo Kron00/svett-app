@@ -2,7 +2,14 @@ import { createServer } from "node:http";
 
 import { NodeHttpServer } from "@effect/platform-node";
 import { PgClient } from "@effect/sql-pg";
-import { COMMENT_MAX_LENGTH, COMMENT_PAGE, FEED_PAGE, INBOX_PAGE } from "@svett/core";
+import {
+  COMMENT_MAX_LENGTH,
+  COMMENT_PAGE,
+  FEED_PAGE,
+  INBOX_PAGE,
+  SYNC_PROTOCOL_VERSION,
+  SYNC_VERSION_HEADER,
+} from "@svett/core";
 import { Effect, Layer } from "effect";
 import { HttpClient, HttpClientRequest, HttpRouter, HttpServer } from "effect/http";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
@@ -92,6 +99,7 @@ const as = (
     const token = yield* Effect.promise(() => issuer.sessionToken(account));
     const request = HttpClientRequest.make(method)(path).pipe(
       HttpClientRequest.bearerToken(token),
+      HttpClientRequest.setHeader(SYNC_VERSION_HEADER, String(SYNC_PROTOCOL_VERSION)),
       (built) => (body === undefined ? built : HttpClientRequest.bodyJsonUnsafe(built, body)),
     );
     const response = yield* (yield* HttpClient.HttpClient).execute(request);
@@ -144,6 +152,8 @@ const activity = (overrides: Record<string, unknown> = {}) => ({
     updatedAt: 1,
     deletedAt: null,
     kind: "strength",
+    status: "finished",
+    routineId: null,
     startedAt: 1_790_000_000_000,
     durationS: 1800,
     title: `Session ${ids}`,
@@ -359,6 +369,48 @@ describe("the feed", { timeout: 60_000 }, () => {
       ["Anna, followers", "followers"],
     ]);
     expect(shown.withDraft).toEqual(shown.following);
+  });
+
+  it("keeps a deleted post out after a stale edit, and an Undo puts it back in its old place", async () => {
+    const seen = await withServer(
+      Effect.gen(function* () {
+        const sql = yield* PgClient.PgClient;
+        yield* name(ANNA, "anna");
+        yield* name(BEN, "ben");
+        yield* follow(ANNA, "ben");
+        const older = activity({ title: "Older" });
+        yield* write(BEN, [older]);
+        yield* Effect.sleep("5 millis");
+        yield* write(BEN, [activity({ title: "Newer" })]);
+        const feed = () => Effect.map(feedPage(ANNA), ({ posts }) => posts);
+        const sharedMs = () =>
+          Effect.map(
+            sql<{ readonly sharedMs: string }>`
+              select shared_ms as "sharedMs" from activity_social
+              where account_id = ${BEN} and activity_id = ${older.row.id}
+            `,
+            ([row]) => row?.sharedMs,
+          );
+        const before = { feed: yield* feed(), sharedMs: yield* sharedMs() };
+        yield* write(BEN, [{ ...older, row: { ...older.row, updatedAt: 10, deletedAt: 10 } }]);
+        const deleted = yield* feed();
+        // A phone that never saw the delete edits the post after it, then sends the edit.
+        yield* write(BEN, [{ ...older, row: { ...older.row, updatedAt: 20, title: "Edited" } }]);
+        const edited = yield* feed();
+        yield* Effect.sleep("5 millis");
+        yield* write(BEN, [{ ...older, row: { ...older.row, updatedAt: 30 }, restores: [10] }]);
+        return {
+          before,
+          deleted,
+          edited,
+          undone: { feed: yield* feed(), sharedMs: yield* sharedMs() },
+        };
+      }),
+    );
+    expect(seen.before.feed.map(({ title }) => title)).toEqual(["Newer", "Older"]);
+    expect(seen.deleted.map(({ title }) => title)).toEqual(["Newer"]);
+    expect(seen.edited).toEqual(seen.deleted);
+    expect(seen.undone).toEqual(seen.before);
   });
 
   it("pages newest first by when each post reached the feed, whatever its start time", async () => {

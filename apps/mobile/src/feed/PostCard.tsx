@@ -17,6 +17,7 @@ import { Pressable, View } from "react-native";
 import { SPORTS } from "../design/tokens";
 import type { RootNavigation } from "../navigation";
 import { formatDay } from "../progress/dates";
+import { useWorkoutSettings } from "../settings/store";
 import { AppText } from "../ui/AppText";
 import { Icon } from "../ui/Icon";
 import { runSocial } from "../social/api";
@@ -37,6 +38,7 @@ export const postLine = (post: Post) =>
     .join(" · ");
 
 function DetailSummary({ detail, id }: { readonly detail: PostDetail; readonly id: string }) {
+  const { unit } = useWorkoutSettings();
   if (detail.type === "route") {
     return (
       <View className="gap-2">
@@ -54,7 +56,7 @@ function DetailSummary({ detail, id }: { readonly detail: PostDetail; readonly i
   return (
     <View className="gap-1">
       <AppText variant="headline" numeric testID={`post-numbers-${id}`}>
-        {liftingLine(detail)}
+        {liftingLine(detail, unit)}
       </AppText>
       {detail.exercises.slice(0, 3).map((exercise) => (
         <AppText key={exercise.position} tone="secondary">

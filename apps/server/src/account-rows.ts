@@ -212,7 +212,11 @@ export class AccountRows extends Context.Service<AccountRows, AccountRowsShape>(
                 // time may be hidden. An activity for only its owner, such as each one moved in
                 // from the phone, is not shared until its audience changes. A delete leaves the
                 // social row alone, so an Undo brings the post back with the same ID and place.
-                if (row.table !== "activity" || row.deletedAt !== null || !isPublished(row.encoded)) {
+                if (
+                  row.table !== "activity" ||
+                  row.deletedAt !== null ||
+                  !isPublished(row.encoded)
+                ) {
                   return Effect.asVoid(saved);
                 }
                 const sharedMs = isShared(row.encoded) ? nowMillis : null;

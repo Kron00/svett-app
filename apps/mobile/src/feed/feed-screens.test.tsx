@@ -24,6 +24,7 @@ vi.mock("react-native", () => ({
   Text: "Text",
   TextInput: "TextInput",
   View: "View",
+  Settings: { get: () => undefined, set: () => undefined },
   StyleSheet: { hairlineWidth: 0.5 },
   useWindowDimensions: () => ({ width: 440, height: 956, scale: 3, fontScale: 1 }),
 }));

@@ -8,12 +8,13 @@ import {
   type PostRef,
   type PostSet,
   type RouteDetail,
-  type RoutePoint,
+  type PostRoutePoint,
 } from "./feed.ts";
 import { describeSet, formatVolumeKg, formatWorkoutDuration } from "./history.ts";
 import type { ActivityKind, Audience, HiddenField } from "./schema.ts";
 import { setBadge, type SetBadge } from "./set-format.ts";
 import { countOf } from "./social-format.ts";
+import type { WeightUnit } from "./weight-unit.ts";
 
 /** Kilometres to two decimals, cut rather than rounded, so 4,996 m does not read as 5.00. */
 export const formatPostDistance = (metres: number): string =>
@@ -27,8 +28,8 @@ export const formatPostPace = (secondsPerKm: number): string =>
 export const formatPostDuration = (seconds: number | null): string =>
   seconds === null ? "Hidden" : formatWorkoutDuration(seconds);
 
-/** The numbers under a lifting post, such as "4 exercises · 16 sets · 12,450 kg". */
-export const liftingLine = (detail: LiftingDetail): string =>
+/** The numbers under a lifting post, such as "4 exercises · 16 sets · 12,450 kg", in `unit`. */
+export const liftingLine = (detail: LiftingDetail, unit: WeightUnit): string =>
   [
     countOf(detail.exercises.length, "exercise", "exercises"),
     countOf(
@@ -36,7 +37,7 @@ export const liftingLine = (detail: LiftingDetail): string =>
       "set",
       "sets",
     ),
-    detail.volumeKg === null ? "Weight hidden" : formatVolumeKg(detail.volumeKg),
+    detail.volumeKg === null ? "Weight hidden" : formatVolumeKg(detail.volumeKg, unit),
   ].join(" · ");
 
 /** The numbers under a route post, such as "5.02 km · 5:12 /km". */
@@ -124,7 +125,7 @@ const ROUTE_PADDING = 12;
  * of latitude.
  */
 export const projectRoute = (
-  lines: ReadonlyArray<ReadonlyArray<RoutePoint>>,
+  lines: ReadonlyArray<ReadonlyArray<PostRoutePoint>>,
   width: number,
   height: number,
 ): ReadonlyArray<string> => {
@@ -140,7 +141,7 @@ export const projectRoute = (
   const scale = Math.min(width - 2 * ROUTE_PADDING, height - 2 * ROUTE_PADDING) / span;
   const offsetX = (width - (right - left) * scale) / 2;
   const offsetY = (height - (top - bottom) * scale) / 2;
-  const at = (point: RoutePoint) =>
+  const at = (point: PostRoutePoint) =>
     `${(offsetX + (point.longitude * squeeze - left) * scale).toFixed(1)},${(offsetY + (top - point.latitude) * scale).toFixed(1)}`;
   return lines.map((line) => line.map(at).join(" "));
 };
@@ -157,9 +158,13 @@ export const splitLines = (splits: RouteDetail["splits"]) =>
         : formatPostPace((split.durationS / split.distanceM) * 1000),
   }));
 
-/** Each set of an exercise in a post with its badge, such as "W" or "2", and what it recorded. */
+/**
+ * Each set of an exercise in a post with its badge, such as "W" or "2", and what it recorded,
+ * with weights in `unit`.
+ */
 export const postSetLines = (
   sets: ReadonlyArray<PostSet>,
+  unit: WeightUnit,
 ): ReadonlyArray<{
   readonly position: number;
   readonly setType: PostSet["setType"];
@@ -173,7 +178,7 @@ export const postSetLines = (
       position: set.position,
       setType: set.setType,
       badge: setBadge(set.setType, normal),
-      text: describeSet(set) || "Nothing recorded",
+      text: describeSet(set, unit) || "Nothing recorded",
     };
   });
 };
