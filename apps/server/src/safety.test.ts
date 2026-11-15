@@ -809,17 +809,18 @@ describe("deleting an account", { timeout: 60_000 }, () => {
     await api.ok(anna, "POST", `/v1/posts/${bensPost}/comments`, { body: "Nice" });
     await api.ok(anna, "PUT", "/v1/inbox/read", { until: Date.now() });
     // A connected app's code, connection, logged read and waiting proposal.
-    await query(
-      url,
-      `insert into oauth_code values ('code-hash', 'client', '${anna}', 'https://chatgpt.com/cb',
-         'challenge', 'svett.read', 0);
-       insert into assistant_connection (id, account_id, client_id, name, host, scopes,
+    await Promise.all(
+      [
+        `insert into oauth_code values ('code-hash', 'client', '${anna}', 'https://chatgpt.com/cb',
+         'challenge', 'svett.read', 0)`,
+        `insert into assistant_connection (id, account_id, client_id, name, host, scopes,
          created_ms, access_hash, access_expires_ms, refresh_hash, refresh_expires_ms)
        values ('connection', '${anna}', 'client', 'ChatGPT', 'chatgpt.com', 'svett.read', 0,
-         'access-hash', 0, 'refresh-hash', 0);
-       insert into assistant_access values ('access', '${anna}', 'connection', 'list_workouts', 0);
-       insert into assistant_proposal values ('proposal', '${anna}', 'connection', 'ChatGPT',
-         '{}', 0);`,
+         'access-hash', 0, 'refresh-hash', 0)`,
+        `insert into assistant_access values ('access', '${anna}', 'connection', 'list_workouts', 0)`,
+        `insert into assistant_proposal values ('proposal', '${anna}', 'connection', 'ChatGPT',
+         '{}', 0)`,
+      ].map((insert) => query(url, insert)),
     );
 
     const before = await rowsNaming(url, anna);
