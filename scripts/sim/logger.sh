@@ -56,7 +56,9 @@
 # screenshot and the screen's elements as launch-<n>.png and launch-<n>.txt. It
 # goes on only when a system prompt over svett explains the wait, after it answers
 # it. A launch that hung with nothing over it fails. At any failure it saves the
-# screen as failure.png and its elements as failure.txt.
+# screen as failure.png and its elements as failure.txt. When an exercise check
+# fails, it then lists every exercise header a scroll reaches, without a press, in
+# exercises.txt.
 # Numbered screenshots go to out-dir, by default
 # ~/svett-proof/<branch>/logger/. Like tabs.sh, Debug opens the development
 # client on Metro at SVETT_METRO, --release opens the installed Release build,
@@ -131,14 +133,43 @@ restore() {
 trap restore EXIT
 
 # fail <message>: keeps the screen as failure.png and its elements as failure.txt,
-# so a failed run shows what was on screen at the step that failed. It writes only
-# to stderr and files, because it also runs inside $(...).
+# so a failed run shows what was on screen at the step that failed. Then it runs
+# $failure_detail, a check's own report, which may scroll but never presses. It writes
+# only to stderr and files, because it also runs inside $(...).
+failure_detail=
 fail() {
+  local detail=$failure_detail
+  failure_detail=
   echo "$1" >&2
   agent_device screenshot "$out/failure.png" >/dev/null 2>&1 || true
   agent_device snapshot >"$out/failure.txt" 2>&1 || true
   echo "The screen at the failure is in $out/failure.png and $out/failure.txt" >&2
+  [[ -z "$detail" ]] || "$detail" >&2
   exit 1
+}
+
+# exercise_headers: prints the label of every exercise header of the workout, from the
+# first on, as far as a scroll reaches, and saves the list as exercises.txt. It only
+# scrolls and reads, and never presses, so it cannot change the workout it reports.
+exercise_headers() {
+  local n=0 selector attrs label
+  {
+    echo "The workout's exercise headers, as far as a scroll reaches:"
+    while ((n < 20)); do
+      selector="id=\"workout-exercise-$n\""
+      if ! agent_device is visible "$selector" >/dev/null 2>&1 &&
+        ! agent_device scroll down --until "$selector" --max-passes 200 >/dev/null 2>&1 &&
+        ! agent_device scroll up --until "$selector" --max-passes 200 >/dev/null 2>&1; then
+        echo "No workout-exercise-$n within reach, so the workout shows $n exercises"
+        break
+      fi
+      label=
+      attrs=$(agent_device get attrs "$selector" 2>/dev/null) &&
+        label=$(node -e 'console.log(JSON.parse(process.argv[1]).label ?? "")' "$attrs" 2>/dev/null)
+      echo "Exercise $((n + 1)), workout-exercise-$n: \"$label\""
+      n=$((n + 1))
+    done
+  } | tee "$out/exercises.txt"
 }
 
 shot=0
@@ -187,19 +218,27 @@ expect() {
   agent_device wait "$1" 10000 >/dev/null || fail "$2"
 }
 
+# agent-device gives up a scroll --until after 12 passes unless told otherwise. At the
+# largest text size the Legs workout with Plank is about 13 screens tall, and on the
+# Mac 12 passes from its top stopped at Standing Calf Raises, short of Plank.
+max_passes=60
+
 # bring <selector> [what is missing]: scrolls until the element is on screen, up
 # or down, because at the largest text size the workout is taller than the screen.
+# A failure also says what the scroll down said.
 bring() {
-  agent_device is visible "$1" >/dev/null 2>&1 ||
-    agent_device scroll up --until "$1" >/dev/null 2>&1 ||
-    agent_device scroll down --until "$1" >/dev/null 2>&1 ||
-    fail "${2:-$1 never came on screen}"
+  local said
+  agent_device is visible "$1" >/dev/null 2>&1 && return 0
+  agent_device scroll up --until "$1" --max-passes "$max_passes" >/dev/null 2>&1 && return 0
+  said=$(agent_device scroll down --until "$1" --max-passes "$max_passes" 2>&1) && return 0
+  fail "${2:-$1 never came on screen}
+The scroll down to it said: $(tail -n 1 <<<"$said")"
 }
 
-# label_of <selector>: prints the element's label once it is ready.
+# label_of <selector> [what is missing]: prints the element's label once it is ready.
 label_of() {
   local attrs
-  ready "$1" >&2
+  ready "$@" >&2
   attrs=$(agent_device get attrs "$1") || fail "$1 is not on screen"
   node -e 'console.log(JSON.parse(process.argv[1]).label ?? "")' "$attrs"
 }
@@ -497,8 +536,17 @@ expect_set() {
     "Set $(($2 + 1)) of exercise $(($1 + 1)) does not read \"$3\""
 }
 
+# expect_exercise <index> <name>: the exercise's header reads exactly its name, as the
+# workout screen labels it. A failure says whether the header never came on screen or
+# read another name, and lists every header a scroll reaches.
 expect_exercise() {
-  see "id=\"workout-exercise-$1\" label=\"$2\"" "Exercise $(($1 + 1)) of the workout is not $2"
+  local selector="id=\"workout-exercise-$1\"" missing="Exercise $(($1 + 1)) of the workout is not $2" label
+  failure_detail=exercise_headers
+  label=$(label_of "$selector" "$missing
+Its header, workout-exercise-$1, never came on screen") || exit 1
+  [[ "$label" == "$2" ]] || fail "$missing
+Its header, workout-exercise-$1, reads \"$label\""
+  failure_detail=
 }
 
 # Checks the picker's first result is the exercise named $1, then presses it.

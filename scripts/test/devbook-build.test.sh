@@ -2663,7 +2663,7 @@ const state = fs.existsSync(stateFile)
   ? JSON.parse(fs.readFileSync(stateFile, "utf8"))
   : { screen: "home", workouts: [], scrolled: [], kills: 0, launches: 0, timing: null, permission: "undetermined",
     prompt: null, rest: false, focus: null, low: null, panned: false, glide: null, flung: null, under: null,
-    overshoot: null, pans: 0 };
+    overshoot: null, pans: 0, offset: 0 };
 const save = () => {
   fs.mkdirSync(process.env.FAKE_STATE, { recursive: true });
   fs.writeFileSync(stateFile, JSON.stringify(state));
@@ -2742,7 +2742,10 @@ const elements = () => {
     if (state.alert) add("alert-finish", "Finish workout", { role: "button" });
     add("set-done-timing", state.timing === null ? "No set marked done yet" : `Set shown done in ${state.timing} ms`);
     workout.exercises.forEach((exercise, e) => {
-      add(`workout-exercise-${e}`, exercise.name);
+      // The header is the exercise's name as text, which is its label. FAKE_TIMED_HEADER
+      // adds a suffix to a timed exercise's header, as a label that said how it logs would.
+      add(`workout-exercise-${e}`, exercise.fields === "time" && process.env.FAKE_TIMED_HEADER
+        ? `${exercise.name}${process.env.FAKE_TIMED_HEADER}` : exercise.name);
       add(`move-exercise-down-${e}`);
       add(`add-workout-set-${e}`);
       exercise.sets.forEach((_, s) => {
@@ -2854,7 +2857,33 @@ const frame = (element) => {
   return fixed[id] ?? { x: 16, y: centreY(id) - 25, width: 408, height: 50 };
 };
 const centre = (rect) => `${Math.round(rect.x + rect.width / 2)} ${Math.round(rect.y + rect.height / 2)}`;
+// At the largest text size the Legs workout with Plank is about 13 screens tall: each
+// exercise's header, notes and column titles take 410 points, each set stacks to 480, and
+// Add set takes 90. An element's place in it is measured from the workout's top, and
+// state.offset is the place at the top of the screen. agent-device swipes about 680 points
+// a pass, and gives up a scroll --until after 12 passes unless --max-passes says more.
+const PASS = 680;
+const SCREEN = 956;
+const contentY = (id) => {
+  const workout = current();
+  let y = 300;
+  for (const [e, exercise] of (workout?.exercises ?? []).entries()) {
+    if (id === `workout-exercise-${e}` || id === `move-exercise-down-${e}`) return y;
+    y += 410;
+    for (const s of exercise.sets.keys()) {
+      if (new RegExp(`^(set|workout-set)-${e}-${s}(-|$)`).test(id ?? "")) return y + 200;
+      y += 480;
+    }
+    if (id === `add-workout-set-${e}`) return y;
+    y += 90;
+  }
+  return y + 300;
+};
+// The exercise headers on screen, for the snapshot.
+const headersShown = () => elements().filter((element) => /^workout-exercise-/.test(element.id ?? "") &&
+  contentY(element.id) >= state.offset && contentY(element.id) < state.offset + SCREEN).map((element) => element.label);
 const show = (screen) => {
+  state.offset = 0;
   state.screen = screen; state.scrolled = []; state.focus = null; state.low = null; state.panned = false;
   state.glide = null; state.flung = null; state.under = null; state.overshoot = null;
 };
@@ -2948,6 +2977,7 @@ const act = (target) => {
     const [moved] = workout.exercises.splice(m[0], 1);
     workout.exercises.splice(m[0] + 1, 0, moved);
     state.scrolled = [];
+    state.offset = 0;
     if (state.focus?.e === m[0]) state.focus.e += 1;
     else if (state.focus?.e === m[0] + 1) state.focus.e -= 1;
   } else if (target === "bar-finish") state.alert = true;
@@ -2969,7 +2999,8 @@ switch (command[0]) {
     break;
   case "snapshot":
     console.log(JSON.stringify({ screen: state.screen, prompt: state.prompt, elements: elements().length,
-      keypad: state.focus !== null, rest: state.rest, scrolled: state.scrolled }));
+      keypad: state.focus !== null, rest: state.rest, scrolled: state.scrolled,
+      ...(state.screen === "workout" ? { headers: headersShown() } : {}) }));
     break;
   case "settings":
     if (command[1] === "permission") {
@@ -3017,6 +3048,18 @@ switch (command[0]) {
     const element = find(command[3]);
     if (element === null || (command[1] === "up" && !visible(element) && !flung(element))) fail();
     if (state.screen === "workout" && coverTop() < 956 && !visible(element)) fail();
+    if (state.screen === "workout" && command[1] === "down" && !visible(element)) {
+      const at = command.indexOf("--max-passes");
+      const limit = at === -1 ? 12 : Number(command[at + 1]);
+      const passes = Math.ceil(Math.max(0, contentY(element.id) - state.offset - 700) / PASS);
+      if (passes > limit) {
+        state.offset += limit * PASS;
+        save();
+        console.error(`Error: ${command[3]} was not visible after ${limit} scroll down passes`);
+        fail();
+      }
+      state.offset = Math.max(state.offset, contentY(element.id) - 300);
+    }
     state.scrolled.push(element.id);
     state.low = null;
     state.panned = false;
@@ -3033,6 +3076,7 @@ switch (command[0]) {
     const bottom = coverTop();
     if (state.prompt === null && state.screen === "workout" && y > 110 && y < bottom) {
       state.panned = true;
+      state.offset = Math.max(0, state.offset - Number(command[5]));
       state.low = null;
       state.flung = null;
       state.under = null;
@@ -3181,15 +3225,19 @@ check "logger.sh closes the keypad with Done after Move down, Romanian Deadlift'
   test "$(grep -cxF -e "$bound_prefix press 324 880" "$root/bound-calls")" = 3
 check "logger.sh closes the keypad and skips the rest right after Move down, before it scrolls to exercise 2" \
   logger_between 'get attrs id="move-exercise-down-0"' \
-  'scroll down --until id="workout-exercise-1" label="Barbell Squat"' \
+  'scroll down --until id="workout-exercise-1" --max-passes 60' \
   'get attrs id="move-exercise-down-0"' "wait 250" 'get attrs id="move-exercise-down-0"' "press 220 250" \
   'is visible id="key-1"' 'get attrs id="keypad-done"' "press 324 880" 'wait absent id="key-1" 5000' \
   'is visible id="rest-timer-skip"' 'get attrs id="rest-timer-skip"' "press 343 881" \
-  'wait absent id="rest-timer" 5000' 'is visible id="workout-exercise-1" label="Barbell Squat"' \
-  'scroll up --until id="workout-exercise-1" label="Barbell Squat"' \
-  'scroll down --until id="workout-exercise-1" label="Barbell Squat"'
+  'wait absent id="rest-timer" 5000' 'is visible id="workout-exercise-1"' \
+  'scroll up --until id="workout-exercise-1" --max-passes 60' \
+  'scroll down --until id="workout-exercise-1" --max-passes 60'
+check "logger.sh scrolls up to 60 passes to reach Plank, the sixth exercise of the 13 screen workout" \
+  bound_got "$bound_prefix scroll down --until id=\"workout-exercise-5\" --max-passes 60"
+check "logger.sh lists no exercise headers when every exercise check passes" \
+  test ! -e "$root/logger/exercises.txt"
 check "logger.sh reads exercise 2 only once its frame shows clear of the rest" \
-  bound_got "$bound_prefix get attrs id=\"workout-exercise-1\" label=\"Barbell Squat\""
+  bound_got "$bound_prefix get attrs id=\"workout-exercise-1\""
 check "logger.sh drags the first set's weight field up from the bottom edge just far enough before it presses it" \
   bound_got "$bound_prefix gesture pan 20 820 0 -81 1620"
 check "logger.sh drags a set up from under the keypad and the rest, from just above them" \
@@ -3209,13 +3257,13 @@ check "logger.sh skips the rest before the order check, before Plank's set is ch
   test "$(grep -cxF -e "$bound_prefix press 343 881" "$root/bound-calls")" = 3
 check "logger.sh presses nothing at the bottom edge but the keypad's Done and the rest's Skip" logger_presses_clear
 check "logger.sh presses Start workout only once two reads agree after the scroll that found it" \
-  logger_from 'scroll down --until id="start-routine"' 'is visible id="key-1"' 'is visible id="rest-timer"' \
+  logger_from 'scroll down --until id="start-routine" --max-passes 60' 'is visible id="key-1"' 'is visible id="rest-timer"' \
   'get attrs id="start-routine"' "wait 250" 'get attrs id="start-routine"' "wait 250" \
   'get attrs id="start-routine"' "wait 250" 'get attrs id="start-routine"' "press 220 625"
 check "logger.sh leaves the first rest's prompt alone when notifications were granted ahead" \
   only_calls "alert" "alert wait 3000" "alert wait 5000" "alert wait 5000"
 check "logger.sh scrolls down to a set below the fold before it checks it" \
-  bound_got "--session t3-test session --device FAKE-UDID scroll down --until id=\"workout-set-1-0\" label=\"Set 1, 100 kg, 5 reps, Done\""
+  bound_got "--session t3-test session --device FAKE-UDID scroll down --until id=\"workout-set-1-0\" label=\"Set 1, 100 kg, 5 reps, Done\" --max-passes 60"
 check "logger.sh finds the restored Legs in the database exactly as logged" \
   diff "$root/logger/restored-expected.txt" "$root/logger/restored.txt"
 check "logger.sh finds the finished Legs in the database with only its done sets" \
@@ -3277,7 +3325,7 @@ run_logger FAKE_FLINGS=1 "$root/logger-flings"
 [[ "$logger_status" == 0 ]] || fail "logger.sh failed when a drag overshot"
 check "logger.sh brings back a field a drag carried off screen, before it presses it" \
   logger_from 'gesture pan 20 820 0 -81 1620' 'is visible id="key-1"' 'is visible id="rest-timer"' \
-  'get attrs id="set-0-0-weight"' 'is visible id="set-0-0-weight"' 'scroll up --until id="set-0-0-weight"' \
+  'get attrs id="set-0-0-weight"' 'is visible id="set-0-0-weight"' 'scroll up --until id="set-0-0-weight" --max-passes 60' \
   'get attrs id="set-0-0-weight"' "wait 250" 'get attrs id="set-0-0-weight"' "wait 250" \
   'get attrs id="set-0-0-weight"' "wait 250" 'get attrs id="set-0-0-weight"' "press 220 625"
 check "logger.sh drags a field a drag left under the navigation bar back down before it presses it" \
@@ -3319,7 +3367,7 @@ check "logger.sh fails when it reads exercise 2 with the keypad and the rest ove
 check "logger.sh fails as it did on the Mac" \
   grep -qxF "Exercise 2 of the workout is not Barbell Squat" "$output"
 check "a scroll down to exercise 2 lands on the keypad and finds nothing" \
-  bound_got "$bound_prefix scroll down --until id=\"workout-exercise-1\" label=\"Barbell Squat\""
+  bound_got "$bound_prefix scroll down --until id=\"workout-exercise-1\" --max-passes 60"
 check "logger.sh keeps the screen with the keypad still open" \
   grep -qF '"screen":"workout"' "$root/logger-open-keypad/failure.txt"
 
@@ -3337,9 +3385,53 @@ check "logger.sh fails at the same step as on the Mac" \
 check "logger.sh closed the keypad after Move down, as f7668d0 did" \
   bound_got "$bound_prefix press 324 880"
 check "a scroll down to exercise 2 starts on the rest and finds nothing" \
-  bound_got "$bound_prefix scroll down --until id=\"workout-exercise-1\" label=\"Barbell Squat\""
+  bound_got "$bound_prefix scroll down --until id=\"workout-exercise-1\" --max-passes 60"
 check "the failure shows the workout at its top, the keypad closed and the rest running, as failure.txt on the Mac did" \
   grep -qF '"keypad":false,"rest":true,"scrolled":[]' "$root/logger-rest-left/failure.txt"
+
+case_name="logger.sh as 9c9a89e ran it, scrolling at most agent-device's 12 passes"
+# The same copy, now with bring's scrolls left at agent-device's default of 12 passes, as
+# 9c9a89e's were. On the Mac they stopped at Standing Calf Raises, short of Plank, the
+# sixth exercise of the 13 screen workout.
+sed -E '/^bring\(\) \{/,/^\}/ s/ --max-passes "\$max_passes"//' "$repo/scripts/sim/logger.sh" \
+  >"$old_repo/scripts/sim/logger.sh"
+check "the copy's bring scrolls without --max-passes" \
+  test -z "$(sed -n '/^bring() {/,/^}/p' "$old_repo/scripts/sim/logger.sh" | grep -e --max-passes)"
+logger_script="$old_repo/scripts/sim/logger.sh" run_logger "$root/logger-12-passes"
+check "logger.sh fails when 12 passes do not reach Plank" test "$logger_status" -ne 0
+check "logger.sh fails at the same step as on the Mac" \
+  grep -qxF "Exercise 6 of the workout is not Plank" "$output"
+check "logger.sh says Plank's header never came on screen" \
+  grep -qxF "Its header, workout-exercise-5, never came on screen" "$output"
+check "logger.sh says what the scroll down said" \
+  grep -qxF 'The scroll down to it said: Error: id="workout-exercise-5" was not visible after 12 scroll down passes' "$output"
+check "the failure shows Standing Calf Raises and no Plank, as failure.txt on the Mac did" \
+  grep -qF '"headers":["Standing Calf Raises"]' "$root/logger-12-passes/failure.txt"
+check "logger.sh lists every exercise header a scroll reaches, Plank sixth" \
+  diff - "$root/logger-12-passes/exercises.txt" <<'LIST'
+The workout's exercise headers, as far as a scroll reaches:
+Exercise 1, workout-exercise-0: "Romanian Deadlift"
+Exercise 2, workout-exercise-1: "Barbell Squat"
+Exercise 3, workout-exercise-2: "Leg Press"
+Exercise 4, workout-exercise-3: "Lying Leg Curls"
+Exercise 5, workout-exercise-4: "Standing Calf Raises"
+Exercise 6, workout-exercise-5: "Plank"
+No workout-exercise-6 within reach, so the workout shows 6 exercises
+LIST
+check "logger.sh prints the list with the failure" \
+  grep -qxF 'Exercise 6, workout-exercise-5: "Plank"' "$output"
+check "logger.sh presses nothing while it lists the headers" \
+  test -z "$(sed -n "/^$bound_prefix snapshot\$/,\$p" "$root/bound-calls" | grep -E "^$bound_prefix (press|gesture|alert accept)")"
+
+case_name="logger.sh when a timed exercise's header reads more than its name"
+run_logger FAKE_TIMED_HEADER=", by time" "$root/logger-header"
+check "logger.sh fails when Plank's header is not exactly Plank" test "$logger_status" -ne 0
+check "logger.sh names the check that failed" \
+  grep -qxF "Exercise 6 of the workout is not Plank" "$output"
+check "logger.sh says what the header reads instead" \
+  grep -qxF 'Its header, workout-exercise-5, reads "Plank, by time"' "$output"
+check "logger.sh lists the headers with the one that reads more" \
+  grep -qxF 'Exercise 6, workout-exercise-5: "Plank, by time"' "$root/logger-header/exercises.txt"
 
 case_name="logger.sh when the workout does not survive the kill"
 run_logger FAKE_LOSES_WORKOUT=1 "$root/logger-loses"
