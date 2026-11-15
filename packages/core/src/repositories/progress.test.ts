@@ -1,4 +1,4 @@
-import { Effect } from "effect";
+import { Effect, Option } from "effect";
 import { describe, expect, it } from "vite-plus/test";
 
 import { DurationSeconds } from "../duration.ts";
@@ -9,6 +9,9 @@ import { BENCH, PULLUPS, SQUAT } from "../test-sets.ts";
 import { ActivityRepository, type SetDraft } from "./activities.ts";
 import { MADE_HERE } from "./origin.ts";
 import { ProgressRepository } from "./progress.ts";
+import { RoutineRepository } from "./routines.ts";
+import { EMPTY_TARGET } from "../routine-plan.ts";
+import { startWorkoutFromRoutine } from "../start-workout.ts";
 
 const DAY = 86_400_000;
 
@@ -114,5 +117,46 @@ describe("ProgressRepository", () => {
     expect(personalRecords(sets).records.map((record) => [record.kind, record.value])).toEqual([
       ["heaviest_weight", 12],
     ]);
+  });
+
+  it("leaves out a workout started from a routine, even a set marked done in it", async () => {
+    const { runtime } = openTestDatabase();
+    const result = await runtime.runPromise(
+      Effect.gen(function* () {
+        const activities = yield* ActivityRepository;
+        const progress = yield* ProgressRepository;
+        yield* logWorkout(0, [[BENCH, [set(85, 3)]]]);
+        const routineId = yield* (yield* RoutineRepository).createRoutine({
+          folderId: null,
+          title: "Legs",
+          notes: "",
+          position: 0,
+          exercises: [
+            {
+              exerciseId: SQUAT,
+              supersetGroup: null,
+              restS: null,
+              notes: "",
+              sets: [
+                { ...EMPTY_TARGET, weightKg: 200, repsMin: 5, repsMax: 5 },
+                { ...EMPTY_TARGET, weightKg: 200, repsMin: 5, repsMax: 5 },
+              ],
+            },
+          ],
+        });
+        yield* startWorkoutFromRoutine(routineId);
+        const started = yield* activities.inProgress;
+        if (Option.isNone(started)) return yield* Effect.die("no workout in progress");
+        yield* activities.updateSet(started.value.exercises[0]!.sets[0]!.id, { done: true });
+        return {
+          sets: yield* progress.performedSets(),
+          squats: yield* progress.performedSets({ exerciseId: SQUAT }),
+          exercises: yield* progress.performedExercises,
+        };
+      }),
+    );
+    expect(result.sets.map((s) => [s.exerciseId, s.weightKg, s.reps])).toEqual([[BENCH, 85, 3]]);
+    expect(result.squats).toEqual([]);
+    expect(result.exercises.map((use) => [use.exercise.id, use.workouts])).toEqual([[BENCH, 1]]);
   });
 });

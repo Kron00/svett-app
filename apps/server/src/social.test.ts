@@ -2,7 +2,14 @@ import { createServer } from "node:http";
 
 import { NodeHttpServer } from "@effect/platform-node";
 import { PgClient } from "@effect/sql-pg";
-import { type AccountId, importedId, TABLES, Username } from "@svett/core";
+import {
+  type AccountId,
+  importedId,
+  SYNC_PROTOCOL_VERSION,
+  SYNC_VERSION_HEADER,
+  TABLES,
+  Username,
+} from "@svett/core";
 import { Data, Deferred, Effect, Fiber, Layer } from "effect";
 import { HttpClient, HttpClientRequest, HttpRouter, HttpServer } from "effect/http";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
@@ -76,6 +83,7 @@ const as = (account: string, method: "GET" | "PUT" | "DELETE", path: string, bod
     const token = yield* Effect.promise(() => issuer.sessionToken(account));
     const request = HttpClientRequest.make(method)(path).pipe(
       HttpClientRequest.bearerToken(token),
+      HttpClientRequest.setHeader(SYNC_VERSION_HEADER, String(SYNC_PROTOCOL_VERSION)),
       (built) => (body === undefined ? built : HttpClientRequest.bodyJsonUnsafe(built, body)),
     );
     const response = yield* (yield* HttpClient.HttpClient).execute(request);
@@ -119,6 +127,8 @@ const activity = (
   updatedAt: 1,
   deletedAt: null,
   kind: "run",
+  status: "finished",
+  routineId: null,
   startedAt: 1_790_000_000_000 + ids,
   durationS: 1800,
   title: `${audience} run ${ids}`,
@@ -738,6 +748,18 @@ describe("a profile's activities", { timeout: 60_000 }, () => {
         const sharedAgain = yield* idsFor(CARA);
         yield* write(ANNA, [{ ...close, updatedAt: 4, deletedAt: 4 }]);
         const deleted = yield* as(BEN, "GET", `/v1/activities/${closeId}`);
+        // A phone that had not seen the delete edits the activity after it. Sync keeps the
+        // delete, so the edit never shows the activity again.
+        yield* write(ANNA, [{ ...close, title: "Edited elsewhere", updatedAt: 5 }]);
+        const staleEdit = yield* as(BEN, "GET", `/v1/activities/${closeId}`);
+        const staleProfile = yield* idsFor(BEN);
+        // Undo of that delete brings it back under the social ID it had.
+        yield* body(
+          as(ANNA, "PUT", "/v1/rows", {
+            rows: [{ table: "activity", row: { ...close, updatedAt: 6 }, restores: [4] }],
+          }),
+        );
+        const undone = yield* as(BEN, "GET", `/v1/activities/${closeId}`);
         return {
           first,
           again,
@@ -747,6 +769,9 @@ describe("a profile's activities", { timeout: 60_000 }, () => {
           madeOnlyYou,
           sharedAgain,
           deleted,
+          staleEdit,
+          staleProfile,
+          undone,
         };
       }),
     );
@@ -767,7 +792,10 @@ describe("a profile's activities", { timeout: 60_000 }, () => {
       madeOnlyYou: { status: 404, body: { error: "not_found" } },
       sharedAgain: { [open.title]: openId },
       deleted: { status: 404, body: { error: "not_found" } },
+      staleEdit: { status: 404, body: { error: "not_found" } },
+      undone: { status: 200, body: { id: closeId, title: close.title } },
     });
+    expect(Object.keys(result.staleProfile)).toEqual([open.title]);
     expect(Object.keys(result.stranger)).toEqual([open.title]);
   });
 

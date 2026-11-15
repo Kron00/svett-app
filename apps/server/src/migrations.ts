@@ -53,12 +53,25 @@ export const MIGRATIONS: Record<string, Effect.Effect<void, unknown, SqlClient>>
     yield* sql`alter table account_row alter column seq set not null`;
     yield* sql`create unique index account_row_seq on account_row (account_id, seq)`;
   }),
+  // The Undos the server took of each row, so a delete that arrives after a change to the row
+  // decides as it would have had it arrived first. A delete of a workout row finds the rows
+  // under it by their parent's key.
+  "3_sync_restored": Effect.gen(function* () {
+    const sql = yield* SqlClient;
+    yield* sql`alter table account_row add column restored jsonb not null default '[]'`;
+    for (const parent of ["activityId", "activityExerciseId", "activityTrackId"]) {
+      yield* sql.unsafe(
+        `create index account_row_${parent} on account_row
+          (account_id, table_name, (data ->> '${parent}'))`,
+      );
+    }
+  }),
   // Usernames are unique whatever their case, so the lower-case form carries the index that
   // keeps them apart and serves searches by prefix. A follow is requested until the account
   // followed approves it, or following at once when that profile is public. Each follow has
   // its own ID, so an answer to a request reaches that request alone, even after its
   // username passes to another account.
-  "3_social": Effect.gen(function* () {
+  "4_social": Effect.gen(function* () {
     const sql = yield* SqlClient;
     yield* sql`
       create table profile (
@@ -86,7 +99,7 @@ export const MIGRATIONS: Record<string, Effect.Effect<void, unknown, SqlClient>>
   // Another account names an activity by a random ID minted here the first time anyone is
   // shown it. An activity's own ID can come from its start time, as an imported workout's
   // does, so it never leaves the server for anyone but its owner.
-  "4_activity_social": Effect.gen(function* () {
+  "5_activity_social": Effect.gen(function* () {
     const sql = yield* SqlClient;
     yield* sql`
       create table activity_social (

@@ -40,6 +40,7 @@ export const TABLES = {
   activitySet: table("activity_set", Model.ActivitySet),
   activityTrack: table("activity_track", Model.ActivityTrack),
   activitySample: table("activity_sample", Model.ActivitySample),
+  activitySource: table("activity_source", Model.ActivitySource),
   folder: table("folder", Model.Folder),
   routine: table("routine", Model.Routine),
   routineExercise: table("routine_exercise", Model.RoutineExercise),
@@ -47,6 +48,7 @@ export const TABLES = {
   measurement: table("measurement", Model.Measurement),
   proposal: table("proposal", Model.Proposal),
   coachMessage: table("coach_message", Model.CoachMessage),
+  gear: table("gear", Model.Gear),
 } as const;
 
 type TableName = { readonly name: string };

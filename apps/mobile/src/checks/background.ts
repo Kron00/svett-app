@@ -1,4 +1,5 @@
 import { type AwayWindow, deliveredInFront } from "@svett/core";
+import * as Location from "expo-location";
 import type { LocationObject } from "expo-location";
 import * as Notifications from "expo-notifications";
 import * as TaskManager from "expo-task-manager";
@@ -25,6 +26,18 @@ AppState.addEventListener("change", (state) => {
 });
 
 export const LOCATION_TASK = "svett-phone-check-location";
+
+/**
+ * Stops a location task that is still registered when svett starts, and says whether there was
+ * one. The location check keeps its run in memory only, so such a task is left by a process that
+ * ended mid-check, and nothing will read it. iOS restarts every registered task during
+ * didFinishLaunching, on every launch, until it is stopped.
+ */
+export const stopLeftoverLocation = async (): Promise<boolean> => {
+  if (!(await Location.hasStartedLocationUpdatesAsync(LOCATION_TASK))) return false;
+  await Location.stopLocationUpdatesAsync(LOCATION_TASK);
+  return true;
+};
 
 /** When each location delivered to the task was measured. */
 export const locationPoints = createStore<ReadonlyArray<number>>([]);

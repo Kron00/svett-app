@@ -80,8 +80,12 @@ screenshot() {
 
 # rows_on_screen succeeds when the snapshot holds at least one history row. A
 # selector check cannot say this, because two rows on screen make it ambiguous.
+# It reads the whole snapshot before it looks. Piped into grep -q, agent-device
+# would lose its pipe at the first row and fail the check under pipefail.
 rows_on_screen() {
-  agent_device snapshot 2>/dev/null | grep -q '"history-row"'
+  local snapshot
+  snapshot=$(agent_device snapshot 2>/dev/null) || return 1
+  [[ "$snapshot" == *'"history-row"'* ]]
 }
 
 # Scrolls the screen until the element $1 is on screen.
@@ -186,7 +190,7 @@ fi
 
 agent_device wait "$progress_tab" 120000
 agent_device press "$progress_tab"
-agent_device wait 'id="history-list"' 10000
+agent_device wait 'id="progress"' 10000
 expect_text 'id="workout-counts"' "300 workouts"
 # The progress sections and the streak sit above the rows, so at the largest text
 # size the first row starts below the fold.

@@ -106,6 +106,8 @@ export const pendingMoveOffer = async (): Promise<MoveCounts | undefined> => {
  */
 export const moveIntoAccount = (account: AccountId) =>
   inTurn(async () => {
+    // A change to the phone's workout made before signing in is saved before the copy.
+    await databasesClosed();
     try {
       await Effect.runPromise(startMove(steps, account));
     } finally {

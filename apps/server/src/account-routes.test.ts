@@ -1,4 +1,5 @@
 import { NodeHttpServer } from "@effect/platform-node";
+import { SYNC_PROTOCOL_VERSION, SYNC_VERSION_HEADER } from "@svett/core";
 import { Effect, Layer } from "effect";
 import { HttpClient, HttpClientRequest, HttpRouter } from "effect/http";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
@@ -32,6 +33,8 @@ const workout = (title: string, updatedAt: number) => ({
   updatedAt,
   deletedAt: null,
   kind: "strength",
+  status: "finished",
+  routineId: null,
   startedAt: 1_700_000_000_000,
   durationS: 3600,
   title,
@@ -85,7 +88,10 @@ const withServer = async <A>(
 const as = (account: string, request: HttpClientRequest.HttpClientRequest) =>
   Effect.map(
     Effect.promise(() => issuer.sessionToken(account)),
-    (token) => HttpClientRequest.bearerToken(request, token),
+    (token) =>
+      HttpClientRequest.bearerToken(request, token).pipe(
+        HttpClientRequest.setHeader(SYNC_VERSION_HEADER, String(SYNC_PROTOCOL_VERSION)),
+      ),
   );
 
 const write = (account: string, body: unknown) =>
