@@ -41,7 +41,7 @@ export function FirstRunScreen({ navigation }: Props) {
       testID="first-run"
       contentInsetAdjustmentBehavior="automatic"
       className="flex-1 bg-background"
-      contentContainerClassName="grow gap-6 px-gutter py-6"
+      contentContainerClassName="grow justify-center gap-6 px-gutter py-6"
     >
       <View className="flex-row flex-wrap items-center justify-between gap-2">
         <AppText testID="first-run-step" variant="footnote" tone="secondary">
@@ -55,7 +55,7 @@ export function FirstRunScreen({ navigation }: Props) {
           onPress={finish}
         />
       </View>
-      <View testID={`first-run-${page.id}`} className="grow justify-center gap-4">
+      <View testID={`first-run-${page.id}`} className="gap-4">
         <Icon name={page.symbol} color="accent" size={56} />
         <AppText testID="first-run-title" variant="largeTitle" accessibilityRole="header">
           {page.title}

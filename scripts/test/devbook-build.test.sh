@@ -5351,4 +5351,220 @@ speed_device gesture pan 20 600 0 -300 400
 speed_device press 20 600
 check "the fake ignores a press while the screen still glides" test ! -e "$root/speed-state/presses"
 
+# Stands in for agent-device in walkthrough.sh. A relaunch with -svettFirstRun show opens
+# the first run, whose Next starts below the screen at the largest text size and on its
+# bottom edge after a scroll. A press there, or while the screen glides after a scroll or
+# a drag, does nothing. Each link opens its screen, whose top element shows, and a
+# screenshot saves the name of the screen it shows. FAKE_MISSING names a screen that
+# never shows.
+cat >"$fake/walk-device" <<'EOF'
+#!/usr/bin/env bash
+s=$FAKE_STATE
+mkdir -p "$s"
+while [[ "$1" == --* ]]; do shift 2; done
+echo "$*" >>"$FAKE_ROOT/walk-calls"
+get() { cat "$s/$1" 2>/dev/null || echo "${2:-}"; }
+put() { echo "$2" >"$s/$1"; }
+screen=$(get screen none)
+top=$(get top 0)
+size=$(get size large)
+pages=(feed data account coach)
+page=$(get page 0)
+next_y() {
+  if [[ "$size" == large ]]; then echo 700
+  elif ((top == 0)); then return 1
+  elif [[ -f "$s/lifted" ]]; then echo 600
+  else echo 870
+  fi
+}
+# root <screen>: the top element each screen shows.
+root() {
+  case "$1" in
+    first-run) echo 'id="first-run"' ;;
+    home) echo 'id="social-signed-out"' ;;
+    you) echo 'id="tab-you"' ;;
+    exercises) echo 'id="exercise-library"' ;;
+    record) echo 'id="record-cardio"' ;;
+    routine) echo 'id="routine-detail"' ;;
+    workout) echo 'id="workout-detail"' ;;
+    exercise-chart) echo 'id="exercise-progress"' ;;
+    muscles) echo 'id="muscle-sets"' ;;
+    settings) echo 'id="workout-settings"' ;;
+    *) echo "id=\"$1\"" ;;
+  esac
+}
+# y <selector>: where the element's centre is on screen, or nothing when it is off it.
+y() {
+  [[ "$screen" == "${FAKE_MISSING:-}" ]] && return 1
+  case "$1" in
+    'label="Train, tab, 2 of 5"' | 'label="You, tab, 5 of 5"') [[ "$screen" != first-run && "$screen" != none ]] && echo 920 ;;
+    'id="first-run-next"') [[ "$screen" == first-run ]] && next_y ;;
+    "id=\"first-run-${pages[$page]:-none}\"") [[ "$screen" == first-run ]] && ((top == 0)) && echo 300 ;;
+    *) [[ "$(root "$screen")" == "$1" ]] && ((top == 0)) && echo 100 ;;
+  esac
+}
+# shows <selector>: the element, or one of a || fallback's, is on screen.
+shows() {
+  local one
+  while IFS= read -r one; do y "$one" >/dev/null && return 0; done < <(sed 's/ || /\n/g' <<<"$1")
+  return 1
+}
+go() { put screen "$1"; put top 0; rm -f "$s/lifted" "$s/glide"; }
+case "$1" in
+  settings) [[ "$2" == text-size ]] && put size "$3" && echo "$3" >>"$s/sizes" ;;
+  screenshot) echo "$screen" >"${@: -1}" ;;
+  record)
+    case "$2" in
+      start) [[ "$screen" != none && ! -f "$s/recording" ]] || exit 1; put recording "$3"; echo "start $3 $size" >>"$s/records" ;;
+      stop) [[ -f "$s/recording" ]] || exit 1; touch "$(get recording)"; rm -f "$s/recording"; echo stop >>"$s/records" ;;
+      *) exit 1 ;;
+    esac ;;
+  open)
+    case "$3" in
+      --relaunch)
+        echo "${*:2}" >>"$s/launches"
+        put page 0
+        if [[ "$*" == *"--launch-args=-svettFirstRun --launch-args=show"* ]]; then go first-run; else go home; fi ;;
+      svett://train) go train ;;
+      svett://routine/*) go routine ;;
+      svett://exercises) go exercises ;;
+      svett://record) go record ;;
+      svett://feed) go home ;;
+      svett://progress) go progress ;;
+      svett://workout/*) go workout ;;
+      svett://progress/exercise/*) go exercise-chart ;;
+      svett://calendar\?month=2026-10) go calendar ;;
+      svett://progress/muscles\?week=*) go muscles ;;
+      svett://progress/measurements\?*) go measurements ;;
+      svett://coach) go coach ;;
+      svett://chatgpt) go chatgpt ;;
+      svett://data) go data ;;
+      svett://settings/workout) go settings ;;
+      svett://account) go account ;;
+      *) exit 1 ;;
+    esac ;;
+  wait) [[ "$2" =~ ^[0-9]+$ ]] || shows "$2" ;;
+  is) shows "$3" ;;
+  scroll)
+    [[ "$3" == --until ]] || exit 1
+    if [[ "$2" == down ]]; then top=1; else top=0; fi
+    put top "$top"
+    touch "$s/glide"
+    shows "$4" ;;
+  gesture) [[ "$2" == pan ]] && touch "$s/lifted" "$s/glide" ;;
+  get)
+    centre=$(y "$3") || exit 1
+    if [[ -f "$s/glide" ]]; then rm -f "$s/glide"; centre=$((centre + 40)); fi
+    echo "{\"rect\":{\"x\":20,\"y\":$((centre - 22)),\"width\":400,\"height\":44}}" ;;
+  press)
+    if [[ "$2" == 'label="You, tab, 5 of 5"' ]]; then
+      [[ "$screen" != first-run ]] && go you
+    elif [[ "$screen" == first-run ]] && centre=$(next_y) && [[ "$3" == "$centre" && ! -f "$s/glide" ]] && ((centre <= 840)); then
+      if ((page == 3)); then go train; else put page $((page + 1)); put top 0; rm -f "$s/lifted"; fi
+    fi
+    exit 0 ;;
+  *) exit 1 ;;
+esac
+EOF
+chmod +x "$fake/walk-device"
+
+# run_walk [VAR=value...] [walkthrough.sh args...] leaves the exit status in walk_status.
+run_walk() {
+  local -a vars=()
+  while [[ "${1:-}" == *=* ]]; do
+    vars+=("$1")
+    shift
+  done
+  rm -rf "$root/walk-state" "$root/walk-calls" "$root/simctl-calls"
+  walk_status=0
+  env PATH="$fake:$PATH" FAKE_ROOT="$root" FAKE_STATE="$root/walk-state" \
+    SVETT_DEVICE_CMD="walk-device --session 't3-test session' --device FAKE-UDID" \
+    "${vars[@]}" "$repo/scripts/sim/walkthrough.sh" "$@" >"$output" 2>&1 || walk_status=$?
+}
+
+walk_stops=(train routine exercises record home progress workout exercise-chart calendar muscles
+  measurements coach chatgpt you data settings account)
+
+# walk_shots <pass>: each screenshot of a pass as "<file> <screen it shows>".
+walk_shots() {
+  local n=0 stop
+  for stop in first-run-feed first-run-data first-run-account first-run-coach "${walk_stops[@]}"; do
+    n=$((n + 1))
+    printf '%s-%02d-%s.png %s\n' "$1" "$n" "$stop" "$([[ "$stop" == first-run-* ]] && echo first-run || echo "$stop")"
+  done
+}
+
+shown_shots() {
+  local file
+  for file in "$root/walk/$1"-*.png; do
+    echo "${file##*/} $(cat "$file")"
+  done
+}
+
+walk_db="$root/data container/Documents/svett-walkthrough.db"
+walk_launch="com.kron00.svett --relaunch --launch-args=-svettFixture --launch-args=$walk_db --launch-args=-svettChatGPTStub --launch-args=signedIn --launch-args=-svettFirstRun --launch-args=show"
+
+# The fixture as far as walkthrough.sh reads it: the newest workout and the first routine.
+node -e '
+  const database = new (require("node:sqlite").DatabaseSync)(process.argv[1]);
+  database.exec(`CREATE TABLE activity (id TEXT, started_at INTEGER, deleted_at INTEGER);
+    CREATE TABLE routine (id TEXT, position INTEGER, deleted_at INTEGER);`);
+  const activity = database.prepare("INSERT INTO activity VALUES (?, ?, ?)");
+  for (const row of [["old", 1, null], ["newest", 3, null], ["deleted", 4, 9]]) activity.run(...row);
+  const routine = database.prepare("INSERT INTO routine VALUES (?, ?, ?)");
+  for (const row of [["second", 1, null], ["first", 0, null]]) routine.run(...row);
+' "$root/walk-fixture.db"
+
+case_name="walkthrough.sh Release with SVETT_DEVICE_CMD"
+run_walk FAKE_FIXTURE_DB="$root/walk-fixture.db" --release "$root/walk"
+[[ "$walk_status" == 0 ]] || fail "walkthrough.sh --release failed"
+check "walkthrough.sh relaunches on the fixture twice, with the ChatGPT stand-in and the first run" \
+  diff <(printf '%s\n' "$walk_launch" "$walk_launch") "$root/walk-state/launches"
+check "walkthrough.sh copies the fixture for svett to open" cmp "$root/walk-fixture.db" "$walk_db"
+check "walkthrough.sh records each pass after svett opened, at its text size, and stops each recording" \
+  diff <(printf '%s\n' "start $root/walk/default.mp4 large" stop \
+    "start $root/walk/largest.mp4 accessibility-extra-extra-extra-large" stop) "$root/walk-state/records"
+check "walkthrough.sh saves both videos" test -f "$root/walk/default.mp4" -a -f "$root/walk/largest.mp4"
+check "walkthrough.sh shoots the first run and every stop at the default text size, each on its own screen" \
+  diff <(walk_shots default) <(shown_shots default)
+check "walkthrough.sh shoots the first run and every stop at the largest text size, each on its own screen" \
+  diff <(walk_shots largest) <(shown_shots largest)
+check "walkthrough.sh opens the newest workout and the first routine of the fixture" \
+  grep -qxF "open com.kron00.svett svett://workout/newest" "$root/walk-calls"
+check "walkthrough.sh opens the first routine" grep -qxF "open com.kron00.svett svett://routine/first" "$root/walk-calls"
+check "walkthrough.sh reaches the first run's Next below the screen at the largest text size" \
+  grep -qxF 'scroll down --until id="first-run-next"' "$root/walk-calls"
+check "walkthrough.sh lifts Next off the bottom edge before it presses it" \
+  grep -qxF "gesture pan 20 600 0 -300 400" "$root/walk-calls"
+check "walkthrough.sh opens the You tab by its tab button" \
+  grep -qxF 'press label="You, tab, 5 of 5"' "$root/walk-calls"
+check "walkthrough.sh leaves the simulator at the default text size" \
+  test "$(tail -1 "$root/walk-state/sizes")" == large
+check "walkthrough.sh with SVETT_DEVICE_CMD calls neither simctl launch nor openurl" no_simctl_launch_or_openurl
+
+case_name="walkthrough.sh when a screen does not show"
+run_walk FAKE_FIXTURE_DB="$root/walk-fixture.db" FAKE_MISSING=calendar --release "$root/walk-missing"
+check "walkthrough.sh fails when a screen does not show" test "$walk_status" -ne 0
+check "walkthrough.sh names the screen" grep -qxF 'calendar did not show id="calendar"' "$output"
+check "walkthrough.sh shoots what showed instead" test -f "$root/walk-missing/default-13-calendar-missing.png"
+check "walkthrough.sh stops the recording when it fails" test "$(tail -1 "$root/walk-state/records")" == stop
+
+case_name="the walkthrough fake"
+walk_device() {
+  env FAKE_ROOT="$root" FAKE_STATE="$root/walk-state" "$fake/walk-device" \
+    --session 't3-test session' --device FAKE-UDID "$@" >/dev/null 2>&1
+}
+rm -rf "$root/walk-state"
+walk_device settings text-size accessibility-extra-extra-extra-large
+walk_device open com.kron00.svett --relaunch --launch-args=-svettFirstRun --launch-args=show
+check "the fake first run keeps Next below the screen at the largest text size" \
+  fails walk_device is visible 'id="first-run-next"'
+walk_device scroll down --until 'id="first-run-next"'
+walk_device press 220 870
+walk_device gesture pan 20 600 0 -300 400
+walk_device press 220 600
+check "the fake ignores presses at the bottom edge and while the screen glides" \
+  walk_device is visible 'id="first-run-next"'
+check "the fake still shows the first page" test "$(cat "$root/walk-state/page")" == 0
+
 echo "$passed passed"
