@@ -51,6 +51,7 @@ const PROFILE = {
   follow: "following",
   followsYou: false,
   activities: [],
+  next: null,
 };
 
 describe("httpSocialApi", () => {
@@ -174,7 +175,7 @@ describe("httpSocialApi", () => {
       id,
       kind: "run",
       startedAt: null,
-      durationS: 1800,
+      durationS: null,
       title: "Easy run",
       notes: "",
       energyKcal: null,
@@ -183,6 +184,15 @@ describe("httpSocialApi", () => {
     const { api, sent } = server(200, view);
     expect(await Effect.runPromise(api.activity(id))).toEqual(view);
     expect(sent.map(({ url }) => url)).toEqual([`https://svett.test/v1/activities/${id}`]);
+  });
+
+  it("reads a profile's activities after a cursor", async () => {
+    const page = { activities: [], next: null };
+    const { api, sent } = server(200, page);
+    expect(await Effect.runPromise(api.profileActivities("Anna.K", "a/b"))).toEqual(page);
+    expect(sent.map(({ url }) => url)).toEqual([
+      "https://svett.test/v1/profiles/Anna.K/activities?cursor=a%2Fb",
+    ]);
   });
 
   it("asks nothing when nobody is signed in", async () => {

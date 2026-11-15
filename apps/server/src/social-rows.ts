@@ -2,9 +2,11 @@ import { PgClient } from "@effect/sql-pg";
 import {
   AccountId,
   Activity,
+  type ActivityPage,
   type ActivityView,
   type FollowRequest,
   type FollowState,
+  isPublished,
   type OwnProfile,
   type ProfilePage,
   type ProfileSummary,
@@ -19,6 +21,15 @@ import {
 } from "@svett/core";
 import { Context, Data, Effect, Layer, Option, Schema } from "effect";
 import { type SqlError, UniqueViolation } from "effect/sql/SqlError";
+
+import {
+  firstVisible,
+  InvalidCursor,
+  idCursor,
+  readIdCursor,
+  SCAN,
+  type ListAnchor,
+} from "./paging.ts";
 
 export class NotFound extends Data.TaggedError("NotFound")<{}> {}
 export class UsernameTaken extends Data.TaggedError("UsernameTaken")<{}> {}
@@ -51,11 +62,25 @@ export interface SocialRowsShape {
     viewer: AccountId,
     prefix: string,
   ) => Effect.Effect<ReadonlyArray<ProfileSummary>, SqlError>;
-  /** A profile and the activities the privacy rule lets `viewer` see. */
+  /**
+   * A profile and the first page of the activities the privacy rule lets `viewer` see, newest
+   * first. Others see shared ones by when each was shared, never by when it started, as a start
+   * may be hidden. The owner sees all of theirs by when each started.
+   */
   readonly profile: (
     viewer: AccountId,
     username: string,
   ) => Effect.Effect<ProfileView, SqlError | NotFound>;
+  /**
+   * The profile's activities after `cursor`, ordered as `profile` orders them, or its first page
+   * without one. The cursor names an activity by its social ID alone, and one the viewer may no
+   * longer see is refused.
+   */
+  readonly activities: (
+    viewer: AccountId,
+    username: string,
+    cursor: string | undefined,
+  ) => Effect.Effect<ActivityPage, SqlError | NotFound | InvalidCursor>;
   /** Follows at once when the profile is public, and asks for approval when it is private. */
   readonly follow: (
     viewer: AccountId,
@@ -123,6 +148,8 @@ const summary = (row: SummaryRow): ProfileSummary => ({
   private: row.private,
   follow: row.follow as FollowState,
 });
+
+const ownList = (relation: OwnedRelation) => relation.viewer === relation.owner;
 
 export class SocialRows extends Context.Service<SocialRows, SocialRowsShape>()(
   "svett/server/SocialRows",
@@ -211,53 +238,88 @@ export class SocialRows extends Context.Service<SocialRows, SocialRowsShape>()(
           }),
         );
 
-      // Mints the social ID of each activity that has none yet, and gives back every one.
-      const socialIds = (owner: AccountId, activityIds: ReadonlyArray<string>) =>
+      /**
+       * What orders a profile's activities, newest first. Others see the owner's shared
+       * activities by when each was shared, never by when it started, as its start may be
+       * hidden. The owner knows their own start times, and sees every activity of theirs by
+       * when it started, shared or not.
+       */
+      const orderOf = (relation: OwnedRelation) =>
+        ownList(relation) ? sql`(r.data->>'startedAt')::bigint` : sql`s.shared_ms`;
+
+      /**
+       * The owner's activities that `relation` reaches by audience. Others see only those
+       * shared, each from the time it was shared. A workout in progress is not listed yet.
+       */
+      const listScope = (relation: OwnedRelation, audiences: ReadonlyArray<string>) => sql`
+        from activity_social s
+        join account_row r on r.account_id = s.account_id and r.table_name = 'activity'
+          and r.row_id = s.activity_id
+        where s.account_id = ${relation.owner}
+          ${ownList(relation) ? sql`` : sql`and s.shared_ms is not null`}
+          and r.deleted_at is null and coalesce(r.data->>'status', '') <> 'in_progress'
+          and r.data->>'audience' in ${sql.in(audiences)}
+      `;
+
+      /**
+       * Where the page after `cursor` starts. The activity it names must still be one the
+       * viewer may see, and one that is not is refused just as one that never was.
+       */
+      const activitiesAfter = (relation: OwnedRelation, cursor: string) =>
         Effect.gen(function* () {
-          const [first, ...rest] = activityIds.map((id) => ({
-            account_id: owner,
-            activity_id: id,
-          }));
-          if (first === undefined) return new Map<string, SocialActivityId>();
-          yield* sql`
-            insert into activity_social ${sql.insert([first, ...rest])}
-            on conflict do nothing
+          const id = yield* readIdCursor(cursor);
+          const audiences = visibleAudiences(relation);
+          if (audiences.length === 0) return yield* new InvalidCursor();
+          const [anchor] = yield* sql<ListAnchor>`
+            select ${orderOf(relation)} as "orderMs", s.social_id as "socialId"
+            ${listScope(relation, audiences)} and s.social_id = ${id}
           `;
-          const rows = yield* sql<{ readonly activity_id: string; readonly social_id: string }>`
-            select activity_id, social_id from activity_social
-            where account_id = ${owner} and activity_id in ${sql.in(activityIds)}
-          `;
-          return new Map(
-            rows.map((row) => [row.activity_id, SocialActivityId.make(row.social_id)]),
-          );
+          if (anchor === undefined) return yield* new InvalidCursor();
+          return anchor;
         });
 
-      const activities = (relation: OwnedRelation) =>
+      const activityPage = (relation: OwnedRelation, start: ListAnchor | undefined) =>
         Effect.gen(function* () {
           const audiences = visibleAudiences(relation);
-          if (audiences.length === 0) return [];
-          const rows = yield* sql<{ readonly data: unknown }>`
-            select data from account_row
-            where account_id = ${relation.owner} and table_name = 'activity'
-              and deleted_at is null and data->>'audience' in ${sql.in(audiences)}
-            order by (data->>'startedAt')::bigint desc, row_id desc
-            limit ${PAGE}
-          `;
-          const shown = rows.flatMap(({ data }) => {
-            const activity = Option.getOrUndefined(decodeActivity(data));
-            if (activity === undefined) return [];
-            const visibility = visibilityOf(relation, activity);
-            return visibility.visible ? [{ activity, visibility }] : [];
-          });
-          const ids = yield* socialIds(
-            relation.owner,
-            shown.map(({ activity }) => activity.id),
+          if (audiences.length === 0) return { activities: [], next: null } satisfies ActivityPage;
+          const scope = listScope(relation, audiences);
+          const order = orderOf(relation);
+          type Row = ListAnchor & { readonly data: unknown };
+          const shown = yield* firstVisible(
+            (after: Row | undefined) => {
+              const before = after ?? start;
+              return sql<Row>`
+                select ${order} as "orderMs", s.social_id as "socialId", r.data
+                ${scope}
+                ${
+                  before === undefined
+                    ? sql``
+                    : sql`and (${order}, s.social_id)
+                        < (${before.orderMs}::bigint, ${before.socialId})`
+                }
+                order by ${order} desc, s.social_id desc
+                limit ${SCAN}
+              `;
+            },
+            (row) => {
+              const activity = isPublished(row.data)
+                ? Option.getOrUndefined(decodeActivity(row.data))
+                : undefined;
+              return activity === undefined
+                ? undefined
+                : viewActivity(
+                    activity,
+                    SocialActivityId.make(row.socialId),
+                    visibilityOf(relation, activity),
+                  );
+            },
+            PAGE + 1,
           );
-          return shown.flatMap(({ activity, visibility }): ReadonlyArray<ActivityView> => {
-            const socialId = ids.get(activity.id);
-            const view = socialId && viewActivity(activity, socialId, visibility);
-            return view ? [view] : [];
-          });
+          const last = shown[PAGE - 1];
+          return {
+            activities: shown.slice(0, PAGE).map(({ item }) => item),
+            next: shown.length > PAGE && last !== undefined ? idCursor(last.row.socialId) : null,
+          } satisfies ActivityPage;
         });
 
       return SocialRows.of({
@@ -317,8 +379,15 @@ export class SocialRows extends Context.Service<SocialRows, SocialRowsShape>()(
               }))),
               follow: seen.follow,
               followsYou: (yield* followState(owner.id, viewer)) === "following",
-              activities: yield* activities(seen),
+              ...(yield* activityPage(seen, undefined)),
             };
+          }),
+        activities: (viewer, username, cursor) =>
+          Effect.gen(function* () {
+            const owner = yield* findAccount(username);
+            const seen = yield* relationTo(viewer, owner.id);
+            const start = cursor === undefined ? undefined : yield* activitiesAfter(seen, cursor);
+            return yield* activityPage(seen, start);
           }),
         follow: (viewer, username) =>
           sql.withTransaction(
@@ -359,7 +428,9 @@ export class SocialRows extends Context.Service<SocialRows, SocialRowsShape>()(
               where s.social_id = ${socialId} and r.deleted_at is null
             `;
             const owner = Option.getOrUndefined(decodeAccountId(found?.account_id));
-            const activity = Option.getOrUndefined(decodeActivity(found?.data));
+            const activity = isPublished(found?.data)
+              ? Option.getOrUndefined(decodeActivity(found?.data))
+              : undefined;
             if (owner === undefined || activity === undefined) return yield* new NotFound();
             const relation = yield* relationTo(viewer, owner);
             const view = viewActivity(activity, socialId, visibilityOf(relation, activity));

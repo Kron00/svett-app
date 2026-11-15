@@ -17,7 +17,8 @@ import type { RootStackParamList } from "./navigation";
 // scripts/sim/tools.sh opens svett://settings/workout and svett://tools/plates?kg=100.
 // scripts/sim/social.sh opens svett://profile, svett://profile/edit?username=<name>,
 // svett://people?q=<prefix>, svett://people/<name>, svett://people/<name>/followers and
-// svett://profile/requests.
+// svett://profile/requests. scripts/sim/feed.sh opens svett://feed, svett://post/<social id>
+// and svett://inbox.
 //
 // The launch argument `-svettLink <link>` opens svett on that link's screen, as if the link had
 // launched it. scripts/sim/startup.sh launches with `-svettLink svett://train`, so the first
@@ -42,6 +43,7 @@ export const linking: LinkingOptions<RootStackParamList> = {
       Tabs: {
         screens: {
           Progress: "progress",
+          Home: "feed",
           Train: "train",
           Coach: { screens: { CoachRoot: "coach" } },
         },
@@ -84,6 +86,8 @@ export const linking: LinkingOptions<RootStackParamList> = {
       Connections: "people/:username/:list",
       Profile: "people/:username",
       People: "people",
+      Post: "post/:id",
+      Inbox: "inbox",
     },
   },
 };

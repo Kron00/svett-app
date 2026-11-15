@@ -172,7 +172,7 @@ describe("viewActivity", () => {
     expect(JSON.stringify(view)).not.toContain(own.id);
   });
 
-  it("leaves the start time and calories out when they are hidden", () => {
+  it("leaves the start time, the duration that would date it, and calories out when hidden", () => {
     const hidden = activity(["start_time", "calories"], "everyone");
     const view = viewActivity(hidden, SOCIAL_ID, {
       visible: true,
@@ -182,7 +182,7 @@ describe("viewActivity", () => {
       id: SOCIAL_ID,
       kind: "run",
       startedAt: null,
-      durationS: 1800,
+      durationS: null,
       title: "Morning run",
       notes: "Easy",
       energyKcal: null,
@@ -190,6 +190,7 @@ describe("viewActivity", () => {
     });
     const sent = JSON.stringify(view);
     expect(sent).not.toContain(String(hidden.startedAt));
+    expect(sent).not.toContain(":1800");
     expect(sent).not.toContain("420");
   });
 

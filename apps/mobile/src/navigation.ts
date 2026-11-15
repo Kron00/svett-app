@@ -74,6 +74,10 @@ export type RootStackParamList = {
   Profile: { username: string };
   /** `list` is followers or following, parsed by the screen. */
   Connections: { username: string; list: string };
+  /** A post in full, named by its activity's social ID. */
+  /** `comment` opens the post on the page of comments that holds it. */
+  Post: { id: string; comment?: string };
+  Inbox: undefined;
 };
 
 export type RootNavigation = NativeStackNavigationProp<RootStackParamList>;

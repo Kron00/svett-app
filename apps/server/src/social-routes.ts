@@ -9,6 +9,8 @@ import { Data, Effect, Layer, Schema } from "effect";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 
 import { SignInUnavailable, signedInAccount, Unauthorized } from "./auth.ts";
+import { InvalidComment, PostNotFound } from "./feed-rows.ts";
+import { InvalidCursor } from "./paging.ts";
 import {
   CannotFollowSelf,
   NotFound,
@@ -28,6 +30,7 @@ const UsernamePath = Schema.Struct({ username: Schema.String });
 const RequestPath = Schema.Struct({ request: Schema.String });
 const ActivityPath = Schema.Struct({ activity: SocialActivityId });
 const PageQuery = Schema.Struct({ after: Schema.optional(Schema.String) });
+const CursorQuery = Schema.Struct({ cursor: Schema.optional(Schema.String) });
 
 const refuse = (error: string, status: number, message?: string) =>
   HttpServerResponse.jsonUnsafe(message === undefined ? { error } : { error, message }, {
@@ -52,6 +55,9 @@ const refusal = (error: unknown) => {
   if (error instanceof UsernameTaken) return refuse("username_taken", 409);
   if (error instanceof UsernameRequired) return refuse("username_required", 403);
   if (error instanceof CannotFollowSelf) return refuse("cannot_follow_self", 400);
+  if (error instanceof PostNotFound) return refuse("post_not_found", 404);
+  if (error instanceof InvalidComment) return refuse("invalid_comment", 400, error.message);
+  if (error instanceof InvalidCursor) return refuse("invalid_cursor", 400);
   return undefined;
 };
 
@@ -60,7 +66,7 @@ const refusal = (error: unknown) => {
  * from the session alone, so nobody reads or writes as someone else. A database failure is
  * left to the router, which answers 500.
  */
-const route = <A, E, R>(handle: (account: AccountId) => Effect.Effect<A, E, R>) =>
+export const route = <A, E, R>(handle: (account: AccountId) => Effect.Effect<A, E, R>) =>
   signedInAccount.pipe(
     Effect.flatMap(handle),
     Effect.map((body) => HttpServerResponse.jsonUnsafe(body)),
@@ -133,6 +139,13 @@ const following = route((account) =>
   }),
 );
 
+const activities = route((account) =>
+  Effect.gen(function* () {
+    const { cursor } = yield* HttpServerRequest.schemaSearchParams(CursorQuery);
+    return yield* (yield* SocialRows).activities(account, yield* username, cursor);
+  }),
+);
+
 const activity = route((account) =>
   Effect.gen(function* () {
     const path = yield* HttpRouter.schemaPathParams(ActivityPath);
@@ -173,6 +186,7 @@ export const SocialRoutes = Layer.mergeAll(
   HttpRouter.add("DELETE", "/v1/profiles/:username/follow", unfollow),
   HttpRouter.add("GET", "/v1/profiles/:username/followers", followers),
   HttpRouter.add("GET", "/v1/profiles/:username/following", following),
+  HttpRouter.add("GET", "/v1/profiles/:username/activities", activities),
   HttpRouter.add("GET", "/v1/activities/:activity", activity),
   HttpRouter.add("GET", "/v1/follow-requests", requests),
   HttpRouter.add("PUT", "/v1/follow-requests/:request", approve),

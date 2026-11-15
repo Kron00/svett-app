@@ -44,7 +44,7 @@ const KIND: Readonly<Record<ActivityKind, string>> = {
 export const activityLine = (view: ActivityView, formatDay: (millis: number) => string) =>
   [
     KIND[view.kind],
-    formatWorkoutDuration(view.durationS),
+    view.durationS === null ? "Duration hidden" : formatWorkoutDuration(view.durationS),
     view.startedAt === null ? "Start time hidden" : formatDay(view.startedAt),
   ].join(" · ");
 

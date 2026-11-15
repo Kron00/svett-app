@@ -9,7 +9,7 @@ export type Tab = {
 };
 
 export const TABS: ReadonlyArray<Tab> = [
-  { name: "Home", symbol: "house.fill", summary: "Your timeline and this week at a glance." },
+  { name: "Home", symbol: "house.fill", summary: "Your posts and those of the people you follow." },
   {
     name: "Train",
     symbol: "dumbbell.fill",

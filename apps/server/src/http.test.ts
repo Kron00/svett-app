@@ -98,7 +98,7 @@ describe("GET /health", { timeout: 60_000 }, () => {
           backup: new Date(backup.takenAt).toISOString(),
           checkedAt: expect.any(String),
           restored: true,
-          tables: 6,
+          tables: 9,
         },
       },
     });

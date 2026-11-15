@@ -96,8 +96,8 @@ export const MIGRATIONS: Record<string, Effect.Effect<void, unknown, SqlClient>>
     yield* sql`create unique index follow_id on follow (id)`;
     yield* sql`create index follow_followee on follow (followee_id, state)`;
   }),
-  // Another account names an activity by a random ID minted here the first time anyone is
-  // shown it. An activity's own ID can come from its start time, as an imported workout's
+  // Another account names an activity by a random ID, minted when the activity first reaches
+  // the server. An activity's own ID can come from its start time, as an imported workout's
   // does, so it never leaves the server for anyone but its owner.
   "5_activity_social": Effect.gen(function* () {
     const sql = yield* SqlClient;
@@ -110,5 +110,60 @@ export const MIGRATIONS: Record<string, Effect.Effect<void, unknown, SqlClient>>
       )
     `;
     yield* sql`create unique index activity_social_id on activity_social (social_id)`;
+  }),
+  // Likes and comments key an activity by its owner and its own ID, which others never see.
+  // The inbox is read from likes, comments and follows, and each account keeps only the time
+  // up to which it has read it. The feed orders posts by when each was first shared with
+  // anyone, set once and never from a start time, which may be hidden. An activity for only
+  // its owner has no such time until its audience changes. Shared activities already here share
+  // the migration's time, so the random social ID orders them. Others see a profile's
+  // activities in the same order. 3_sync_restored's indexes serve a post's sets and route.
+  "6_feed": Effect.gen(function* () {
+    const sql = yield* SqlClient;
+    yield* sql`alter table activity_social add column shared_ms bigint`;
+    yield* sql`
+      insert into activity_social (account_id, activity_id, shared_ms)
+      select account_id, row_id,
+        case when data->>'audience' <> 'only_you'
+          then (extract(epoch from now()) * 1000)::bigint end
+      from account_row
+      where table_name = 'activity' and deleted_at is null
+        and coalesce(data->>'status', '') <> 'in_progress'
+      on conflict (account_id, activity_id) do update set shared_ms = excluded.shared_ms
+    `;
+    yield* sql`create index activity_social_shared on activity_social (shared_ms, social_id)`;
+    yield* sql`
+      create index activity_social_owner_shared on activity_social (account_id, shared_ms, social_id)
+    `;
+    yield* sql`
+      create table activity_like (
+        owner_id text not null,
+        activity_id text not null,
+        liker_id text not null,
+        created_ms bigint not null,
+        primary key (owner_id, activity_id, liker_id)
+      )
+    `;
+    yield* sql`create index activity_like_owner on activity_like (owner_id, created_ms)`;
+    yield* sql`
+      create table activity_comment (
+        id text primary key,
+        owner_id text not null,
+        activity_id text not null,
+        author_id text not null,
+        body text not null,
+        created_ms bigint not null
+      )
+    `;
+    yield* sql`
+      create index activity_comment_post on activity_comment (owner_id, activity_id, created_ms)
+    `;
+    yield* sql`create index activity_comment_author on activity_comment (author_id)`;
+    yield* sql`
+      create table inbox_read (
+        account_id text primary key,
+        read_until bigint not null
+      )
+    `;
   }),
 };

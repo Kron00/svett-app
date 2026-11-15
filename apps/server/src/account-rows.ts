@@ -10,6 +10,8 @@ import {
   deletionToJoin,
   DRAFT_MESSAGE,
   inDraftWorkout,
+  isPublished,
+  isShared,
   isTooFarAhead,
   MAX_SYNC_ROWS,
   mergePushed,
@@ -190,7 +192,7 @@ export class AccountRows extends Context.Service<AccountRows, AccountRowsShape>(
               const save = (row: CheckedRow, restored: ReadonlyArray<Restoration>) => {
                 seq++;
                 stored.set(key(row.table, row.id), { ...row, restored });
-                return sql`
+                const saved = sql`
                   insert into account_row
                     (account_id, table_name, row_id, updated_at, deleted_at, data, seq, change_id,
                      restored)
@@ -205,6 +207,29 @@ export class AccountRows extends Context.Service<AccountRows, AccountRowsShape>(
                     change_id = excluded.change_id,
                     restored = excluded.restored
                 `;
+                // Each published activity gets its social ID here. The feed orders posts by
+                // when each was first shared with anyone, never by when it started, as a start
+                // time may be hidden. An activity for only its owner, such as each one moved in
+                // from the phone, is not shared until its audience changes. A delete leaves the
+                // social row alone, so an Undo brings the post back with the same ID and place.
+                if (
+                  row.table !== "activity" ||
+                  row.deletedAt !== null ||
+                  !isPublished(row.encoded)
+                ) {
+                  return Effect.asVoid(saved);
+                }
+                const sharedMs = isShared(row.encoded) ? nowMillis : null;
+                return Effect.andThen(
+                  saved,
+                  sql`
+                    insert into activity_social (account_id, activity_id, shared_ms)
+                    values (${account}, ${row.id}, ${sharedMs})
+                    on conflict (account_id, activity_id) do update
+                      set shared_ms = excluded.shared_ms
+                      where activity_social.shared_ms is null and excluded.shared_ms is not null
+                  `,
+                ).pipe(Effect.asVoid);
               };
               /**
                * Deletes each live row under `table`/`id` as the phone's delete at `deletedAt`

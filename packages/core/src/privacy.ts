@@ -61,6 +61,35 @@ export const visibleAudiences = (relation: Relation): ReadonlyArray<Audience> =>
     (audience) => privacy({ ...relation, audience, hiddenFields: [] }).visible,
   );
 
+/** A value in an activity or in its sets and route that the privacy rule can withhold. */
+export type Withheld =
+  | "start_time"
+  | "duration"
+  | "calories"
+  | "weight"
+  | "volume"
+  | "heart_rate"
+  | "pace";
+
+/**
+ * What hiding each field withholds: the field itself, and every value that would give it back
+ * from what stays visible. A duration over a distance is a pace, so hiding pace withholds every
+ * duration, the activity's, each split's and each set's. A post reaches the feed about when its
+ * workout ends, so a duration would date a hidden start, and pace times distance is a duration
+ * again. Weight times reps is the volume.
+ */
+export const WITHHELD: Readonly<Record<HiddenField, ReadonlyArray<Withheld>>> = {
+  weight: ["weight", "volume"],
+  heart_rate: ["heart_rate"],
+  start_time: ["start_time", "duration", "pace"],
+  calories: ["calories"],
+  pace: ["pace", "duration"],
+};
+
+/** Every value that hiding `hidden` withholds. */
+export const withheldBy = (hidden: ReadonlyArray<HiddenField>): ReadonlySet<Withheld> =>
+  new Set(hidden.flatMap((field) => WITHHELD[field]));
+
 /**
  * How another account names an activity. The server mints it at random the first time it
  * shows the activity, and keeps it, so it stays the same across reads and likes and
@@ -79,7 +108,8 @@ export const ActivityView = Schema.Struct({
   id: SocialActivityId,
   kind: ActivityKind,
   startedAt: Schema.NullOr(EpochMillis),
-  durationS: DurationSeconds,
+  /** Null when the owner hides pace or the start time. */
+  durationS: Schema.NullOr(DurationSeconds),
   title: Schema.String,
   notes: Schema.String,
   energyKcal: Schema.NullOr(Schema.Finite),
@@ -97,15 +127,15 @@ export const viewActivity = (
   visibility: Visibility,
 ): ActivityView | undefined => {
   if (!visibility.visible) return undefined;
-  const hidden = new Set(visibility.hidden);
+  const withheld = withheldBy(visibility.hidden);
   return {
     id: socialId,
     kind: activity.kind,
-    startedAt: hidden.has("start_time") ? null : activity.startedAt,
-    durationS: activity.durationS,
+    startedAt: withheld.has("start_time") ? null : activity.startedAt,
+    durationS: withheld.has("duration") ? null : activity.durationS,
     title: activity.title,
     notes: activity.notes,
-    energyKcal: hidden.has("calories") ? null : activity.energyKcal,
+    energyKcal: withheld.has("calories") ? null : activity.energyKcal,
     hiddenFields: visibility.hidden,
   };
 };
