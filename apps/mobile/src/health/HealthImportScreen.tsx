@@ -25,7 +25,7 @@ import { AppText } from "../ui/AppText";
 import { Button } from "../ui/Button";
 import { EmptyState } from "../ui/EmptyState";
 import { ListRow, ListSection } from "../ui/List";
-import { readWorkoutFile } from "./files";
+import { discardPickedFile, readWorkoutFile } from "./files";
 
 type Read =
   | { readonly kind: "reading"; readonly fraction: number }
@@ -87,6 +87,19 @@ const toggled = (key: string) => (current: ReadonlySet<string>) => {
 const subtitle = (item: SourcePlanItem) =>
   `${SPORTS[item.workout.kind].label}, ${formatDay(item.workout.startedAt)}`;
 
+/** The line under a capped list for the rows it leaves out. */
+const more = (count: number, rest = "") =>
+  count > LISTED ? `And ${workoutsLabel(count - LISTED)} more${rest}.` : undefined;
+
+const changedSubtitle = (item: Extract<SourcePlanItem, { status: "changed" }>) =>
+  [
+    subtitle(item),
+    item.linked ? "linked to a workout from another source" : null,
+    item.deleted ? "deleted here" : null,
+  ]
+    .filter((part) => part !== null)
+    .join(", ");
+
 function Plan({
   file,
   plan,
@@ -122,11 +135,7 @@ function Plan({
             <View testID="health-new">
               <ListSection
                 header={`New, ${workoutsLabel(newItems.length)}`}
-                footer={
-                  newItems.length > LISTED
-                    ? `And ${workoutsLabel(newItems.length - LISTED)} more.`
-                    : undefined
-                }
+                footer={more(newItems.length)}
               >
                 {newItems.slice(0, LISTED).map((item) => (
                   <ListRow key={item.key} title={item.workout.title} subtitle={subtitle(item)} />
@@ -138,9 +147,14 @@ function Plan({
             <View testID="health-duplicates">
               <ListSection
                 header="Possible duplicates"
-                footer="Each overlaps a workout from another source. Linking keeps one workout, with its sets and this file's heart rate. Switch one off to keep both."
+                footer={[
+                  "Each overlaps a workout from another source. Linking keeps one workout, with its sets and this file's heart rate. Switch one off to keep both.",
+                  more(plan.duplicates.length, ", which link"),
+                ]
+                  .filter((line) => line !== undefined)
+                  .join(" ")}
               >
-                {plan.duplicates.map((item, index) => (
+                {plan.duplicates.slice(0, LISTED).map((item, index) => (
                   <ListRow
                     key={item.key}
                     testID={`health-duplicate-${index}`}
@@ -161,17 +175,18 @@ function Plan({
             <View testID="health-changed">
               <ListSection
                 header="Changed since your copy"
-                footer="svett keeps yours unless you switch on the file's version. Undo puts yours back."
+                footer={[
+                  "svett keeps yours unless you switch on the file's version. A workout deleted here stays deleted. Undo puts yours back.",
+                  more(plan.changed.length, ", which keep yours"),
+                ]
+                  .filter((line) => line !== undefined)
+                  .join(" ")}
               >
-                {plan.changed.map((item) => (
+                {plan.changed.slice(0, LISTED).map((item) => (
                   <ListRow
                     key={item.key}
                     title={item.workout.title}
-                    subtitle={
-                      item.linked
-                        ? `${subtitle(item)}, linked to a workout from another source`
-                        : subtitle(item)
-                    }
+                    subtitle={changedSubtitle(item)}
                     value={take.has(item.key) ? "File's version" : "Yours"}
                     trailing={{
                       type: "switch",
@@ -187,7 +202,12 @@ function Plan({
             <View testID="health-collisions">
               <ListSection
                 header="Same start in this file"
-                footer="These share a start, a type and a source, but not their content. svett keeps each as its own workout."
+                footer={[
+                  "These share a start, a type and a source, but not their content. svett keeps each as its own workout.",
+                  more(plan.collisions.length),
+                ]
+                  .filter((line) => line !== undefined)
+                  .join(" ")}
               >
                 {plan.collisions.slice(0, LISTED).map((item) => (
                   <ListRow
@@ -298,21 +318,35 @@ export function HealthImportScreen() {
     };
   }, [params, file, owner, handle]);
 
-  const done = () => (navigation.canGoBack() ? navigation.goBack() : navigation.navigate("Tabs"));
+  /** The picked file is read once, so its cached copy goes once the import is over. */
+  const discard = () => {
+    try {
+      if (params.uri !== undefined) discardPickedFile({ uri: params.uri });
+    } catch {
+      // iOS clears the cache on its own, so a copy that would not go is no reason to stop.
+    }
+  };
+
+  const done = () => {
+    discard();
+    return navigation.canGoBack() ? navigation.goBack() : navigation.navigate("Tabs");
+  };
 
   /** Imports into the data the plan was made for. It refuses once that is not open. */
   const runImport = (ready: Extract<State, { kind: "ready" }>, choices: SourceChoices) => {
     setState(() => ({ kind: "importing" }));
     changeTransfers(ready.database, (transfers) =>
       transfers.applySourceImport(ready.file.source, ready.file.workouts, choices),
-    ).then(
-      (result) => setState(() => ({ kind: "imported", result })),
-      (error: unknown) =>
-        setState(() => ({
-          kind: "failed",
-          message: error instanceof Error ? error.message : String(error),
-        })),
-    );
+    )
+      .then(
+        (result) => setState(() => ({ kind: "imported", result })),
+        (error: unknown) =>
+          setState(() => ({
+            kind: "failed",
+            message: error instanceof Error ? error.message : String(error),
+          })),
+      )
+      .finally(discard);
   };
 
   const stale = state.kind === "ready" && !sameDatabase(state.database, { owner, handle });

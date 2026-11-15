@@ -313,12 +313,19 @@ describe("importing from Apple Health and GPX", () => {
     expect(liveRows(database, "activity_source")).toBe(0);
     expect(liveRows(database, "activity_sample")).toBe(0);
 
-    // After Undo the duplicate shows again.
+    // After Undo every workout it took back shows as changed, so importing again keeps
+    // them undone unless taken.
     const replanned = await transfers(database, (repository) =>
       repository.previewSourceImport(file.workouts),
     );
-    expect(replanned.duplicates).toHaveLength(1);
-    expect(replanned.added).toBe(3);
+    expect(replanned.duplicates).toEqual([]);
+    expect(replanned.added).toBe(0);
+    expect(replanned.changed).toHaveLength(4);
+    expect(replanned.changed.every((item) => item.deleted)).toBe(true);
+    expect(replanned.changed.filter((item) => item.linked)).toEqual([
+      expect.objectContaining({ local: hevyId }),
+    ]);
+    expect(await importAll(database, file)).toEqual(Option.none());
   });
 
   it("lists a workout whose source changed, and keeps yours unless the new one is taken", async () => {
@@ -399,6 +406,96 @@ describe("importing from Apple Health and GPX", () => {
     expect(liveRows(database, "activity_source")).toBe(0);
     await activities(database, (repository) => repository.restore(hevyId));
     expect(liveRows(database, "activity_source")).toBe(1);
+  });
+
+  it("keeps a Health workout you deleted deleted when the export is imported again", async () => {
+    const database = openTestDatabase();
+    const file = await health();
+    await importAll(database, file);
+    const run = file.workouts.find((workout) => workout.kind === "run")!;
+    await activities(database, (repository) => repository.remove(sourceActivityId(run)));
+    expect(await counts(database)).toEqual({ activities: 3, sets: 0 });
+
+    const plan = await planOf(database, file);
+    expect(plan.added).toBe(0);
+    expect(plan.duplicates).toEqual([]);
+    expect(plan.changed).toEqual([
+      expect.objectContaining({ local: sourceActivityId(run), linked: false, deleted: true }),
+    ]);
+    expect(await importAll(database, file)).toEqual(Option.none());
+    expect(await counts(database)).toEqual({ activities: 3, sets: 0 });
+    expect(
+      await activities(database, (repository) => repository.get(sourceActivityId(run))),
+    ).toEqual(Option.none());
+  });
+
+  it("keeps a linked Hevy workout you deleted deleted when the export is imported again", async () => {
+    const database = openTestDatabase();
+    const hevyId = await seedHevy(database);
+    const file = await health();
+    await importAll(database, file);
+    await activities(database, (repository) => repository.remove(hevyId));
+    expect(await counts(database)).toEqual({ activities: 3, sets: 0 });
+
+    const plan = await planOf(database, file);
+    expect(plan.added).toBe(0);
+    expect(plan.duplicates).toEqual([]);
+    expect(plan.changed).toEqual([
+      expect.objectContaining({ local: hevyId, linked: true, deleted: true }),
+    ]);
+    expect(await importAll(database, file)).toEqual(Option.none());
+    expect(await counts(database)).toEqual({ activities: 3, sets: 0 });
+    expect(liveRows(database, "activity_source")).toBe(0);
+    expect(await activities(database, (repository) => repository.get(hevyId))).toEqual(
+      Option.none(),
+    );
+  });
+
+  it("brings back a whole deleted workout when you take it, and Undo deletes it again", async () => {
+    const database = openTestDatabase();
+    const hevyId = await seedHevy(database);
+    const file = await health();
+    await importAll(database, file);
+    const run = file.workouts.find((workout) => workout.kind === "run")!;
+    await activities(database, (repository) => repository.remove(sourceActivityId(run)));
+    await activities(database, (repository) => repository.remove(hevyId));
+    const plan = await planOf(database, file);
+    expect(plan.changed).toHaveLength(2);
+
+    const taken = Option.getOrThrow(
+      await importAll(database, file, {
+        take: plan.changed.map((item) => item.key),
+        keepBoth: [],
+      }),
+    );
+    expect(taken).toMatchObject({ added: 0, linked: 0, replaced: 2 });
+    expect(await counts(database)).toEqual({ activities: 4, sets: 9 });
+    const push = Option.getOrThrow(
+      await activities(database, (repository) => repository.get(hevyId)),
+    );
+    expect(push.activity).toMatchObject({ title: "Push day", source: "hevy" });
+    expect(push.exercises.flatMap((exercise) => exercise.sets)).toHaveLength(9);
+    expect(await heartOf(database, hevyId)).toEqual({ averageBpm: 112, maxBpm: 124 });
+    expect(liveRows(database, "activity_source")).toBe(1);
+    const back = Option.getOrThrow(
+      await activities(database, (repository) => repository.get(sourceActivityId(run))),
+    );
+    expect(back.track!.distanceM).toBeCloseTo(5020, 6);
+    expect(isNothingFromSource(await planOf(database, file))).toBe(true);
+
+    expect(
+      await transfers(database, (repository) => repository.undoImport(taken.importBatchId, [])),
+    ).toEqual({ removed: 0, restored: 2, left: 0, kept: 0, discarded: 0 });
+    expect(await counts(database)).toEqual({ activities: 2, sets: 0 });
+    expect(liveRows(database, "activity_source")).toBe(0);
+    expect(liveRows(database, "activity_sample")).toBe(
+      database.database
+        .prepare(
+          "SELECT count(*) AS n FROM activity_sample WHERE deleted_at IS NULL AND activity_track_id IN (SELECT id FROM activity_track WHERE deleted_at IS NULL)",
+        )
+        .get()!["n"],
+    );
+    expect((await planOf(database, file)).changed).toHaveLength(2);
   });
 
   it("imports Health workouts that share a source, start and type as two, with the same IDs every time", async () => {

@@ -256,9 +256,13 @@ export type LocalActivity = Pick<
   | "source"
   | "sourceId"
   | "fingerprint"
+  | "deletedAt"
 >;
 
-export type LocalLink = Pick<ActivitySource, "activityId" | "source" | "sourceId" | "fingerprint">;
+export type LocalLink = Pick<
+  ActivitySource,
+  "activityId" | "source" | "sourceId" | "fingerprint" | "deletedAt"
+>;
 
 export type SourcePlanItem =
   | { readonly status: "new"; readonly key: string; readonly workout: SourceWorkout }
@@ -270,6 +274,8 @@ export type SourcePlanItem =
       readonly local: ActivityId;
       /** True when the workout is linked to an activity from another source, not its own. */
       readonly linked: boolean;
+      /** True when you deleted it here, or an Undo removed it, so keeping yours keeps it deleted. */
+      readonly deleted: boolean;
     }
   | {
       readonly status: "duplicate";
@@ -389,11 +395,13 @@ const newestFirst = (a: SourcePlanItem, b: SourcePlanItem) =>
 /**
  * Compares workouts from a source with the activities here. One already here, or
  * linked to an activity from another source, is unchanged when its content is the same
- * as when it was saved or linked, and changed when not. One that overlaps the time of
- * a finished activity from another source is a possible duplicate. A workout still in
- * progress is never one, since linking would change it under the logger. The rest are new. Workouts
- * in the file that share an identity get their own first, matched against the
- * identities saved here, as `distinctIdentities` says.
+ * as when it was saved or linked, and changed when not. One you deleted, or an Undo
+ * removed, with its activity or its link, is changed, so the default keeps it deleted
+ * and you can take it back. One that overlaps the time of a live, finished activity from
+ * another source is a possible duplicate. A workout still in progress is never one,
+ * since linking would change it under the logger. The rest are new. Workouts in the
+ * file that share an identity get their own first, matched against the identities saved
+ * here, deleted ones too, as `distinctIdentities` says.
  */
 export const planSourceImport = (
   local: {
@@ -411,28 +419,40 @@ export const planSourceImport = (
   const items: Array<SourcePlanItem> = [];
   for (const workout of workouts) {
     const key = sourceKey(workout);
-    const here = byId.get(sourceActivityId(workout));
-    if (here !== undefined) {
-      items.push(
-        here.fingerprint === workout.fingerprint
-          ? { status: "unchanged", key, workout }
-          : { status: "changed", key, workout, local: here.id, linked: false },
-      );
-      continue;
-    }
+    const own = byId.get(sourceActivityId(workout));
     const link = linked.get(key);
-    if (link !== undefined) {
+    // A live copy wins over a deleted one, and of two deleted copies the later deletion.
+    const saved = [
+      own && { local: own.id, linked: false, fingerprint: own.fingerprint, at: own.deletedAt },
+      link && {
+        local: link.activityId,
+        linked: true,
+        fingerprint: link.fingerprint,
+        at: link.deletedAt,
+      },
+    ]
+      .filter((copy) => copy !== undefined)
+      .sort((a, b) => (a.at ?? Infinity) - (b.at ?? Infinity))
+      .at(-1);
+    if (saved !== undefined) {
+      const deleted = saved.at !== null;
       items.push(
-        link.fingerprint === workout.fingerprint
+        !deleted && saved.fingerprint === workout.fingerprint
           ? { status: "unchanged", key, workout }
-          : { status: "changed", key, workout, local: link.activityId, linked: true },
+          : { status: "changed", key, workout, local: saved.local, linked: saved.linked, deleted },
       );
       continue;
     }
     let match: LocalActivity | undefined;
     let best = 0;
     for (const activity of local.activities) {
-      if (activity.source === workout.source || activity.status !== "finished") continue;
+      if (
+        activity.source === workout.source ||
+        activity.status !== "finished" ||
+        activity.deletedAt !== null
+      ) {
+        continue;
+      }
       const overlap = overlapMs(activity, workout);
       if (overlap > best) {
         best = overlap;

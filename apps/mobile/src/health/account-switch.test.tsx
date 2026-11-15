@@ -23,6 +23,7 @@ type Runtime = ManagedRuntime.ManagedRuntime<ActivityRepository | TransferReposi
 const app = vi.hoisted(() => ({
   databases: new Map<string, unknown>(),
   storage: new Map<string, string>(),
+  discarded: [] as Array<unknown>,
 }));
 
 vi.mock("react-native", () => ({
@@ -65,14 +66,15 @@ vi.mock("../data/database", () => ({
     close: async () => {},
   }),
 }));
-// The picked file is the sample Health export, read as the phone reads it.
+// The picked file is the sample Health export, read as the phone reads it, from the cache.
 vi.mock("./files", () => ({
+  discardPickedFile: (source: unknown) => app.discarded.push(source),
   readWorkoutFile: () =>
     readSourceFile(bytesSource(sampleHealthZip()), { hourOf: (at) => new Date(at).getUTCHours() }),
 }));
 vi.mock("@react-navigation/native", () => {
   const navigation = { canGoBack: () => true, goBack: () => {}, navigate: () => {} };
-  const route = { params: { file: "export.zip" } };
+  const route = { params: { uri: "file:///cache/export.zip" } };
   return { useNavigation: () => navigation, useRoute: () => route };
 });
 
@@ -111,6 +113,7 @@ beforeEach(() => {
   app.databases.set("anonymous", phone);
   app.databases.set(ACCOUNT, account);
   app.storage.clear();
+  app.discarded.length = 0;
   switchOwner(ANONYMOUS);
 });
 
@@ -214,6 +217,23 @@ describe("a Health import across signing in", () => {
     await act(async () => press(root, "health-apply")());
     await until(() => has(root, "health-done"), "importing");
     expect(await titles(account)).toEqual(SAMPLE_TITLES);
+    expect(await titles(phone)).toEqual([]);
+  });
+});
+
+describe("the picked file's cached copy", () => {
+  it("is deleted once the import finishes", async () => {
+    const root = await render("health-new");
+    expect(app.discarded).toEqual([]);
+    await act(async () => press(root, "health-apply")());
+    await until(() => has(root, "health-done"), "importing");
+    expect(app.discarded).toEqual([{ uri: "file:///cache/export.zip" }]);
+  });
+
+  it("is deleted when the import is declined", async () => {
+    const root = await render("health-new");
+    await act(async () => press(root, "health-decline")());
+    expect(app.discarded).toEqual([{ uri: "file:///cache/export.zip" }]);
     expect(await titles(phone)).toEqual([]);
   });
 });

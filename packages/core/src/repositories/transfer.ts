@@ -472,12 +472,32 @@ const activityItem = (id: string, rows: TableRows): Item => ({
   rows,
 });
 
-/** What the duplicate check needs of every activity here, and the sources already linked. */
+/**
+ * What the duplicate check needs of every activity here, and the sources linked, deleted
+ * ones too, so a workout you deleted does not come back as new.
+ */
 const localActivities = Effect.gen(function* () {
-  const activities = yield* selectRows(TABLES.activity);
-  const links = yield* selectRows(TABLES.activitySource);
+  const activities = yield* selectRowsWithDeleted(TABLES.activity);
+  const links = yield* selectRowsWithDeleted(TABLES.activitySource);
   return { activities, links };
 }).pipe(Effect.orDie);
+
+/**
+ * The rows of a deleted activity that were deleted with it, live again, as
+ * ActivityRepository.restore brings them back. None when the activity is live.
+ */
+const restoredRows = (rows: TableRows, activityId: ActivityId, at: EpochMillis): TableRows => {
+  const deletedAt = rows.activity?.find((row) => row.id === activityId)?.deletedAt ?? null;
+  if (deletedAt === null) return {};
+  return Object.fromEntries(
+    TABLE_KEYS.flatMap((key) => {
+      const back = (rows[key] ?? [])
+        .filter((row) => row.deletedAt === deletedAt)
+        .map((row) => Object.assign({}, row, { updatedAt: at, deletedAt: null }));
+      return back.length === 0 ? [] : [[key, back]];
+    }),
+  ) as TableRows;
+};
 
 const makeTransferRepository = Effect.gen(function* () {
   const sql = yield* Sql;
@@ -596,9 +616,13 @@ const makeTransferRepository = Effect.gen(function* () {
           for (const [activityId, writes] of byActivity) {
             const root = { table: TABLES.activity.name, id: activityId };
             const before = yield* journalRows({}, root);
-            let after = before;
-            let written: TableRows = {};
-            let replaced: TableRows = {};
+            // Taking a workout you deleted brings back the whole activity first, so Undo
+            // deletes it again.
+            const restored = restoredRows(before, activityId, at);
+            yield* putAll(restored);
+            let after = yield* journalRows({}, root);
+            let written: TableRows = restored;
+            let replaced: TableRows = rowsIn(before, restored);
             for (const { kind, workout } of writes) {
               if (kind === "link") {
                 // Linking only adds rows, so Undo removes them and the activity is as it was.

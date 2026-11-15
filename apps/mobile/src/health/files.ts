@@ -26,6 +26,15 @@ const fileOf = (source: ImportFileSource): File | undefined =>
       : undefined;
 
 /**
+ * Deletes the copy of a picked file the picker left in the cache, which for a whole Health
+ * history can be gigabytes. A file in svett's documents stays.
+ */
+export const discardPickedFile = (source: ImportFileSource) => {
+  const file = "uri" in source ? fileOf(source) : undefined;
+  if (file?.exists) file.delete();
+};
+
+/**
  * Reads the file's workouts a megabyte at a time through one file handle. Reads queue
  * behind each other, because the handle has one position.
  */

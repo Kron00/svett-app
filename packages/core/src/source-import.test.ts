@@ -53,6 +53,7 @@ const local = (
   source,
   sourceId: source === "svett" ? null : SourceIdentity.make(id),
   fingerprint: source === "svett" ? null : Fingerprint.make("b".repeat(64)),
+  deletedAt: null,
   ...overrides,
 });
 
@@ -134,6 +135,7 @@ describe("planSourceImport", () => {
             source: "apple_health",
             sourceId: SourceIdentity.make("linked"),
             fingerprint: Fingerprint.make("a".repeat(64)),
+            deletedAt: null,
           },
         ],
       },
@@ -154,6 +156,7 @@ describe("planSourceImport", () => {
             source: "apple_health",
             sourceId: SourceIdentity.make("linked"),
             fingerprint: Fingerprint.make("0".repeat(64)),
+            deletedAt: null,
           },
         ],
       },
@@ -163,6 +166,41 @@ describe("planSourceImport", () => {
       { key: "apple_health:linked", local: UUID(2), linked: true },
     ]);
     expect(plan.unchanged).toBe(0);
+  });
+
+  it("lists a workout deleted here, or whose link was, as changed, and matches no deleted activity", () => {
+    const gone = workout("gone", T - 3 * HOUR, 30);
+    const DELETED = EpochMillis.make(T + 9 * HOUR);
+    const plan = planSourceImport(
+      {
+        activities: [
+          local(sourceActivityId(gone), gone.startedAt, "apple_health", {
+            fingerprint: gone.fingerprint,
+            deletedAt: DELETED,
+          }),
+          local(UUID(2), T, "hevy", { deletedAt: DELETED }),
+          local(UUID(3), T + 2 * HOUR, "hevy", { deletedAt: DELETED }),
+        ],
+        links: [
+          {
+            activityId: ActivityId.make(UUID(2)),
+            source: "apple_health",
+            sourceId: SourceIdentity.make("linked"),
+            fingerprint: workout("linked", T, 60).fingerprint,
+            deletedAt: DELETED,
+          },
+        ],
+      },
+      [gone, workout("linked", T, 60), workout("over", T + 2 * HOUR, 30)],
+    );
+    expect(plan.changed).toMatchObject([
+      { key: "apple_health:linked", local: UUID(2), linked: true, deleted: true },
+      { key: "apple_health:gone", local: sourceActivityId(gone), linked: false, deleted: true },
+    ]);
+    expect(plan.duplicates).toEqual([]);
+    expect(plan.items.filter((item) => item.status === "new").map((item) => item.key)).toEqual([
+      "apple_health:over",
+    ]);
   });
 
   it("keeps workouts that share an identity but not their content, with the same IDs in any order", () => {
@@ -233,6 +271,7 @@ describe("planSourceImport", () => {
               source: "apple_health",
               sourceId: SourceIdentity.make("same #2"),
               fingerprint: c.fingerprint,
+              deletedAt: null,
             },
           ],
         },
